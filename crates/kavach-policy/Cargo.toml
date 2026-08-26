@@ -16,7 +16,7 @@ thiserror.workspace = true
 chrono.workspace = true
 
 [dev-dependencies]
-walkdir = "2"
+walkdir.workspace = true
 
 [lints]
 workspace = true

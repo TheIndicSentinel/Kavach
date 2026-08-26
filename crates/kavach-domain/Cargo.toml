@@ -13,9 +13,11 @@ chrono.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 sha2.workspace = true
-walkdir = "2"
-jsonschema = "0.29"
-serde_yaml = "0.9"
+walkdir.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true
+serde_yaml.workspace = true
 
 [lints]
 workspace = true
