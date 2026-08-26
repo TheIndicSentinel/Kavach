@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kavach.local/schemas/model-record.schema.json",
+  "title": "ModelRecord",
+  "type": "object",
+  "required": [
+    "model_id",
+    "version",
+    "sector",
+    "owner",
+    "risk_tier",
+    "origin",
+    "governance_mode",
+    "input_schema",
+    "status",
+    "pack_id",
+    "purpose"
+  ],
+  "properties": {
+    "model_id": { "type": "string" },
+    "version": { "type": "string" },
+    "sector": { "type": "string" },
+    "owner": { "type": "string" },
+    "risk_tier": { "type": "string", "enum": ["low", "medium", "high"] },
+    "origin": { "type": "string", "enum": ["in_house", "vendor"] },
+    "governance_mode": { "type": "string", "enum": ["shadow", "enforce"] },
+    "input_schema": { "type": "object" },
+    "human_review_hold_policy": {
+      "type": "string",
+      "description": "Documents LOS interpretation of HUMAN_REVIEW for this model."
+    },
+    "status": { "type": "string", "enum": ["draft", "production", "retired"] },
+    "pack_id": { "type": "string" },
+    "purpose": { "type": "string" }
+  }
+}

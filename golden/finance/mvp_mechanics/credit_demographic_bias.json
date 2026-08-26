@@ -1,0 +1,38 @@
+{
+  "name": "credit_demographic_bias",
+  "description": "MVP mechanics — caste_proxy_score field for engine testing only, NOT in finance-v0 pack",
+  "source": "python_mvp SimulatePage.jsx",
+  "model": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "sector": "finance",
+    "governance_mode": "enforce",
+    "pack_id": "finance-v0"
+  },
+  "request": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "purpose": "credit_decision",
+    "consent": {
+      "purpose_id": "credit_decision",
+      "timestamp": "2026-08-01T10:00:00Z"
+    },
+    "input": {
+      "credit_score": 610,
+      "income": 35000,
+      "debt_ratio": 0.38,
+      "loan_amount": 200000,
+      "employment_years": 3,
+      "caste_proxy_score": 0.19,
+      "region_risk": 0.22
+    },
+    "confidence": 0.81,
+    "decision_time": "2026-08-01T10:00:01Z",
+    "correlation_id": "golden-mvp-caste-proxy-001"
+  },
+  "expect": {
+    "note": "v0 pack ignores caste_proxy_score; future mvp_mechanics pack or batch fairness only",
+    "policy_decision_v0_pack": "PASS",
+    "mvp_ui_expected": "BLOCK"
+  }
+}

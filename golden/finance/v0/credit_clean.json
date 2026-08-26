@@ -1,0 +1,36 @@
+{
+  "name": "credit_clean",
+  "description": "Compliant credit application — all v0 pack checks pass",
+  "model": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "sector": "finance",
+    "governance_mode": "enforce",
+    "pack_id": "finance-v0"
+  },
+  "request": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "purpose": "credit_decision",
+    "consent": {
+      "purpose_id": "credit_decision",
+      "timestamp": "2026-08-01T10:00:00Z"
+    },
+    "input": {
+      "credit_score": 740,
+      "income": 85000,
+      "debt_ratio": 0.32,
+      "loan_amount": 300000,
+      "employment_years": 6
+    },
+    "confidence": 0.89,
+    "decision_time": "2026-08-01T10:00:01Z",
+    "correlation_id": "golden-v0-credit-clean-001"
+  },
+  "expect": {
+    "policy_decision": "PASS",
+    "returned_decision_enforce": "PASS",
+    "returned_decision_sync_shadow": "PASS",
+    "reason_codes_contains": ["CONSENT_OK"]
+  }
+}

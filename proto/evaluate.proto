@@ -1,0 +1,89 @@
+syntax = "proto3";
+
+package kavach.v1;
+
+option java_package = "in.kavach.v1";
+option java_multiple_files = true;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+enum Decision {
+  DECISION_UNSPECIFIED = 0;
+  PASS = 1;
+  ALERT = 2;
+  BLOCK = 3;
+  HUMAN_REVIEW = 4;
+}
+
+enum GovernanceMode {
+  GOVERNANCE_MODE_UNSPECIFIED = 0;
+  SHADOW = 1;
+  ENFORCE = 2;
+}
+
+enum ModelOrigin {
+  MODEL_ORIGIN_UNSPECIFIED = 0;
+  IN_HOUSE = 1;
+  VENDOR = 2;
+}
+
+message Consent {
+  string purpose_id = 1;
+  google.protobuf.Timestamp timestamp = 2;
+  optional bool valid = 3; // ignored in v1
+}
+
+message EvaluateRequest {
+  string model_id = 1;
+  string model_version = 2;
+  string purpose = 3;
+  Consent consent = 4;
+  google.protobuf.Struct input = 5;
+  optional google.protobuf.Struct output = 6;
+  optional double score = 7;
+  optional double confidence = 8;
+  google.protobuf.Timestamp decision_time = 9;
+  string correlation_id = 10;
+  optional string idempotency_key = 11;
+}
+
+message EvaluateResponse {
+  Decision policy_decision = 1;
+  Decision returned_decision = 2;
+  string evidence_id = 3;
+  repeated string reason_codes = 4;
+  repeated string policy_hits = 5;
+  int64 latency_ms = 6;
+}
+
+message DecisionEvent {
+  string schema_version = 1;
+  string event_id = 2;
+  string evidence_id = 3;
+  string prev_hash = 4;
+  string hash = 5;
+  string pack_id = 6;
+  string pack_version = 7;
+  string sector = 8;
+  string model_id = 9;
+  string model_version = 10;
+  ModelOrigin model_origin = 11;
+  GovernanceMode governance_mode = 12;
+  Decision policy_decision = 13;
+  Decision returned_decision = 14;
+  repeated string reason_codes = 15;
+  repeated string policy_hits = 16;
+  repeated string pii_tokens = 17;
+  string input_digest = 18;
+  int64 latency_ms = 19;
+  google.protobuf.Timestamp decision_time = 20;
+  google.protobuf.Timestamp evaluated_at = 21;
+  string service_identity_id = 22;
+  string correlation_id = 23;
+  optional string idempotency_key = 24;
+}
+
+service EvaluateService {
+  rpc Evaluate(EvaluateRequest) returns (EvaluateResponse);
+}

@@ -1,0 +1,22 @@
+model_id: credit-underwriting-v1
+version: "1.0.0"
+sector: finance
+owner: model-risk@example.nbfc
+risk_tier: high
+origin: in_house
+governance_mode: shadow
+input_schema:
+  type: object
+  required: [debt_ratio]
+  properties:
+    credit_score: { type: number }
+    income: { type: number }
+    debt_ratio: { type: number, minimum: 0, maximum: 1 }
+    loan_amount: { type: number }
+    employment_years: { type: number }
+    informal_sector: { type: boolean }
+human_review_hold_policy: >
+  LOS must hold disbursement on HUMAN_REVIEW; scoring API may still return score to underwriter UI.
+status: production
+pack_id: finance-v0
+purpose: credit_decision

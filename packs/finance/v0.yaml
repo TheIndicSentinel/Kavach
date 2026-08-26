@@ -1,0 +1,54 @@
+id: finance-v0
+version: "0.1.0"
+sector: finance
+jurisdiction: IN
+effective_from: "2026-01-01T00:00:00Z"
+description: >
+  Finance v0 pack — per-record CEL rules only. No cohort fairness.
+  Maps to RBI digital lending DTI guidance and DPDP consent presence.
+
+cel_runtime_limits:
+  timeout_ms: 10
+  max_alloc_bytes: 65536
+
+rules:
+  - id: finance-consent-001
+    expression: "has(request.consent) && request.consent.purpose_id == request.purpose"
+    decision: PASS
+    reason_code: CONSENT_OK
+    severity: info
+    control_mappings: ["DPDP-consent-purpose"]
+
+  - id: finance-consent-missing
+    expression: "!has(request.consent) || request.consent.purpose_id != request.purpose"
+    decision: BLOCK
+    reason_code: CONSENT_MISMATCH
+    severity: critical
+    control_mappings: ["DPDP-consent-purpose"]
+
+  - id: finance-dti-alert
+    expression: "has(request.input.debt_ratio) && request.input.debt_ratio > 0.40"
+    decision: ALERT
+    reason_code: RBI_DTI_EXCEEDED
+    severity: medium
+    control_mappings: ["FREE-AI-fairness", "RBI-digital-lending"]
+
+  - id: finance-informal-review
+    expression: "has(request.input.informal_sector) && request.input.informal_sector == true"
+    decision: HUMAN_REVIEW
+    reason_code: INFORMAL_ECONOMY_REVIEW
+    severity: medium
+    control_mappings: ["FREE-AI-human-oversight"]
+
+  - id: finance-low-confidence
+    expression: "has(request.confidence) && request.confidence < 0.55"
+    decision: HUMAN_REVIEW
+    reason_code: LOW_CONFIDENCE_GATE
+    severity: medium
+    control_mappings: ["FREE-AI-human-oversight"]
+
+control_mappings:
+  DPDP-consent-purpose: "DPDP Rules — consent and purpose limitation (mapped, not claimed)"
+  FREE-AI-fairness: "RBI FREE-AI — fairness and consumer protection themes"
+  FREE-AI-human-oversight: "RBI FREE-AI — human oversight"
+  RBI-digital-lending: "RBI digital lending — indebtedness thresholds"

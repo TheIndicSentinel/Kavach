@@ -1,0 +1,37 @@
+{
+  "name": "credit_informal_review",
+  "description": "Informal sector applicant — HUMAN_REVIEW",
+  "model": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "sector": "finance",
+    "governance_mode": "enforce",
+    "pack_id": "finance-v0"
+  },
+  "request": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "purpose": "credit_decision",
+    "consent": {
+      "purpose_id": "credit_decision",
+      "timestamp": "2026-08-01T10:00:00Z"
+    },
+    "input": {
+      "credit_score": 0,
+      "income": 28000,
+      "debt_ratio": 0.28,
+      "loan_amount": 80000,
+      "employment_years": 0,
+      "informal_sector": true
+    },
+    "confidence": 0.49,
+    "decision_time": "2026-08-01T10:00:01Z",
+    "correlation_id": "golden-v0-informal-001"
+  },
+  "expect": {
+    "policy_decision": "HUMAN_REVIEW",
+    "returned_decision_enforce": "HUMAN_REVIEW",
+    "returned_decision_sync_shadow": "PASS",
+    "reason_codes_contains": ["INFORMAL_ECONOMY_REVIEW", "LOW_CONFIDENCE_GATE"]
+  }
+}

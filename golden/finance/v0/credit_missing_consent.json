@@ -1,0 +1,33 @@
+{
+  "name": "credit_missing_consent",
+  "description": "Purpose mismatch on consent — BLOCK",
+  "model": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "sector": "finance",
+    "governance_mode": "enforce",
+    "pack_id": "finance-v0"
+  },
+  "request": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "purpose": "credit_decision",
+    "consent": {
+      "purpose_id": "marketing",
+      "timestamp": "2026-08-01T10:00:00Z"
+    },
+    "input": {
+      "credit_score": 700,
+      "debt_ratio": 0.30
+    },
+    "confidence": 0.85,
+    "decision_time": "2026-08-01T10:00:01Z",
+    "correlation_id": "golden-v0-consent-001"
+  },
+  "expect": {
+    "policy_decision": "BLOCK",
+    "returned_decision_enforce": "BLOCK",
+    "returned_decision_sync_shadow": "PASS",
+    "reason_codes_contains": ["CONSENT_MISMATCH"]
+  }
+}

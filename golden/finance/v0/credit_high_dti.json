@@ -1,0 +1,36 @@
+{
+  "name": "credit_high_dti",
+  "description": "Debt ratio 47% exceeds 40% RBI-style cap — ALERT",
+  "model": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "sector": "finance",
+    "governance_mode": "enforce",
+    "pack_id": "finance-v0"
+  },
+  "request": {
+    "model_id": "credit-underwriting-v1",
+    "model_version": "1.0.0",
+    "purpose": "credit_decision",
+    "consent": {
+      "purpose_id": "credit_decision",
+      "timestamp": "2026-08-01T10:00:00Z"
+    },
+    "input": {
+      "credit_score": 680,
+      "income": 52000,
+      "debt_ratio": 0.47,
+      "loan_amount": 450000,
+      "employment_years": 2
+    },
+    "confidence": 0.78,
+    "decision_time": "2026-08-01T10:00:01Z",
+    "correlation_id": "golden-v0-credit-dti-001"
+  },
+  "expect": {
+    "policy_decision": "ALERT",
+    "returned_decision_enforce": "ALERT",
+    "returned_decision_sync_shadow": "PASS",
+    "reason_codes_contains": ["RBI_DTI_EXCEEDED"]
+  }
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kavach.local/schemas/decision-event.schema.json",
+  "title": "DecisionEvent",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "event_id",
+    "evidence_id",
+    "prev_hash",
+    "hash",
+    "pack_id",
+    "pack_version",
+    "sector",
+    "model_id",
+    "model_version",
+    "model_origin",
+    "governance_mode",
+    "policy_decision",
+    "returned_decision",
+    "reason_codes",
+    "policy_hits",
+    "input_digest",
+    "latency_ms",
+    "decision_time",
+    "evaluated_at",
+    "service_identity_id"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "event_id": { "type": "string", "format": "uuid" },
+    "evidence_id": { "type": "string", "format": "uuid" },
+    "prev_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "pack_id": { "type": "string" },
+    "pack_version": { "type": "string" },
+    "sector": { "type": "string" },
+    "model_id": { "type": "string" },
+    "model_version": { "type": "string" },
+    "model_origin": { "type": "string", "enum": ["in_house", "vendor"] },
+    "governance_mode": { "type": "string", "enum": ["shadow", "enforce"] },
+    "policy_decision": { "$ref": "#/$defs/decision" },
+    "returned_decision": { "$ref": "#/$defs/decision" },
+    "reason_codes": { "type": "array", "items": { "type": "string" } },
+    "policy_hits": { "type": "array", "items": { "type": "string" } },
+    "pii_tokens": { "type": "array", "items": { "type": "string" } },
+    "input_digest": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "latency_ms": { "type": "integer", "minimum": 0 },
+    "decision_time": { "type": "string", "format": "date-time" },
+    "evaluated_at": { "type": "string", "format": "date-time" },
+    "service_identity_id": { "type": "string" },
+    "correlation_id": { "type": "string" },
+    "idempotency_key": { "type": "string" }
+  },
+  "$defs": {
+    "decision": {
+      "type": "string",
+      "enum": ["PASS", "ALERT", "BLOCK", "HUMAN_REVIEW"]
+    }
+  }
+}

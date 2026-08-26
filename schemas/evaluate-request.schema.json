@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kavach.local/schemas/evaluate-request.schema.json",
+  "title": "EvaluateRequest",
+  "description": "Public evaluate request. Mode is NOT caller-controlled; see ModelRecord.governance_mode.",
+  "type": "object",
+  "required": [
+    "model_id",
+    "model_version",
+    "purpose",
+    "consent",
+    "input",
+    "decision_time",
+    "correlation_id"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "model_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "model_version": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "purpose": { "type": "string", "minLength": 1, "maxLength": 256 },
+    "consent": { "$ref": "#/$defs/consent" },
+    "input": { "type": "object", "additionalProperties": true },
+    "output": { "type": "object", "additionalProperties": true },
+    "score": { "type": "number" },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "decision_time": { "type": "string", "format": "date-time" },
+    "correlation_id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "idempotency_key": { "type": "string", "maxLength": 128 }
+  },
+  "$defs": {
+    "consent": {
+      "type": "object",
+      "required": ["purpose_id", "timestamp"],
+      "additionalProperties": false,
+      "properties": {
+        "purpose_id": { "type": "string", "minLength": 1 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "valid": { "type": "boolean", "description": "Ignored in v1; reserved." }
+      }
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kavach.local/schemas/policy-pack.schema.json",
+  "title": "PolicyPack",
+  "type": "object",
+  "required": ["id", "version", "sector", "jurisdiction", "effective_from", "rules"],
+  "properties": {
+    "id": { "type": "string" },
+    "version": { "type": "string" },
+    "sector": { "type": "string" },
+    "jurisdiction": { "type": "string" },
+    "effective_from": { "type": "string", "format": "date-time" },
+    "description": { "type": "string" },
+    "cel_runtime_limits": {
+      "type": "object",
+      "properties": {
+        "timeout_ms": { "type": "integer" },
+        "max_alloc_bytes": { "type": "integer" }
+      }
+    },
+    "rules": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "expression", "decision", "reason_code"],
+        "properties": {
+          "id": { "type": "string" },
+          "expression": { "type": "string" },
+          "decision": { "type": "string", "enum": ["PASS", "ALERT", "BLOCK", "HUMAN_REVIEW"] },
+          "reason_code": { "type": "string" },
+          "severity": { "type": "string" },
+          "control_mappings": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "control_mappings": { "type": "object", "additionalProperties": { "type": "string" } }
+  }
+}
