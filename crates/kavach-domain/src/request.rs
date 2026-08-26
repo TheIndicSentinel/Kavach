@@ -45,7 +45,11 @@ impl EvaluateRequest {
         Ok(())
     }
 
-    pub fn check_clock_skew(&self, server_now: DateTime<Utc>, max_seconds: i64) -> Result<(), DomainError> {
+    pub fn check_clock_skew(
+        &self,
+        server_now: DateTime<Utc>,
+        max_seconds: i64,
+    ) -> Result<(), DomainError> {
         let skew = (self.decision_time - server_now).num_seconds().abs();
         if skew > max_seconds {
             return Err(DomainError::ClockSkew {

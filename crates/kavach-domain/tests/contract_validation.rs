@@ -1,8 +1,8 @@
 mod common;
 
 use common::{
-    assert_valid, collect_json_files, golden_mvp_dir, golden_v0_dir, load_json, validator_for_schema,
-    workspace_root, yaml_to_json,
+    assert_valid, collect_json_files, golden_mvp_dir, golden_v0_dir, load_json,
+    validator_for_schema, workspace_root, yaml_to_json,
 };
 
 #[test]
@@ -58,14 +58,22 @@ fn finance_model_record_matches_schema() {
     let validator = validator_for_schema("model-record.schema.json");
     let path = workspace_root().join("models/finance/credit-underwriting-v1.yaml");
     let model = yaml_to_json(&path);
-    assert_valid(&validator, &model, "models/finance/credit-underwriting-v1.yaml");
+    assert_valid(
+        &validator,
+        &model,
+        "models/finance/credit-underwriting-v1.yaml",
+    );
 }
 
 #[test]
 fn golden_v0_fixtures_have_required_expect_fields() {
     for path in collect_json_files(&golden_v0_dir()) {
         let fixture = load_json(&path);
-        assert!(fixture.get("name").is_some(), "missing name in {}", path.display());
+        assert!(
+            fixture.get("name").is_some(),
+            "missing name in {}",
+            path.display()
+        );
         assert!(
             fixture["expect"].get("policy_decision").is_some(),
             "missing expect.policy_decision in {}",

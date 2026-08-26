@@ -24,8 +24,7 @@ impl PolicyEngine {
             .pack
             .cel_runtime_limits
             .as_ref()
-            .map(|l| l.timeout_ms)
-            .unwrap_or(10);
+            .map_or(10, |l| l.timeout_ms);
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let context = build_context(request)?;
@@ -39,10 +38,13 @@ impl PolicyEngine {
                 return Err(PolicyError::Timeout { timeout_ms });
             }
 
-            let value = rule.program.execute(&context).map_err(|e| PolicyError::CelExecute {
-                rule_id: rule.id.clone(),
-                message: e.to_string(),
-            })?;
+            let value = rule
+                .program
+                .execute(&context)
+                .map_err(|e| PolicyError::CelExecute {
+                    rule_id: rule.id.clone(),
+                    message: e.to_string(),
+                })?;
 
             if !cel_bool(&value)? {
                 continue;
@@ -78,7 +80,7 @@ mod tests {
     use super::*;
     use crate::PackLoader;
     use chrono::Utc;
-    use kavach_domain::{Consent, golden::load_fixtures, golden::workspace_golden_v0_dir};
+    use kavach_domain::{golden::load_fixtures, golden::workspace_golden_v0_dir, Consent};
     use std::path::PathBuf;
 
     fn finance_pack_path() -> PathBuf {
@@ -142,6 +144,8 @@ mod tests {
 
         let evaluation = PolicyEngine::evaluate(&loaded, &request).expect("eval");
         assert_eq!(evaluation.policy_decision, Decision::Block);
-        assert!(evaluation.reason_codes.contains(&"CONSENT_MISMATCH".to_string()));
+        assert!(evaluation
+            .reason_codes
+            .contains(&"CONSENT_MISMATCH".to_string()));
     }
 }

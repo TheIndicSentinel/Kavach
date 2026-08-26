@@ -30,15 +30,18 @@ impl PackLoader {
 
     pub fn load_from_pack(pack: PolicyPack) -> Result<LoadedPolicyPack, PolicyError> {
         if pack.rules.is_empty() {
-            return Err(PolicyError::Validation("pack must contain at least one rule".into()));
+            return Err(PolicyError::Validation(
+                "pack must contain at least one rule".into(),
+            ));
         }
 
         let mut compiled_rules = Vec::with_capacity(pack.rules.len());
         for rule in &pack.rules {
-            let program = Program::compile(&rule.expression).map_err(|e| PolicyError::CelCompile {
-                rule_id: rule.id.clone(),
-                message: e.to_string(),
-            })?;
+            let program =
+                Program::compile(&rule.expression).map_err(|e| PolicyError::CelCompile {
+                    rule_id: rule.id.clone(),
+                    message: e.to_string(),
+                })?;
             compiled_rules.push(CompiledRule {
                 id: rule.id.clone(),
                 program,
@@ -47,6 +50,9 @@ impl PackLoader {
             });
         }
 
-        Ok(LoadedPolicyPack { pack, compiled_rules })
+        Ok(LoadedPolicyPack {
+            pack,
+            compiled_rules,
+        })
     }
 }

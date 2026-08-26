@@ -10,7 +10,8 @@ pub fn workspace_root() -> PathBuf {
 }
 
 pub fn load_json(path: &Path) -> Value {
-    let content = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let content =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
     serde_json::from_str(&content).unwrap_or_else(|e| panic!("parse JSON {}: {e}", path.display()))
 }
 
@@ -25,16 +26,22 @@ pub fn validator_for_schema(schema_file: &str) -> Validator {
 }
 
 pub fn assert_valid(validator: &Validator, instance: &Value, label: &str) {
-    if let Err(errors) = validator.validate(instance) {
-        let messages: Vec<String> = errors.map(|e| e.to_string()).collect();
-        panic!("{label} failed schema validation:\n{}", messages.join("\n"));
-    }
+    let errors: Vec<String> = validator
+        .iter_errors(instance)
+        .map(|e| e.to_string())
+        .collect();
+    assert!(
+        errors.is_empty(),
+        "{label} failed schema validation:\n{}",
+        errors.join("\n")
+    );
 }
 
 pub fn yaml_to_json(path: &Path) -> Value {
-    let content = fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let value: serde_yaml::Value =
-        serde_yaml::from_str(&content).unwrap_or_else(|e| panic!("parse YAML {}: {e}", path.display()));
+    let content =
+        fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let value: serde_yaml::Value = serde_yaml::from_str(&content)
+        .unwrap_or_else(|e| panic!("parse YAML {}: {e}", path.display()));
     serde_json::to_value(value).unwrap_or_else(|e| panic!("yaml to json {}: {e}", path.display()))
 }
 
