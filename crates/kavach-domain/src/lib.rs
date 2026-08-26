@@ -13,5 +13,5 @@ pub mod types;
 pub use decision::Decision;
 pub use error::DomainError;
 pub use request::{Consent, EvaluateRequest};
-pub use response::{DecisionEvent, EvaluateResponse, GovernanceMode, ModelOrigin};
-pub use types::{ModelRecord, PolicyPack, RiskTier, ModelStatus, SCHEMA_VERSION};
+pub use response::{DecisionEvent, EvaluateResponse, GovernanceMode, ModelOrigin, SCHEMA_VERSION};
+pub use types::{ModelRecord, ModelStatus, PolicyPack, RiskTier};

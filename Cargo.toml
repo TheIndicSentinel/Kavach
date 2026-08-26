@@ -1,21 +1,26 @@
 [workspace]
 resolver = "2"
-members = ["crates/kavach-domain"]
-default-members = ["crates/kavach-domain"]
+members = ["crates/kavach-domain", "crates/kavach-policy"]
+default-members = ["crates/kavach-domain", "crates/kavach-policy"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "Proprietary"
+license = "MIT"
 authors = ["Kavach"]
 
 [workspace.dependencies]
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-chrono = { version = "0.4", features = ["serde"] }
-thiserror = "2"
-uuid = { version = "1", features = ["serde", "v4"] }
-sha2 = "0.10"
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.151"
+chrono = { version = "0.4.45", features = ["serde"] }
+thiserror = "2.0.20"
+uuid = { version = "1.18.0", features = ["serde", "v4"] }
+sha2 = "0.10.9"
+cel-interpreter = "0.10.0"
+serde_yaml = "0.9.34"
+walkdir = "2.5.0"
+jsonschema = "0.29.1"
+kavach-domain = { path = "crates/kavach-domain", version = "0.1.0" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

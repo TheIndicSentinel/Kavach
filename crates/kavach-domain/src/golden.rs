@@ -52,9 +52,8 @@ pub fn load_fixtures(dir: &Path) -> Result<Vec<GoldenFixture>, DomainError> {
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
     {
-        let content = fs::read_to_string(entry.path()).map_err(|e| {
-            DomainError::Golden(format!("read {}: {e}", entry.path().display()))
-        })?;
+        let content = fs::read_to_string(entry.path())
+            .map_err(|e| DomainError::Golden(format!("read {}: {e}", entry.path().display())))?;
         let fixture: GoldenFixture = serde_json::from_str(&content)?;
         fixtures.push(fixture);
     }
@@ -63,8 +62,7 @@ pub fn load_fixtures(dir: &Path) -> Result<Vec<GoldenFixture>, DomainError> {
 }
 
 pub fn workspace_golden_v0_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../golden/finance/v0")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../golden/finance/v0")
 }
 
 pub fn assert_returned_decision_mapping(

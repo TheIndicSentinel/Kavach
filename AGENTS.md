@@ -32,8 +32,11 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Phase 0 scaffolding (docs, contracts, domain crate, CI config)
-- **Next:** Milestone A — `kavach-policy` → `kavach-evidence` → `kavach-evaluate` → `kavach-api` → `kavach-batch`
+- **Done:** Phase 0 on `main` (docs, contracts, domain crate, CI)
+- **In progress:** Milestone A on `feat/kavach-policy` — CEL policy engine
+- **Next:** `kavach-evidence` → `kavach-evaluate` → `kavach-api` → `kavach-batch`
+
+Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 
 ## Invariants
 

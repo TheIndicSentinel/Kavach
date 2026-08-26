@@ -3,12 +3,16 @@
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "transitive via cel-interpreter; no upstream fix yet" },
+]
+unmaintained = "none"
 
 [licenses]
 version = 2
 allow = [
     "MIT",
+    "MIT-0",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
