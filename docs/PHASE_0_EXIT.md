@@ -31,9 +31,9 @@ Sign off before starting Milestone A (`kavach-policy`).
 
 ## Verification
 
-- [ ] `cargo test --workspace` green locally
-- [ ] CI green on GitHub `main`
-- [ ] No API server, Postgres, or React in repo
+- [ ] `cargo test --workspace` green locally (`./scripts/verify.sh`)
+- [ ] CI green on GitHub `main` after push
+- [x] No API server, Postgres, or React in repo
 
 ## Explicitly not Phase 0
 
@@ -51,4 +51,4 @@ When all boxes above are checked, begin Milestone A in order:
 4. `kavach-api`
 5. `kavach-batch`
 
-**Phase 0 status:** Complete pending CI green on GitHub and local `cargo test`.
+**Phase 0 status:** Complete in repo; pending local `cargo test` and CI green on GitHub after push to https://github.com/TheIndicSentinel/Kavach.git
