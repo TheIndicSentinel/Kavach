@@ -17,6 +17,6 @@ cargo fmt --all -- --check
 
 ## Phase status
 
-See [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md).
+See [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) and [docs/BRANCHING.md](docs/BRANCHING.md).
 
-Phase 0 complete when CI is green on `main`. Milestone A starts with `kavach-policy`.
+Phase 0 complete on `main`. Milestone A in progress on feature branches (`feat/kavach-policy`, …).

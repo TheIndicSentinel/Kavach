@@ -1,0 +1,22 @@
+[package]
+name = "kavach-policy"
+description = "Policy pack loader and CEL evaluation engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kavach-domain = { path = "../kavach-domain" }
+cel-interpreter = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml = { workspace = true }
+thiserror.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+walkdir = "2"
+
+[lints]
+workspace = true

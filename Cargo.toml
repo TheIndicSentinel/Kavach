@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
-members = ["crates/kavach-domain"]
-default-members = ["crates/kavach-domain"]
+members = ["crates/kavach-domain", "crates/kavach-policy"]
+default-members = ["crates/kavach-domain", "crates/kavach-policy"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +16,8 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 uuid = { version = "1", features = ["serde", "v4"] }
 sha2 = "0.10"
+cel-interpreter = "0.10"
+serde_yaml = "0.9"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
