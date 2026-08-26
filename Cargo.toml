@@ -6,7 +6,7 @@ default-members = ["crates/kavach-domain", "crates/kavach-policy"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "LicenseRef-Proprietary"
+license = "MIT"
 authors = ["Kavach"]
 
 [workspace.dependencies]

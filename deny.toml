@@ -20,17 +20,8 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
-    "LicenseRef-Proprietary",
 ]
 confidence-threshold = 0.8
-
-[[licenses.clarify]]
-crate = "kavach-domain"
-expression = "LicenseRef-Proprietary"
-
-[[licenses.clarify]]
-crate = "kavach-policy"
-expression = "LicenseRef-Proprietary"
 
 [bans]
 multiple-versions = "warn"
