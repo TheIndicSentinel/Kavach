@@ -7,8 +7,8 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
-kavach-domain = { path = "../kavach-domain" }
-cel-interpreter = { workspace = true }
+kavach-domain.workspace = true
+cel-interpreter.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = { workspace = true }

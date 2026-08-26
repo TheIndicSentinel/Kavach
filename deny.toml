@@ -3,8 +3,10 @@
 
 [advisories]
 version = 2
-ignore = []
-unmaintained = "transitive"
+ignore = [
+    { id = "RUSTSEC-2024-0436", reason = "transitive via cel-interpreter; no upstream fix yet" },
+]
+unmaintained = "none"
 
 [licenses]
 version = 2
@@ -18,8 +20,17 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    "LicenseRef-Proprietary",
 ]
 confidence-threshold = 0.8
+
+[[licenses.clarify]]
+crate = "kavach-domain"
+expression = "LicenseRef-Proprietary"
+
+[[licenses.clarify]]
+crate = "kavach-policy"
+expression = "LicenseRef-Proprietary"
 
 [bans]
 multiple-versions = "warn"
