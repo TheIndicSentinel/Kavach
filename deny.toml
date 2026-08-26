@@ -4,7 +4,7 @@
 [advisories]
 version = 2
 ignore = []
-unmaintained = "warn"
+unmaintained = "transitive"
 
 [licenses]
 version = 2
