@@ -3,7 +3,6 @@
 pub mod config;
 pub mod convert;
 pub mod error;
-pub mod evidence;
 pub mod grpc;
 pub mod http;
 pub mod metrics;

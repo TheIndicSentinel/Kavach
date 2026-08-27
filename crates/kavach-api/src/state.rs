@@ -5,12 +5,10 @@ use kavach_domain::{EvaluateRequest, EvaluateResponse, ModelRecord};
 use kavach_evaluate::{EvaluateConfig, EvaluatePath, EvaluateService};
 use kavach_evidence::MemoryChain;
 use kavach_policy::PackLoader;
+use kavach_storage::{EvidenceBackend, IncidentBackend, StoragePool};
 
 use crate::config::{ApiConfig, EvidenceStoreKind};
 use crate::error::ApiError;
-use crate::evidence::{
-    EvidenceBackend, IncidentBackend, PostgresEvidenceStore, PostgresIncidentRecorder,
-};
 use crate::metrics::Metrics;
 
 pub struct AppState {
@@ -31,13 +29,12 @@ impl AppState {
                 IncidentBackend::Memory(kavach_evaluate::VecIncidentRecorder::default()),
             ),
             EvidenceStoreKind::Postgres { database_url } => {
-                let store = PostgresEvidenceStore::connect(database_url)
+                let pool = StoragePool::connect(database_url)
                     .await
-                    .map_err(|e| ApiError::Internal(format!("postgres evidence: {e}")))?;
-                let pool = store.pool.clone();
+                    .map_err(|e| ApiError::Internal(format!("postgres storage: {e}")))?;
                 (
-                    EvidenceBackend::Postgres(store),
-                    IncidentBackend::Postgres(PostgresIncidentRecorder::new(pool)),
+                    EvidenceBackend::Postgres(pool.evidence_store()),
+                    IncidentBackend::Postgres(pool.incident_recorder()),
                 )
             }
         };

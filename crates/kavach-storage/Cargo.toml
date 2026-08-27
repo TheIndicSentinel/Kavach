@@ -1,33 +1,22 @@
 [package]
-name = "kavach-batch"
-description = "NDJSON batch ingest worker for evaluate (Milestone A.5)"
+name = "kavach-storage"
+description = "Postgres evidence chain and batch job persistence"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "kavach-batch"
-path = "src/bin/kavach-batch.rs"
-
 [dependencies]
 kavach-domain = { workspace = true }
 kavach-evaluate = { workspace = true }
 kavach-evidence = { workspace = true }
-kavach-policy = { workspace = true }
-kavach-storage = { workspace = true }
 chrono.workspace = true
-clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml.workspace = true
+sqlx.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 uuid.workspace = true
-
-[dev-dependencies]
-kavach-storage = { workspace = true }
-walkdir.workspace = true
 
 [lints]
 workspace = true

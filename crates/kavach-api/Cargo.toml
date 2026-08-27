@@ -16,6 +16,7 @@ kavach-domain = { workspace = true }
 kavach-evaluate = { workspace = true }
 kavach-evidence = { workspace = true }
 kavach-policy = { workspace = true }
+kavach-storage = { workspace = true }
 axum.workspace = true
 axum-server.workspace = true
 rustls.workspace = true
@@ -34,7 +35,6 @@ hex = "0.4.3"
 tonic.workspace = true
 prost.workspace = true
 prost-types.workspace = true
-sqlx.workspace = true
 prometheus.workspace = true
 uuid.workspace = true
 

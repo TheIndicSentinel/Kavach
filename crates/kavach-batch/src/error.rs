@@ -19,6 +19,9 @@ pub enum BatchError {
     #[error("evaluate: {0}")]
     Evaluate(#[from] EvaluateError),
 
+    #[error("job store: {0}")]
+    JobStore(#[from] kavach_storage::JobStoreError),
+
     #[error("parse line {line_number}: {message}")]
     ParseLine { line_number: usize, message: String },
 }
