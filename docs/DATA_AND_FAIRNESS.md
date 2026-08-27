@@ -36,10 +36,21 @@ Kavach checks **presence** of a consent object and **purpose match** with the re
 
 ### Batch reports (Milestone B)
 
-Two report types via Polars:
+Two report types via Polars (`kavach-batch fairness`):
 
 1. **Non-discrimination / disparity** — approval rate gaps on lawfully held declared attributes; sample-size guards.  
 2. **Inclusion monitoring** — PSL/inclusion segments where applicable.
+
+```bash
+kavach-batch fairness \
+  --requests batch_requests.ndjson \
+  --results batch_results.ndjson \
+  --report disparity \
+  --attribute input.customer_segment \
+  --output disparity_report.json
+```
+
+Schema: `schemas/fairness-report.schema.json`. Golden oracle: `golden/finance/fairness/`.
 
 Attributes used in production require partner legal sign-off. MVP `caste_proxy_score` is a **golden test fixture only** (`golden/finance/mvp_mechanics/`), not a production field.
 

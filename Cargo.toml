@@ -60,6 +60,7 @@ rustls = { version = "0.23.43", default-features = false, features = ["ring", "s
 rustls-pemfile = "2.2.0"
 sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "json", "chrono", "derive"] }
 prometheus = "0.14.0"
+polars = { version = "0.45.1", default-features = false, features = ["lazy", "dtype-full"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

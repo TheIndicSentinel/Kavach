@@ -140,6 +140,19 @@ Output: one result row per input line (`status`, `policy_decision`, `returned_de
 
 Partner-shaped sample files: [`partner/finance/`](../partner/finance/).
 
+Fairness reports (paired request + result NDJSON):
+
+```bash
+./target/release/kavach-batch fairness \
+  --requests /data/in/applications.ndjson \
+  --results /data/out/results.ndjson \
+  --report disparity \
+  --attribute input.customer_segment \
+  --output /data/out/disparity_report.json
+```
+
+Use `--report inclusion` with `--inclusion-field input.informal_sector` for PSL/inclusion monitoring.
+
 ### Evidence verification
 
 Export the evidence chain to NDJSON, then:

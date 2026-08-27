@@ -24,4 +24,7 @@ pub enum BatchError {
 
     #[error("parse line {line_number}: {message}")]
     ParseLine { line_number: usize, message: String },
+
+    #[error("fairness: {0}")]
+    Fairness(String),
 }

@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kavach.local/schemas/fairness-report.schema.json",
+  "title": "FairnessReport",
+  "oneOf": [
+    { "$ref": "#/$defs/disparity_report" },
+    { "$ref": "#/$defs/inclusion_report" }
+  ],
+  "$defs": {
+    "disparity_report": {
+      "type": "object",
+      "required": [
+        "report_type",
+        "attribute",
+        "min_sample_size",
+        "disparity_threshold",
+        "total_evaluated",
+        "overall_approval_rate",
+        "reference_group",
+        "groups",
+        "max_disparity_gap",
+        "flagged",
+        "generated_at"
+      ],
+      "properties": {
+        "report_type": { "const": "disparity" },
+        "attribute": { "type": "string" },
+        "min_sample_size": { "type": "integer", "minimum": 1 },
+        "disparity_threshold": { "type": "number", "minimum": 0, "maximum": 1 },
+        "total_evaluated": { "type": "integer", "minimum": 0 },
+        "overall_approval_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reference_group": { "type": "string" },
+        "groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/group_metric" }
+        },
+        "max_disparity_gap": { "type": "number", "minimum": 0, "maximum": 1 },
+        "flagged": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/flagged_group" }
+        },
+        "generated_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "inclusion_report": {
+      "type": "object",
+      "required": [
+        "report_type",
+        "segment_field",
+        "min_sample_size",
+        "total_evaluated",
+        "inclusion_count",
+        "inclusion_approval_rate",
+        "non_inclusion_count",
+        "non_inclusion_approval_rate",
+        "approval_gap",
+        "inclusion_sample_sufficient",
+        "non_inclusion_sample_sufficient",
+        "flagged",
+        "generated_at"
+      ],
+      "properties": {
+        "report_type": { "const": "inclusion" },
+        "segment_field": { "type": "string" },
+        "min_sample_size": { "type": "integer", "minimum": 1 },
+        "total_evaluated": { "type": "integer", "minimum": 0 },
+        "inclusion_count": { "type": "integer", "minimum": 0 },
+        "inclusion_approval_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "non_inclusion_count": { "type": "integer", "minimum": 0 },
+        "non_inclusion_approval_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "approval_gap": { "type": "number", "minimum": 0, "maximum": 1 },
+        "inclusion_sample_sufficient": { "type": "boolean" },
+        "non_inclusion_sample_sufficient": { "type": "boolean" },
+        "flagged": { "type": "boolean" },
+        "generated_at": { "type": "string", "format": "date-time" }
+      },
+      "additionalProperties": false
+    },
+    "group_metric": {
+      "type": "object",
+      "required": [
+        "group_value",
+        "count",
+        "approval_rate",
+        "sample_sufficient"
+      ],
+      "properties": {
+        "group_value": { "type": "string" },
+        "count": { "type": "integer", "minimum": 0 },
+        "approval_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "sample_sufficient": { "type": "boolean" },
+        "gap_from_reference": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    },
+    "flagged_group": {
+      "type": "object",
+      "required": [
+        "group_value",
+        "gap_from_reference",
+        "approval_rate",
+        "reference_approval_rate"
+      ],
+      "properties": {
+        "group_value": { "type": "string" },
+        "gap_from_reference": { "type": "number", "minimum": 0, "maximum": 1 },
+        "approval_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "reference_approval_rate": { "type": "number", "minimum": 0, "maximum": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -3,7 +3,10 @@ use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand, ValueEnum};
-use kavach_batch::{run_batch, BatchConfig, BatchRunContext};
+use kavach_batch::{
+    run_batch, run_disparity_report, run_inclusion_report, BatchConfig, BatchRunContext,
+    FairnessConfig, FairnessReport,
+};
 use kavach_evaluate::VecIncidentRecorder;
 use kavach_evidence::MemoryChain;
 use kavach_storage::{EvidenceBackend, IncidentBackend, NoopBatchJobStore, StoragePool};
@@ -12,6 +15,12 @@ use kavach_storage::{EvidenceBackend, IncidentBackend, NoopBatchJobStore, Storag
 enum EvidenceStoreArg {
     Memory,
     Postgres,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum FairnessReportKind {
+    Disparity,
+    Inclusion,
 }
 
 #[derive(Parser)]
@@ -42,6 +51,32 @@ enum Command {
 
         #[arg(long, env = "KAVACH_DATABASE_URL")]
         database_url: Option<String>,
+    },
+    /// Generate a fairness batch report from paired NDJSON request/result files.
+    Fairness {
+        #[arg(long)]
+        requests: PathBuf,
+
+        #[arg(long)]
+        results: PathBuf,
+
+        #[arg(long)]
+        output: PathBuf,
+
+        #[arg(long, value_enum)]
+        report: FairnessReportKind,
+
+        #[arg(long, default_value = "input.customer_segment")]
+        attribute: String,
+
+        #[arg(long, default_value = "input.informal_sector")]
+        inclusion_field: String,
+
+        #[arg(long, default_value_t = 30)]
+        min_sample_size: usize,
+
+        #[arg(long, default_value_t = 0.10)]
+        disparity_threshold: f64,
     },
 }
 
@@ -112,6 +147,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if report.failed > 0 {
                 std::process::exit(1);
             }
+        }
+        Command::Fairness {
+            requests,
+            results,
+            output,
+            report,
+            attribute,
+            inclusion_field,
+            min_sample_size,
+            disparity_threshold,
+        } => {
+            let config = FairnessConfig {
+                attribute,
+                inclusion_field,
+                min_sample_size,
+                disparity_threshold,
+            };
+            let fairness_report = match report {
+                FairnessReportKind::Disparity => {
+                    let disparity = run_disparity_report(&requests, &results, &config)?;
+                    FairnessReport::Disparity(disparity)
+                }
+                FairnessReportKind::Inclusion => {
+                    let inclusion = run_inclusion_report(&requests, &results, &config)?;
+                    FairnessReport::Inclusion(inclusion)
+                }
+            };
+            let output_file = File::create(&output)?;
+            serde_json::to_writer_pretty(BufWriter::new(output_file), &fairness_report)?;
+            eprintln!(
+                "kavach-batch fairness report={:?} output={}",
+                report,
+                output.display()
+            );
         }
     }
     Ok(())
