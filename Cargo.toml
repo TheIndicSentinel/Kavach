@@ -1,7 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/kavach-domain", "crates/kavach-policy"]
-default-members = ["crates/kavach-domain", "crates/kavach-policy"]
+members = [
+    "crates/kavach-domain",
+    "crates/kavach-policy",
+    "crates/kavach-evidence",
+]
+default-members = [
+    "crates/kavach-domain",
+    "crates/kavach-policy",
+    "crates/kavach-evidence",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,6 +29,8 @@ serde_yaml = "0.9.34"
 walkdir = "2.5.0"
 jsonschema = "0.29.1"
 kavach-domain = { path = "crates/kavach-domain", version = "0.1.0" }
+kavach-policy = { path = "crates/kavach-policy", version = "0.1.0" }
+clap = { version = "4.5.47", features = ["derive"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
