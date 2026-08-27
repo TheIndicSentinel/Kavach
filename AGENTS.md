@@ -40,9 +40,8 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Phase 0 on `main`; Milestone A complete; B.1 Cedar RBAC; B.2 React console merged
-- **In progress:** Milestone B.3 — gRPC Cedar enforcement
-- **Next:** Policy lifecycle UI, Milestone A exit (partner payload + install docs)
+- **Done:** Phase 0 on `main`; Milestone A complete; B.1–B.3 (Cedar HTTP + console + gRPC)
+- **Next:** B.4 policy lifecycle UI; Milestone A exit (partner payload + install docs)
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 
