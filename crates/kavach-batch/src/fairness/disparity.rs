@@ -118,8 +118,7 @@ fn read_group_metric(
         .u32()
         .map_err(|err| BatchError::Fairness(err.to_string()))?
         .get(index)
-        .ok_or_else(|| BatchError::Fairness("missing count".into()))?
-        as usize;
+        .ok_or_else(|| BatchError::Fairness("missing count".into()))? as usize;
     Ok(GroupMetric {
         group_value,
         count,

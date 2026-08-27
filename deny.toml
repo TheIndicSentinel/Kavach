@@ -18,11 +18,17 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    "BSL-1.0",
     "ISC",
     "Unicode-3.0",
     "Zlib",
 ]
 confidence-threshold = 0.8
+
+[[licenses.clarify]]
+crate = "polars-arrow-format"
+expression = "Apache-2.0"
+license-files = [{ path = "LICENSE", hash = 0x0 }]
 
 [bans]
 multiple-versions = "warn"
