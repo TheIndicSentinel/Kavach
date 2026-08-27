@@ -29,12 +29,14 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 | `packs/` | Policy packs (CEL) |
 | `golden/` | Executable test oracles |
 | `crates/kavach-domain/` | Domain types (no I/O) |
+| `crates/kavach-policy/` | CEL pack loader and evaluator |
+| `crates/kavach-evidence/` | Hash chain, memory store, verify CLI |
 
 ## Phase
 
-- **Done:** Phase 0 on `main` (docs, contracts, domain crate, CI)
-- **In progress:** Milestone A on `feat/kavach-policy` — CEL policy engine
-- **Next:** `kavach-evidence` → `kavach-evaluate` → `kavach-api` → `kavach-batch`
+- **Done:** Phase 0 on `main`; Milestone A.1 `kavach-policy` merged
+- **In progress:** Milestone A.2 on `feat/kavach-evidence` — hash chain + verify CLI
+- **Next:** `kavach-evaluate` → `kavach-api` → `kavach-batch`
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 

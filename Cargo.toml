@@ -1,7 +1,15 @@
 [workspace]
 resolver = "2"
-members = ["crates/kavach-domain", "crates/kavach-policy"]
-default-members = ["crates/kavach-domain", "crates/kavach-policy"]
+members = [
+    "crates/kavach-domain",
+    "crates/kavach-policy",
+    "crates/kavach-evidence",
+]
+default-members = [
+    "crates/kavach-domain",
+    "crates/kavach-policy",
+    "crates/kavach-evidence",
+]
 
 [workspace.package]
 version = "0.1.0"

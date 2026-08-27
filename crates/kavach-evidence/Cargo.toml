@@ -1,0 +1,28 @@
+[package]
+name = "kavach-evidence"
+description = "Tamper-evident hash-chained decision evidence"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kavach-evidence"
+path = "src/bin/kavach-evidence.rs"
+
+[dependencies]
+kavach-domain = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+sha2.workspace = true
+clap = { version = "4.5.47", features = ["derive"] }
+
+[dev-dependencies]
+kavach-policy = { path = "../kavach-policy" }
+walkdir.workspace = true
+
+[lints]
+workspace = true
