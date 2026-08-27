@@ -6,7 +6,10 @@ use std::time::Duration;
 use chrono::Utc;
 use kavach_api::proto::kavach::v1::evaluate_service_client::EvaluateServiceClient;
 use kavach_api::proto::kavach::v1::{Consent, EvaluateRequest};
-use kavach_api::{AppState, EvaluateServiceServer, GrpcEvaluateService};
+use kavach_api::{
+    AccessControlKind, ApiConfig, AppState, EvaluateServiceServer, EvidenceStoreKind,
+    GrpcEvaluateService,
+};
 use prost_types::{value::Kind, Struct, Timestamp, Value};
 use tonic::transport::{Channel, Server};
 
@@ -109,5 +112,112 @@ async fn grpc_evaluate_returns_pass() {
     );
     assert!(!response.evidence_id.is_empty());
 
+    handle.abort();
+}
+
+fn cedar_fixture_paths() -> (PathBuf, PathBuf) {
+    let auth_root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kavach-auth/policies");
+    (
+        auth_root.join("kavach.cedar"),
+        auth_root.join("entities.example.json"),
+    )
+}
+
+async fn spawn_cedar_grpc_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let (pack, model) = fixture_paths();
+    let (policy_path, entities_path) = cedar_fixture_paths();
+    let config = ApiConfig {
+        pack_path: pack,
+        model_path: model,
+        hmac_secret: None,
+        evidence_store: EvidenceStoreKind::Memory,
+        access_control: AccessControlKind::Cedar {
+            policy_path,
+            entities_path,
+        },
+        tls: None,
+    };
+    let state = Arc::new(AppState::from_config(&config).await.expect("cedar state"));
+    let service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+
+    let handle = tokio::spawn(async move {
+        Server::builder()
+            .add_service(service)
+            .serve(addr)
+            .await
+            .expect("grpc server");
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    (addr, handle)
+}
+
+#[tokio::test]
+async fn grpc_cedar_requires_principal_metadata() {
+    let (addr, handle) = spawn_cedar_grpc_server().await;
+    let endpoint = format!("http://{addr}");
+    let channel = Channel::from_shared(endpoint)
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut client = EvaluateServiceClient::new(channel);
+
+    let err = client
+        .evaluate(sample_proto_request())
+        .await
+        .expect_err("missing principal");
+
+    assert_eq!(err.code(), tonic::Code::Unauthenticated);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn grpc_cedar_operator_may_evaluate() {
+    let (addr, handle) = spawn_cedar_grpc_server().await;
+    let endpoint = format!("http://{addr}");
+    let channel = Channel::from_shared(endpoint)
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut client = EvaluateServiceClient::new(channel);
+
+    let mut request = tonic::Request::new(sample_proto_request());
+    request
+        .metadata_mut()
+        .insert("x-kavach-principal", "operator-1".parse().unwrap());
+
+    let response = client.evaluate(request).await.expect("rpc").into_inner();
+
+    assert_eq!(
+        response.returned_decision,
+        i32::from(kavach_api::proto::kavach::v1::Decision::Pass)
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn grpc_cedar_viewer_cannot_evaluate() {
+    let (addr, handle) = spawn_cedar_grpc_server().await;
+    let endpoint = format!("http://{addr}");
+    let channel = Channel::from_shared(endpoint)
+        .unwrap()
+        .connect()
+        .await
+        .unwrap();
+    let mut client = EvaluateServiceClient::new(channel);
+
+    let mut request = tonic::Request::new(sample_proto_request());
+    request
+        .metadata_mut()
+        .insert("x-kavach-principal", "viewer-1".parse().unwrap());
+
+    let err = client.evaluate(request).await.expect_err("forbidden");
+    assert_eq!(err.code(), tonic::Code::PermissionDenied);
     handle.abort();
 }

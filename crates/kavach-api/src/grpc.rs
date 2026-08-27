@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
+use kavach_auth::KavachAction;
 use tonic::{Request, Response, Status};
+
+use crate::auth::authorize_metadata;
 
 use crate::convert::{domain_to_proto, proto_to_domain};
 use crate::error::ApiError;
@@ -28,6 +31,12 @@ impl EvaluateService for GrpcEvaluateService {
         &self,
         request: Request<ProtoEvaluateRequest>,
     ) -> Result<Response<ProtoEvaluateResponse>, Status> {
+        authorize_metadata(
+            self.state.as_ref(),
+            request.metadata(),
+            KavachAction::Evaluate,
+        )
+        .map_err(|e| status_from_api(&e))?;
         let domain_request =
             proto_to_domain(request.into_inner()).map_err(|e| status_from_api(&e))?;
         let response = self
