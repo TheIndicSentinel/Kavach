@@ -52,6 +52,7 @@ mod embedded {
             Some("png") => "image/png",
             Some("json") => "application/json; charset=utf-8",
             Some("woff2") => "font/woff2",
+            Some("woff") => "font/woff",
             _ => "application/octet-stream",
         }
     }
