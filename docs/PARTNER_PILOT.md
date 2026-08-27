@@ -31,6 +31,17 @@ On-prem pilot for Indian structured-credit integrations. This is the **first pro
 4. Review admin audit log (`/audit`).
 5. Configure retention policy (`/retention`) per bank DPDP posture.
 
+**Automated API path:**
+
+```bash
+# Cedar pilot (default entities include admin-1 / admin-2)
+export PILOT_API_URL=http://localhost:8080
+export PILOT_PRINCIPAL=viewer-1
+export PILOT_ACTOR=admin-1
+export PILOT_APPROVER=admin-2
+./scripts/pilot-phase2.sh
+```
+
 **Exit criteria:** Audit log captures all mutations; retention settings persisted; principals mapped from IdP.
 
 ### Phase 3 — Sync enforce (optional, week 3+)
@@ -93,7 +104,8 @@ cargo run -p kavach-api -- \
 | [`deploy/Dockerfile`](../deploy/Dockerfile) | Pilot container image |
 | [`deploy/docker-compose.pilot.yml`](../deploy/docker-compose.pilot.yml) | Postgres + API + batch profile |
 | [`scripts/pilot-phase1.sh`](../scripts/pilot-phase1.sh) | Phase 1 exit-criteria validator (schema + batch + report) |
-| [`scripts/pilot-smoke.sh`](../scripts/pilot-smoke.sh) | CI/local smoke without Docker |
+| [`scripts/pilot-phase2.sh`](../scripts/pilot-phase2.sh) | Phase 2 governance API + dual-control smoke |
+| [`scripts/pilot-smoke.sh`](../scripts/pilot-smoke.sh) | CI/local batch smoke without Docker |
 | [INSTALL.md](INSTALL.md) | Full on-prem install reference |
 | [MILESTONE_B_EXIT.md](MILESTONE_B_EXIT.md) | Milestone B sign-off gate |
 
