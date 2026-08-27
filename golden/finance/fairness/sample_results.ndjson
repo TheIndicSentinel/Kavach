@@ -1,0 +1,6 @@
+{"line_number":1,"correlation_id":"fairness-001","status":"ok","policy_decision":"PASS","returned_decision":"PASS","evidence_id":"ev-001","reason_codes":[],"policy_hits":[]}
+{"line_number":2,"correlation_id":"fairness-002","status":"ok","policy_decision":"PASS","returned_decision":"PASS","evidence_id":"ev-002","reason_codes":[],"policy_hits":[]}
+{"line_number":3,"correlation_id":"fairness-003","status":"ok","policy_decision":"PASS","returned_decision":"PASS","evidence_id":"ev-003","reason_codes":[],"policy_hits":[]}
+{"line_number":4,"correlation_id":"fairness-004","status":"ok","policy_decision":"BLOCK","returned_decision":"BLOCK","evidence_id":"ev-004","reason_codes":["DTI_HIGH"],"policy_hits":["dti_threshold"]}
+{"line_number":5,"correlation_id":"fairness-005","status":"ok","policy_decision":"PASS","returned_decision":"PASS","evidence_id":"ev-005","reason_codes":[],"policy_hits":[]}
+{"line_number":6,"correlation_id":"fairness-006","status":"ok","policy_decision":"BLOCK","returned_decision":"BLOCK","evidence_id":"ev-006","reason_codes":["DTI_HIGH"],"policy_hits":["dti_threshold"]}

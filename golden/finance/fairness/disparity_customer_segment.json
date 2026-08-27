@@ -1,0 +1,29 @@
+{
+  "name": "disparity_customer_segment",
+  "description": "Fairness batch — approval-rate gap between salaried and informal segments",
+  "config": {
+    "attribute": "input.customer_segment",
+    "inclusion_field": "input.informal_sector",
+    "min_sample_size": 2,
+    "disparity_threshold": 0.10
+  },
+  "expect_disparity": {
+    "total_evaluated": 6,
+    "reference_group": "salaried",
+    "overall_approval_rate": 0.6666666666666666,
+    "max_disparity_gap": 0.25,
+    "flagged_groups": ["informal"],
+    "groups": {
+      "salaried": { "count": 4, "approval_rate": 0.75 },
+      "informal": { "count": 2, "approval_rate": 0.5 }
+    }
+  },
+  "expect_inclusion": {
+    "inclusion_count": 2,
+    "non_inclusion_count": 4,
+    "inclusion_approval_rate": 0.5,
+    "non_inclusion_approval_rate": 0.75,
+    "approval_gap": 0.25,
+    "flagged": true
+  }
+}

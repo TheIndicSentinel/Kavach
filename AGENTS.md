@@ -41,8 +41,8 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Phase 0; Milestone A (incl. exit); B.1–B.3; B.4 policy lifecycle UI; B.5 admin audit + lifecycle mutations
-- **Next:** Fairness batch reports, retention/erasure workflows
+- **Done:** Phase 0; Milestone A (incl. exit); B.1–B.3; B.4 policy lifecycle UI; B.5 admin audit + lifecycle mutations; B.6 fairness batch reports
+- **Next:** Retention/erasure workflows
 
 See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md).
 
