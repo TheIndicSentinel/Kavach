@@ -31,4 +31,4 @@ else
   echo "==> skip cargo deny (install: cargo install cargo-deny)"
 fi
 
-echo "==> Phase 0 local verification passed"
+echo "==> Kavach local verification passed"

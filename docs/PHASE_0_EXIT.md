@@ -37,7 +37,7 @@ Sign off before starting Milestone A (`kavach-policy`).
 
 ## Explicitly not Phase 0
 
-- Partner real payload sample (required for Milestone A **exit**, not Phase 0)
+- Partner real payload sample — delivered at Milestone A exit ([`partner/`](../partner/), [MILESTONE_A_EXIT.md](MILESTONE_A_EXIT.md))
 - `kavach-policy`, `kavach-evidence`, `kavach-api`
 - Console / Helm
 

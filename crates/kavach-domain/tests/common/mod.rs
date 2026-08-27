@@ -53,6 +53,10 @@ pub fn golden_mvp_dir() -> PathBuf {
     workspace_root().join("golden/finance/mvp_mechanics")
 }
 
+pub fn partner_finance_dir() -> PathBuf {
+    workspace_root().join("partner/finance")
+}
+
 pub fn collect_json_files(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = walkdir::WalkDir::new(dir)
         .into_iter()

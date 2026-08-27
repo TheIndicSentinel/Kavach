@@ -151,3 +151,56 @@ fn run_batch_marks_validation_errors_without_evidence() {
         serde_json::from_slice(output.split(|b| *b == b'\n').next().unwrap()).unwrap();
     assert_eq!(line["status"], "validation_error");
 }
+
+#[test]
+fn run_batch_processes_partner_finance_sample() {
+    let batch_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../partner/finance/credit_underwriting_v1_batch.ndjson");
+    let ndjson = std::fs::read_to_string(&batch_path).expect("read partner batch");
+    let now = Utc::now().to_rfc3339();
+    let mut lines = Vec::new();
+    for line in ndjson.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut request: serde_json::Value = serde_json::from_str(line).expect("parse line");
+        request["decision_time"] = serde_json::Value::String(now.clone());
+        request["consent"]["timestamp"] = serde_json::Value::String(now.clone());
+        lines.push(request.to_string());
+    }
+    let input = format!("{}\n", lines.join("\n"));
+
+    let mut output = Vec::new();
+    let context = BatchRunContext {
+        input_path: "partner-batch".into(),
+        output_path: "stdout".into(),
+    };
+    let mut job_store = NoopBatchJobStore;
+    let report = run_batch(
+        Cursor::new(input),
+        &mut output,
+        &BatchConfig {
+            pack_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../packs/finance/v0.yaml"),
+            model_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../models/finance/credit-underwriting-v1.yaml"),
+            ..BatchConfig::default()
+        },
+        &context,
+        MemoryChain::new(),
+        VecIncidentRecorder::default(),
+        &mut job_store,
+    )
+    .expect("partner batch run");
+
+    assert_eq!(report.total_rows, 3);
+    assert_eq!(report.succeeded, 3);
+    let result_lines: Vec<&[u8]> = output
+        .split(|b| *b == b'\n')
+        .filter(|l| !l.is_empty())
+        .collect();
+    assert_eq!(result_lines.len(), 3);
+    let first: serde_json::Value = serde_json::from_slice(result_lines[0]).unwrap();
+    assert_eq!(first["status"], "ok");
+    assert_eq!(first["policy_decision"], "PASS");
+}
