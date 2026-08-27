@@ -32,12 +32,13 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 | `crates/kavach-policy/` | CEL pack loader and evaluator |
 | `crates/kavach-evidence/` | Hash chain, memory store, verify CLI |
 | `crates/kavach-evaluate/` | Evaluate pipeline orchestration |
+| `crates/kavach-api/` | HTTP/gRPC sync evaluate, health, auth |
 
 ## Phase
 
-- **Done:** Phase 0 on `main`; Milestone A.1 `kavach-policy`; Milestone A.2 `kavach-evidence` merged
-- **In progress:** Milestone A.3 on `feat/kavach-evaluate` — evaluate pipeline
-- **Next:** `kavach-api` → `kavach-batch`
+- **Done:** Phase 0 on `main`; Milestone A.1 `kavach-policy`; A.2 `kavach-evidence`; A.3 `kavach-evaluate` merged
+- **In progress:** Milestone A.4 on `feat/kavach-api` — HTTP/gRPC, HMAC, mTLS, Postgres evidence, metrics
+- **Next:** `kavach-batch`
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 

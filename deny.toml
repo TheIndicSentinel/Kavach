@@ -5,6 +5,7 @@
 version = 2
 ignore = [
     { id = "RUSTSEC-2024-0436", reason = "transitive via cel-interpreter; no upstream fix yet" },
+    { id = "RUSTSEC-2023-0071", reason = "transitive via unused sqlx-mysql lockfile entry; postgres-only build" },
 ]
 unmaintained = "none"
 

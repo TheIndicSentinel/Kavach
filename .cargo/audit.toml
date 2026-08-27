@@ -1,0 +1,4 @@
+[advisories]
+# sqlx lockfile retains optional mysql driver metadata; build graph is postgres-only.
+ignore = ["RUSTSEC-2023-0071"]
+informational_warnings = ["unmaintained"]

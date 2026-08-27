@@ -5,12 +5,14 @@ members = [
     "crates/kavach-policy",
     "crates/kavach-evidence",
     "crates/kavach-evaluate",
+    "crates/kavach-api",
 ]
 default-members = [
     "crates/kavach-domain",
     "crates/kavach-policy",
     "crates/kavach-evidence",
     "crates/kavach-evaluate",
+    "crates/kavach-api",
 ]
 
 [workspace.package]
@@ -33,7 +35,21 @@ jsonschema = "0.29.1"
 kavach-domain = { path = "crates/kavach-domain", version = "0.1.0" }
 kavach-policy = { path = "crates/kavach-policy", version = "0.1.0" }
 kavach-evidence = { path = "crates/kavach-evidence", version = "0.1.0" }
-clap = { version = "4.5.47", features = ["derive"] }
+kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0" }
+clap = { version = "4.5.47", features = ["derive", "env"] }
+axum = { version = "0.8.8", features = ["json"] }
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "net"] }
+tower-http = { version = "0.6.11", features = ["trace"] }
+hmac = "0.12.1"
+tonic = { version = "0.12.3", features = ["transport", "tls"] }
+prost = "0.13.5"
+prost-types = "0.13.5"
+tonic-build = "0.12.3"
+axum-server = { version = "0.7.3", features = ["tls-rustls"] }
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2.2.0"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "json", "chrono"] }
+prometheus = "0.14.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
