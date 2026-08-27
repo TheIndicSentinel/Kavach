@@ -58,4 +58,4 @@ When all boxes above are checked, proceed with post-B hardening:
 - Partner pilot engagement using [PARTNER_PILOT.md](PARTNER_PILOT.md)
 - Optional: fairness report console viewer
 
-**Milestone B status:** Complete — merged to `main` (PR #18). Partner pilot packaging in PR #19.
+**Milestone B status:** Complete — merged to `main` (PRs #18, #19).
