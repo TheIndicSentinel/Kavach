@@ -16,6 +16,7 @@ kavach-domain = { workspace = true }
 kavach-evaluate = { workspace = true }
 kavach-evidence = { workspace = true }
 kavach-policy = { workspace = true }
+kavach-auth = { workspace = true }
 kavach-storage = { workspace = true }
 axum.workspace = true
 axum-server.workspace = true

@@ -5,6 +5,9 @@ use kavach_evaluate::EvaluateError;
 
 #[derive(Debug, Error)]
 pub enum ApiError {
+    #[error("forbidden")]
+    Forbidden,
+
     #[error("unauthorized")]
     Unauthorized,
 
@@ -22,6 +25,7 @@ impl ApiError {
     pub fn status_code(&self) -> StatusCode {
         match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::Forbidden => StatusCode::FORBIDDEN,
             Self::BadRequest(_)
             | Self::Evaluate(
                 EvaluateError::Validation(_)

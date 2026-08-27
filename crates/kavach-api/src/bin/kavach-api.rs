@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
 use kavach_api::{
-    grpc_server_tls_config, router, serve_http, ApiConfig, AppState, EvaluateServiceServer,
-    EvidenceStoreKind, GrpcEvaluateService, TlsConfig,
+    grpc_server_tls_config, router, serve_http, AccessControlKind, ApiConfig, AppState,
+    EvaluateServiceServer, EvidenceStoreKind, GrpcEvaluateService, TlsConfig,
 };
 use tonic::transport::Server;
 
@@ -13,6 +13,12 @@ use tonic::transport::Server;
 enum EvidenceStoreArg {
     Memory,
     Postgres,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum AccessControlArg {
+    None,
+    Cedar,
 }
 
 #[derive(Parser)]
@@ -40,6 +46,17 @@ struct Cli {
     #[arg(long, env = "KAVACH_DATABASE_URL")]
     database_url: Option<String>,
 
+    #[arg(long, value_enum, default_value = "none")]
+    access_control: AccessControlArg,
+
+    /// Cedar policy file (required when --access-control cedar).
+    #[arg(long, env = "KAVACH_CEDAR_POLICY")]
+    cedar_policy: Option<PathBuf>,
+
+    /// Cedar entities JSON (required when --access-control cedar).
+    #[arg(long, env = "KAVACH_CEDAR_ENTITIES")]
+    cedar_entities: Option<PathBuf>,
+
     #[arg(long, env = "KAVACH_TLS_CERT")]
     tls_cert: Option<PathBuf>,
 
@@ -63,6 +80,22 @@ impl Cli {
             }
         };
 
+        let access_control = match self.access_control {
+            AccessControlArg::None => AccessControlKind::None,
+            AccessControlArg::Cedar => {
+                let policy_path = self
+                    .cedar_policy
+                    .ok_or("cedar access control requires --cedar-policy or KAVACH_CEDAR_POLICY")?;
+                let entities_path = self.cedar_entities.ok_or(
+                    "cedar access control requires --cedar-entities or KAVACH_CEDAR_ENTITIES",
+                )?;
+                AccessControlKind::Cedar {
+                    policy_path,
+                    entities_path,
+                }
+            }
+        };
+
         let tls = match (self.tls_cert, self.tls_key) {
             (Some(cert_path), Some(key_path)) => Some(TlsConfig::from_paths(
                 cert_path,
@@ -80,6 +113,7 @@ impl Cli {
             model_path: self.model,
             hmac_secret: self.hmac_secret,
             evidence_store,
+            access_control,
             tls,
         })
     }
@@ -106,8 +140,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     eprintln!(
-        "kavach-api listening http={} grpc={} transport={} evidence={:?}",
-        http_listen, grpc_listen, tls_mode, config.evidence_store
+        "kavach-api listening http={} grpc={} transport={} evidence={:?} access_control={:?}",
+        http_listen, grpc_listen, tls_mode, config.evidence_store, config.access_control
     );
 
     let tls_ref = config.tls.as_ref();

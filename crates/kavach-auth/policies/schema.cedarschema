@@ -1,0 +1,20 @@
+namespace Kavach {
+  entity User in [Group];
+  entity Group;
+  entity System;
+
+  action evaluate appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action read_health appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action read_metrics appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+}

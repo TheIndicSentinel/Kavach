@@ -14,6 +14,8 @@ use hmac::{Hmac, Mac};
 use kavach_domain::EvaluateRequest;
 use sha2::Sha256;
 
+use kavach_auth::KavachAction;
+
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -27,11 +29,19 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "status": "ok" }))
+async fn health(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    authorize(&state, &headers, KavachAction::ReadHealth)?;
+    Ok(Json(serde_json::json!({ "status": "ok" })))
 }
 
-async fn metrics(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
+async fn metrics(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, ApiError> {
+    authorize(&state, &headers, KavachAction::ReadMetrics)?;
     let body = state
         .metrics()
         .gather_text()
@@ -51,10 +61,31 @@ async fn evaluate(
     body: Bytes,
 ) -> Result<Json<kavach_domain::EvaluateResponse>, ApiError> {
     verify_hmac_if_configured(state.as_ref(), &headers, &body)?;
+    authorize(state.as_ref(), &headers, KavachAction::Evaluate)?;
     let request: EvaluateRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::BadRequest(format!("invalid JSON body: {e}")))?;
     let response = state.evaluate("http", &request)?;
     Ok(Json(response))
+}
+
+fn authorize(state: &AppState, headers: &HeaderMap, action: KavachAction) -> Result<(), ApiError> {
+    let Some(auth) = state.access_control() else {
+        return Ok(());
+    };
+
+    let principal = headers
+        .get("x-kavach-principal")
+        .and_then(|value| value.to_str().ok())
+        .ok_or(ApiError::Unauthorized)?;
+
+    let allowed = auth
+        .authorize(principal, action)
+        .map_err(|e| ApiError::Internal(format!("cedar authorize: {e}")))?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
+    }
 }
 
 fn verify_hmac_if_configured(

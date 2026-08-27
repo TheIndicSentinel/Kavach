@@ -1,0 +1,37 @@
+[
+  {
+    "uid": { "type": "Kavach::System", "id": "api" },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": { "type": "Kavach::Group", "id": "operators" },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": { "type": "Kavach::Group", "id": "viewers" },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": { "type": "Kavach::Group", "id": "admins" },
+    "attrs": {},
+    "parents": []
+  },
+  {
+    "uid": { "type": "Kavach::User", "id": "operator-1" },
+    "attrs": {},
+    "parents": [{ "type": "Kavach::Group", "id": "operators" }]
+  },
+  {
+    "uid": { "type": "Kavach::User", "id": "viewer-1" },
+    "attrs": {},
+    "parents": [{ "type": "Kavach::Group", "id": "viewers" }]
+  },
+  {
+    "uid": { "type": "Kavach::User", "id": "admin-1" },
+    "attrs": {},
+    "parents": [{ "type": "Kavach::Group", "id": "admins" }]
+  }
+]

@@ -1,19 +1,21 @@
 use std::sync::Mutex;
 
 use chrono::Utc;
+use kavach_auth::KavachAuthorizer;
 use kavach_domain::{EvaluateRequest, EvaluateResponse, ModelRecord};
 use kavach_evaluate::{EvaluateConfig, EvaluatePath, EvaluateService};
 use kavach_evidence::MemoryChain;
 use kavach_policy::PackLoader;
 use kavach_storage::{EvidenceBackend, IncidentBackend, StoragePool};
 
-use crate::config::{ApiConfig, EvidenceStoreKind};
+use crate::config::{AccessControlKind, ApiConfig, EvidenceStoreKind};
 use crate::error::ApiError;
 use crate::metrics::Metrics;
 
 pub struct AppState {
     service: Mutex<EvaluateService<EvidenceBackend, IncidentBackend>>,
     hmac_secret: Option<String>,
+    access_control: Option<KavachAuthorizer>,
     metrics: Metrics,
 }
 
@@ -43,9 +45,21 @@ impl AppState {
             EvaluateService::new(pack, model, evidence, incidents, EvaluateConfig::default())
                 .map_err(|e| ApiError::Internal(format!("evaluate service: {e}")))?;
 
+        let access_control = match &config.access_control {
+            AccessControlKind::None => None,
+            AccessControlKind::Cedar {
+                policy_path,
+                entities_path,
+            } => Some(
+                KavachAuthorizer::from_files(policy_path, entities_path)
+                    .map_err(|e| ApiError::Internal(format!("cedar access control: {e}")))?,
+            ),
+        };
+
         Ok(Self {
             service: Mutex::new(service),
             hmac_secret: config.hmac_secret.clone(),
+            access_control,
             metrics: Metrics::new().map_err(|e| ApiError::Internal(format!("metrics: {e}")))?,
         })
     }
@@ -60,6 +74,7 @@ impl AppState {
             model_path: model_path.to_path_buf(),
             hmac_secret,
             evidence_store: EvidenceStoreKind::Memory,
+            access_control: AccessControlKind::None,
             tls: None,
         };
         Self::from_config(&config).await
@@ -67,6 +82,10 @@ impl AppState {
 
     pub fn hmac_secret(&self) -> Option<&str> {
         self.hmac_secret.as_deref()
+    }
+
+    pub fn access_control(&self) -> Option<&KavachAuthorizer> {
+        self.access_control.as_ref()
     }
 
     pub fn metrics(&self) -> &Metrics {
