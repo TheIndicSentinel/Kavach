@@ -3,8 +3,8 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 use jsonschema::Validator;
 use kavach_domain::{
-    decision::map_returned_decision, golden::canonical_input_digest, Decision, EvaluateRequest,
-    EvaluateResponse, ModelRecord,
+    decision::map_returned_decision_for_path, golden::canonical_input_digest, Decision,
+    EvaluatePath, EvaluateRequest, EvaluateResponse, ModelRecord,
 };
 use kavach_evidence::AppendDecisionEvent;
 use kavach_policy::{LoadedPolicyPack, PolicyEngine};
@@ -83,6 +83,7 @@ where
 
     pub fn evaluate(
         &mut self,
+        path: EvaluatePath,
         request: &EvaluateRequest,
         server_now: DateTime<Utc>,
     ) -> Result<EvaluateResult, EvaluateError> {
@@ -99,8 +100,12 @@ where
             .map_err(EvaluateError::from_domain)?;
 
         let evaluation = PolicyEngine::evaluate(&self.pack, request)?;
-        let returned_decision =
-            map_returned_decision(evaluation.policy_decision, self.model.governance_mode, true);
+        let returned_decision = map_returned_decision_for_path(
+            evaluation.policy_decision,
+            self.model.governance_mode,
+            path,
+            true,
+        );
         let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
 
         let append = AppendDecisionEvent {
@@ -138,6 +143,7 @@ where
                 incident: None,
             }),
             Err(err) => Ok(self.record_evidence_failure(
+                path,
                 request,
                 evaluation.policy_decision,
                 evaluation.reason_codes,
@@ -155,8 +161,10 @@ where
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn record_evidence_failure(
         &mut self,
+        path: EvaluatePath,
         request: &EvaluateRequest,
         policy_decision: Decision,
         reason_codes: Vec<String>,
@@ -166,9 +174,10 @@ where
     ) -> EvaluateResult {
         use kavach_domain::GovernanceMode;
 
-        let returned_decision = match self.model.governance_mode {
-            GovernanceMode::Enforce => Decision::Block,
-            GovernanceMode::Shadow => Decision::Pass,
+        let returned_decision = match (self.model.governance_mode, path) {
+            (GovernanceMode::Enforce, _) => Decision::Block,
+            (GovernanceMode::Shadow, EvaluatePath::Sync) => Decision::Pass,
+            (GovernanceMode::Shadow, EvaluatePath::Batch) => policy_decision,
         };
 
         let incident = EvaluateIncident {

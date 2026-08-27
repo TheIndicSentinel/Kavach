@@ -6,6 +6,7 @@ mod service;
 mod validation;
 
 pub use error::EvaluateError;
+pub use kavach_domain::EvaluatePath;
 pub use ports::{
     EvaluateIncident, EvidenceStore, IncidentRecorder, NoopIncidentRecorder, VecIncidentRecorder,
 };
