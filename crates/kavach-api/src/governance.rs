@@ -32,7 +32,7 @@ pub async fn runtime(
     headers: HeaderMap,
 ) -> Result<Json<RuntimeResponse>, ApiError> {
     authorize_headers(&state, &headers, KavachAction::ReadGovernance)?;
-    Ok(Json(state.runtime().clone()))
+    Ok(Json(state.runtime()))
 }
 
 pub async fn list_policy_packs(

@@ -22,4 +22,24 @@ namespace Kavach {
     principal: [User],
     resource: [System],
   };
+
+  action read_audit appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action activate_pack appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action rollback_pack appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action update_model appliesTo {
+    principal: [User],
+    resource: [System],
+  };
 }

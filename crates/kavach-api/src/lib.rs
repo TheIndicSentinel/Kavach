@@ -8,6 +8,7 @@ pub mod error;
 pub mod governance;
 pub mod grpc;
 pub mod http;
+pub mod lifecycle;
 pub mod metrics;
 pub mod proto;
 pub mod registry;

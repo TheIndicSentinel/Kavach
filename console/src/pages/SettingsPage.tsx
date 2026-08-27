@@ -8,15 +8,17 @@ import {
   CardTitle,
 } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
-import { getPrincipal, setPrincipal } from "../lib/api";
+import { getApprover, getPrincipal, setApprover, setPrincipal } from "../lib/api";
 
 export default function SettingsPage() {
   const [principal, setPrincipalInput] = useState(getPrincipal());
+  const [approver, setApproverInput] = useState(getApprover());
   const [saved, setSaved] = useState(false);
 
   function onSave(event: React.FormEvent) {
     event.preventDefault();
     setPrincipal(principal);
+    setApprover(approver);
     setSaved(true);
     window.setTimeout(() => {
       setSaved(false);
@@ -58,6 +60,22 @@ export default function SettingsPage() {
                 value={principal}
                 onChange={(event) => setPrincipalInput(event.target.value)}
                 placeholder="operator-1"
+                autoComplete="off"
+                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-stone-400 focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20"
+              />
+            </div>
+            <div>
+              <label
+                htmlFor="approver"
+                className="mb-1.5 block text-sm font-medium text-ink"
+              >
+                Approver ID (dual control)
+              </label>
+              <input
+                id="approver"
+                value={approver}
+                onChange={(event) => setApproverInput(event.target.value)}
+                placeholder="admin-1"
                 autoComplete="off"
                 className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-stone-400 focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20"
               />

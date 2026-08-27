@@ -73,6 +73,38 @@ pub fn list_packs(
     Ok(packs)
 }
 
+pub fn pack_source_path(packs_dir: &Path, pack_id: &str) -> Result<PathBuf, ApiError> {
+    for entry in walkdir::WalkDir::new(packs_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "yaml"))
+    {
+        let pack = load_policy_pack(entry.path())?;
+        if pack.id == pack_id {
+            return Ok(entry.path().to_path_buf());
+        }
+    }
+    Err(ApiError::NotFound(format!(
+        "policy pack not found: {pack_id}"
+    )))
+}
+
+pub fn model_source_path(models_dir: &Path, model_id: &str) -> Result<PathBuf, ApiError> {
+    for entry in walkdir::WalkDir::new(models_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "yaml"))
+    {
+        let model = load_model_record(entry.path())?;
+        if model.model_id == model_id {
+            return Ok(entry.path().to_path_buf());
+        }
+    }
+    Err(ApiError::NotFound(format!(
+        "model record not found: {model_id}"
+    )))
+}
+
 pub fn get_pack_by_id(packs_dir: &Path, pack_id: &str) -> Result<PolicyPack, ApiError> {
     for entry in walkdir::WalkDir::new(packs_dir)
         .into_iter()

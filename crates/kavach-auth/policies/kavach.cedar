@@ -26,6 +26,34 @@ permit (
   resource == Kavach::System::"api"
 );
 
+@id("admins-may-read-audit")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"read_audit",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-activate-pack")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"activate_pack",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-rollback-pack")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"rollback_pack",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-update-model")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"update_model",
+  resource == Kavach::System::"api"
+);
+
 @id("viewers-may-read-health")
 permit (
   principal in Kavach::Group::"viewers",

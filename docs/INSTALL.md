@@ -101,7 +101,18 @@ Paths default via env vars; CLI flags override.
 | `/health` | GET | `read_health` | Liveness |
 | `/metrics` | GET | `read_metrics` | Prometheus text |
 | `/v1/evaluate` | POST | `evaluate` | Sync evaluate |
+| `/v1/runtime` | GET | `read_governance` | Active pack/model |
+| `/v1/packs` | GET | `read_governance` | Policy pack inventory |
+| `/v1/packs/{id}` | GET | `read_governance` | Policy pack detail |
+| `/v1/packs/{id}/activate` | POST | `activate_pack` | Dual-control pack activate |
+| `/v1/packs/rollback` | POST | `rollback_pack` | Dual-control pack rollback |
+| `/v1/models` | GET | `read_governance` | Model inventory |
+| `/v1/models/{id}` | GET | `read_governance` | Model detail |
+| `/v1/models/{id}` | PATCH | `update_model` | Dual-control model promotion |
+| `/v1/admin/audit` | GET | `read_audit` | Admin audit log |
 | `/` | GET | — | Governance console (when built) |
+
+Lifecycle mutations require `X-Kavach-Principal` (actor) and `X-Kavach-Approver` (distinct admin).
 
 gRPC: `EvaluateService` on `--grpc-listen` (default `50051`). Pass principal via metadata `x-kavach-principal`.
 

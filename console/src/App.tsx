@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
+import AuditPage from "./pages/AuditPage";
 import EvaluatePage from "./pages/EvaluatePage";
 import ModelDetailPage from "./pages/ModelDetailPage";
 import ModelsPage from "./pages/ModelsPage";
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="policies/:packId" element={<PolicyDetailPage />} />
         <Route path="models" element={<ModelsPage />} />
         <Route path="models/:modelId" element={<ModelDetailPage />} />
+        <Route path="audit" element={<AuditPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />
       </Route>

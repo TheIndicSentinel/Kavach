@@ -6,7 +6,7 @@ use axum::{
     http::header,
     http::HeaderMap,
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, patch, post},
     Json, Router,
 };
 
@@ -21,6 +21,7 @@ use crate::error::ApiError;
 use crate::governance::{
     get_model_record, get_policy_pack, list_model_records, list_policy_packs, runtime,
 };
+use crate::lifecycle::{activate_pack, list_audit_log, rollback_pack, update_model_record};
 use crate::state::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -34,7 +35,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/packs", get(list_policy_packs))
         .route("/v1/packs/{pack_id}", get(get_policy_pack))
         .route("/v1/models", get(list_model_records))
-        .route("/v1/models/{model_id}", get(get_model_record));
+        .route("/v1/models/{model_id}", get(get_model_record))
+        .route("/v1/models/{model_id}", patch(update_model_record))
+        .route("/v1/packs/{pack_id}/activate", post(activate_pack))
+        .route("/v1/packs/rollback", post(rollback_pack))
+        .route("/v1/admin/audit", get(list_audit_log));
 
     #[cfg(console_embedded)]
     {

@@ -17,6 +17,10 @@ pub enum KavachAction {
     ReadHealth,
     ReadMetrics,
     ReadGovernance,
+    ActivatePack,
+    RollbackPack,
+    UpdateModel,
+    ReadAudit,
 }
 
 impl KavachAction {
@@ -26,6 +30,10 @@ impl KavachAction {
             Self::ReadHealth => "read_health",
             Self::ReadMetrics => "read_metrics",
             Self::ReadGovernance => "read_governance",
+            Self::ActivatePack => "activate_pack",
+            Self::RollbackPack => "rollback_pack",
+            Self::UpdateModel => "update_model",
+            Self::ReadAudit => "read_audit",
         }
     }
 }

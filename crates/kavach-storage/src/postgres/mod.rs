@@ -1,9 +1,12 @@
 //! Postgres persistence for evidence chain, incidents, and batch jobs.
 
+mod admin;
 mod evidence;
 mod incidents;
 mod jobs;
 mod migrate;
+
+pub use admin::PostgresAdminStore;
 
 pub use evidence::PostgresEvidenceStore;
 pub use incidents::PostgresIncidentRecorder;
@@ -35,5 +38,9 @@ impl StoragePool {
 
     pub fn batch_job_store(&self) -> PostgresBatchJobStore {
         PostgresBatchJobStore::new(self.pool.clone())
+    }
+
+    pub fn admin_store(&self) -> PostgresAdminStore {
+        PostgresAdminStore::new(self.pool.clone())
     }
 }

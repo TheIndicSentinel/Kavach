@@ -6,12 +6,14 @@ import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Skeleton } from "../components/ui/Skeleton";
-import { ApiError, fetchModel, type ModelRecord } from "../lib/api";
+import { ApiError, fetchModel, getApprover, getPrincipal, updateModel, type ModelRecord } from "../lib/api";
 
 export default function ModelDetailPage() {
   const { modelId } = useParams<{ modelId: string }>();
   const [model, setModel] = useState<ModelRecord | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [promoting, setPromoting] = useState(false);
 
   useEffect(() => {
     if (!modelId) return;
@@ -35,6 +37,26 @@ export default function ModelDetailPage() {
       cancelled = true;
     };
   }, [modelId]);
+
+  async function onPromote() {
+    if (!modelId) return;
+    const actor = getPrincipal();
+    const approver = getApprover();
+    if (!actor || !approver) {
+      setActionMessage("Set actor and approver principals in Settings.");
+      return;
+    }
+    setPromoting(true);
+    setActionMessage(null);
+    try {
+      await updateModel(modelId, { status: "production" }, actor, approver);
+      setActionMessage("Model promoted to production.");
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : "Promotion failed");
+    } finally {
+      setPromoting(false);
+    }
+  }
 
   return (
     <section>
@@ -126,13 +148,15 @@ export default function ModelDetailPage() {
             <CardHeader>
               <CardTitle>Promotion workflow</CardTitle>
               <CardDescription>
-                Model status changes (draft → production → retired) require admin audit
-                logging. Contact model risk to update YAML and restart the API in v1.
+                Dual-control status changes are audited. Governance mode remains authoritative on evaluate path.
               </CardDescription>
             </CardHeader>
-            <Button variant="secondary" disabled title="Ships with admin audit in next release">
-              Promote to production
+            <Button variant="secondary" disabled={promoting} onClick={onPromote}>
+              {promoting ? "Promoting…" : "Promote to production"}
             </Button>
+            {actionMessage && (
+              <p className="mt-3 text-sm text-muted">{actionMessage}</p>
+            )}
           </Card>
         </div>
       )}

@@ -1,4 +1,5 @@
 const PRINCIPAL_KEY = "kavach.principal";
+const APPROVER_KEY = "kavach.approver";
 
 export function getPrincipal(): string {
   return sessionStorage.getItem(PRINCIPAL_KEY) ?? "";
@@ -9,6 +10,18 @@ export function setPrincipal(value: string): void {
     sessionStorage.setItem(PRINCIPAL_KEY, value.trim());
   } else {
     sessionStorage.removeItem(PRINCIPAL_KEY);
+  }
+}
+
+export function getApprover(): string {
+  return sessionStorage.getItem(APPROVER_KEY) ?? "";
+}
+
+export function setApprover(value: string): void {
+  if (value.trim()) {
+    sessionStorage.setItem(APPROVER_KEY, value.trim());
+  } else {
+    sessionStorage.removeItem(APPROVER_KEY);
   }
 }
 
@@ -164,4 +177,90 @@ export function fetchModels(): Promise<ModelSummary[]> {
 
 export function fetchModel(modelId: string): Promise<ModelRecord> {
   return governanceFetch(`/v1/models/${encodeURIComponent(modelId)}`);
+}
+
+export type AuditEntry = {
+  id: number;
+  action: string;
+  resource_type: string;
+  resource_id: string;
+  actor_principal: string;
+  approver_principal: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
+function dualControlHeaders(actor: string, approver: string): HeadersInit {
+  return {
+    "X-Kavach-Principal": actor,
+    "X-Kavach-Approver": approver,
+  };
+}
+
+export function fetchAuditLog(limit = 50): Promise<AuditEntry[]> {
+  return governanceFetch(`/v1/admin/audit?limit=${limit}`);
+}
+
+export function activatePack(
+  packId: string,
+  actor: string,
+  approver: string,
+): Promise<RuntimeInfo> {
+  return fetch(`/v1/packs/${encodeURIComponent(packId)}/activate`, {
+    method: "POST",
+    headers: dualControlHeaders(actor, approver),
+  }).then(async (response) => {
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new ApiError(
+        typeof payload?.error === "string" ? payload.error : "Activate failed",
+        response.status,
+      );
+    }
+    return payload as RuntimeInfo;
+  });
+}
+
+export function rollbackPack(
+  actor: string,
+  approver: string,
+): Promise<RuntimeInfo> {
+  return fetch("/v1/packs/rollback", {
+    method: "POST",
+    headers: dualControlHeaders(actor, approver),
+  }).then(async (response) => {
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new ApiError(
+        typeof payload?.error === "string" ? payload.error : "Rollback failed",
+        response.status,
+      );
+    }
+    return payload as RuntimeInfo;
+  });
+}
+
+export function updateModel(
+  modelId: string,
+  body: { status?: string; governance_mode?: string },
+  actor: string,
+  approver: string,
+): Promise<RuntimeInfo> {
+  return fetch(`/v1/models/${encodeURIComponent(modelId)}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...dualControlHeaders(actor, approver),
+    },
+    body: JSON.stringify(body),
+  }).then(async (response) => {
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new ApiError(
+        typeof payload?.error === "string" ? payload.error : "Update failed",
+        response.status,
+      );
+    }
+    return payload as RuntimeInfo;
+  });
 }
