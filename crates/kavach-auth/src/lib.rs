@@ -16,6 +16,7 @@ pub enum KavachAction {
     Evaluate,
     ReadHealth,
     ReadMetrics,
+    ReadGovernance,
 }
 
 impl KavachAction {
@@ -24,6 +25,7 @@ impl KavachAction {
             Self::Evaluate => "evaluate",
             Self::ReadHealth => "read_health",
             Self::ReadMetrics => "read_metrics",
+            Self::ReadGovernance => "read_governance",
         }
     }
 }
@@ -135,6 +137,14 @@ mod tests {
         assert!(auth.authorize("admin-1", KavachAction::Evaluate).unwrap());
         assert!(auth
             .authorize("admin-1", KavachAction::ReadMetrics)
+            .unwrap());
+    }
+
+    #[test]
+    fn viewer_may_read_governance() {
+        let auth = fixture_authorizer();
+        assert!(auth
+            .authorize("viewer-1", KavachAction::ReadGovernance)
             .unwrap());
     }
 

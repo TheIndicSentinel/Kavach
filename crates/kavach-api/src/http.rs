@@ -18,6 +18,9 @@ use kavach_auth::KavachAction;
 
 use crate::auth::authorize_headers;
 use crate::error::ApiError;
+use crate::governance::{
+    get_model_record, get_policy_pack, list_model_records, list_policy_packs, runtime,
+};
 use crate::state::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -26,7 +29,12 @@ pub fn router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
-        .route("/v1/evaluate", post(evaluate));
+        .route("/v1/evaluate", post(evaluate))
+        .route("/v1/runtime", get(runtime))
+        .route("/v1/packs", get(list_policy_packs))
+        .route("/v1/packs/{pack_id}", get(get_policy_pack))
+        .route("/v1/models", get(list_model_records))
+        .route("/v1/models/{model_id}", get(get_model_record));
 
     #[cfg(console_embedded)]
     {

@@ -5,10 +5,12 @@ pub mod config;
 pub mod console;
 pub mod convert;
 pub mod error;
+pub mod governance;
 pub mod grpc;
 pub mod http;
 pub mod metrics;
 pub mod proto;
+pub mod registry;
 pub mod state;
 pub mod tls;
 

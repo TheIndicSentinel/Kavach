@@ -68,7 +68,13 @@ Fonts are self-hosted (no external CDN) for on-prem bank VPCs.
 
 ## B.4 guidance
 
-When building policy lifecycle UI:
+Policy lifecycle UI is implemented (read-only v1):
+
+- `/policies` — pack inventory and rule detail
+- `/models` — model inventory and promotion metadata
+- `GET /v1/runtime`, `/v1/packs`, `/v1/models` — governance APIs
+
+When adding mutations (activate, rollback, promote):
 
 - Reuse `Card`, `PageHeader`, `DecisionBadge`, `Button`
 - Add data tables with the same border/radius tokens

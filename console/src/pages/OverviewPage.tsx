@@ -4,12 +4,13 @@ import {
   Scale,
   ShieldCheck,
 } from "lucide-react";
+import { Link } from "react-router-dom";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Skeleton } from "../components/ui/Skeleton";
 import { StatusIndicator } from "../components/ui/StatusIndicator";
 import { useHealth } from "../hooks/useHealth";
-import { ACTIVE_MODEL } from "../lib/constants";
+import { useRuntime } from "../hooks/useRuntime";
 
 const capabilities = [
   {
@@ -36,6 +37,7 @@ const capabilities = [
 
 export default function OverviewPage() {
   const health = useHealth();
+  const runtime = useRuntime();
 
   return (
     <section>
@@ -71,31 +73,58 @@ export default function OverviewPage() {
         <Card>
           <CardHeader>
             <CardTitle>Active model</CardTitle>
-            <CardDescription>Authoritative governance configuration</CardDescription>
+            <CardDescription>Loaded at runtime from model record YAML</CardDescription>
           </CardHeader>
-          <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-muted">Model</dt>
-            <dd className="font-medium text-ink">{ACTIVE_MODEL.modelId}</dd>
-            <dt className="text-muted">Version</dt>
-            <dd className="font-medium text-ink">{ACTIVE_MODEL.version}</dd>
-            <dt className="text-muted">Pack</dt>
-            <dd className="font-medium text-ink">{ACTIVE_MODEL.packId}</dd>
-            <dt className="text-muted">Mode</dt>
-            <dd>
-              <span className="rounded-md bg-peacock-600/10 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-peacock-700">
-                {ACTIVE_MODEL.governanceMode}
-              </span>
-            </dd>
-          </dl>
+          {runtime.kind === "loading" && <Skeleton className="h-20 w-full" />}
+          {runtime.kind === "error" && (
+            <p className="text-sm text-muted">{runtime.message}</p>
+          )}
+          {runtime.kind === "ok" && (
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+              <dt className="text-muted">Model</dt>
+              <dd>
+                <Link
+                  to={`/models/${runtime.data.model_id}`}
+                  className="font-medium text-kavach-700 hover:text-saffron-600"
+                >
+                  {runtime.data.model_id}
+                </Link>
+              </dd>
+              <dt className="text-muted">Version</dt>
+              <dd className="font-medium text-ink">{runtime.data.model_version}</dd>
+              <dt className="text-muted">Pack</dt>
+              <dd>
+                <Link
+                  to={`/policies/${runtime.data.pack_id}`}
+                  className="font-medium text-peacock-700 hover:underline"
+                >
+                  {runtime.data.pack_id}
+                </Link>
+              </dd>
+              <dt className="text-muted">Mode</dt>
+              <dd>
+                <span className="rounded-md bg-peacock-600/10 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-peacock-700">
+                  {runtime.data.governance_mode}
+                </span>
+              </dd>
+            </dl>
+          )}
         </Card>
 
         <Card className="md:col-span-2 xl:col-span-1">
           <CardHeader>
             <CardTitle>Jurisdiction</CardTitle>
-            <CardDescription>Finance sector · India</CardDescription>
+            <CardDescription>
+              {runtime.kind === "ok"
+                ? `${runtime.data.sector} sector · India`
+                : "Finance sector · India"}
+            </CardDescription>
           </CardHeader>
           <p className="text-sm leading-relaxed text-muted">
-            Policy pack <code className="rounded bg-stone-100 px-1.5 py-0.5 text-xs text-ink">finance-v0</code>{" "}
+            Policy pack{" "}
+            <code className="rounded bg-stone-100 px-1.5 py-0.5 text-xs text-ink">
+              {runtime.kind === "ok" ? runtime.data.pack_id : "finance-v0"}
+            </code>{" "}
             enforces consent presence, DTI thresholds, and human-review gates aligned
             to RBI digital lending and DPDP consent posture.
           </p>
