@@ -61,9 +61,11 @@ docker compose -f deploy/docker-compose.pilot.yml --profile batch run --rm batch
 ## Quick start (source build, no Docker)
 
 ```bash
-./scripts/pilot-smoke.sh
+./scripts/pilot-phase1.sh
 
-# Postgres-backed API (separate terminal)
+# Postgres-backed API (separate terminal) — then re-run with API check:
+# export PILOT_API_URL=http://localhost:8080 PILOT_PRINCIPAL=admin-1
+# ./scripts/pilot-phase1.sh
 export KAVACH_DATABASE_URL=postgres://kavach:change-me@localhost:5432/kavach
 cargo run -p kavach-api -- \
   --pack packs/finance/v0.yaml \
@@ -90,6 +92,7 @@ cargo run -p kavach-api -- \
 | [`partner/`](../partner/) | Production-shaped request + batch NDJSON samples |
 | [`deploy/Dockerfile`](../deploy/Dockerfile) | Pilot container image |
 | [`deploy/docker-compose.pilot.yml`](../deploy/docker-compose.pilot.yml) | Postgres + API + batch profile |
+| [`scripts/pilot-phase1.sh`](../scripts/pilot-phase1.sh) | Phase 1 exit-criteria validator (schema + batch + report) |
 | [`scripts/pilot-smoke.sh`](../scripts/pilot-smoke.sh) | CI/local smoke without Docker |
 | [INSTALL.md](INSTALL.md) | Full on-prem install reference |
 | [MILESTONE_B_EXIT.md](MILESTONE_B_EXIT.md) | Milestone B sign-off gate |
