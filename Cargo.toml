@@ -5,6 +5,7 @@ members = [
     "crates/kavach-policy",
     "crates/kavach-evidence",
     "crates/kavach-evaluate",
+    "crates/kavach-storage",
     "crates/kavach-api",
     "crates/kavach-batch",
 ]
@@ -13,6 +14,7 @@ default-members = [
     "crates/kavach-policy",
     "crates/kavach-evidence",
     "crates/kavach-evaluate",
+    "crates/kavach-storage",
     "crates/kavach-api",
     "crates/kavach-batch",
 ]
@@ -38,6 +40,7 @@ kavach-domain = { path = "crates/kavach-domain", version = "0.1.0" }
 kavach-policy = { path = "crates/kavach-policy", version = "0.1.0" }
 kavach-evidence = { path = "crates/kavach-evidence", version = "0.1.0" }
 kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0" }
+kavach-storage = { path = "crates/kavach-storage", version = "0.1.0" }
 kavach-batch = { path = "crates/kavach-batch", version = "0.1.0" }
 clap = { version = "4.5.47", features = ["derive", "env"] }
 axum = { version = "0.8.8", features = ["json"] }

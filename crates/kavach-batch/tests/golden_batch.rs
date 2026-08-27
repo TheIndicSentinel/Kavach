@@ -11,7 +11,8 @@ use kavach_policy::PackLoader;
 use std::io::Cursor;
 use std::path::PathBuf;
 
-use kavach_batch::{run_batch, BatchConfig};
+use kavach_batch::{run_batch, BatchConfig, BatchRunContext};
+use kavach_storage::NoopBatchJobStore;
 
 fn finance_pack() -> kavach_policy::LoadedPolicyPack {
     PackLoader::load_from_path(
@@ -82,6 +83,11 @@ fn run_batch_writes_ndjson_results_for_clean_fixture() {
     let input = format!("{request}\n");
 
     let mut output = Vec::new();
+    let context = BatchRunContext {
+        input_path: "stdin".into(),
+        output_path: "stdout".into(),
+    };
+    let mut job_store = NoopBatchJobStore;
     let report = run_batch(
         Cursor::new(input),
         &mut output,
@@ -92,8 +98,10 @@ fn run_batch_writes_ndjson_results_for_clean_fixture() {
                 .join("../../models/finance/credit-underwriting-v1.yaml"),
             ..BatchConfig::default()
         },
+        &context,
         MemoryChain::new(),
         VecIncidentRecorder::default(),
+        &mut job_store,
     )
     .expect("batch run");
 
@@ -116,6 +124,11 @@ fn run_batch_marks_validation_errors_without_evidence() {
     let input = format!("{}\n", fixture["request"]);
 
     let mut output = Vec::new();
+    let context = BatchRunContext {
+        input_path: "stdin".into(),
+        output_path: "stdout".into(),
+    };
+    let mut job_store = NoopBatchJobStore;
     let report = run_batch(
         Cursor::new(input),
         &mut output,
@@ -126,8 +139,10 @@ fn run_batch_marks_validation_errors_without_evidence() {
                 .join("../../models/finance/credit-underwriting-v1.yaml"),
             ..BatchConfig::default()
         },
+        &context,
         MemoryChain::new(),
         VecIncidentRecorder::default(),
+        &mut job_store,
     )
     .expect("batch run");
 

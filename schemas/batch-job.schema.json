@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kavach.local/schemas/batch-job.schema.json",
+  "title": "BatchJob",
+  "type": "object",
+  "required": [
+    "job_id",
+    "status",
+    "input_path",
+    "model_id",
+    "governance_mode",
+    "created_at"
+  ],
+  "properties": {
+    "job_id": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["pending", "running", "completed", "failed"]
+    },
+    "input_path": { "type": "string", "minLength": 1 },
+    "output_path": { "type": "string" },
+    "model_id": { "type": "string", "minLength": 1 },
+    "governance_mode": {
+      "type": "string",
+      "enum": ["shadow", "enforce"]
+    },
+    "total_rows": { "type": "integer", "minimum": 0 },
+    "processed_rows": { "type": "integer", "minimum": 0 },
+    "succeeded_rows": { "type": "integer", "minimum": 0 },
+    "failed_rows": { "type": "integer", "minimum": 0 },
+    "skipped_rows": { "type": "integer", "minimum": 0 },
+    "error_summary": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "started_at": { "type": "string", "format": "date-time" },
+    "completed_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

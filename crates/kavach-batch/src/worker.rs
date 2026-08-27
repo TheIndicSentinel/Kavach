@@ -7,7 +7,7 @@ use kavach_evaluate::{
     EvaluateConfig, EvaluateError, EvaluateService, EvidenceStore, IncidentRecorder,
 };
 use kavach_policy::PackLoader;
-use uuid::Uuid;
+use kavach_storage::{BatchJobCreate, BatchJobStore};
 
 use crate::error::BatchError;
 use crate::export::{BatchResultRow, BatchRowStatus};
@@ -30,6 +30,12 @@ impl Default for BatchConfig {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BatchRunContext {
+    pub input_path: String,
+    pub output_path: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BatchJobReport {
     pub job_id: String,
@@ -39,22 +45,45 @@ pub struct BatchJobReport {
     pub skipped: usize,
 }
 
-pub fn run_batch<R, W, S, I>(
+pub fn run_batch<R, W, S, I, J>(
     input: R,
     output: &mut W,
     config: &BatchConfig,
+    context: &BatchRunContext,
     evidence: S,
     incidents: I,
+    job_store: &mut J,
 ) -> Result<BatchJobReport, BatchError>
 where
     R: Read,
     W: Write,
     S: EvidenceStore,
     I: IncidentRecorder,
+    J: BatchJobStore,
 {
     let pack = PackLoader::load_from_path(&config.pack_path)?;
     let model = load_model_record(&config.model_path)?;
-    let rows = parse_ndjson_requests(BufReader::new(input))?;
+
+    let job_id = job_store
+        .create_pending(&BatchJobCreate {
+            input_path: context.input_path.clone(),
+            output_path: context.output_path.clone(),
+            model_id: model.model_id.clone(),
+            governance_mode: model.governance_mode,
+        })
+        .map_err(BatchError::JobStore)?;
+
+    let rows = match parse_ndjson_requests(BufReader::new(input)) {
+        Ok(rows) => rows,
+        Err(err) => {
+            let _ = job_store.mark_failed(&job_id, &err.to_string(), 0, 0, 0, 0);
+            return Err(err);
+        }
+    };
+
+    job_store
+        .mark_running(&job_id, rows.len())
+        .map_err(BatchError::JobStore)?;
 
     let mut service = EvaluateService::new(
         pack,
@@ -67,9 +96,8 @@ where
         },
     )?;
 
-    let job_id = Uuid::new_v4().to_string();
     let mut report = BatchJobReport {
-        job_id,
+        job_id: job_id.clone(),
         total_rows: rows.len(),
         succeeded: 0,
         failed: 0,
@@ -80,36 +108,114 @@ where
     let mut seen_evidence: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (line_number, request) in rows {
-        let correlation_id = request.correlation_id.clone();
-        match service.evaluate(EvaluatePath::Batch, &request, server_now) {
-            Ok(result) => {
-                let row = ok_result_row(
-                    line_number,
-                    correlation_id,
-                    result,
-                    &mut report,
-                    &mut seen_evidence,
-                );
-                row.write_ndjson_line(output)?;
-            }
-            Err(EvaluateError::Validation(message) | EvaluateError::ModelMismatch(message)) => {
-                validation_error_row(line_number, correlation_id, message, &mut report)
-                    .write_ndjson_line(output)?;
-            }
-            Err(EvaluateError::PackNotEffective) => {
-                validation_error_row(
-                    line_number,
-                    correlation_id,
-                    "pack not effective at decision_time".into(),
-                    &mut report,
-                )
-                .write_ndjson_line(output)?;
-            }
-            Err(err) => return Err(BatchError::Evaluate(err)),
-        }
+        process_evaluate_row(
+            &mut service,
+            output,
+            &mut ProcessRowInput {
+                line_number,
+                request: &request,
+                server_now,
+                report: &mut report,
+                seen_evidence: &mut seen_evidence,
+                job_id: &job_id,
+            },
+            job_store,
+        )?;
     }
 
+    finalize_batch_job(job_store, &job_id, &report)?;
     Ok(report)
+}
+
+struct ProcessRowInput<'a> {
+    line_number: usize,
+    request: &'a kavach_domain::EvaluateRequest,
+    server_now: chrono::DateTime<Utc>,
+    report: &'a mut BatchJobReport,
+    seen_evidence: &'a mut std::collections::HashSet<String>,
+    job_id: &'a str,
+}
+
+fn process_evaluate_row<W, J>(
+    service: &mut EvaluateService<impl EvidenceStore, impl IncidentRecorder>,
+    output: &mut W,
+    input: &mut ProcessRowInput<'_>,
+    job_store: &mut J,
+) -> Result<(), BatchError>
+where
+    W: Write,
+    J: BatchJobStore,
+{
+    let correlation_id = input.request.correlation_id.clone();
+    match service.evaluate(EvaluatePath::Batch, input.request, input.server_now) {
+        Ok(result) => {
+            let row = ok_result_row(
+                input.line_number,
+                correlation_id,
+                result,
+                input.report,
+                input.seen_evidence,
+            );
+            row.write_ndjson_line(output)?;
+        }
+        Err(EvaluateError::Validation(message) | EvaluateError::ModelMismatch(message)) => {
+            validation_error_row(input.line_number, correlation_id, message, input.report)
+                .write_ndjson_line(output)?;
+        }
+        Err(EvaluateError::PackNotEffective) => {
+            validation_error_row(
+                input.line_number,
+                correlation_id,
+                "pack not effective at decision_time".into(),
+                input.report,
+            )
+            .write_ndjson_line(output)?;
+        }
+        Err(err) => {
+            let _ = job_store.mark_failed(
+                input.job_id,
+                &err.to_string(),
+                input.report.total_rows,
+                input.report.succeeded,
+                input.report.failed,
+                input.report.skipped,
+            );
+            return Err(BatchError::Evaluate(err));
+        }
+    }
+    Ok(())
+}
+
+fn finalize_batch_job<J>(
+    job_store: &mut J,
+    job_id: &str,
+    report: &BatchJobReport,
+) -> Result<(), BatchError>
+where
+    J: BatchJobStore,
+{
+    if report.failed > 0 {
+        job_store
+            .mark_failed(
+                job_id,
+                "one or more rows failed validation or evidence append",
+                report.total_rows,
+                report.succeeded,
+                report.failed,
+                report.skipped,
+            )
+            .map_err(BatchError::JobStore)
+    } else {
+        job_store
+            .mark_completed(
+                job_id,
+                report.total_rows,
+                report.succeeded,
+                report.failed,
+                report.skipped,
+            )
+            .map_err(BatchError::JobStore)
+    }
 }
 
 fn ok_result_row(

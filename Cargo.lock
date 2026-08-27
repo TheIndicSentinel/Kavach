@@ -1318,6 +1318,7 @@ dependencies = [
  "kavach-evaluate",
  "kavach-evidence",
  "kavach-policy",
+ "kavach-storage",
  "prometheus",
  "prost",
  "prost-types",
@@ -1328,7 +1329,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha2",
- "sqlx",
  "thiserror 2.0.20",
  "tokio",
  "tonic",
@@ -1348,10 +1348,12 @@ dependencies = [
  "kavach-evaluate",
  "kavach-evidence",
  "kavach-policy",
+ "kavach-storage",
  "serde",
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.20",
+ "tokio",
  "uuid",
  "walkdir",
 ]
@@ -1415,6 +1417,22 @@ dependencies = [
  "serde_yaml",
  "thiserror 2.0.20",
  "walkdir",
+]
+
+[[package]]
+name = "kavach-storage"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "kavach-domain",
+ "kavach-evaluate",
+ "kavach-evidence",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror 2.0.20",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

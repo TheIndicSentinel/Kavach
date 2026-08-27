@@ -1,82 +1,33 @@
 use kavach_domain::{Decision, DecisionEvent, GovernanceMode, ModelOrigin, SCHEMA_VERSION};
 use kavach_evaluate::EvidenceStore;
-use kavach_evaluate::{EvaluateIncident, IncidentRecorder};
-use kavach_evidence::{
-    compute_event_hash, verify_event_hash, AppendDecisionEvent, EvidenceError, MemoryChain,
-};
-use sqlx::postgres::PgPoolOptions;
+use kavach_evidence::{compute_event_hash, verify_event_hash, AppendDecisionEvent, EvidenceError};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-pub enum EvidenceBackend {
-    Memory(MemoryChain),
-    Postgres(PostgresEvidenceStore),
-}
-
-impl EvidenceStore for EvidenceBackend {
-    fn append(&mut self, input: AppendDecisionEvent) -> Result<DecisionEvent, EvidenceError> {
-        match self {
-            Self::Memory(chain) => chain.append(input),
-            Self::Postgres(store) => store.append(input),
-        }
-    }
-}
-
-pub enum IncidentBackend {
-    Memory(kavach_evaluate::VecIncidentRecorder),
-    Postgres(PostgresIncidentRecorder),
-}
-
-impl IncidentRecorder for IncidentBackend {
-    fn record(&mut self, incident: EvaluateIncident) {
-        match self {
-            Self::Memory(recorder) => recorder.record(incident),
-            Self::Postgres(recorder) => recorder.record(incident),
-        }
-    }
-}
-
+#[derive(Clone)]
 pub struct PostgresEvidenceStore {
-    pub(crate) pool: PgPool,
+    pool: PgPool,
 }
 
 impl PostgresEvidenceStore {
-    pub async fn connect(database_url: &str) -> Result<Self, EvidenceError> {
-        let pool = PgPoolOptions::new()
-            .max_connections(5)
-            .connect(database_url)
-            .await
-            .map_err(|err| {
-                EvidenceError::Domain(kavach_domain::DomainError::Golden(format!(
-                    "postgres connect: {err}"
-                )))
-            })?;
-        let store = Self { pool };
-        store.migrate().await?;
-        Ok(store)
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
-    async fn migrate(&self) -> Result<(), EvidenceError> {
-        let sql = include_str!("../../migrations/001_evidence.sql");
-        for statement in sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            sqlx::query(statement)
-                .execute(&self.pool)
-                .await
-                .map_err(|err| {
-                    EvidenceError::Domain(kavach_domain::DomainError::Golden(format!(
-                        "postgres migrate: {err}"
-                    )))
-                })?;
-        }
-        Ok(())
+    pub fn pool(&self) -> &PgPool {
+        &self.pool
     }
+}
 
+impl EvidenceStore for PostgresEvidenceStore {
     fn append(&mut self, input: AppendDecisionEvent) -> Result<DecisionEvent, EvidenceError> {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.append_async(input))
         })
     }
+}
 
+impl PostgresEvidenceStore {
     async fn append_async(
         &self,
         input: AppendDecisionEvent,
@@ -205,34 +156,6 @@ impl PostgresEvidenceStore {
     }
 }
 
-pub struct PostgresIncidentRecorder {
-    pool: PgPool,
-}
-
-impl PostgresIncidentRecorder {
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
-    }
-}
-
-impl IncidentRecorder for PostgresIncidentRecorder {
-    fn record(&mut self, incident: EvaluateIncident) {
-        let pool = self.pool.clone();
-        tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(async move {
-                let _ = sqlx::query(
-                    "INSERT INTO evaluate_incidents (correlation_id, model_id, reason) VALUES ($1, $2, $3)",
-                )
-                .bind(incident.correlation_id)
-                .bind(incident.model_id)
-                .bind(incident.reason)
-                .execute(&pool)
-                .await;
-            });
-        });
-    }
-}
-
 fn io_err(err: &sqlx::Error) -> EvidenceError {
     EvidenceError::Domain(kavach_domain::DomainError::Golden(format!(
         "postgres io: {err}"
@@ -339,14 +262,4 @@ fn row_to_event(row: &sqlx::postgres::PgRow) -> Result<DecisionEvent, EvidenceEr
         correlation_id: row.try_get("correlation_id").map_err(|err| io_err(&err))?,
         idempotency_key: row.try_get("idempotency_key").map_err(|err| io_err(&err))?,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use kavach_evidence::GENESIS_HASH;
-
-    #[test]
-    fn genesis_hash_constant_matches_meta_seed() {
-        assert_eq!(GENESIS_HASH.len(), 64);
-    }
 }
