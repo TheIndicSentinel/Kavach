@@ -6,7 +6,17 @@ pub struct ApiConfig {
     pub model_path: PathBuf,
     pub hmac_secret: Option<String>,
     pub evidence_store: EvidenceStoreKind,
+    pub access_control: AccessControlKind,
     pub tls: Option<TlsConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub enum AccessControlKind {
+    None,
+    Cedar {
+        policy_path: PathBuf,
+        entities_path: PathBuf,
+    },
 }
 
 #[derive(Debug, Clone)]

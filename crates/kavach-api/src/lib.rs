@@ -10,7 +10,7 @@ pub mod proto;
 pub mod state;
 pub mod tls;
 
-pub use config::{ApiConfig, EvidenceStoreKind, TlsConfig};
+pub use config::{AccessControlKind, ApiConfig, EvidenceStoreKind, TlsConfig};
 pub use error::ApiError;
 pub use grpc::{status_from_api, GrpcEvaluateService};
 pub use http::router;

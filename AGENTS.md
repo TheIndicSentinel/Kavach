@@ -33,13 +33,15 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 | `crates/kavach-evidence/` | Hash chain, memory store, verify CLI |
 | `crates/kavach-evaluate/` | Evaluate pipeline orchestration |
 | `crates/kavach-storage/` | Postgres evidence chain, incidents, batch jobs |
+| `crates/kavach-auth/` | Cedar RBAC policies and authorizer |
 | `crates/kavach-api/` | HTTP/gRPC sync evaluate, health, auth |
 | `crates/kavach-batch/` | NDJSON batch ingest worker |
 
 ## Phase
 
-- **Done:** Phase 0 on `main`; Milestone A.1 `kavach-policy`; A.2 `kavach-evidence`; A.3 `kavach-evaluate`; A.4 `kavach-api`; A.5 `kavach-batch` + shared `kavach-storage` merged
-- **Next:** Milestone B (console, Cedar RBAC)
+- **Done:** Phase 0 on `main`; Milestone A.1–A.5 including `kavach-storage` hardening
+- **In progress:** Milestone B.1 — Cedar RBAC in `kavach-auth` + API enforcement
+- **Next:** Milestone B — static console (React)
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 
