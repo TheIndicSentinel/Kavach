@@ -44,6 +44,9 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --verbose
 
+      - name: Credit underwriting policy simulation
+        run: ./scripts/simulate-credit-underwriting.sh
+
       - name: Partner pilot batch smoke
         run: SKIP_VERIFY=1 ./scripts/pilot-smoke.sh
 

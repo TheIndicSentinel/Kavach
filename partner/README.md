@@ -8,6 +8,8 @@ Production-shaped **EvaluateRequest** examples for Indian structured-credit inte
 |---|---|
 | `finance/credit_underwriting_v1_request.json` | Single HTTP/gRPC evaluate body |
 | `finance/credit_underwriting_v1_batch.ndjson` | NDJSON input for `kavach-batch run` |
+| `finance/scenarios/manifest.json` | Expected outcomes for policy simulation (CI) |
+| `finance/scenarios/credit_underwriting_v1.ndjson` | LOS-shaped scenario library for simulation |
 
 ## Field notes
 
@@ -32,6 +34,16 @@ cargo run -p kavach-batch -- run \
 ```
 
 Update `decision_time` and `consent.timestamp` to the current UTC time if the batch run fails clock-skew validation.
+
+## Policy simulation (git workflow)
+
+For policy changes, use the manifest-driven harness instead of hand-editing timestamps:
+
+```bash
+./scripts/simulate-credit-underwriting.sh
+```
+
+See [docs/CREDIT_UNDERWRITING_SIMULATION.md](../docs/CREDIT_UNDERWRITING_SIMULATION.md) for the branch/PR workflow (`pack` + `scenarios/` + `manifest.json` in one commit).
 
 ## Privacy
 

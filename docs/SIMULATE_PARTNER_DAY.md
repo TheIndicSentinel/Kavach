@@ -48,6 +48,7 @@ Real-world path validated — console manual review is optional.
 
 | Script | Scope |
 |---|---|
+| `simulate-credit-underwriting.sh` | **Policy pack** — manifest-driven batch + optional sync shadow ([CREDIT_UNDERWRITING_SIMULATION.md](CREDIT_UNDERWRITING_SIMULATION.md)) |
 | `simulate-partner-day.sh` | **Real-world usage** — batch + sync + governance + fairness |
 | `pilot-signoff.sh` | Pilot Phase 1–3 exit criteria |
 | `system-review.sh` | Full engineering gate (verify + sign-off + evidence) |

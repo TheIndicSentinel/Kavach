@@ -33,3 +33,18 @@ gh pr create --base main --title "..." --body "..."
 # after CI green
 gh pr merge --squash
 ```
+
+## Policy pack changes (credit underwriting)
+
+Keep **pack rules**, **scenario NDJSON**, and **manifest expectations** in the same PR. CI runs `./scripts/simulate-credit-underwriting.sh` on every push.
+
+```bash
+git checkout -b cursor/feat-policy-<change>-4a07
+# edit packs/finance/v0.yaml
+# edit partner/finance/scenarios/credit_underwriting_v1.ndjson
+# edit partner/finance/scenarios/manifest.json
+./scripts/simulate-credit-underwriting.sh
+git push -u origin cursor/feat-policy-<change>-4a07
+```
+
+Details: [CREDIT_UNDERWRITING_SIMULATION.md](CREDIT_UNDERWRITING_SIMULATION.md).
