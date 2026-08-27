@@ -28,6 +28,7 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 | `proto/` | gRPC contracts |
 | `packs/` | Policy packs (CEL) |
 | `golden/` | Executable test oracles |
+| `partner/` | Partner-shaped payload samples (not test oracles) |
 | `crates/kavach-domain/` | Domain types (no I/O) |
 | `crates/kavach-policy/` | CEL pack loader and evaluator |
 | `crates/kavach-evidence/` | Hash chain, memory store, verify CLI |
@@ -40,9 +41,10 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Phase 0 on `main`; Milestone A complete; B.1 Cedar RBAC; B.2 React console merged
-- **In progress:** Milestone B.3 — gRPC Cedar enforcement
-- **Next:** Policy lifecycle UI, Milestone A exit (partner payload + install docs)
+- **Done:** Phase 0; Milestone A (incl. exit: partner payloads + [INSTALL.md](docs/INSTALL.md)); B.1 Cedar RBAC; B.2 React console; B.3 gRPC Cedar
+- **Next:** B.4 policy lifecycle UI
+
+See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md).
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 

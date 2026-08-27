@@ -2,7 +2,7 @@ mod common;
 
 use common::{
     assert_valid, collect_json_files, golden_mvp_dir, golden_v0_dir, load_json,
-    validator_for_schema, workspace_root, yaml_to_json,
+    partner_finance_dir, validator_for_schema, workspace_root, yaml_to_json,
 };
 
 #[test]
@@ -41,6 +41,37 @@ fn golden_mvp_requests_match_evaluate_request_schema() {
             &validator,
             request,
             &format!("golden mvp request in {}", path.display()),
+        );
+    }
+}
+
+#[test]
+fn partner_finance_request_matches_evaluate_request_schema() {
+    let validator = validator_for_schema("evaluate-request.schema.json");
+    let path = partner_finance_dir().join("credit_underwriting_v1_request.json");
+    let request = load_json(&path);
+    assert_valid(
+        &validator,
+        &request,
+        "partner finance credit_underwriting_v1_request.json",
+    );
+}
+
+#[test]
+fn partner_finance_batch_ndjson_lines_match_evaluate_request_schema() {
+    let validator = validator_for_schema("evaluate-request.schema.json");
+    let path = partner_finance_dir().join("credit_underwriting_v1_batch.ndjson");
+    let content = std::fs::read_to_string(&path).expect("read partner batch ndjson");
+    for (index, line) in content.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let request: serde_json::Value =
+            serde_json::from_str(line).expect("parse partner batch line as JSON");
+        assert_valid(
+            &validator,
+            &request,
+            &format!("partner batch line {} in {}", index + 1, path.display()),
         );
     }
 }
