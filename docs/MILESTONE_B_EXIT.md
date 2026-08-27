@@ -18,7 +18,7 @@ Sign-off after governance console, Cedar RBAC, policy lifecycle, fairness, reten
 
 ## Exit artifacts (this gate)
 
-- [x] **Governance console** — policies, models, audit, incidents, retention, batch jobs
+- [x] **Governance console** — policies, models, audit, incidents, retention, batch jobs, fairness reports
 - [x] **Admin read APIs** — audit, retention, tombstones, incidents, batch jobs
 - [x] **Responsive layout** — mobile drawer nav, card fallback for data tables
 - [x] **Install docs** — [INSTALL.md](INSTALL.md) admin route table
@@ -46,9 +46,12 @@ cd console && npm run dev
 ## Explicitly not Milestone B exit
 
 - In-browser batch upload/trigger (batch remains CronJob/workflow invoked)
-- Fairness report viewer in console (CLI `kavach-batch fairness` only)
 - Live batch progress streaming (`processed_rows` mid-run)
 - Helm charts / operator — future packaging
+
+## Post-B console additions
+
+- [x] **Fairness report viewer** — `/fairness` route; upload or sample `kavach-batch fairness` JSON (client-side only)
 
 ## Sign-off
 
@@ -56,6 +59,5 @@ When all boxes above are checked, proceed with post-B hardening:
 
 - Milestone B exit CI green on `main`
 - Partner pilot engagement using [PARTNER_PILOT.md](PARTNER_PILOT.md)
-- Optional: fairness report console viewer
 
 **Milestone B status:** Complete — merged to `main` (PRs #18, #19).

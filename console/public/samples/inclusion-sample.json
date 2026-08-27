@@ -1,0 +1,15 @@
+{
+  "report_type": "inclusion",
+  "segment_field": "input.informal_sector",
+  "min_sample_size": 30,
+  "total_evaluated": 6,
+  "inclusion_count": 2,
+  "inclusion_approval_rate": 0.5,
+  "non_inclusion_count": 4,
+  "non_inclusion_approval_rate": 0.75,
+  "approval_gap": 0.25,
+  "inclusion_sample_sufficient": false,
+  "non_inclusion_sample_sufficient": false,
+  "flagged": true,
+  "generated_at": "2026-08-27T10:00:00Z"
+}

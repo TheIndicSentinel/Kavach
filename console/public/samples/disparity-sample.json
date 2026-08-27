@@ -1,0 +1,35 @@
+{
+  "report_type": "disparity",
+  "attribute": "input.customer_segment",
+  "min_sample_size": 30,
+  "disparity_threshold": 0.1,
+  "total_evaluated": 6,
+  "overall_approval_rate": 0.6666666666666666,
+  "reference_group": "salaried",
+  "groups": [
+    {
+      "group_value": "salaried",
+      "count": 4,
+      "approval_rate": 0.75,
+      "sample_sufficient": false,
+      "gap_from_reference": 0.0
+    },
+    {
+      "group_value": "informal",
+      "count": 2,
+      "approval_rate": 0.5,
+      "sample_sufficient": false,
+      "gap_from_reference": 0.25
+    }
+  ],
+  "max_disparity_gap": 0.25,
+  "flagged": [
+    {
+      "group_value": "informal",
+      "gap_from_reference": 0.25,
+      "approval_rate": 0.5,
+      "reference_approval_rate": 0.75
+    }
+  ],
+  "generated_at": "2026-08-27T10:00:00Z"
+}
