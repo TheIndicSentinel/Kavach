@@ -25,11 +25,13 @@ with open(source, encoding="utf-8") as handle, open(dest, "w", encoding="utf-8")
         out.write(json.dumps(row, separators=(",", ":")) + "\n")
 PY
 
-echo "==> build console (embedded in API)"
-./scripts/build-console.sh
+if [[ "${SKIP_VERIFY:-}" != "1" ]]; then
+  echo "==> build console (embedded in API)"
+  ./scripts/build-console.sh
 
-echo "==> workspace verification"
-./scripts/verify.sh
+  echo "==> workspace verification"
+  ./scripts/verify.sh
+fi
 
 echo "==> batch shadow smoke (memory evidence)"
 cargo run -q -p kavach-batch -- run \

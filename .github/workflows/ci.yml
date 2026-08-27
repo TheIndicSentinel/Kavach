@@ -44,6 +44,9 @@ jobs:
       - name: cargo test
         run: cargo test --workspace --verbose
 
+      - name: Partner pilot batch smoke
+        run: SKIP_VERIFY=1 ./scripts/pilot-smoke.sh
+
   audit:
     name: Security audit
     runs-on: ubuntu-latest
