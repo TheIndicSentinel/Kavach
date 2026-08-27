@@ -81,3 +81,38 @@ permit (
   action == Kavach::Action::"read_health",
   resource == Kavach::System::"api"
 );
+
+@id("admins-may-read-retention")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"read_retention",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-update-retention")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"update_retention",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-read-tombstones")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"read_tombstones",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-erase-evidence")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"erase_evidence",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-apply-retention")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"apply_retention",
+  resource == Kavach::System::"api"
+);

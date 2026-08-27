@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use chrono::Utc;
+use chrono::{Duration, Utc};
 use kavach_auth::KavachAuthorizer;
 use kavach_domain::{EvaluateRequest, EvaluateResponse, GovernanceMode, ModelRecord, ModelStatus};
 use kavach_evaluate::{EvaluateConfig, EvaluatePath, EvaluateService};
 use kavach_evidence::MemoryChain;
 use kavach_policy::PackLoader;
 use kavach_storage::{
-    AdminBackend, AuditInsert, EvidenceBackend, IncidentBackend, RuntimePointers, StoragePool,
+    AdminBackend, AuditInsert, EvidenceBackend, IncidentBackend, RetentionApplyReport,
+    RetentionBackend, RetentionSettings, RetentionStoreError, RuntimePointers, StoragePool,
+    TombstoneReason, TombstoneRecord,
 };
 
 use crate::auth::DualControlPrincipals;
@@ -27,6 +29,7 @@ pub struct AppState {
     packs_dir: PathBuf,
     models_dir: PathBuf,
     admin: AdminBackend,
+    retention: RetentionBackend,
 }
 
 impl AppState {
@@ -35,11 +38,12 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
         let model = load_model_record(config.model_path())?;
 
-        let (evidence, incidents, admin) = match &config.evidence_store {
+        let (evidence, incidents, admin, retention) = match &config.evidence_store {
             EvidenceStoreKind::Memory => (
                 EvidenceBackend::Memory(MemoryChain::new()),
                 IncidentBackend::Memory(kavach_evaluate::VecIncidentRecorder::default()),
                 AdminBackend::memory(),
+                RetentionBackend::memory(),
             ),
             EvidenceStoreKind::Postgres { database_url } => {
                 let pool = StoragePool::connect(database_url)
@@ -49,6 +53,7 @@ impl AppState {
                     EvidenceBackend::Postgres(pool.evidence_store()),
                     IncidentBackend::Postgres(pool.incident_recorder()),
                     AdminBackend::Postgres(pool.admin_store()),
+                    RetentionBackend::Postgres(pool.retention_store()),
                 )
             }
         };
@@ -89,6 +94,7 @@ impl AppState {
             packs_dir,
             models_dir,
             admin,
+            retention,
         })
     }
 
@@ -134,6 +140,150 @@ impl AppState {
 
     pub fn admin(&self) -> &AdminBackend {
         &self.admin
+    }
+
+    pub fn retention(&self) -> &RetentionBackend {
+        &self.retention
+    }
+
+    pub async fn update_retention_settings(
+        &self,
+        evidence_retention_days: u32,
+        principals: &DualControlPrincipals,
+    ) -> Result<RetentionSettings, ApiError> {
+        let settings = self
+            .retention
+            .set_settings(
+                evidence_retention_days,
+                &principals.actor,
+                &principals.approver,
+            )
+            .await
+            .map_err(map_retention_error)?;
+
+        self.admin
+            .append_audit(AuditInsert {
+                action: "update_retention".into(),
+                resource_type: "tenant_settings".into(),
+                resource_id: "retention".into(),
+                actor_principal: principals.actor.clone(),
+                approver_principal: principals.approver.clone(),
+                payload: serde_json::json!({
+                    "evidence_retention_days": settings.evidence_retention_days,
+                }),
+            })
+            .await
+            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
+
+        Ok(settings)
+    }
+
+    pub async fn erase_evidence(
+        &self,
+        evidence_id: &str,
+        reason: TombstoneReason,
+        principals: &DualControlPrincipals,
+    ) -> Result<TombstoneRecord, ApiError> {
+        if let Some(events) = self.memory_events_snapshot()? {
+            if !events.iter().any(|event| event.evidence_id == evidence_id) {
+                return Err(ApiError::NotFound(format!(
+                    "evidence not found: {evidence_id}"
+                )));
+            }
+        }
+
+        let record = self
+            .retention
+            .tombstone(evidence_id, reason, &principals.actor, &principals.approver)
+            .await
+            .map_err(map_retention_error)?;
+
+        self.admin
+            .append_audit(AuditInsert {
+                action: "erase_evidence".into(),
+                resource_type: "evidence".into(),
+                resource_id: evidence_id.to_string(),
+                actor_principal: principals.actor.clone(),
+                approver_principal: principals.approver.clone(),
+                payload: serde_json::json!({
+                    "reason": record.reason,
+                }),
+            })
+            .await
+            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
+
+        Ok(record)
+    }
+
+    pub async fn apply_retention(
+        &self,
+        principals: &DualControlPrincipals,
+    ) -> Result<RetentionApplyReport, ApiError> {
+        let memory_candidates = self.memory_retention_candidates().await?;
+        let report = self
+            .retention
+            .apply_retention(
+                memory_candidates.as_deref(),
+                &principals.actor,
+                &principals.approver,
+            )
+            .await
+            .map_err(map_retention_error)?;
+
+        self.admin
+            .append_audit(AuditInsert {
+                action: "apply_retention".into(),
+                resource_type: "tenant_settings".into(),
+                resource_id: "retention".into(),
+                actor_principal: principals.actor.clone(),
+                approver_principal: principals.approver.clone(),
+                payload: serde_json::json!({
+                    "tombstoned_count": report.tombstoned_count,
+                }),
+            })
+            .await
+            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
+
+        Ok(report)
+    }
+
+    fn memory_events_snapshot(
+        &self,
+    ) -> Result<Option<Vec<kavach_domain::DecisionEvent>>, ApiError> {
+        let service = self
+            .service
+            .lock()
+            .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
+        Ok(service.evidence_store().memory_events())
+    }
+
+    async fn memory_retention_candidates(&self) -> Result<Option<Vec<String>>, ApiError> {
+        let Some(events) = self.memory_events_snapshot()? else {
+            return Ok(None);
+        };
+
+        let settings = self
+            .retention
+            .get_settings()
+            .await
+            .map_err(map_retention_error)?;
+        let cutoff = Utc::now() - Duration::days(i64::from(settings.evidence_retention_days));
+        let tombstoned: std::collections::HashSet<String> = self
+            .retention
+            .list_tombstones(u32::MAX)
+            .await
+            .map_err(map_retention_error)?
+            .into_iter()
+            .map(|record| record.evidence_id)
+            .collect();
+
+        let candidates = events
+            .into_iter()
+            .filter(|event| event.evaluated_at < cutoff)
+            .filter(|event| !tombstoned.contains(&event.evidence_id))
+            .map(|event| event.evidence_id)
+            .collect();
+        Ok(Some(candidates))
     }
 
     pub fn evaluate(
@@ -404,4 +554,14 @@ fn load_model_record(path: &std::path::Path) -> Result<ModelRecord, ApiError> {
         .map_err(|e| ApiError::Internal(format!("read model {}: {e}", path.display())))?;
     serde_yaml::from_str(&content)
         .map_err(|e| ApiError::Internal(format!("parse model {}: {e}", path.display())))
+}
+
+fn map_retention_error(error: RetentionStoreError) -> ApiError {
+    match error {
+        RetentionStoreError::NotFound(id) => ApiError::NotFound(id),
+        RetentionStoreError::AlreadyTombstoned(id) => {
+            ApiError::BadRequest(format!("evidence already tombstoned: {id}"))
+        }
+        RetentionStoreError::Io(message) => ApiError::Internal(message),
+    }
 }

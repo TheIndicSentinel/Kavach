@@ -21,6 +21,11 @@ pub enum KavachAction {
     RollbackPack,
     UpdateModel,
     ReadAudit,
+    ReadRetention,
+    UpdateRetention,
+    ReadTombstones,
+    EraseEvidence,
+    ApplyRetention,
 }
 
 impl KavachAction {
@@ -34,6 +39,11 @@ impl KavachAction {
             Self::RollbackPack => "rollback_pack",
             Self::UpdateModel => "update_model",
             Self::ReadAudit => "read_audit",
+            Self::ReadRetention => "read_retention",
+            Self::UpdateRetention => "update_retention",
+            Self::ReadTombstones => "read_tombstones",
+            Self::EraseEvidence => "erase_evidence",
+            Self::ApplyRetention => "apply_retention",
         }
     }
 }

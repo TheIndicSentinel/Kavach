@@ -22,6 +22,10 @@ use crate::governance::{
     get_model_record, get_policy_pack, list_model_records, list_policy_packs, runtime,
 };
 use crate::lifecycle::{activate_pack, list_audit_log, rollback_pack, update_model_record};
+use crate::retention::{
+    apply_retention, erase_evidence, get_retention_settings, list_tombstones,
+    update_retention_settings,
+};
 use crate::state::AppState;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -39,7 +43,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/models/{model_id}", patch(update_model_record))
         .route("/v1/packs/{pack_id}/activate", post(activate_pack))
         .route("/v1/packs/rollback", post(rollback_pack))
-        .route("/v1/admin/audit", get(list_audit_log));
+        .route("/v1/admin/audit", get(list_audit_log))
+        .route("/v1/admin/retention", get(get_retention_settings))
+        .route("/v1/admin/retention", patch(update_retention_settings))
+        .route("/v1/admin/retention/apply", post(apply_retention))
+        .route("/v1/admin/tombstones", get(list_tombstones))
+        .route(
+            "/v1/admin/evidence/{evidence_id}/erase",
+            post(erase_evidence),
+        );
 
     #[cfg(console_embedded)]
     {

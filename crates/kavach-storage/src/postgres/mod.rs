@@ -5,6 +5,7 @@ mod evidence;
 mod incidents;
 mod jobs;
 mod migrate;
+mod retention;
 
 pub use admin::PostgresAdminStore;
 
@@ -14,6 +15,7 @@ pub use jobs::{
     BatchJobCreate, BatchJobStore, JobStoreError, NoopBatchJobStore, PostgresBatchJobStore,
 };
 pub use migrate::connect_pool;
+pub use retention::PostgresRetentionStore;
 
 use sqlx::PgPool;
 
@@ -42,5 +44,9 @@ impl StoragePool {
 
     pub fn admin_store(&self) -> PostgresAdminStore {
         PostgresAdminStore::new(self.pool.clone())
+    }
+
+    pub fn retention_store(&self) -> PostgresRetentionStore {
+        PostgresRetentionStore::new(self.pool.clone())
     }
 }

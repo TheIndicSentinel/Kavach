@@ -12,6 +12,7 @@ pub mod lifecycle;
 pub mod metrics;
 pub mod proto;
 pub mod registry;
+pub mod retention;
 pub mod state;
 pub mod tls;
 

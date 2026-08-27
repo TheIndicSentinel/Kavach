@@ -417,6 +417,119 @@ async fn admin_audit_list_returns_entries() {
     assert!(parsed.is_array());
 }
 
+#[tokio::test]
+async fn retention_settings_default_and_update() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state);
+
+    let get = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/admin/retention")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get.status(), StatusCode::OK);
+    let settings: serde_json::Value =
+        serde_json::from_slice(&get.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(settings["evidence_retention_days"], 365);
+
+    let patch = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/v1/admin/retention")
+                .header("content-type", "application/json")
+                .header("x-kavach-principal", "admin-1")
+                .header("x-kavach-approver", "admin-2")
+                .body(Body::from(r#"{"evidence_retention_days":180}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(patch.status(), StatusCode::OK);
+    let updated: serde_json::Value =
+        serde_json::from_slice(&patch.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(updated["evidence_retention_days"], 180);
+}
+
+#[tokio::test]
+async fn erase_evidence_tombstones_memory_chain_row() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state.clone());
+
+    let body = include_str!("../../../golden/finance/v0/credit_clean.json");
+    let request_json: serde_json::Value = serde_json::from_str(body).unwrap();
+    let mut request: EvaluateRequest =
+        serde_json::from_value(request_json["request"].clone()).unwrap();
+    let now = Utc::now();
+    request.decision_time = now;
+    request.consent.timestamp = now;
+    let payload = serde_json::to_vec(&request).unwrap();
+
+    let evaluate = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/evaluate")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evaluate.status(), StatusCode::OK);
+    let evaluate_json: serde_json::Value =
+        serde_json::from_slice(&evaluate.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let evidence_id = evaluate_json["evidence_id"].as_str().unwrap().to_string();
+
+    let erase = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/admin/evidence/{evidence_id}/erase"))
+                .header("x-kavach-principal", "admin-1")
+                .header("x-kavach-approver", "admin-2")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(erase.status(), StatusCode::OK);
+
+    let tombstones = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/admin/tombstones?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tombstones.status(), StatusCode::OK);
+    let listed: serde_json::Value =
+        serde_json::from_slice(&tombstones.into_body().collect().await.unwrap().to_bytes())
+            .unwrap();
+    assert!(listed
+        .as_array()
+        .is_some_and(|rows| rows.iter().any(|row| row["evidence_id"] == evidence_id)));
+}
+
 #[cfg(console_embedded)]
 #[tokio::test]
 async fn console_serves_index_html() {
