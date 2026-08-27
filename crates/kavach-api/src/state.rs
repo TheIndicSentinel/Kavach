@@ -2,7 +2,7 @@ use std::sync::Mutex;
 
 use chrono::Utc;
 use kavach_domain::{EvaluateRequest, EvaluateResponse, ModelRecord};
-use kavach_evaluate::{EvaluateConfig, EvaluateService};
+use kavach_evaluate::{EvaluateConfig, EvaluatePath, EvaluateService};
 use kavach_evidence::MemoryChain;
 use kavach_policy::PackLoader;
 
@@ -105,7 +105,7 @@ impl AppState {
             .lock()
             .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
         let result = service
-            .evaluate(request, Utc::now())
+            .evaluate(EvaluatePath::Sync, request, Utc::now())
             .map_err(ApiError::Evaluate)?;
         Ok(result.response)
     }

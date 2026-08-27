@@ -1339,6 +1339,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-batch"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "kavach-domain",
+ "kavach-evaluate",
+ "kavach-evidence",
+ "kavach-policy",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.20",
+ "uuid",
+ "walkdir",
+]
+
+[[package]]
 name = "kavach-domain"
 version = "0.1.0"
 dependencies = [

@@ -5,7 +5,9 @@ use kavach_domain::{
     golden::{load_fixtures, workspace_golden_v0_dir},
     GovernanceMode, ModelRecord,
 };
-use kavach_evaluate::{EvaluateConfig, EvaluateError, EvaluateService, VecIncidentRecorder};
+use kavach_evaluate::{
+    EvaluateConfig, EvaluateError, EvaluatePath, EvaluateService, VecIncidentRecorder,
+};
 use kavach_evidence::MemoryChain;
 use kavach_policy::{LoadedPolicyPack, PackLoader};
 use std::path::PathBuf;
@@ -57,6 +59,7 @@ fn golden_v0_enforce_evaluate_matches_expectations() {
 
         let result = service
             .evaluate(
+                EvaluatePath::Sync,
                 &fixture.request,
                 server_now_for(fixture.request.decision_time),
             )
@@ -114,6 +117,7 @@ fn golden_v0_shadow_sync_masks_non_pass_returned_decision() {
 
         let result = service
             .evaluate(
+                EvaluatePath::Sync,
                 &fixture.request,
                 server_now_for(fixture.request.decision_time),
             )
@@ -121,6 +125,41 @@ fn golden_v0_shadow_sync_masks_non_pass_returned_decision() {
 
         assert_eq!(
             result.response.returned_decision, expected_returned,
+            "{}",
+            fixture.name
+        );
+    }
+}
+
+#[test]
+fn golden_v0_batch_shadow_matches_policy_decision() {
+    let pack = finance_pack();
+    let fixtures = load_fixtures(&workspace_golden_v0_dir()).expect("fixtures");
+    let model = finance_model_record(GovernanceMode::Shadow);
+    let chain = MemoryChain::new();
+    let incidents = VecIncidentRecorder::default();
+    let mut service =
+        EvaluateService::new(pack, model, chain, incidents, EvaluateConfig::default())
+            .expect("service");
+
+    for fixture in fixtures {
+        if fixture.name == "credit_missing_consent" {
+            continue;
+        }
+        let Some(expected_policy) = fixture.expect.policy_decision else {
+            continue;
+        };
+
+        let result = service
+            .evaluate(
+                EvaluatePath::Batch,
+                &fixture.request,
+                server_now_for(fixture.request.decision_time),
+            )
+            .unwrap_or_else(|e| panic!("{}: {e}", fixture.name));
+
+        assert_eq!(
+            result.response.returned_decision, expected_policy,
             "{}",
             fixture.name
         );
@@ -145,6 +184,7 @@ fn consent_mismatch_is_validation_error_not_rpc_decision() {
 
     let err = service
         .evaluate(
+            EvaluatePath::Sync,
             &fixture.request,
             server_now_for(fixture.request.decision_time),
         )
@@ -186,6 +226,7 @@ fn evidence_failure_enforce_returns_block_without_row() {
 
     let result = service
         .evaluate(
+            EvaluatePath::Sync,
             &fixture.request,
             server_now_for(fixture.request.decision_time),
         )
@@ -232,6 +273,7 @@ fn evidence_failure_shadow_returns_pass_without_row() {
 
     let result = service
         .evaluate(
+            EvaluatePath::Sync,
             &fixture.request,
             server_now_for(fixture.request.decision_time),
         )
@@ -266,8 +308,12 @@ fn idempotent_retry_returns_same_evidence_id() {
             .expect("service");
 
     let now = server_now_for(fixture.request.decision_time);
-    let first = service.evaluate(&fixture.request, now).expect("first");
-    let second = service.evaluate(&fixture.request, now).expect("second");
+    let first = service
+        .evaluate(EvaluatePath::Sync, &fixture.request, now)
+        .expect("first");
+    let second = service
+        .evaluate(EvaluatePath::Sync, &fixture.request, now)
+        .expect("second");
 
     assert_eq!(first.response.evidence_id, second.response.evidence_id);
     assert_eq!(service.evidence_store().events().len(), 1);
@@ -299,7 +345,7 @@ fn clock_skew_rejected() {
 
     let skewed_now = Utc.with_ymd_and_hms(2026, 8, 2, 0, 0, 0).unwrap();
     let err = service
-        .evaluate(&fixture.request, skewed_now)
+        .evaluate(EvaluatePath::Sync, &fixture.request, skewed_now)
         .expect_err("skew");
 
     assert!(matches!(err, EvaluateError::Validation(_)));

@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::path::EvaluatePath;
 use crate::response::GovernanceMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -47,6 +48,22 @@ impl fmt::Display for Decision {
     }
 }
 
+/// Map policy outcome to returned decision per ADR-001 §2 and §6.
+#[must_use]
+pub fn map_returned_decision_for_path(
+    policy_decision: Decision,
+    governance_mode: GovernanceMode,
+    path: EvaluatePath,
+    request_valid: bool,
+) -> Decision {
+    match path {
+        EvaluatePath::Batch => policy_decision,
+        EvaluatePath::Sync => {
+            map_returned_decision(policy_decision, governance_mode, request_valid)
+        }
+    }
+}
+
 /// Map policy outcome to sync RPC returned decision per ADR-001 §5.
 #[must_use]
 pub fn map_returned_decision(
@@ -68,6 +85,19 @@ pub fn map_returned_decision(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn batch_shadow_returns_policy_decision() {
+        assert_eq!(
+            map_returned_decision_for_path(
+                Decision::Alert,
+                GovernanceMode::Shadow,
+                EvaluatePath::Batch,
+                true
+            ),
+            Decision::Alert
+        );
+    }
 
     #[test]
     fn shadow_sync_masks_non_pass_policy() {

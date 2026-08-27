@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kavach.local/schemas/batch-result-row.schema.json",
+  "title": "BatchResultRow",
+  "type": "object",
+  "required": ["line_number", "correlation_id", "status"],
+  "properties": {
+    "line_number": { "type": "integer", "minimum": 1 },
+    "correlation_id": { "type": "string", "minLength": 1 },
+    "status": {
+      "type": "string",
+      "enum": ["ok", "validation_error", "evidence_error", "parse_error"]
+    },
+    "policy_decision": {
+      "type": "string",
+      "enum": ["PASS", "ALERT", "BLOCK", "HUMAN_REVIEW"]
+    },
+    "returned_decision": {
+      "type": "string",
+      "enum": ["PASS", "ALERT", "BLOCK", "HUMAN_REVIEW"]
+    },
+    "evidence_id": { "type": "string" },
+    "reason_codes": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "policy_hits": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "error": { "type": "string" }
+  },
+  "additionalProperties": false
+}
