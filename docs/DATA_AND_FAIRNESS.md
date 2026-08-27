@@ -56,8 +56,14 @@ Attributes used in production require partner legal sign-off. MVP `caste_proxy_s
 
 ## Retention and erasure
 
-- Tenant-configurable retention on evidence (Milestone B).  
-- DPDP erasure: tombstone by `evidence_id` preserving chain integrity (Milestone B).
+Tenant-configurable retention on evidence and DPDP erasure via tombstone metadata:
+
+- **Retention policy** — `GET/PATCH /v1/admin/retention` (`evidence_retention_days`, default 365)
+- **Apply retention** — `POST /v1/admin/retention/apply` tombstones evidence older than the policy window
+- **DPDP erasure** — `POST /v1/admin/evidence/{evidence_id}/erase` tombstones a single row by id
+- **Tombstone list** — `GET /v1/admin/tombstones`
+
+Tombstones are recorded in `evidence_tombstones` without mutating hash-chain fields in `decision_events`. Export views use `kavach-evidence` redaction helpers; offline `kavach-evidence verify` still validates the stored chain.
 
 ## Tenancy
 

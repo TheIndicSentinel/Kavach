@@ -110,6 +110,11 @@ Paths default via env vars; CLI flags override.
 | `/v1/models/{id}` | GET | `read_governance` | Model detail |
 | `/v1/models/{id}` | PATCH | `update_model` | Dual-control model promotion |
 | `/v1/admin/audit` | GET | `read_audit` | Admin audit log |
+| `/v1/admin/retention` | GET | `read_retention` | Retention policy |
+| `/v1/admin/retention` | PATCH | `update_retention` | Dual-control retention update |
+| `/v1/admin/retention/apply` | POST | `apply_retention` | Apply retention tombstones |
+| `/v1/admin/evidence/{id}/erase` | POST | `erase_evidence` | DPDP erasure tombstone |
+| `/v1/admin/tombstones` | GET | `read_tombstones` | Tombstone list |
 | `/` | GET | — | Governance console (when built) |
 
 Lifecycle mutations require `X-Kavach-Principal` (actor) and `X-Kavach-Approver` (distinct admin).

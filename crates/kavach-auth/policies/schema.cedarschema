@@ -42,4 +42,29 @@ namespace Kavach {
     principal: [User],
     resource: [System],
   };
+
+  action read_retention appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action update_retention appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action read_tombstones appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action erase_evidence appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action apply_retention appliesTo {
+    principal: [User],
+    resource: [System],
+  };
 }

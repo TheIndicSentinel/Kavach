@@ -20,6 +20,7 @@ async fn run_migrations(pool: &PgPool) -> Result<(), kavach_evidence::EvidenceEr
         include_str!("../../migrations/001_evidence.sql"),
         include_str!("../../migrations/002_batch_jobs.sql"),
         include_str!("../../migrations/003_admin_governance.sql"),
+        include_str!("../../migrations/004_retention_erasure.sql"),
     ] {
         for statement in sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
             sqlx::query(statement)

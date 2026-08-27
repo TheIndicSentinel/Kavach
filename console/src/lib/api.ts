@@ -264,3 +264,74 @@ export function updateModel(
     return payload as RuntimeInfo;
   });
 }
+
+export interface RetentionSettings {
+  evidence_retention_days: number;
+  updated_at: string;
+  updated_by?: string | null;
+  approved_by?: string | null;
+}
+
+export interface TombstoneRecord {
+  evidence_id: string;
+  reason: string;
+  actor_principal: string;
+  approver_principal: string;
+  tombstoned_at: string;
+}
+
+export interface RetentionApplyReport {
+  tombstoned_count: number;
+  evidence_ids: string[];
+}
+
+export function fetchRetentionSettings(): Promise<RetentionSettings> {
+  return governanceFetch("/v1/admin/retention");
+}
+
+export function fetchTombstones(limit = 50): Promise<TombstoneRecord[]> {
+  return governanceFetch(`/v1/admin/tombstones?limit=${limit}`);
+}
+
+export function updateRetentionSettings(
+  evidenceRetentionDays: number,
+  actor: string,
+  approver: string,
+): Promise<RetentionSettings> {
+  return fetch("/v1/admin/retention", {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      ...dualControlHeaders(actor, approver),
+    },
+    body: JSON.stringify({ evidence_retention_days: evidenceRetentionDays }),
+  }).then(async (response) => {
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new ApiError(
+        typeof payload?.error === "string" ? payload.error : "Retention update failed",
+        response.status,
+      );
+    }
+    return payload as RetentionSettings;
+  });
+}
+
+export function applyRetention(
+  actor: string,
+  approver: string,
+): Promise<RetentionApplyReport> {
+  return fetch("/v1/admin/retention/apply", {
+    method: "POST",
+    headers: dualControlHeaders(actor, approver),
+  }).then(async (response) => {
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new ApiError(
+        typeof payload?.error === "string" ? payload.error : "Retention apply failed",
+        response.status,
+      );
+    }
+    return payload as RetentionApplyReport;
+  });
+}

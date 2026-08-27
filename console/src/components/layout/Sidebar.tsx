@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   ScrollText,
   Settings,
+  ShieldOff,
 } from "lucide-react";
 import { KavachLogo } from "../brand/KavachLogo";
 import { cn } from "../../lib/cn";
@@ -20,6 +21,7 @@ const governanceNav = [
   { to: "/policies", label: "Policies", icon: ScrollText },
   { to: "/models", label: "Models", icon: Boxes },
   { to: "/audit", label: "Audit", icon: ClipboardList },
+  { to: "/retention", label: "Retention", icon: ShieldOff },
 ] as const;
 
 export function Sidebar() {

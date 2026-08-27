@@ -7,6 +7,7 @@ import ModelsPage from "./pages/ModelsPage";
 import OverviewPage from "./pages/OverviewPage";
 import PoliciesPage from "./pages/PoliciesPage";
 import PolicyDetailPage from "./pages/PolicyDetailPage";
+import RetentionPage from "./pages/RetentionPage";
 import SettingsPage from "./pages/SettingsPage";
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="models" element={<ModelsPage />} />
         <Route path="models/:modelId" element={<ModelDetailPage />} />
         <Route path="audit" element={<AuditPage />} />
+        <Route path="retention" element={<RetentionPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />
       </Route>
