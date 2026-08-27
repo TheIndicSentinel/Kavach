@@ -19,6 +19,17 @@ You have:
 
 ## One-command automated gate
 
+**Recommended — real-world simulation (no manual JSON):**
+
+```bash
+./scripts/start-local-review.sh
+./scripts/simulate-partner-day.sh
+```
+
+See [SIMULATE_PARTNER_DAY.md](SIMULATE_PARTNER_DAY.md).
+
+**Full engineering gate:**
+
 ```bash
 # Minimal (no live API — CI-equivalent)
 ./scripts/system-review.sh

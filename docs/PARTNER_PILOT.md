@@ -132,6 +132,7 @@ cargo run -p kavach-api -- \
 | [`scripts/pilot-phase2.sh`](../scripts/pilot-phase2.sh) | Phase 2 governance API + dual-control smoke |
 | [`scripts/pilot-phase3.sh`](../scripts/pilot-phase3.sh) | Phase 3 sync enforce evaluate + decision parity |
 | [`scripts/pilot-signoff.sh`](../scripts/pilot-signoff.sh) | Runs Phase 1–3 against live pilot API (sign-off gate) |
+| [`scripts/simulate-partner-day.sh`](../scripts/simulate-partner-day.sh) | Automated real-world partner day simulation |
 | [`scripts/system-review.sh`](../scripts/system-review.sh) | Holistic automated gate before bank VPC deployment |
 | [`scripts/pilot-smoke.sh`](../scripts/pilot-smoke.sh) | CI/local batch smoke without Docker |
 | [INSTALL.md](INSTALL.md) | Full on-prem install reference |
