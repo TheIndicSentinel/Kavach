@@ -34,14 +34,15 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 | `crates/kavach-evaluate/` | Evaluate pipeline orchestration |
 | `crates/kavach-storage/` | Postgres evidence chain, incidents, batch jobs |
 | `crates/kavach-auth/` | Cedar RBAC policies and authorizer |
+| `console/` | React governance console (static, embedded in API) |
 | `crates/kavach-api/` | HTTP/gRPC sync evaluate, health, auth |
 | `crates/kavach-batch/` | NDJSON batch ingest worker |
 
 ## Phase
 
-- **Done:** Phase 0 on `main`; Milestone A.1–A.5 including `kavach-storage` hardening
-- **In progress:** Milestone B.1 — Cedar RBAC in `kavach-auth` + API enforcement
-- **Next:** Milestone B — static console (React)
+- **Done:** Phase 0 on `main`; Milestone A complete; B.1 Cedar RBAC merged
+- **In progress:** Milestone B.2 — static React console served from `kavach-api`
+- **Next:** Policy lifecycle UI, gRPC Cedar enforcement
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 

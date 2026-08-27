@@ -25,6 +25,16 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+
+      - name: Build console
+        run: ./scripts/build-console.sh
+
       - name: cargo fmt
         run: cargo fmt --all -- --check
 

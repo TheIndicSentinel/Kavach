@@ -265,3 +265,25 @@ async fn cedar_viewer_cannot_evaluate() {
 
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
+
+#[cfg(console_embedded)]
+#[tokio::test]
+async fn console_serves_index_html() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state);
+
+    let response = app
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let html = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(html.contains("Kavach Console"));
+}

@@ -22,11 +22,17 @@ use crate::state::AppState;
 type HmacSha256 = Hmac<Sha256>;
 
 pub fn router(state: Arc<AppState>) -> Router {
-    Router::new()
+    let mut router = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
-        .route("/v1/evaluate", post(evaluate))
-        .with_state(state)
+        .route("/v1/evaluate", post(evaluate));
+
+    #[cfg(console_embedded)]
+    {
+        router = router.fallback(crate::console::fallback);
+    }
+
+    router.with_state(state)
 }
 
 async fn health(

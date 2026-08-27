@@ -3,6 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+if [[ -f console/package.json ]]; then
+  echo "==> build console"
+  ./scripts/build-console.sh
+fi
+
 echo "==> cargo fmt --check"
 cargo fmt --all -- --check
 
