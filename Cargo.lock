@@ -778,6 +778,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-evaluate"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "jsonschema",
+ "kavach-domain",
+ "kavach-evidence",
+ "kavach-policy",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "thiserror 2.0.20",
+ "walkdir",
+]
+
+[[package]]
 name = "kavach-evidence"
 version = "0.1.0"
 dependencies = [
