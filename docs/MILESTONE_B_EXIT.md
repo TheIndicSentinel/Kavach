@@ -18,7 +18,7 @@ Sign-off after governance console, Cedar RBAC, policy lifecycle, fairness, reten
 
 ## Exit artifacts (this gate)
 
-- [x] **Governance console** — policies, models, audit, incidents, retention, batch jobs
+- [x] **Governance console** — policies, models, audit, incidents, retention, batch jobs, fairness reports
 - [x] **Admin read APIs** — audit, retention, tombstones, incidents, batch jobs
 - [x] **Responsive layout** — mobile drawer nav, card fallback for data tables
 - [x] **Install docs** — [INSTALL.md](INSTALL.md) admin route table
@@ -46,16 +46,20 @@ cd console && npm run dev
 ## Explicitly not Milestone B exit
 
 - In-browser batch upload/trigger (batch remains CronJob/workflow invoked)
-- Fairness report viewer in console (CLI `kavach-batch fairness` only)
 - Live batch progress streaming (`processed_rows` mid-run)
 - Helm charts / operator — future packaging
 
+## Post-B additions
+
+- [x] **Fairness report viewer** — `/fairness` route
+- [x] **Pilot sign-off** — `scripts/pilot-signoff.sh`
+- [x] **System review checkpoint** — [SYSTEM_REVIEW_CHECKPOINT.md](SYSTEM_REVIEW_CHECKPOINT.md)
+
 ## Sign-off
 
-When all boxes above are checked, proceed with post-B hardening:
+When all boxes above are checked, proceed to the **system review checkpoint**:
 
-- Milestone B exit CI green on `main`
-- Partner pilot engagement using [PARTNER_PILOT.md](PARTNER_PILOT.md)
-- Optional: fairness report console viewer
+- [SYSTEM_REVIEW_CHECKPOINT.md](SYSTEM_REVIEW_CHECKPOINT.md) — holistic review before bank VPC deployment
+- `./scripts/system-review.sh` — automated gate
 
 **Milestone B status:** Complete — merged to `main` (PRs #18, #19).

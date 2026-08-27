@@ -76,6 +76,8 @@ export PILOT_API_URL=http://localhost:8080
 
 See [PILOT_SIGNOFF.md](PILOT_SIGNOFF.md) for the full checklist (console review, IdP mapping, evidence verify).
 
+**After sign-off:** proceed to [SYSTEM_REVIEW_CHECKPOINT.md](SYSTEM_REVIEW_CHECKPOINT.md) for holistic system review.
+
 ## Quick start (Docker pilot)
 
 ```bash
@@ -130,6 +132,7 @@ cargo run -p kavach-api -- \
 | [`scripts/pilot-phase2.sh`](../scripts/pilot-phase2.sh) | Phase 2 governance API + dual-control smoke |
 | [`scripts/pilot-phase3.sh`](../scripts/pilot-phase3.sh) | Phase 3 sync enforce evaluate + decision parity |
 | [`scripts/pilot-signoff.sh`](../scripts/pilot-signoff.sh) | Runs Phase 1–3 against live pilot API (sign-off gate) |
+| [`scripts/system-review.sh`](../scripts/system-review.sh) | Holistic automated gate before bank VPC deployment |
 | [`scripts/pilot-smoke.sh`](../scripts/pilot-smoke.sh) | CI/local batch smoke without Docker |
 | [INSTALL.md](INSTALL.md) | Full on-prem install reference |
 | [MILESTONE_B_EXIT.md](MILESTONE_B_EXIT.md) | Milestone B sign-off gate |

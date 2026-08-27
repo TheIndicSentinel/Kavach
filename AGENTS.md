@@ -41,10 +41,11 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Partner pilot Phase 1–3 validators (merged)
-- **Next:** Partner pilot engagement sign-off — `./scripts/pilot-signoff.sh` per [PILOT_SIGNOFF.md](docs/PILOT_SIGNOFF.md)
+- **Done:** Milestone A + B, pilot Phase 1–3 validators, fairness console viewer, pilot sign-off script
+- **You are here:** **System review checkpoint** — holistic review before bank VPC deployment ([SYSTEM_REVIEW_CHECKPOINT.md](docs/SYSTEM_REVIEW_CHECKPOINT.md))
+- **Next:** Partner pilot in bank VPC; production hardening (HMAC, mTLS, Helm)
 
-See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md), [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md), [docs/PARTNER_PILOT.md](docs/PARTNER_PILOT.md), and [docs/PILOT_SIGNOFF.md](docs/PILOT_SIGNOFF.md).
+See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md), [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md), [docs/PARTNER_PILOT.md](docs/PARTNER_PILOT.md), [docs/PILOT_SIGNOFF.md](docs/PILOT_SIGNOFF.md), and [docs/SYSTEM_REVIEW_CHECKPOINT.md](docs/SYSTEM_REVIEW_CHECKPOINT.md).
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 

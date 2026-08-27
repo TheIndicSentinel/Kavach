@@ -44,6 +44,8 @@ The sign-off script runs, in order:
 
 When `KAVACH_DATABASE_URL` is set, Phase 1 runs `kavach-batch` with `--evidence-store postgres` so batch jobs appear in `GET /v1/admin/batch-jobs`.
 
+After `./scripts/pilot-signoff.sh` passes, run the holistic gate: [SYSTEM_REVIEW_CHECKPOINT.md](SYSTEM_REVIEW_CHECKPOINT.md) (`./scripts/system-review.sh`).
+
 ## Sign-off checklist
 
 ### Automated (repo scripts)
