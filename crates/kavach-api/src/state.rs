@@ -121,10 +121,7 @@ impl AppState {
     }
 
     pub fn runtime(&self) -> RuntimeResponse {
-        self.runtime
-            .lock()
-            .expect("runtime lock poisoned")
-            .clone()
+        self.runtime.lock().expect("runtime lock poisoned").clone()
     }
 
     pub fn packs_dir(&self) -> &std::path::Path {
