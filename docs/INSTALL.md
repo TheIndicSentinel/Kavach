@@ -182,6 +182,8 @@ Reverse proxy / API gateway terminates TLS and forwards `X-Kavach-Principal` fro
 
 ## Partner integration checklist
 
+See [PARTNER_PILOT.md](PARTNER_PILOT.md) for the full pilot playbook. Quick path:
+
 1. Map LOS export fields to `EvaluateRequest` (see `partner/finance/credit_underwriting_v1_request.json`).
 2. Validate against `schemas/evaluate-request.schema.json`.
 3. Run batch shadow with `models/finance/credit-underwriting-v1.yaml` (`governance_mode: shadow`).
@@ -202,4 +204,5 @@ curl -s http://localhost:8080/health
 - [ADR-001 evaluate semantics](ADR-001-evaluate-semantics.md)
 - [ADR-002 deployment architecture](ADR-002-deployment-architecture.md)
 - [Milestone A exit gate](MILESTONE_A_EXIT.md)
+- [Partner pilot playbook](PARTNER_PILOT.md)
 - [Partner payload samples](../partner/README.md)
