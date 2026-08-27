@@ -2,9 +2,18 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use clap::Parser;
-use kavach_api::{router, AppState, EvaluateServiceServer, GrpcEvaluateService};
+use clap::{Parser, ValueEnum};
+use kavach_api::{
+    grpc_server_tls_config, router, serve_http, ApiConfig, AppState, EvaluateServiceServer,
+    EvidenceStoreKind, GrpcEvaluateService, TlsConfig,
+};
 use tonic::transport::Server;
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum EvidenceStoreArg {
+    Memory,
+    Postgres,
+}
 
 #[derive(Parser)]
 #[command(name = "kavach-api", about = "Kavach sync evaluate HTTP + gRPC API")]
@@ -24,37 +33,96 @@ struct Cli {
     /// When set, requires `X-Kavach-Signature: sha256=<hex>` over the raw HTTP request body.
     #[arg(long, env = "KAVACH_HMAC_SECRET")]
     hmac_secret: Option<String>,
+
+    #[arg(long, value_enum, default_value = "memory")]
+    evidence_store: EvidenceStoreArg,
+
+    #[arg(long, env = "KAVACH_DATABASE_URL")]
+    database_url: Option<String>,
+
+    #[arg(long, env = "KAVACH_TLS_CERT")]
+    tls_cert: Option<PathBuf>,
+
+    #[arg(long, env = "KAVACH_TLS_KEY")]
+    tls_key: Option<PathBuf>,
+
+    /// When set with cert/key, require client certificate (mTLS).
+    #[arg(long, env = "KAVACH_TLS_CLIENT_CA")]
+    tls_client_ca: Option<PathBuf>,
+}
+
+impl Cli {
+    fn into_config(self) -> Result<ApiConfig, String> {
+        let evidence_store = match self.evidence_store {
+            EvidenceStoreArg::Memory => EvidenceStoreKind::Memory,
+            EvidenceStoreArg::Postgres => {
+                let database_url = self.database_url.ok_or(
+                    "postgres evidence store requires --database-url or KAVACH_DATABASE_URL",
+                )?;
+                EvidenceStoreKind::Postgres { database_url }
+            }
+        };
+
+        let tls = match (self.tls_cert, self.tls_key) {
+            (Some(cert_path), Some(key_path)) => Some(TlsConfig::from_paths(
+                cert_path,
+                key_path,
+                self.tls_client_ca,
+            )),
+            (None, None) => None,
+            _ => {
+                return Err("TLS requires both --tls-cert and --tls-key".into());
+            }
+        };
+
+        Ok(ApiConfig {
+            pack_path: self.pack,
+            model_path: self.model,
+            hmac_secret: self.hmac_secret,
+            evidence_store,
+            tls,
+        })
+    }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
-    let state = Arc::new(AppState::from_paths(
-        &cli.pack,
-        &cli.model,
-        cli.hmac_secret,
-    )?);
-
+    let http_listen = cli.listen;
+    let grpc_listen = cli.grpc_listen;
+    let config = cli
+        .into_config()
+        .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
+    let state = Arc::new(AppState::from_config(&config).await?);
     let http_app = router(state.clone());
-    let http_listener = tokio::net::TcpListener::bind(cli.listen).await?;
     let grpc_service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
 
+    let tls_mode = if config.tls.as_ref().is_some_and(TlsConfig::is_mtls) {
+        "mTLS"
+    } else if config.tls.is_some() {
+        "TLS"
+    } else {
+        "plain"
+    };
+
     eprintln!(
-        "kavach-api listening http={} grpc={}",
-        cli.listen, cli.grpc_listen
+        "kavach-api listening http={} grpc={} transport={} evidence={:?}",
+        http_listen, grpc_listen, tls_mode, config.evidence_store
     );
 
+    let tls_ref = config.tls.as_ref();
     tokio::try_join!(
         async move {
-            axum::serve(http_listener, http_app).await?;
-            Ok::<(), Box<dyn std::error::Error>>(())
+            serve_http(http_app, http_listen, tls_ref).await?;
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         },
         async move {
-            Server::builder()
-                .add_service(grpc_service)
-                .serve(cli.grpc_listen)
-                .await?;
-            Ok::<(), Box<dyn std::error::Error>>(())
+            let mut builder = Server::builder();
+            if let Some(server_tls) = grpc_server_tls_config(tls_ref).await? {
+                builder = builder.tls_config(server_tls)?;
+            }
+            builder.add_service(grpc_service).serve(grpc_listen).await?;
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         }
     )?;
 

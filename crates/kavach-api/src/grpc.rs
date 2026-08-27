@@ -32,7 +32,7 @@ impl EvaluateService for GrpcEvaluateService {
             proto_to_domain(request.into_inner()).map_err(|e| status_from_api(&e))?;
         let response = self
             .state
-            .evaluate(&domain_request)
+            .evaluate("grpc", &domain_request)
             .map_err(|e| status_from_api(&e))?;
         Ok(Response::new(domain_to_proto(response)))
     }

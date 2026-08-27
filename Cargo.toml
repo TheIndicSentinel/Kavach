@@ -41,10 +41,15 @@ axum = { version = "0.8.8", features = ["json"] }
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "net"] }
 tower-http = { version = "0.6.11", features = ["trace"] }
 hmac = "0.12.1"
-tonic = { version = "0.12.3", features = ["transport"] }
+tonic = { version = "0.12.3", features = ["transport", "tls"] }
 prost = "0.13.5"
 prost-types = "0.13.5"
 tonic-build = "0.12.3"
+axum-server = { version = "0.7.3", features = ["tls-rustls"] }
+rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2.2.0"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "json", "chrono"] }
+prometheus = "0.14.0"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

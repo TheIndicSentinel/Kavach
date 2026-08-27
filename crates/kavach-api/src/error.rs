@@ -34,4 +34,9 @@ impl ApiError {
             Self::Evaluate(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
+
+    #[must_use]
+    pub fn is_client_error(&self) -> bool {
+        self.status_code().is_client_error()
+    }
 }

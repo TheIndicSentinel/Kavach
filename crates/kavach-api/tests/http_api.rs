@@ -20,7 +20,11 @@ fn fixture_paths() -> (PathBuf, PathBuf) {
 #[tokio::test]
 async fn health_returns_ok() {
     let (pack, model) = fixture_paths();
-    let state = Arc::new(AppState::from_paths(&pack, &model, None).expect("state"));
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
     let app = router(state);
 
     let response = app
@@ -39,7 +43,11 @@ async fn health_returns_ok() {
 #[tokio::test]
 async fn evaluate_golden_clean_request() {
     let (pack, model) = fixture_paths();
-    let state = Arc::new(AppState::from_paths(&pack, &model, None).expect("state"));
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
     let app = router(state);
 
     let body = include_str!("../../../golden/finance/v0/credit_clean.json");
@@ -72,10 +80,63 @@ async fn evaluate_golden_clean_request() {
 }
 
 #[tokio::test]
+async fn metrics_endpoint_exposes_prometheus_text() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state.clone());
+
+    let body = include_str!("../../../golden/finance/v0/credit_clean.json");
+    let request_json: serde_json::Value = serde_json::from_str(body).unwrap();
+    let mut request: EvaluateRequest =
+        serde_json::from_value(request_json["request"].clone()).unwrap();
+    let now = Utc::now();
+    request.decision_time = now;
+    request.consent.timestamp = now;
+    let payload = serde_json::to_vec(&request).unwrap();
+
+    let evaluate_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/evaluate")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evaluate_response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(bytes.to_vec()).unwrap();
+    assert!(text.contains("kavach_evaluate_requests_total"));
+    assert!(text.contains("kavach_evaluate_latency_ms"));
+}
+
+#[tokio::test]
 async fn hmac_required_when_secret_configured() {
     let (pack, model) = fixture_paths();
-    let state =
-        Arc::new(AppState::from_paths(&pack, &model, Some("test-secret".into())).expect("state"));
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, Some("test-secret".into()))
+            .await
+            .expect("state"),
+    );
     let app = router(state);
 
     let payload = br#"{"model_id":"x"}"#;

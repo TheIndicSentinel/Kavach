@@ -20,7 +20,11 @@ fn fixture_paths() -> (PathBuf, PathBuf) {
 
 async fn spawn_grpc_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let (pack, model) = fixture_paths();
-    let state = Arc::new(AppState::from_paths(&pack, &model, None).expect("state"));
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
     let service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

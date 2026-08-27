@@ -1,15 +1,18 @@
+use std::sync::Arc;
+
 use axum::{
     body::Bytes,
     extract::State,
+    http::header,
     http::HeaderMap,
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
+
 use hmac::{Hmac, Mac};
 use kavach_domain::EvaluateRequest;
 use sha2::Sha256;
-use std::sync::Arc;
 
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -19,12 +22,27 @@ type HmacSha256 = Hmac<Sha256>;
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(metrics))
         .route("/v1/evaluate", post(evaluate))
         .with_state(state)
 }
 
 async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok" }))
+}
+
+async fn metrics(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, ApiError> {
+    let body = state
+        .metrics()
+        .gather_text()
+        .map_err(|e| ApiError::Internal(format!("metrics gather: {e}")))?;
+    Ok((
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        body,
+    ))
 }
 
 async fn evaluate(
@@ -35,7 +53,7 @@ async fn evaluate(
     verify_hmac_if_configured(state.as_ref(), &headers, &body)?;
     let request: EvaluateRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::BadRequest(format!("invalid JSON body: {e}")))?;
-    let response = state.evaluate(&request)?;
+    let response = state.evaluate("http", &request)?;
     Ok(Json(response))
 }
 
