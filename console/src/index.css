@@ -1,0 +1,77 @@
+@import "@fontsource/plus-jakarta-sans/400.css";
+@import "@fontsource/plus-jakarta-sans/500.css";
+@import "@fontsource/plus-jakarta-sans/600.css";
+@import "@fontsource/plus-jakarta-sans/700.css";
+@import "@fontsource/noto-sans-devanagari/500.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "tailwindcss";
+
+@theme {
+  --font-sans:
+    "Plus Jakarta Sans", "Noto Sans Devanagari", ui-sans-serif, system-ui,
+    sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --color-kavach-950: #061528;
+  --color-kavach-900: #0b1f3a;
+  --color-kavach-800: #132d4f;
+  --color-kavach-700: #1a3d66;
+  --color-kavach-600: #234f82;
+  --color-kavach-500: #2f649e;
+
+  --color-saffron-600: #c76f08;
+  --color-saffron-500: #e8870d;
+  --color-saffron-400: #f5a623;
+  --color-saffron-100: #fef3c7;
+
+  --color-peacock-700: #0a5c5f;
+  --color-peacock-600: #0d7377;
+  --color-peacock-500: #10908f;
+
+  --color-surface: #fafaf9;
+  --color-surface-raised: #ffffff;
+  --color-border: #e7e5e4;
+  --color-muted: #78716c;
+  --color-ink: #1c1917;
+
+  --color-decision-pass: #15803d;
+  --color-decision-pass-bg: #dcfce7;
+  --color-decision-alert: #b45309;
+  --color-decision-alert-bg: #fef3c7;
+  --color-decision-block: #b91c1c;
+  --color-decision-block-bg: #fee2e2;
+  --color-decision-review: #1d4ed8;
+  --color-decision-review-bg: #dbeafe;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+
+  --shadow-card: 0 1px 3px rgb(6 21 40 / 0.06), 0 8px 24px rgb(6 21 40 / 0.04);
+  --shadow-sidebar: 4px 0 24px rgb(6 21 40 / 0.12);
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-surface text-ink font-sans;
+    margin: 0;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-saffron-500;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

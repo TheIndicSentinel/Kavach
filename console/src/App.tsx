@@ -1,5 +1,5 @@
 import { Navigate, Route, Routes } from "react-router-dom";
-import Layout from "./components/Layout";
+import { AppShell } from "./components/layout/AppShell";
 import EvaluatePage from "./pages/EvaluatePage";
 import OverviewPage from "./pages/OverviewPage";
 import SettingsPage from "./pages/SettingsPage";
@@ -7,7 +7,7 @@ import SettingsPage from "./pages/SettingsPage";
 export default function App() {
   return (
     <Routes>
-      <Route element={<Layout />}>
+      <Route element={<AppShell />}>
         <Route index element={<Navigate to="/overview" replace />} />
         <Route path="overview" element={<OverviewPage />} />
         <Route path="evaluate" element={<EvaluatePage />} />

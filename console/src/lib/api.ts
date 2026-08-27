@@ -17,10 +17,20 @@ function authHeaders(): HeadersInit {
   return principal ? { "X-Kavach-Principal": principal } : {};
 }
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
 export async function fetchHealth(): Promise<{ status: string }> {
   const response = await fetch("/health", { headers: authHeaders() });
   if (!response.ok) {
-    throw new Error(`health ${response.status}`);
+    throw new ApiError(`Health check failed (${response.status})`, response.status);
   }
   return response.json() as Promise<{ status: string }>;
 }
@@ -47,8 +57,10 @@ export async function evaluateRequest(
   const payload = await response.json();
   if (!response.ok) {
     const message =
-      typeof payload?.error === "string" ? payload.error : response.statusText;
-    throw new Error(message);
+      typeof payload?.error === "string"
+        ? payload.error
+        : `Evaluate failed (${response.status})`;
+    throw new ApiError(message, response.status);
   }
   return payload as EvaluateResponse;
 }

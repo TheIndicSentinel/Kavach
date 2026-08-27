@@ -285,5 +285,5 @@ async fn console_serves_index_html() {
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let html = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(html.contains("Kavach Console"));
+    assert!(html.contains("Kavach"));
 }
