@@ -18,10 +18,10 @@ chrono.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 sha2.workspace = true
-clap = { version = "4.5.47", features = ["derive"] }
+clap.workspace = true
 
 [dev-dependencies]
-kavach-policy = { path = "../kavach-policy" }
+kavach-policy = { workspace = true }
 walkdir.workspace = true
 
 [lints]
