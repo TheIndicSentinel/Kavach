@@ -33,5 +33,10 @@
     "uid": { "type": "Kavach::User", "id": "admin-1" },
     "attrs": {},
     "parents": [{ "type": "Kavach::Group", "id": "admins" }]
+  },
+  {
+    "uid": { "type": "Kavach::User", "id": "admin-2" },
+    "attrs": {},
+    "parents": [{ "type": "Kavach::Group", "id": "admins" }]
   }
 ]

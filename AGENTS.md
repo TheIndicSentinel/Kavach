@@ -41,9 +41,9 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Phase 0; Milestone A (exit); Milestone B (merged); partner pilot packaging (merged)
-- **In progress:** Partner pilot Phase 1 — run `./scripts/pilot-phase1.sh` per [PARTNER_PILOT.md](docs/PARTNER_PILOT.md)
-- **Next:** Phase 2 governance review with partner; optional fairness report console viewer
+- **Done:** Phase 0; Milestone A (exit); Milestone B (merged); partner pilot packaging; Phase 1 validator (merged PR #20)
+- **In progress:** Partner pilot Phase 2 — `./scripts/pilot-phase2.sh` per [PARTNER_PILOT.md](docs/PARTNER_PILOT.md)
+- **Next:** Phase 3 sync enforce pilot; optional fairness report console viewer
 
 See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md), [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md), and [docs/PARTNER_PILOT.md](docs/PARTNER_PILOT.md).
 
