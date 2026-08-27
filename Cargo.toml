@@ -48,7 +48,7 @@ tonic-build = "0.12.3"
 axum-server = { version = "0.7.3", features = ["tls-rustls"] }
 rustls = { version = "0.23.43", default-features = false, features = ["ring", "std", "tls12"] }
 rustls-pemfile = "2.2.0"
-sqlx = { version = "0.8.6", features = ["runtime-tokio", "postgres", "json", "chrono"] }
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio", "postgres", "json", "chrono"] }
 prometheus = "0.14.0"
 
 [workspace.lints.rust]

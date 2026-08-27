@@ -88,7 +88,7 @@ impl AppState {
         match &result {
             Ok(response) => {
                 self.metrics
-                    .observe_success(transport, response.returned_decision, latency_ms)
+                    .observe_success(transport, response.returned_decision, latency_ms);
             }
             Err(err) if err.is_client_error() => {
                 self.metrics.observe_client_error(transport);
