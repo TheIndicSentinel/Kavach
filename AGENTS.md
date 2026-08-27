@@ -37,7 +37,7 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 ## Phase
 
 - **Done:** Phase 0 on `main`; Milestone A.1 `kavach-policy`; A.2 `kavach-evidence`; A.3 `kavach-evaluate` merged
-- **In progress:** Milestone A.4 on `feat/kavach-api` — HTTP API + HMAC auth
+- **In progress:** Milestone A.4 on `feat/kavach-api` — HTTP + gRPC API, HMAC auth
 - **Next:** `kavach-batch`
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).

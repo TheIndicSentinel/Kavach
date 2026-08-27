@@ -41,6 +41,10 @@ axum = { version = "0.8.8", features = ["json"] }
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "net"] }
 tower-http = { version = "0.6.11", features = ["trace"] }
 hmac = "0.12.1"
+tonic = { version = "0.12.3", features = ["transport"] }
+prost = "0.13.5"
+prost-types = "0.13.5"
+tonic-build = "0.12.3"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
