@@ -3,6 +3,7 @@ import {
   Boxes,
   ClipboardList,
   FileSearch,
+  Layers,
   LayoutDashboard,
   ScrollText,
   Settings,
@@ -21,14 +22,26 @@ const primaryNav = [
 const governanceNav = [
   { to: "/policies", label: "Policies", icon: ScrollText },
   { to: "/models", label: "Models", icon: Boxes },
+  { to: "/batch", label: "Batch jobs", icon: Layers },
   { to: "/audit", label: "Audit", icon: ClipboardList },
   { to: "/incidents", label: "Incidents", icon: TriangleAlert },
   { to: "/retention", label: "Retention", icon: ShieldOff },
 ] as const;
 
-export function Sidebar() {
+type SidebarProps = {
+  open: boolean;
+  onNavigate: () => void;
+};
+
+export function Sidebar({ open, onNavigate }: SidebarProps) {
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col bg-kavach-950 text-stone-300 shadow-(--shadow-sidebar)">
+    <aside
+      className={cn(
+        "fixed inset-y-0 left-0 z-50 flex h-full w-72 max-w-[85vw] shrink-0 flex-col bg-kavach-950 text-stone-300 shadow-(--shadow-sidebar) transition-transform duration-200 ease-out lg:static lg:z-auto lg:w-64 lg:max-w-none lg:translate-x-0",
+        open ? "translate-x-0" : "-translate-x-full",
+      )}
+      aria-label="Sidebar"
+    >
       <div className="border-b border-white/10 px-5 py-5">
         <KavachLogo />
         <p className="mt-3 text-xs leading-relaxed text-stone-400">
@@ -36,11 +49,12 @@ export function Sidebar() {
         </p>
       </div>
 
-      <nav className="flex-1 space-y-1 px-3 py-4" aria-label="Main navigation">
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Main navigation">
         {primaryNav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
+            onClick={onNavigate}
             className={({ isActive }) =>
               cn(
                 "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
@@ -63,6 +77,7 @@ export function Sidebar() {
             <NavLink
               key={item.to}
               to={item.to}
+              onClick={onNavigate}
               className={({ isActive }) =>
                 cn(
                   "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",

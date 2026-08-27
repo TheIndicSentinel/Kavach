@@ -17,6 +17,7 @@ use sha2::Sha256;
 use kavach_auth::KavachAction;
 
 use crate::auth::authorize_headers;
+use crate::batch_jobs::{get_batch_job, list_batch_jobs};
 use crate::error::ApiError;
 use crate::governance::{
     get_model_record, get_policy_pack, list_model_records, list_policy_packs, runtime,
@@ -50,6 +51,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/admin/retention/apply", post(apply_retention))
         .route("/v1/admin/tombstones", get(list_tombstones))
         .route("/v1/admin/incidents", get(list_incidents))
+        .route("/v1/admin/batch-jobs", get(list_batch_jobs))
+        .route("/v1/admin/batch-jobs/{job_id}", get(get_batch_job))
         .route(
             "/v1/admin/evidence/{evidence_id}/erase",
             post(erase_evidence),

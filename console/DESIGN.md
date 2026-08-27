@@ -57,14 +57,27 @@ Fonts are self-hosted (no external CDN) for on-prem bank VPCs.
 ## Layout
 
 ```
+Mobile (< lg): off-canvas sidebar + hamburger in top bar
+Desktop (≥ lg): fixed 256px sidebar
+
 ┌──────────────┬────────────────────────────────────┐
 │   Sidebar    │  TopBar (env + principal)          │
 │   (navy)     ├────────────────────────────────────┤
 │              │  Page content (cards, forms)       │
 │   Governance │                                    │
-│   [Soon]     │                                    │
 └──────────────┴────────────────────────────────────┘
 ```
+
+### Responsive breakpoints
+
+| Breakpoint | Behavior |
+|---|---|
+| `< md` (default) | Data tables render as stacked cards; page padding `p-4` |
+| `md+` | Full data tables with horizontal scroll fallback |
+| `< lg` | Sidebar hidden; drawer opens from hamburger |
+| `lg+` | Persistent sidebar; top bar without menu button |
+
+Test at **375px**, **768px**, and **1280px** before shipping UI changes.
 
 ## B.4 guidance
 
@@ -73,6 +86,9 @@ Policy lifecycle UI is implemented (read-only v1):
 - `/policies` — pack inventory and rule detail
 - `/models` — model inventory and promotion metadata
 - `GET /v1/runtime`, `/v1/packs`, `/v1/models` — governance APIs
+
+- `/retention` — retention policy and tombstones
+- `/batch` — batch job inventory (Postgres lifecycle)
 
 When adding mutations (activate, rollback, promote):
 

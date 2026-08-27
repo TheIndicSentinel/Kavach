@@ -1,7 +1,9 @@
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use kavach_domain::GovernanceMode;
 use sqlx::PgPool;
 use uuid::Uuid;
+
+use crate::jobs_store::{BatchJobRecord, JobQueryError};
 
 #[derive(Debug, Clone)]
 pub struct BatchJobCreate {
@@ -82,6 +84,40 @@ pub struct PostgresBatchJobStore {
 impl PostgresBatchJobStore {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
+    }
+
+    pub async fn list(&self, limit: i64) -> Result<Vec<BatchJobRecord>, JobQueryError> {
+        let rows = sqlx::query_as::<_, BatchJobRow>(
+            "SELECT job_id, status, input_path, output_path, model_id, governance_mode, \
+            total_rows, processed_rows, succeeded_rows, failed_rows, skipped_rows, error_summary, \
+            created_at, started_at, completed_at \
+            FROM batch_jobs ORDER BY created_at DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|err| JobQueryError::Io(err.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .map(BatchJobRow::into_record)
+            .map(BatchJobRecord::redacted_paths)
+            .collect())
+    }
+
+    pub async fn get(&self, job_id: &str) -> Result<BatchJobRecord, JobQueryError> {
+        let row = sqlx::query_as::<_, BatchJobRow>(
+            "SELECT job_id, status, input_path, output_path, model_id, governance_mode, \
+            total_rows, processed_rows, succeeded_rows, failed_rows, skipped_rows, error_summary, \
+            created_at, started_at, completed_at \
+            FROM batch_jobs WHERE job_id = $1",
+        )
+        .bind(job_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|err| JobQueryError::Io(err.to_string()))?;
+        row.map(BatchJobRow::into_record)
+            .map(BatchJobRecord::redacted_paths)
+            .ok_or_else(|| JobQueryError::NotFound(job_id.to_string()))
     }
 }
 
@@ -243,5 +279,46 @@ fn governance_mode_str(mode: GovernanceMode) -> &'static str {
     match mode {
         GovernanceMode::Shadow => "shadow",
         GovernanceMode::Enforce => "enforce",
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct BatchJobRow {
+    job_id: String,
+    status: String,
+    input_path: String,
+    output_path: Option<String>,
+    model_id: String,
+    governance_mode: String,
+    total_rows: i64,
+    processed_rows: i64,
+    succeeded_rows: i64,
+    failed_rows: i64,
+    skipped_rows: i64,
+    error_summary: Option<String>,
+    created_at: DateTime<Utc>,
+    started_at: Option<DateTime<Utc>>,
+    completed_at: Option<DateTime<Utc>>,
+}
+
+impl BatchJobRow {
+    fn into_record(self) -> BatchJobRecord {
+        BatchJobRecord {
+            job_id: self.job_id,
+            status: self.status,
+            input_path: self.input_path,
+            output_path: self.output_path,
+            model_id: self.model_id,
+            governance_mode: self.governance_mode,
+            total_rows: self.total_rows,
+            processed_rows: self.processed_rows,
+            succeeded_rows: self.succeeded_rows,
+            failed_rows: self.failed_rows,
+            skipped_rows: self.skipped_rows,
+            error_summary: self.error_summary,
+            created_at: self.created_at,
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+        }
     }
 }

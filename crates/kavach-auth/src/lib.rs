@@ -27,6 +27,7 @@ pub enum KavachAction {
     EraseEvidence,
     ApplyRetention,
     ReadIncidents,
+    ReadBatchJobs,
 }
 
 impl KavachAction {
@@ -46,6 +47,7 @@ impl KavachAction {
             Self::EraseEvidence => "erase_evidence",
             Self::ApplyRetention => "apply_retention",
             Self::ReadIncidents => "read_incidents",
+            Self::ReadBatchJobs => "read_batch_jobs",
         }
     }
 }

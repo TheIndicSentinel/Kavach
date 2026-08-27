@@ -1,6 +1,7 @@
 //! Sync evaluate API — HTTP and gRPC (mTLS, Postgres evidence, metrics).
 
 pub mod auth;
+pub mod batch_jobs;
 pub mod config;
 pub mod console;
 pub mod convert;

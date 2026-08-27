@@ -393,6 +393,67 @@ async fn dual_control_rejects_matching_actor_and_approver() {
 }
 
 #[tokio::test]
+async fn admin_batch_jobs_list_and_get() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    state
+        .batch_jobs()
+        .seed_test_job(kavach_storage::BatchJobRecord {
+            job_id: "job-test-1".into(),
+            status: "completed".into(),
+            input_path: "/data/partner/credit_batch.ndjson".into(),
+            output_path: Some("/data/out/results.ndjson".into()),
+            model_id: "credit-underwriting-v1".into(),
+            governance_mode: "shadow".into(),
+            total_rows: 10,
+            processed_rows: 10,
+            succeeded_rows: 9,
+            failed_rows: 1,
+            skipped_rows: 0,
+            error_summary: None,
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+        });
+    let app = router(state);
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/admin/batch-jobs?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let listed: serde_json::Value =
+        serde_json::from_slice(&list.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(listed.as_array().is_some_and(|rows| !rows.is_empty()));
+    assert_eq!(listed[0]["input_path"], "credit_batch.ndjson");
+
+    let detail = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/admin/batch-jobs/job-test-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), StatusCode::OK);
+    let job: serde_json::Value =
+        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(job["job_id"], "job-test-1");
+    assert_eq!(job["succeeded_rows"], 9);
+}
+
+#[tokio::test]
 async fn admin_incidents_list_returns_entries() {
     let (pack, model) = fixture_paths();
     let state = Arc::new(

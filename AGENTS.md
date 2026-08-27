@@ -41,10 +41,10 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Phase 0; Milestone A (incl. exit); B.1–B.7; B.8 incident records + supplier AI controls
-- **Next:** Milestone B exit review, batch job console UI
+- **Done:** Phase 0; Milestone A (incl. exit); B.1–B.9 (incl. batch console + responsive UI)
+- **Next:** Milestone B exit CI sign-off, partner pilot packaging
 
-See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md).
+See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md) and [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md).
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 

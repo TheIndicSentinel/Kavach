@@ -214,6 +214,32 @@ export function fetchIncidents(limit = 50): Promise<IncidentRecord[]> {
   return governanceFetch(`/v1/admin/incidents?limit=${limit}`);
 }
 
+export type BatchJob = {
+  job_id: string;
+  status: string;
+  input_path: string;
+  output_path?: string | null;
+  model_id: string;
+  governance_mode: string;
+  total_rows: number;
+  processed_rows: number;
+  succeeded_rows: number;
+  failed_rows: number;
+  skipped_rows: number;
+  error_summary?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+};
+
+export function fetchBatchJobs(limit = 50): Promise<BatchJob[]> {
+  return governanceFetch(`/v1/admin/batch-jobs?limit=${limit}`);
+}
+
+export function fetchBatchJob(jobId: string): Promise<BatchJob> {
+  return governanceFetch(`/v1/admin/batch-jobs/${encodeURIComponent(jobId)}`);
+}
+
 export function activatePack(
   packId: string,
   actor: string,

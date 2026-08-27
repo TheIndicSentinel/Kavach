@@ -72,4 +72,9 @@ namespace Kavach {
     principal: [User],
     resource: [System],
   };
+
+  action read_batch_jobs appliesTo {
+    principal: [User],
+    resource: [System],
+  };
 }

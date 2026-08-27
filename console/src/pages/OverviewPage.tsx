@@ -32,6 +32,7 @@ const capabilities = [
     icon: Activity,
     title: "Batch ingest",
     description: "NDJSON worker for partner LOS exports (primary install path).",
+    href: "/batch",
   },
 ] as const;
 
@@ -142,7 +143,15 @@ export default function OverviewPage() {
                 <item.icon className="h-5 w-5" aria-hidden />
               </div>
               <div>
-                <CardTitle className="text-sm">{item.title}</CardTitle>
+                <CardTitle className="text-sm">
+                  {"href" in item ? (
+                    <Link to={item.href} className="hover:text-saffron-600">
+                      {item.title}
+                    </Link>
+                  ) : (
+                    item.title
+                  )}
+                </CardTitle>
                 <CardDescription className="mt-1">{item.description}</CardDescription>
               </div>
             </Card>

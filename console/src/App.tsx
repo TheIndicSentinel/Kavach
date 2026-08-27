@@ -1,6 +1,8 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
 import AuditPage from "./pages/AuditPage";
+import BatchJobDetailPage from "./pages/BatchJobDetailPage";
+import BatchJobsPage from "./pages/BatchJobsPage";
 import EvaluatePage from "./pages/EvaluatePage";
 import IncidentsPage from "./pages/IncidentsPage";
 import ModelDetailPage from "./pages/ModelDetailPage";
@@ -22,6 +24,8 @@ export default function App() {
         <Route path="policies/:packId" element={<PolicyDetailPage />} />
         <Route path="models" element={<ModelsPage />} />
         <Route path="models/:modelId" element={<ModelDetailPage />} />
+        <Route path="batch" element={<BatchJobsPage />} />
+        <Route path="batch/:jobId" element={<BatchJobDetailPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="incidents" element={<IncidentsPage />} />
         <Route path="retention" element={<RetentionPage />} />
