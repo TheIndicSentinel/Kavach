@@ -41,8 +41,8 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Phase 0; Milestone A (incl. exit); B.1–B.6; B.7 retention/erasure workflows
-- **Next:** Incident records, supplier AI controls hardening
+- **Done:** Phase 0; Milestone A (incl. exit); B.1–B.7; B.8 incident records + supplier AI controls
+- **Next:** Milestone B exit review, batch job console UI
 
 See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md).
 

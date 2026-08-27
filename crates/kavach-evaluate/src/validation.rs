@@ -24,6 +24,20 @@ pub fn validate_input(validator: &Validator, input: &Value) -> Result<(), Evalua
     }
 }
 
+pub fn validate_supplier_controls(model: &ModelRecord) -> Result<(), EvaluateError> {
+    use kavach_domain::{GovernanceMode, ModelOrigin, ModelStatus};
+
+    if model.origin == ModelOrigin::Vendor
+        && model.governance_mode == GovernanceMode::Enforce
+        && model.status != ModelStatus::Production
+    {
+        return Err(EvaluateError::validation(
+            "vendor model cannot run in enforce mode until promoted to production",
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_model_binding(
     model: &ModelRecord,
     request: &EvaluateRequest,

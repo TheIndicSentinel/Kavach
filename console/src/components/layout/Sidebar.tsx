@@ -7,6 +7,7 @@ import {
   ScrollText,
   Settings,
   ShieldOff,
+  TriangleAlert,
 } from "lucide-react";
 import { KavachLogo } from "../brand/KavachLogo";
 import { cn } from "../../lib/cn";
@@ -21,6 +22,7 @@ const governanceNav = [
   { to: "/policies", label: "Policies", icon: ScrollText },
   { to: "/models", label: "Models", icon: Boxes },
   { to: "/audit", label: "Audit", icon: ClipboardList },
+  { to: "/incidents", label: "Incidents", icon: TriangleAlert },
   { to: "/retention", label: "Retention", icon: ShieldOff },
 ] as const;
 

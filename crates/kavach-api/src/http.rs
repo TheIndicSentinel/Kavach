@@ -21,6 +21,7 @@ use crate::error::ApiError;
 use crate::governance::{
     get_model_record, get_policy_pack, list_model_records, list_policy_packs, runtime,
 };
+use crate::incidents::list_incidents;
 use crate::lifecycle::{activate_pack, list_audit_log, rollback_pack, update_model_record};
 use crate::retention::{
     apply_retention, erase_evidence, get_retention_settings, list_tombstones,
@@ -48,6 +49,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/admin/retention", patch(update_retention_settings))
         .route("/v1/admin/retention/apply", post(apply_retention))
         .route("/v1/admin/tombstones", get(list_tombstones))
+        .route("/v1/admin/incidents", get(list_incidents))
         .route(
             "/v1/admin/evidence/{evidence_id}/erase",
             post(erase_evidence),

@@ -1,0 +1,20 @@
+model_id: credit-vendor-bureau-v1
+version: "1.0.0"
+sector: finance
+owner: vendor-risk@example.nbfc
+risk_tier: high
+origin: vendor
+governance_mode: enforce
+input_schema:
+  type: object
+  required: [debt_ratio]
+  properties:
+    credit_score: { type: number }
+    income: { type: number }
+    debt_ratio: { type: number, minimum: 0, maximum: 1 }
+    loan_amount: { type: number }
+human_review_hold_policy: >
+  Vendor bureau model requires NBFC production sign-off before enforce-mode disbursement.
+status: draft
+pack_id: finance-v0
+purpose: credit_decision

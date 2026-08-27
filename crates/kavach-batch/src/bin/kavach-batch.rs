@@ -133,7 +133,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         &config,
                         &context,
                         EvidenceBackend::Postgres(pool.evidence_store()),
-                        IncidentBackend::Postgres(pool.incident_recorder()),
+                        IncidentBackend::Postgres(pool.incident_store()),
                         &mut job_store,
                     )?
                 }

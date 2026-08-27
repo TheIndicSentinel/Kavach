@@ -125,6 +125,7 @@ export type ModelSummary = {
   status: string;
   risk_tier: string;
   governance_mode: string;
+  origin: string;
   pack_id: string;
   owner: string;
   source_path: string;
@@ -199,6 +200,18 @@ function dualControlHeaders(actor: string, approver: string): HeadersInit {
 
 export function fetchAuditLog(limit = 50): Promise<AuditEntry[]> {
   return governanceFetch(`/v1/admin/audit?limit=${limit}`);
+}
+
+export type IncidentRecord = {
+  id: number;
+  correlation_id: string;
+  model_id: string;
+  reason: string;
+  recorded_at: string;
+};
+
+export function fetchIncidents(limit = 50): Promise<IncidentRecord[]> {
+  return governanceFetch(`/v1/admin/incidents?limit=${limit}`);
 }
 
 export function activatePack(
