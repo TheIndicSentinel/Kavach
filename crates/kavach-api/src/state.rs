@@ -10,13 +10,18 @@ use kavach_storage::{EvidenceBackend, IncidentBackend, StoragePool};
 
 use crate::config::{AccessControlKind, ApiConfig, EvidenceStoreKind};
 use crate::error::ApiError;
+use crate::governance::RuntimeResponse;
 use crate::metrics::Metrics;
+use crate::registry::registry_roots;
 
 pub struct AppState {
     service: Mutex<EvaluateService<EvidenceBackend, IncidentBackend>>,
     hmac_secret: Option<String>,
     access_control: Option<KavachAuthorizer>,
     metrics: Metrics,
+    runtime: RuntimeResponse,
+    packs_dir: std::path::PathBuf,
+    models_dir: std::path::PathBuf,
 }
 
 impl AppState {
@@ -41,6 +46,18 @@ impl AppState {
             }
         };
 
+        let (packs_dir, models_dir) = registry_roots(config.pack_path(), config.model_path());
+        let runtime = RuntimeResponse {
+            pack_id: pack.pack.id.clone(),
+            pack_version: pack.pack.version.clone(),
+            model_id: model.model_id.clone(),
+            model_version: model.version.clone(),
+            sector: model.sector.clone(),
+            governance_mode: model.governance_mode,
+            pack_path: config.pack_path().display().to_string(),
+            model_path: config.model_path().display().to_string(),
+        };
+
         let service =
             EvaluateService::new(pack, model, evidence, incidents, EvaluateConfig::default())
                 .map_err(|e| ApiError::Internal(format!("evaluate service: {e}")))?;
@@ -61,6 +78,9 @@ impl AppState {
             hmac_secret: config.hmac_secret.clone(),
             access_control,
             metrics: Metrics::new().map_err(|e| ApiError::Internal(format!("metrics: {e}")))?,
+            runtime,
+            packs_dir,
+            models_dir,
         })
     }
 
@@ -90,6 +110,18 @@ impl AppState {
 
     pub fn metrics(&self) -> &Metrics {
         &self.metrics
+    }
+
+    pub fn runtime(&self) -> &RuntimeResponse {
+        &self.runtime
+    }
+
+    pub fn packs_dir(&self) -> &std::path::Path {
+        &self.packs_dir
+    }
+
+    pub fn models_dir(&self) -> &std::path::Path {
+        &self.models_dir
     }
 
     pub fn evaluate(

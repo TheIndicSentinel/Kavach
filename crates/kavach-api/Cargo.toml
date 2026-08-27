@@ -39,6 +39,7 @@ prost-types.workspace = true
 prometheus.workspace = true
 include_dir = "0.7.4"
 uuid.workspace = true
+walkdir.workspace = true
 
 [build-dependencies]
 tonic-build.workspace = true

@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import {
+  Boxes,
   FileSearch,
   LayoutDashboard,
   ScrollText,
@@ -8,30 +9,15 @@ import {
 import { KavachLogo } from "../brand/KavachLogo";
 import { cn } from "../../lib/cn";
 
-const navItems = [
-  {
-    to: "/overview",
-    label: "Overview",
-    icon: LayoutDashboard,
-  },
-  {
-    to: "/evaluate",
-    label: "Evaluate",
-    icon: FileSearch,
-  },
-  {
-    to: "/settings",
-    label: "Settings",
-    icon: Settings,
-  },
+const primaryNav = [
+  { to: "/overview", label: "Overview", icon: LayoutDashboard },
+  { to: "/evaluate", label: "Evaluate", icon: FileSearch },
+  { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
-const upcomingItems = [
-  {
-    label: "Policies",
-    icon: ScrollText,
-    hint: "B.4",
-  },
+const governanceNav = [
+  { to: "/policies", label: "Policies", icon: ScrollText },
+  { to: "/models", label: "Models", icon: Boxes },
 ] as const;
 
 export function Sidebar() {
@@ -45,7 +31,7 @@ export function Sidebar() {
       </div>
 
       <nav className="flex-1 space-y-1 px-3 py-4" aria-label="Main navigation">
-        {navItems.map((item) => (
+        {primaryNav.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -67,18 +53,22 @@ export function Sidebar() {
           <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-500">
             Governance
           </p>
-          {upcomingItems.map((item) => (
-            <div
-              key={item.label}
-              className="flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-stone-500"
-              title={`${item.label} — Milestone ${item.hint}`}
+          {governanceNav.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-white/10 text-white"
+                    : "text-stone-300 hover:bg-white/5 hover:text-white",
+                )
+              }
             >
-              <item.icon className="h-4 w-4 shrink-0 opacity-50" aria-hidden />
-              <span>{item.label}</span>
-              <span className="ml-auto rounded bg-white/5 px-1.5 py-0.5 text-[0.65rem] font-medium uppercase tracking-wide">
-                Soon
-              </span>
-            </div>
+              <item.icon className="h-4 w-4 shrink-0 opacity-80" aria-hidden />
+              {item.label}
+            </NavLink>
           ))}
         </div>
       </nav>

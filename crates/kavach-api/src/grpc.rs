@@ -60,6 +60,7 @@ pub fn status_from_api(err: &ApiError) -> Status {
         ApiError::Evaluate(kavach_evaluate::EvaluateError::Policy(
             kavach_policy::PolicyError::Timeout { .. },
         )) => tonic::Code::Unavailable,
+        ApiError::NotFound(_) => tonic::Code::NotFound,
         ApiError::Evaluate(_) | ApiError::Internal(_) => tonic::Code::Internal,
     };
     Status::new(code, err.to_string())

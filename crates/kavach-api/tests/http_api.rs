@@ -266,6 +266,105 @@ async fn cedar_viewer_cannot_evaluate() {
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
 }
 
+#[tokio::test]
+async fn governance_runtime_lists_active_pack_and_model() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runtime")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(parsed["pack_id"], "finance-v0");
+    assert_eq!(parsed["model_id"], "credit-underwriting-v1");
+}
+
+#[tokio::test]
+async fn governance_lists_packs_and_models() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state.clone());
+
+    let packs = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/packs")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(packs.status(), StatusCode::OK);
+    let packs_json: serde_json::Value =
+        serde_json::from_slice(&packs.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(packs_json.as_array().is_some_and(|items| !items.is_empty()));
+    assert_eq!(packs_json[0]["active"], true);
+
+    let models = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(models.status(), StatusCode::OK);
+    let models_json: serde_json::Value =
+        serde_json::from_slice(&models.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(models_json
+        .as_array()
+        .is_some_and(|items| !items.is_empty()));
+    assert_eq!(models_json[0]["active"], true);
+}
+
+#[tokio::test]
+async fn governance_pack_detail_returns_rules() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/packs/finance-v0")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(parsed["rules"]
+        .as_array()
+        .is_some_and(|rules| !rules.is_empty()));
+}
+
 #[cfg(console_embedded)]
 #[tokio::test]
 async fn console_serves_index_html() {
