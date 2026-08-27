@@ -15,6 +15,8 @@ You have:
 
 **Stop and review the system at this checkpoint.** Do not proceed to bank VPC deployment until automated gates pass and the manual console walkthrough is complete.
 
+**Step-by-step startup commands:** [LOCAL_REVIEW_STEPS.md](LOCAL_REVIEW_STEPS.md) · `./scripts/start-local-review.sh`
+
 ## One-command automated gate
 
 ```bash
