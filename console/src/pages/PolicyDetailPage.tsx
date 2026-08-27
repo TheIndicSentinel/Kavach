@@ -8,13 +8,15 @@ import { DataTable } from "../components/ui/DataTable";
 import { DecisionBadge } from "../components/ui/DecisionBadge";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Skeleton } from "../components/ui/Skeleton";
-import { ApiError, fetchPack, type PolicyPack } from "../lib/api";
+import { ApiError, activatePack, fetchPack, getApprover, getPrincipal, type PolicyPack } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 
 export default function PolicyDetailPage() {
   const { packId } = useParams<{ packId: string }>();
   const [pack, setPack] = useState<PolicyPack | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [activating, setActivating] = useState(false);
 
   useEffect(() => {
     if (!packId) return;
@@ -38,6 +40,26 @@ export default function PolicyDetailPage() {
       cancelled = true;
     };
   }, [packId]);
+
+  async function onActivate() {
+    if (!packId) return;
+    const actor = getPrincipal();
+    const approver = getApprover();
+    if (!actor || !approver) {
+      setActionMessage("Set actor and approver principals in Settings.");
+      return;
+    }
+    setActivating(true);
+    setActionMessage(null);
+    try {
+      await activatePack(packId, actor, approver);
+      setActionMessage("Pack activated. Runtime updated.");
+    } catch (err) {
+      setActionMessage(err instanceof Error ? err.message : "Activate failed");
+    } finally {
+      setActivating(false);
+    }
+  }
 
   return (
     <section>
@@ -128,13 +150,19 @@ export default function PolicyDetailPage() {
             <CardHeader>
               <CardTitle>Lifecycle actions</CardTitle>
               <CardDescription>
-                Pack activate and rollback require dual-control audit logging (planned).
-                Contact ops to roll out pack changes via Git and service restart in v1.
+                Dual control: distinct actor and approver admins required. Recorded in admin audit log.
               </CardDescription>
             </CardHeader>
-            <Button variant="secondary" disabled title="Ships with admin audit in next release">
-              Activate pack
+            <Button
+              variant="secondary"
+              disabled={activating}
+              onClick={onActivate}
+            >
+              {activating ? "Activating…" : "Activate pack"}
             </Button>
+            {actionMessage && (
+              <p className="mt-3 text-sm text-muted">{actionMessage}</p>
+            )}
           </Card>
         </div>
       )}

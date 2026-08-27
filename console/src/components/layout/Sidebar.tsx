@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import {
   Boxes,
+  ClipboardList,
   FileSearch,
   LayoutDashboard,
   ScrollText,
@@ -18,6 +19,7 @@ const primaryNav = [
 const governanceNav = [
   { to: "/policies", label: "Policies", icon: ScrollText },
   { to: "/models", label: "Models", icon: Boxes },
+  { to: "/audit", label: "Audit", icon: ClipboardList },
 ] as const;
 
 export function Sidebar() {

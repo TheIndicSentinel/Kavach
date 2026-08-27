@@ -365,6 +365,58 @@ async fn governance_pack_detail_returns_rules() {
         .is_some_and(|rules| !rules.is_empty()));
 }
 
+#[tokio::test]
+async fn dual_control_rejects_matching_actor_and_approver() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/packs/finance-v0/activate")
+                .header("x-kavach-principal", "admin-1")
+                .header("x-kavach-approver", "admin-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn admin_audit_list_returns_entries() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/admin/audit?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(parsed.is_array());
+}
+
 #[cfg(console_embedded)]
 #[tokio::test]
 async fn console_serves_index_html() {

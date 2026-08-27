@@ -41,13 +41,8 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-<<<<<<< HEAD
-- **Done:** Phase 0; Milestone A (incl. exit: partner payloads + [INSTALL.md](docs/INSTALL.md)); B.1 Cedar RBAC; B.2 React console; B.3 gRPC Cedar
-- **Next:** B.4 policy lifecycle UI — extend `console/` per `console/DESIGN.md`
-=======
-- **Done:** Phase 0; Milestone A; B.1 Cedar RBAC; B.2 React console; B.3 gRPC Cedar; B.4 policy lifecycle UI (read-only)
-- **Next:** Admin audit log, pack activate/rollback mutations
->>>>>>> 66a487c (feat(console): policy lifecycle UI and governance read APIs (B.4))
+- **Done:** Phase 0; Milestone A (incl. exit); B.1–B.3; B.4 policy lifecycle UI; B.5 admin audit + lifecycle mutations
+- **Next:** Fairness batch reports, retention/erasure workflows
 
 See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md).
 

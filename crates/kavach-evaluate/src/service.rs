@@ -81,6 +81,17 @@ where
         &self.model
     }
 
+    pub fn reload_pack_and_model(
+        &mut self,
+        pack: LoadedPolicyPack,
+        model: ModelRecord,
+    ) -> Result<(), EvaluateError> {
+        self.input_validator = compile_input_validator(&model.input_schema)?;
+        self.pack = pack;
+        self.model = model;
+        Ok(())
+    }
+
     pub fn evaluate(
         &mut self,
         path: EvaluatePath,
