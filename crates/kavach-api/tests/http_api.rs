@@ -335,6 +335,7 @@ async fn governance_lists_packs_and_models() {
         .as_array()
         .is_some_and(|items| !items.is_empty()));
     assert_eq!(models_json[0]["active"], true);
+    assert!(models_json[0]["origin"].is_string());
 }
 
 #[tokio::test]
@@ -389,6 +390,136 @@ async fn dual_control_rejects_matching_actor_and_approver() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn admin_batch_jobs_list_and_get() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    state
+        .batch_jobs()
+        .seed_test_job(kavach_storage::BatchJobRecord {
+            job_id: "job-test-1".into(),
+            status: "completed".into(),
+            input_path: "/data/partner/credit_batch.ndjson".into(),
+            output_path: Some("/data/out/results.ndjson".into()),
+            model_id: "credit-underwriting-v1".into(),
+            governance_mode: "shadow".into(),
+            total_rows: 10,
+            processed_rows: 10,
+            succeeded_rows: 9,
+            failed_rows: 1,
+            skipped_rows: 0,
+            error_summary: None,
+            created_at: Utc::now(),
+            started_at: Some(Utc::now()),
+            completed_at: Some(Utc::now()),
+        });
+    let app = router(state);
+
+    let list = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/v1/admin/batch-jobs?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list.status(), StatusCode::OK);
+    let listed: serde_json::Value =
+        serde_json::from_slice(&list.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(listed.as_array().is_some_and(|rows| !rows.is_empty()));
+    assert_eq!(listed[0]["input_path"], "credit_batch.ndjson");
+
+    let detail = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/admin/batch-jobs/job-test-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail.status(), StatusCode::OK);
+    let job: serde_json::Value =
+        serde_json::from_slice(&detail.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(job["job_id"], "job-test-1");
+    assert_eq!(job["succeeded_rows"], 9);
+}
+
+#[tokio::test]
+async fn admin_incidents_list_returns_entries() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/admin/incidents?limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(parsed.is_array());
+}
+
+#[tokio::test]
+async fn vendor_enforce_draft_rejected_on_evaluate() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let pack = root.join("packs/finance/v0.yaml");
+    let model = root.join("models/finance/credit-vendor-bureau-v1.yaml");
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state);
+
+    let body = include_str!("../../../golden/finance/v0/credit_clean.json");
+    let request_json: serde_json::Value = serde_json::from_str(body).unwrap();
+    let mut request: EvaluateRequest =
+        serde_json::from_value(request_json["request"].clone()).unwrap();
+    request.model_id = "credit-vendor-bureau-v1".into();
+    request.model_version = "1.0.0".into();
+    let now = Utc::now();
+    request.decision_time = now;
+    request.consent.timestamp = now;
+    let payload = serde_json::to_vec(&request).unwrap();
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/evaluate")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(parsed["error"]
+        .as_str()
+        .is_some_and(|msg| msg.contains("vendor model cannot run in enforce mode")));
 }
 
 #[tokio::test]

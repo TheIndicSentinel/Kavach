@@ -115,6 +115,9 @@ Paths default via env vars; CLI flags override.
 | `/v1/admin/retention/apply` | POST | `apply_retention` | Apply retention tombstones |
 | `/v1/admin/evidence/{id}/erase` | POST | `erase_evidence` | DPDP erasure tombstone |
 | `/v1/admin/tombstones` | GET | `read_tombstones` | Tombstone list |
+| `/v1/admin/incidents` | GET | `read_incidents` | Evaluate incident log |
+| `/v1/admin/batch-jobs` | GET | `read_batch_jobs` | Batch job inventory |
+| `/v1/admin/batch-jobs/{job_id}` | GET | `read_batch_jobs` | Batch job detail |
 | `/` | GET | — | Governance console (when built) |
 
 Lifecycle mutations require `X-Kavach-Principal` (actor) and `X-Kavach-Approver` (distinct admin).

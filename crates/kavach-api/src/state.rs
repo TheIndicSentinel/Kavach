@@ -8,9 +8,9 @@ use kavach_evaluate::{EvaluateConfig, EvaluatePath, EvaluateService};
 use kavach_evidence::MemoryChain;
 use kavach_policy::PackLoader;
 use kavach_storage::{
-    AdminBackend, AuditInsert, EvidenceBackend, IncidentBackend, RetentionApplyReport,
-    RetentionBackend, RetentionSettings, RetentionStoreError, RuntimePointers, StoragePool,
-    TombstoneReason, TombstoneRecord,
+    AdminBackend, AuditInsert, BatchJobBackend, EvidenceBackend, IncidentBackend,
+    RetentionApplyReport, RetentionBackend, RetentionSettings, RetentionStoreError,
+    RuntimePointers, StoragePool, TombstoneReason, TombstoneRecord,
 };
 
 use crate::auth::DualControlPrincipals;
@@ -30,6 +30,8 @@ pub struct AppState {
     models_dir: PathBuf,
     admin: AdminBackend,
     retention: RetentionBackend,
+    incidents: IncidentBackend,
+    batch_jobs: BatchJobBackend,
 }
 
 impl AppState {
@@ -38,10 +40,11 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
         let model = load_model_record(config.model_path())?;
 
-        let (evidence, incidents, admin, retention) = match &config.evidence_store {
+        let (evidence, incidents, batch_jobs, admin, retention) = match &config.evidence_store {
             EvidenceStoreKind::Memory => (
                 EvidenceBackend::Memory(MemoryChain::new()),
-                IncidentBackend::Memory(kavach_evaluate::VecIncidentRecorder::default()),
+                IncidentBackend::memory(),
+                BatchJobBackend::memory(),
                 AdminBackend::memory(),
                 RetentionBackend::memory(),
             ),
@@ -51,7 +54,8 @@ impl AppState {
                     .map_err(|e| ApiError::Internal(format!("postgres storage: {e}")))?;
                 (
                     EvidenceBackend::Postgres(pool.evidence_store()),
-                    IncidentBackend::Postgres(pool.incident_recorder()),
+                    IncidentBackend::Postgres(pool.incident_store()),
+                    BatchJobBackend::Postgres(pool.batch_job_store()),
                     AdminBackend::Postgres(pool.admin_store()),
                     RetentionBackend::Postgres(pool.retention_store()),
                 )
@@ -70,9 +74,14 @@ impl AppState {
             model_path: config.model_path().display().to_string(),
         };
 
-        let service =
-            EvaluateService::new(pack, model, evidence, incidents, EvaluateConfig::default())
-                .map_err(|e| ApiError::Internal(format!("evaluate service: {e}")))?;
+        let service = EvaluateService::new(
+            pack,
+            model,
+            evidence,
+            incidents.clone(),
+            EvaluateConfig::default(),
+        )
+        .map_err(|e| ApiError::Internal(format!("evaluate service: {e}")))?;
 
         let access_control = match &config.access_control {
             AccessControlKind::None => None,
@@ -95,6 +104,8 @@ impl AppState {
             models_dir,
             admin,
             retention,
+            incidents,
+            batch_jobs,
         })
     }
 
@@ -144,6 +155,14 @@ impl AppState {
 
     pub fn retention(&self) -> &RetentionBackend {
         &self.retention
+    }
+
+    pub fn incidents(&self) -> &IncidentBackend {
+        &self.incidents
+    }
+
+    pub fn batch_jobs(&self) -> &BatchJobBackend {
+        &self.batch_jobs
     }
 
     pub async fn update_retention_settings(

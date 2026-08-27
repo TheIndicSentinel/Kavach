@@ -5,8 +5,11 @@ use kavach_evaluate::EvidenceStore;
 use kavach_evidence::MemoryChain;
 
 use crate::admin::{AdminStoreError, AuditEntry, AuditInsert, MemoryAdminStore, RuntimePointers};
+use crate::incidents_store::{IncidentRecord, IncidentStoreError, MemoryIncidentStore};
+use crate::jobs_store::{BatchJobRecord, JobQueryError, MemoryBatchJobStore};
 use crate::postgres::{
-    PostgresAdminStore, PostgresEvidenceStore, PostgresIncidentRecorder, PostgresRetentionStore,
+    PostgresAdminStore, PostgresBatchJobStore, PostgresEvidenceStore, PostgresIncidentStore,
+    PostgresRetentionStore,
 };
 use crate::retention::{
     MemoryRetentionStore, RetentionApplyReport, RetentionSettings, RetentionStoreError,
@@ -41,15 +44,70 @@ impl EvidenceStore for EvidenceBackend {
 }
 
 pub enum IncidentBackend {
-    Memory(kavach_evaluate::VecIncidentRecorder),
-    Postgres(PostgresIncidentRecorder),
+    Memory(Arc<MemoryIncidentStore>),
+    Postgres(PostgresIncidentStore),
+}
+
+impl IncidentBackend {
+    pub fn memory() -> Self {
+        Self::Memory(Arc::new(MemoryIncidentStore::default()))
+    }
+
+    pub async fn list(&self, limit: u32) -> Result<Vec<IncidentRecord>, IncidentStoreError> {
+        match self {
+            Self::Memory(store) => store.list(limit),
+            Self::Postgres(store) => store.list(i64::from(limit)).await,
+        }
+    }
+}
+
+impl Clone for IncidentBackend {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Memory(store) => Self::Memory(Arc::clone(store)),
+            Self::Postgres(store) => Self::Postgres(store.clone()),
+        }
+    }
 }
 
 impl kavach_evaluate::IncidentRecorder for IncidentBackend {
     fn record(&mut self, incident: kavach_evaluate::EvaluateIncident) {
         match self {
-            Self::Memory(recorder) => recorder.record(incident),
-            Self::Postgres(recorder) => recorder.record(incident),
+            Self::Memory(store) => {
+                let _ = store.record_incident(incident);
+            }
+            Self::Postgres(store) => store.record(incident),
+        }
+    }
+}
+
+pub enum BatchJobBackend {
+    Memory(Arc<MemoryBatchJobStore>),
+    Postgres(PostgresBatchJobStore),
+}
+
+impl BatchJobBackend {
+    pub fn memory() -> Self {
+        Self::Memory(Arc::new(MemoryBatchJobStore::default()))
+    }
+
+    pub async fn list(&self, limit: u32) -> Result<Vec<BatchJobRecord>, JobQueryError> {
+        match self {
+            Self::Memory(store) => store.list(limit),
+            Self::Postgres(store) => store.list(i64::from(limit)).await,
+        }
+    }
+
+    pub async fn get(&self, job_id: &str) -> Result<BatchJobRecord, JobQueryError> {
+        match self {
+            Self::Memory(store) => store.get(job_id),
+            Self::Postgres(store) => store.get(job_id).await,
+        }
+    }
+
+    pub fn seed_test_job(&self, record: BatchJobRecord) {
+        if let Self::Memory(store) = self {
+            let _ = store.insert(record);
         }
     }
 }

@@ -10,7 +10,7 @@ mod retention;
 pub use admin::PostgresAdminStore;
 
 pub use evidence::PostgresEvidenceStore;
-pub use incidents::PostgresIncidentRecorder;
+pub use incidents::PostgresIncidentStore;
 pub use jobs::{
     BatchJobCreate, BatchJobStore, JobStoreError, NoopBatchJobStore, PostgresBatchJobStore,
 };
@@ -34,8 +34,8 @@ impl StoragePool {
         PostgresEvidenceStore::new(self.pool.clone())
     }
 
-    pub fn incident_recorder(&self) -> PostgresIncidentRecorder {
-        PostgresIncidentRecorder::new(self.pool.clone())
+    pub fn incident_store(&self) -> PostgresIncidentStore {
+        PostgresIncidentStore::new(self.pool.clone())
     }
 
     pub fn batch_job_store(&self) -> PostgresBatchJobStore {

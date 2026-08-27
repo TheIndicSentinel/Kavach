@@ -96,6 +96,16 @@ export default function ModelDetailPage() {
 
       {model && (
         <div className="space-y-4">
+          {model.origin === "vendor" && model.governance_mode === "enforce" && model.status !== "production" && (
+            <Card className="border-decision-alert/30 bg-decision-alert-bg/30">
+              <CardHeader>
+                <CardTitle className="text-decision-alert">Supplier AI control</CardTitle>
+                <CardDescription>
+                  Vendor models cannot run in enforce mode until dual-control promotion to production.
+                </CardDescription>
+              </CardHeader>
+            </Card>
+          )}
           <Card>
             <CardHeader>
               <CardTitle>Governance</CardTitle>

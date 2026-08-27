@@ -24,7 +24,7 @@ Full local verification: `./scripts/verify.sh`
 |---|---|
 | Phase 0 | Complete — [docs/PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md) |
 | Milestone A | Complete — [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md) |
-| Milestone B | In progress — B.1–B.3 done; B.4 policy lifecycle UI next |
+| Milestone B | Complete — [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md) |
 
 **On-prem install:** [docs/INSTALL.md](docs/INSTALL.md)  
 **Partner payloads:** [partner/](partner/)  

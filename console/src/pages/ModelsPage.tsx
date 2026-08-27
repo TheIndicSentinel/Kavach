@@ -84,6 +84,15 @@ export default function ModelsPage() {
                 ),
               },
               {
+                key: "origin",
+                header: "Origin",
+                render: (row) => (
+                  <Badge variant={row.origin === "vendor" ? "warning" : "default"}>
+                    {row.origin}
+                  </Badge>
+                ),
+              },
+              {
                 key: "mode",
                 header: "Governance",
                 render: (row) => row.governance_mode,

@@ -116,3 +116,17 @@ permit (
   action == Kavach::Action::"apply_retention",
   resource == Kavach::System::"api"
 );
+
+@id("admins-may-read-incidents")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"read_incidents",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-read-batch-jobs")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"read_batch_jobs",
+  resource == Kavach::System::"api"
+);

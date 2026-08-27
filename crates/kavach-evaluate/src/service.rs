@@ -11,7 +11,9 @@ use kavach_policy::{LoadedPolicyPack, PolicyEngine};
 
 use crate::error::EvaluateError;
 use crate::ports::{EvaluateIncident, EvidenceStore, IncidentRecorder};
-use crate::validation::{compile_input_validator, validate_input, validate_model_binding};
+use crate::validation::{
+    compile_input_validator, validate_input, validate_model_binding, validate_supplier_controls,
+};
 
 #[derive(Debug, Clone)]
 pub struct EvaluateConfig {
@@ -101,6 +103,7 @@ where
         let started = Instant::now();
 
         validate_model_binding(&self.model, request)?;
+        validate_supplier_controls(&self.model)?;
         self.assert_pack_effective(request.decision_time)?;
         validate_input(&self.input_validator, &request.input)?;
         request

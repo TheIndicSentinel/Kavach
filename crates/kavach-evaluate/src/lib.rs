@@ -11,4 +11,6 @@ pub use ports::{
     EvaluateIncident, EvidenceStore, IncidentRecorder, NoopIncidentRecorder, VecIncidentRecorder,
 };
 pub use service::{EvaluateConfig, EvaluateResult, EvaluateService};
-pub use validation::{compile_input_validator, validate_input, validate_model_binding};
+pub use validation::{
+    compile_input_validator, validate_input, validate_model_binding, validate_supplier_controls,
+};
