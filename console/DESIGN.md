@@ -89,6 +89,7 @@ Policy lifecycle UI is implemented (read-only v1):
 
 - `/retention` — retention policy and tombstones
 - `/batch` — batch job inventory (Postgres lifecycle)
+- `/fairness` — client-side viewer for `kavach-batch fairness` JSON reports
 
 When adding mutations (activate, rollback, promote):
 

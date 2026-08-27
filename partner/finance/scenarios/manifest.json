@@ -1,0 +1,78 @@
+{
+  "pack_id": "finance-v0",
+  "pack_version": "0.1.0",
+  "model_id": "credit-underwriting-v1",
+  "model_version": "1.0.0",
+  "governance_mode": "shadow",
+  "sync_shadow": {
+    "returned_decision": "PASS"
+  },
+  "scenarios": [
+    {
+      "id": "sim-cu-pass-001",
+      "name": "Salaried clean approval",
+      "correlation_id": "sim-cu-pass-001",
+      "expect": {
+        "status": "ok",
+        "policy_decision": "PASS",
+        "returned_decision": "PASS",
+        "reason_codes": ["CONSENT_OK"]
+      }
+    },
+    {
+      "id": "sim-cu-dti-alert-002",
+      "name": "High DTI salaried (RBI threshold)",
+      "correlation_id": "sim-cu-dti-alert-002",
+      "expect": {
+        "status": "ok",
+        "policy_decision": "ALERT",
+        "returned_decision": "ALERT",
+        "reason_codes": ["CONSENT_OK", "RBI_DTI_EXCEEDED"]
+      }
+    },
+    {
+      "id": "sim-cu-informal-003",
+      "name": "Informal sector MSME",
+      "correlation_id": "sim-cu-informal-003",
+      "expect": {
+        "status": "ok",
+        "policy_decision": "HUMAN_REVIEW",
+        "returned_decision": "HUMAN_REVIEW",
+        "reason_codes_contains": ["INFORMAL_ECONOMY_REVIEW"]
+      }
+    },
+    {
+      "id": "sim-cu-low-conf-004",
+      "name": "Low model confidence gate",
+      "correlation_id": "sim-cu-low-conf-004",
+      "expect": {
+        "status": "ok",
+        "policy_decision": "HUMAN_REVIEW",
+        "returned_decision": "HUMAN_REVIEW",
+        "reason_codes_contains": ["LOW_CONFIDENCE_GATE"]
+      }
+    },
+    {
+      "id": "sim-cu-borderline-005",
+      "name": "Borderline DTI just under cap",
+      "correlation_id": "sim-cu-borderline-005",
+      "expect": {
+        "status": "ok",
+        "policy_decision": "PASS",
+        "returned_decision": "PASS",
+        "reason_codes": ["CONSENT_OK"]
+      }
+    },
+    {
+      "id": "sim-cu-ka-alert-006",
+      "name": "Karnataka high-DTI application",
+      "correlation_id": "sim-cu-ka-alert-006",
+      "expect": {
+        "status": "ok",
+        "policy_decision": "ALERT",
+        "returned_decision": "ALERT",
+        "reason_codes": ["CONSENT_OK", "RBI_DTI_EXCEEDED"]
+      }
+    }
+  ]
+}

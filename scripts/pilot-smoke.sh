@@ -33,12 +33,25 @@ if [[ "${SKIP_VERIFY:-}" != "1" ]]; then
   ./scripts/verify.sh
 fi
 
-echo "==> batch shadow smoke (memory evidence)"
-cargo run -q -p kavach-batch -- run \
-  --input "$STAMPED_INPUT" \
-  --output "$OUTPUT" \
-  --pack "$PACK" \
+EVIDENCE_STORE="${PILOT_EVIDENCE_STORE:-memory}"
+batch_args=(
+  run
+  --input "$STAMPED_INPUT"
+  --output "$OUTPUT"
+  --pack "$PACK"
   --model "$MODEL"
+)
+if [[ "$EVIDENCE_STORE" == "postgres" ]]; then
+  if [[ -z "${KAVACH_DATABASE_URL:-${PILOT_DATABASE_URL:-}}" ]]; then
+    echo "postgres evidence store requires KAVACH_DATABASE_URL or PILOT_DATABASE_URL" >&2
+    exit 1
+  fi
+  batch_args+=(--evidence-store postgres)
+  echo "==> batch shadow smoke (Postgres evidence)"
+else
+  echo "==> batch shadow smoke (memory evidence)"
+fi
+cargo run -q -p kavach-batch -- "${batch_args[@]}"
 
 if [[ -f "$OUTPUT" ]]; then
   lines="$(wc -l < "$OUTPUT" | tr -d ' ')"
@@ -64,7 +77,11 @@ fi
 
 if [[ "${PILOT_API_URL:-}" != "" ]]; then
   echo "==> API health: $PILOT_API_URL/health"
-  curl -fsS "${PILOT_API_URL}/health" >/dev/null
+  health_args=()
+  if [[ -n "${PILOT_PRINCIPAL:-}" ]]; then
+    health_args+=(-H "X-Kavach-Principal: ${PILOT_PRINCIPAL}")
+  fi
+  curl -fsS "${PILOT_API_URL}/health" "${health_args[@]}" >/dev/null
   echo "==> API health OK"
 fi
 

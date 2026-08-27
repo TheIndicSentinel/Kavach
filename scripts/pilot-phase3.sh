@@ -6,13 +6,19 @@ cd "$(dirname "$0")/.."
 API="${PILOT_API_URL:-http://localhost:8080}"
 ACTOR="${PILOT_ACTOR:-admin-1}"
 APPROVER="${PILOT_APPROVER:-admin-2}"
-EVAL_PRINCIPAL="${PILOT_EVAL_PRINCIPAL:-}"
+READ_PRINCIPAL="${PILOT_PRINCIPAL:-${ACTOR}}"
+EVAL_PRINCIPAL="${PILOT_EVAL_PRINCIPAL:-${ACTOR}}"
 MODEL_ID="${PILOT_MODEL_ID:-credit-underwriting-v1}"
 REQUEST_TEMPLATE="${PILOT_EVAL_REQUEST:-partner/finance/credit_underwriting_v1_request.json}"
 EVAL_BODY_FILE="${PILOT_EVAL_BODY:-/tmp/kavach-pilot-phase3-eval.json}"
 
+read_args=()
+if [[ -n "${READ_PRINCIPAL}" ]]; then
+  read_args+=(-H "X-Kavach-Principal: ${READ_PRINCIPAL}")
+fi
+
 echo "==> Phase 3.1 — capture runtime posture"
-runtime="$(curl -fsS "${API}/v1/runtime")"
+runtime="$(curl -fsS "${API}/v1/runtime" "${read_args[@]}")"
 original_mode="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["governance_mode"])' "$runtime")"
 echo "active model: ${MODEL_ID}, current mode: ${original_mode}"
 

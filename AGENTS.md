@@ -41,11 +41,13 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Partner pilot Phase 1–2 validators (merged); Phase 3 in PR
-- **In progress:** Partner pilot Phase 3 — `./scripts/pilot-phase3.sh` per [PARTNER_PILOT.md](docs/PARTNER_PILOT.md)
-- **Next:** Optional fairness report console viewer; partner pilot engagement sign-off
+- **Done:** Milestone A + B, pilot Phase 1–3 validators, fairness console viewer, pilot sign-off script
+- **You are here:** **System review checkpoint** — holistic review before bank VPC deployment ([SYSTEM_REVIEW_CHECKPOINT.md](docs/SYSTEM_REVIEW_CHECKPOINT.md))
+- **Automated real-world test:** `./scripts/simulate-partner-day.sh` ([SIMULATE_PARTNER_DAY.md](docs/SIMULATE_PARTNER_DAY.md))
+- **Policy simulation (git + CI):** `./scripts/simulate-credit-underwriting.sh` ([CREDIT_UNDERWRITING_SIMULATION.md](docs/CREDIT_UNDERWRITING_SIMULATION.md))
+- **Next:** Partner pilot in bank VPC; production hardening (HMAC, mTLS, Helm)
 
-See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md), [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md), and [docs/PARTNER_PILOT.md](docs/PARTNER_PILOT.md).
+See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md), [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md), [docs/PARTNER_PILOT.md](docs/PARTNER_PILOT.md), [docs/PILOT_SIGNOFF.md](docs/PILOT_SIGNOFF.md), and [docs/SYSTEM_REVIEW_CHECKPOINT.md](docs/SYSTEM_REVIEW_CHECKPOINT.md).
 
 Branching: see [docs/BRANCHING.md](docs/BRANCHING.md).
 

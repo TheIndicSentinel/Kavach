@@ -11,7 +11,14 @@ echo "==> Phase 1.1 — contract validation (partner finance samples)"
 cargo test -q -p kavach-domain partner_finance
 
 echo "==> Phase 1.2 — shadow batch run"
-PILOT_BATCH_OUTPUT="$OUTPUT" SKIP_VERIFY=1 ./scripts/pilot-smoke.sh
+phase1_smoke_env=(PILOT_BATCH_OUTPUT="$OUTPUT" SKIP_VERIFY=1)
+if [[ -n "${KAVACH_DATABASE_URL:-${PILOT_DATABASE_URL:-}}" ]]; then
+  phase1_smoke_env+=(PILOT_EVIDENCE_STORE=postgres)
+fi
+if [[ -n "${PILOT_PRINCIPAL:-}" ]]; then
+  phase1_smoke_env+=(PILOT_PRINCIPAL="$PILOT_PRINCIPAL")
+fi
+env "${phase1_smoke_env[@]}" ./scripts/pilot-smoke.sh
 
 echo "==> Phase 1.3 — batch result summary"
 python3 - "$OUTPUT" "$MIN_SUCCESS_RATE" <<'PY'
@@ -64,12 +71,19 @@ PY
 
 if [[ "${PILOT_API_URL:-}" != "" ]]; then
   echo "==> Phase 1.4 — batch jobs API (Postgres pilot)"
+  batch_jobs_principal="${PILOT_BATCH_JOBS_PRINCIPAL:-${PILOT_ACTOR:-admin-1}}"
   jobs="$(curl -fsS "${PILOT_API_URL}/v1/admin/batch-jobs?limit=5" \
-    ${PILOT_PRINCIPAL:+-H "X-Kavach-Principal: ${PILOT_PRINCIPAL}"})"
+    -H "X-Kavach-Principal: ${batch_jobs_principal}")"
   count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$jobs")"
   echo "batch jobs visible: $count"
   if [[ "$count" -lt 1 ]]; then
-    echo "WARN: no batch jobs in API — ensure Postgres evidence store and admin principal" >&2
+    if [[ -n "${KAVACH_DATABASE_URL:-${PILOT_DATABASE_URL:-}}" ]]; then
+      echo "FAIL: no batch jobs in API after Postgres batch run" >&2
+      exit 1
+    fi
+    echo "WARN: no batch jobs in API — set KAVACH_DATABASE_URL for Postgres pilot batch" >&2
+  else
+    echo "batch jobs API OK"
   fi
 fi
 
