@@ -64,6 +64,18 @@ export PILOT_APPROVER=admin-2
 ./scripts/pilot-phase3.sh
 ```
 
+## Automated sign-off
+
+After Phases 1–3 are green individually, run the combined gate:
+
+```bash
+export KAVACH_DATABASE_URL=postgres://kavach:change-me@localhost:5432/kavach
+export PILOT_API_URL=http://localhost:8080
+./scripts/pilot-signoff.sh
+```
+
+See [PILOT_SIGNOFF.md](PILOT_SIGNOFF.md) for the full checklist (console review, IdP mapping, evidence verify).
+
 ## Quick start (Docker pilot)
 
 ```bash
@@ -117,6 +129,7 @@ cargo run -p kavach-api -- \
 | [`scripts/pilot-phase1.sh`](../scripts/pilot-phase1.sh) | Phase 1 exit-criteria validator (schema + batch + report) |
 | [`scripts/pilot-phase2.sh`](../scripts/pilot-phase2.sh) | Phase 2 governance API + dual-control smoke |
 | [`scripts/pilot-phase3.sh`](../scripts/pilot-phase3.sh) | Phase 3 sync enforce evaluate + decision parity |
+| [`scripts/pilot-signoff.sh`](../scripts/pilot-signoff.sh) | Runs Phase 1–3 against live pilot API (sign-off gate) |
 | [`scripts/pilot-smoke.sh`](../scripts/pilot-smoke.sh) | CI/local batch smoke without Docker |
 | [INSTALL.md](INSTALL.md) | Full on-prem install reference |
 | [MILESTONE_B_EXIT.md](MILESTONE_B_EXIT.md) | Milestone B sign-off gate |
