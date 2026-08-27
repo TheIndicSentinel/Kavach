@@ -1,0 +1,11 @@
+target/
+console/node_modules/
+console/dist/
+.git/
+.github/
+**/*.md
+!packs/**
+!models/**
+!schemas/**
+!partner/**
+!crates/kavach-auth/policies/**

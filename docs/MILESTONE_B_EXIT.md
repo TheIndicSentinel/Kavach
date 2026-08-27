@@ -22,8 +22,9 @@ Sign-off after governance console, Cedar RBAC, policy lifecycle, fairness, reten
 - [x] **Admin read APIs** — audit, retention, tombstones, incidents, batch jobs
 - [x] **Responsive layout** — mobile drawer nav, card fallback for data tables
 - [x] **Install docs** — [INSTALL.md](INSTALL.md) admin route table
-- [ ] `cargo test --workspace` green locally (`./scripts/verify.sh`)
-- [ ] CI green on GitHub `main` after merge
+- [x] **Partner pilot packaging** — [PARTNER_PILOT.md](PARTNER_PILOT.md), `deploy/`, `scripts/pilot-smoke.sh`
+- [x] `cargo test --workspace` green locally (`./scripts/verify.sh`)
+- [x] CI green on GitHub `main` after merge (includes `scripts/pilot-smoke.sh` batch path)
 
 ## Verification commands
 
@@ -54,7 +55,7 @@ cd console && npm run dev
 When all boxes above are checked, proceed with post-B hardening:
 
 - Milestone B exit CI green on `main`
-- Partner pilot packaging review
+- Partner pilot engagement using [PARTNER_PILOT.md](PARTNER_PILOT.md)
 - Optional: fairness report console viewer
 
-**Milestone B status:** Complete in repo; pending CI green after merge to `main`.
+**Milestone B status:** Complete — merged to `main` (PR #18). Partner pilot packaging in PR #19.
