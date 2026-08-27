@@ -41,9 +41,8 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`).
 
 ## Phase
 
-- **Done:** Partner pilot Phase 1–2 validators (merged); Phase 3 in PR
-- **In progress:** Partner pilot Phase 3 — `./scripts/pilot-phase3.sh` per [PARTNER_PILOT.md](docs/PARTNER_PILOT.md)
-- **Next:** Optional fairness report console viewer; partner pilot engagement sign-off
+- **Done:** Partner pilot Phase 1–3 validators (merged); fairness report console viewer
+- **Next:** Partner pilot engagement sign-off — run all three phase scripts against Cedar/Postgres pilot stack per [PARTNER_PILOT.md](docs/PARTNER_PILOT.md)
 
 See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md), [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md), and [docs/PARTNER_PILOT.md](docs/PARTNER_PILOT.md).
 

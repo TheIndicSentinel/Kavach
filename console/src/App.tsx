@@ -4,6 +4,7 @@ import AuditPage from "./pages/AuditPage";
 import BatchJobDetailPage from "./pages/BatchJobDetailPage";
 import BatchJobsPage from "./pages/BatchJobsPage";
 import EvaluatePage from "./pages/EvaluatePage";
+import FairnessPage from "./pages/FairnessPage";
 import IncidentsPage from "./pages/IncidentsPage";
 import ModelDetailPage from "./pages/ModelDetailPage";
 import ModelsPage from "./pages/ModelsPage";
@@ -28,6 +29,7 @@ export default function App() {
         <Route path="batch/:jobId" element={<BatchJobDetailPage />} />
         <Route path="audit" element={<AuditPage />} />
         <Route path="incidents" element={<IncidentsPage />} />
+        <Route path="fairness" element={<FairnessPage />} />
         <Route path="retention" element={<RetentionPage />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/overview" replace />} />

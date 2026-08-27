@@ -17,3 +17,7 @@ export function formatDateTime(value: string | Date): string {
   const date = typeof value === "string" ? new Date(value) : value;
   return dateFormatter.format(date);
 }
+
+export function formatPercent(rate: number, digits = 1): string {
+  return `${(rate * 100).toFixed(digits)}%`;
+}
