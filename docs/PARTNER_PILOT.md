@@ -53,6 +53,17 @@ export PILOT_APPROVER=admin-2
 
 **Exit criteria:** Sync evaluate returns `policy_decision == returned_decision`; evidence chain verifies with `kavach-evidence verify`.
 
+**Automated API path:**
+
+```bash
+export PILOT_API_URL=http://localhost:8080
+export PILOT_ACTOR=admin-1
+export PILOT_APPROVER=admin-2
+# export PILOT_EVAL_PRINCIPAL=operator-1   # when Cedar enabled
+# export PILOT_HMAC_SECRET=...             # when HMAC enabled
+./scripts/pilot-phase3.sh
+```
+
 ## Quick start (Docker pilot)
 
 ```bash
@@ -105,6 +116,7 @@ cargo run -p kavach-api -- \
 | [`deploy/docker-compose.pilot.yml`](../deploy/docker-compose.pilot.yml) | Postgres + API + batch profile |
 | [`scripts/pilot-phase1.sh`](../scripts/pilot-phase1.sh) | Phase 1 exit-criteria validator (schema + batch + report) |
 | [`scripts/pilot-phase2.sh`](../scripts/pilot-phase2.sh) | Phase 2 governance API + dual-control smoke |
+| [`scripts/pilot-phase3.sh`](../scripts/pilot-phase3.sh) | Phase 3 sync enforce evaluate + decision parity |
 | [`scripts/pilot-smoke.sh`](../scripts/pilot-smoke.sh) | CI/local batch smoke without Docker |
 | [INSTALL.md](INSTALL.md) | Full on-prem install reference |
 | [MILESTONE_B_EXIT.md](MILESTONE_B_EXIT.md) | Milestone B sign-off gate |
