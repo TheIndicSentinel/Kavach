@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::{DateTime, Utc};
-use kavach_domain::mandate::{AgentPassport, DelegationRequest, Mandate};
+use kavach_domain::mandate::{AgentPassport, DelegationRequest, DelegationRules, Mandate};
 use kavach_ports::PortError;
 
 fn meet(a: &BTreeSet<String>, b: &BTreeSet<String>) -> BTreeSet<String> {
@@ -58,6 +58,18 @@ pub fn narrow_child(
         (Some(p), None) => Some(p),
         (None, r) => r,
     };
+    if let Some(w) = window {
+        if !w.within_floor() {
+            return Err(PortError::rejected(
+                "delegated contact window must fit the 08:00-19:00 IST floor",
+            ));
+        }
+    }
+    if crate::service::requires_window(&actions) && window.is_none() {
+        return Err(PortError::rejected(
+            "delegated contact actions need a contact window",
+        ));
+    }
     let exp = request.exp.map_or(parent.exp, |e| e.min(parent.exp));
     if exp <= child.now {
         return Err(PortError::rejected(
@@ -83,7 +95,12 @@ pub fn narrow_child(
         channels: meet(&parent.channels, &request.channels),
         window,
         ceilings: narrow_ceilings(&parent.ceilings, &request.ceilings, &passport.ceilings),
-        delegation: parent.delegation.clone(),
+        // The child may re-delegate only to agents the delegator names, and
+        // only among those the parent allows.
+        delegation: DelegationRules {
+            max_depth: parent.delegation.max_depth,
+            allowed_agents: meet(&parent.delegation.allowed_agents, &request.allowed_agents),
+        },
         parent_id: Some(parent.id.clone()),
         depth: parent.depth.saturating_add(1),
         nbf: child.now.max(parent.nbf),
@@ -112,6 +129,14 @@ pub fn is_within(child: &Mandate, parent: &Mandate) -> bool {
             .iter()
             .all(|(k, v)| parent.ceilings.get(k).is_some_and(|pv| v <= pv))
         && child.exp <= parent.exp
+        && child.nbf >= parent.nbf
         && child.depth == parent.depth + 1
         && child.depth <= parent.delegation.max_depth
+        && child.parent_id.as_deref() == Some(parent.id.as_str())
+        && parent.delegation.allowed_agents.contains(&child.holder)
+        && child.delegation.max_depth <= parent.delegation.max_depth
+        && child
+            .delegation
+            .allowed_agents
+            .is_subset(&parent.delegation.allowed_agents)
 }

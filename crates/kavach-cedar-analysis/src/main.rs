@@ -19,7 +19,7 @@ use cedar_policy_symcc::{
 use kavach_authz::{AGENT_POLICIES, AGENT_SCHEMA};
 
 /// (name, policy permitting exactly the requests the property forbids).
-const PROPERTIES: [(&str, &str); 3] = [
+const PROPERTIES: [(&str, &str); 16] = [
     (
         "no waiver above the mandate ceiling is allowed without an action-bound approval",
         r#"permit (principal, action == Kavach::Agent::Action::"propose_plan", resource)
@@ -34,32 +34,115 @@ const PROPERTIES: [(&str, &str); 3] = [
     ),
     (
         "no contact is allowed outside the mandate's IST window",
-        r#"permit (
-             principal,
-             action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call"],
-             resource)
+        r#"permit (principal, action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call"], resource)
            when { context.has_window
                   && (context.ist_minute_of_day < context.window_from
                       || context.ist_minute_of_day >= context.window_to) };"#,
     ),
+    (
+        "read_fields is allowed only when the mandate lists read_fields",
+        r#"permit (principal, action == Kavach::Agent::Action::"read_fields", resource)
+           when { !context.mandate_actions.contains("read_fields") };"#,
+    ),
+    (
+        "send_reminder is allowed only when the mandate lists send_reminder",
+        r#"permit (principal, action == Kavach::Agent::Action::"send_reminder", resource)
+           when { !context.mandate_actions.contains("send_reminder") };"#,
+    ),
+    (
+        "place_call is allowed only when the mandate lists place_call",
+        r#"permit (principal, action == Kavach::Agent::Action::"place_call", resource)
+           when { !context.mandate_actions.contains("place_call") };"#,
+    ),
+    (
+        "propose_plan is allowed only when the mandate lists propose_plan",
+        r#"permit (principal, action == Kavach::Agent::Action::"propose_plan", resource)
+           when { !context.mandate_actions.contains("propose_plan") };"#,
+    ),
+    (
+        "update_status is allowed only when the mandate lists update_status",
+        r#"permit (principal, action == Kavach::Agent::Action::"update_status", resource)
+           when { !context.mandate_actions.contains("update_status") };"#,
+    ),
+    (
+        "no action is allowed for anyone but the mandate holder",
+        r"permit (principal, action, resource)
+           when { principal != context.mandate_holder };",
+    ),
+    (
+        "no plan is allowed without a waiver amount",
+        r#"permit (principal, action == Kavach::Agent::Action::"propose_plan", resource)
+           when { !context.has_waiver };"#,
+    ),
+    (
+        "no plan is allowed with a waiver outside 0..=10000 bps",
+        r#"permit (principal, action == Kavach::Agent::Action::"propose_plan", resource)
+           when { context.waiver_bps < 0 || context.waiver_bps > 10000 };"#,
+    ),
+    (
+        "no field read is allowed without requested fields",
+        r#"permit (principal, action == Kavach::Agent::Action::"read_fields", resource)
+           when { !context.has_requested_fields };"#,
+    ),
+    (
+        "no contact is allowed without a channel",
+        r#"permit (principal, action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call"], resource)
+           when { !context.has_channel };"#,
+    ),
+    (
+        "no contact is allowed without a mandate window",
+        r#"permit (principal, action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call"], resource)
+           when { !context.has_window };"#,
+    ),
+    (
+        "no contact is allowed outside 08:00-19:00 IST",
+        r#"permit (principal, action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call"], resource)
+           when { context.ist_minute_of_day < 480 || context.ist_minute_of_day >= 1140 };"#,
+    ),
+    (
+        "no contact is allowed at or above the daily cap, or with a negative count",
+        r#"permit (principal, action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call"], resource)
+           when { context.contacts_today < 0
+                  || context.contacts_today >= context.max_per_day };"#,
+    ),
 ];
 
 /// Weakened variants that must be caught: (label, anchor to replace, replacement).
-const SANITY_VARIANTS: [(&str, &str, &str); 3] = [
+const SANITY_VARIANTS: [(&str, &str, &str); 7] = [
     (
         "waiver ceiling relaxed by 500 bps",
-        "context.waiver_bps > context.waiver_ceiling_bps",
-        "context.waiver_bps > context.waiver_ceiling_bps + 500",
+        r"context.waiver_bps > context.waiver_ceiling_bps",
+        r"context.waiver_bps > context.waiver_ceiling_bps + 500",
     ),
     (
         "subject binding removed",
-        "when { resource != context.mandate_subject };",
-        "when { false };",
+        r"when { resource != context.mandate_subject };",
+        r"when { false };",
     ),
     (
         "contact window end extended by 60 minutes",
-        "context.ist_minute_of_day >= context.window_to)",
-        "context.ist_minute_of_day >= context.window_to + 60)",
+        r"context.ist_minute_of_day >= context.window_to)",
+        r"context.ist_minute_of_day >= context.window_to + 60)",
+    ),
+    (
+        "contact floor widened by an hour",
+        r"context.ist_minute_of_day >= 1140",
+        r"context.ist_minute_of_day >= 1200",
+    ),
+    (
+        "update_status permit checks another action's name",
+        r#"context.mandate_actions.contains("update_status")"#,
+        r#"context.mandate_actions.contains("read_fields")"#,
+    ),
+    (
+        "missing-waiver guard removed",
+        r"unless { context.has_waiver };",
+        r"unless { true };",
+    ),
+    (
+        "negative contact count allowed",
+        r"when { context.contacts_today < 0 };",
+        r"when { false };",
     ),
 ];
 

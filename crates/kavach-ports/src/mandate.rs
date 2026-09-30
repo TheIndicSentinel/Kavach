@@ -15,9 +15,25 @@ pub struct StoredMandate {
 }
 
 /// Mandate persistence (ADR-004, ADR-006 §4).
+///
+/// **Invariant:** a mandate is `Active` only if every ancestor is `Active`.
+/// `insert_child` and `revoke_tree` maintain it atomically: a child is never
+/// inserted under a revoked parent, and revoking a mandate revokes its whole
+/// subtree in one operation, so concurrent delegation and revocation cannot
+/// leave an active child below a revoked parent. Expiry is not stored status;
+/// verification checks it on every ancestor (ADR-011).
 pub trait MandateStore: Send + Sync {
-    /// Inserts a new mandate. An existing id → `Rejected`.
+    /// Inserts a root mandate (`parent_id` must be `None`). An existing id
+    /// → `Rejected`.
     fn insert(&self, record: StoredMandate) -> impl Future<Output = Result<(), PortError>> + Send;
+
+    /// Inserts a delegated mandate only if its parent (`mandate.parent_id`)
+    /// exists in the same tenant and is `Active`, atomically with that check.
+    /// Otherwise → `Rejected`.
+    fn insert_child(
+        &self,
+        record: StoredMandate,
+    ) -> impl Future<Output = Result<(), PortError>> + Send;
 
     fn get(
         &self,
@@ -25,20 +41,25 @@ pub trait MandateStore: Send + Sync {
         id: &str,
     ) -> impl Future<Output = Result<Option<StoredMandate>, PortError>> + Send;
 
-    /// Marks a mandate revoked. Returns `false` if it was already revoked.
-    fn revoke(
+    /// The mandates above `id`, nearest parent first, in one call. Stops at a
+    /// root, a missing parent, or after `limit` entries (bounding a corrupted
+    /// cycle); callers compare the result with the mandate's depth.
+    fn ancestors(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<StoredMandate>, PortError>> + Send;
+
+    /// Revokes `id` and every descendant that is not yet revoked, atomically.
+    /// Returns the mandates whose status changed with their reason (`reason`
+    /// for `id`, `ParentRevoked` below it). Unknown `id` → `Rejected`.
+    fn revoke_tree(
         &self,
         tenant_id: &str,
         id: &str,
         reason: RevocationReason,
-    ) -> impl Future<Output = Result<bool, PortError>> + Send;
-
-    /// Ids of the direct children of `parent_id`.
-    fn children(
-        &self,
-        tenant_id: &str,
-        parent_id: &str,
-    ) -> impl Future<Output = Result<Vec<String>, PortError>> + Send;
+    ) -> impl Future<Output = Result<Vec<(String, RevocationReason)>, PortError>> + Send;
 }
 
 /// Domain events published for caches, credential revocation and audit.

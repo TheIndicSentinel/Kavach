@@ -247,3 +247,134 @@ fn policy_sets_must_be_well_formed() {
     .is_err());
     AgentAuthorizer::bundled().expect("bundled policies are valid");
 }
+
+// ---- H4 (ADR-011) ----
+
+fn blocked_by(r: &AuthzRequest<'_>, policy: &str) {
+    let (decision, policies) = decide(r);
+    assert_eq!(decision, Decision::Block, "{policies:?}");
+    assert!(
+        policies.iter().any(|p| p == policy),
+        "{policy} not in {policies:?}"
+    );
+}
+
+#[test]
+fn h4_missing_parameters_fail_closed() {
+    let m = mandate();
+    // A plan must state its waiver, even when it is zero.
+    blocked_by(&request(&m, AgentAction::ProposePlan), "waiver-required");
+    let mut r = request(&m, AgentAction::ProposePlan);
+    r.waiver_bps = Some(0);
+    assert_eq!(decide(&r).0, Decision::Pass);
+
+    let mut r = request(&m, AgentAction::SendReminder);
+    r.channel = None;
+    blocked_by(&r, "channel-required");
+
+    let mut r = request(&m, AgentAction::ReadFields);
+    r.requested_fields.clear();
+    blocked_by(&r, "fields-required");
+}
+
+#[test]
+fn h4_out_of_range_waivers_are_blocked() {
+    let m = mandate();
+    for waiver in [-5000, -1, 10_001] {
+        let mut r = request(&m, AgentAction::ProposePlan);
+        r.waiver_bps = Some(waiver);
+        blocked_by(&r, "waiver-in-range");
+    }
+}
+
+#[test]
+fn h4_contact_needs_a_window() {
+    let mut m = mandate();
+    m.window = None;
+    blocked_by(
+        &request(&m, AgentAction::SendReminder),
+        "contact-window-required",
+    );
+    blocked_by(
+        &request(&m, AgentAction::PlaceCall),
+        "contact-window-required",
+    );
+    // Non-contact actions are unaffected.
+    assert_eq!(
+        decide(&request(&m, AgentAction::ReadFields)).0,
+        Decision::Pass
+    );
+}
+
+/// The Cedar floor equals `CONTACT_FLOOR_*`: with a (non-validated) mandate
+/// window wider than the floor, only the floor decides at its boundaries.
+#[test]
+fn h4_contact_floor_matches_the_domain_constants() {
+    use kavach_domain::mandate::{CONTACT_FLOOR_FROM_MIN, CONTACT_FLOOR_TO_MIN};
+    let mut m = mandate();
+    m.window = Some(ContactWindow {
+        tz: TimeZoneId::AsiaKolkata,
+        from_min: 6 * 60,
+        to_min: 22 * 60,
+        max_per_day: 3,
+    });
+    let at = |minute: u16| {
+        let (h, min) = (u32::from(minute / 60), u32::from(minute % 60));
+        ist(h, min, 0)
+    };
+    let cases = [
+        (CONTACT_FLOOR_FROM_MIN - 1, Decision::Block),
+        (CONTACT_FLOOR_FROM_MIN, Decision::Pass),
+        (CONTACT_FLOOR_TO_MIN - 1, Decision::Pass),
+        (CONTACT_FLOOR_TO_MIN, Decision::Block),
+    ];
+    for (minute, expected) in cases {
+        let mut r = request(&m, AgentAction::PlaceCall);
+        r.channel = Some("voice".into());
+        r.now = at(minute);
+        let (decision, policies) = decide(&r);
+        assert_eq!(decision, expected, "minute {minute}: {policies:?}");
+        if expected == Decision::Block {
+            assert!(
+                policies.iter().any(|p| p == "contact-hours-floor"),
+                "{policies:?}"
+            );
+        }
+    }
+    // The floor is for contact only.
+    let mut r = request(&m, AgentAction::ReadFields);
+    r.now = at(3 * 60);
+    assert_eq!(decide(&r).0, Decision::Pass);
+}
+
+#[test]
+fn h4_every_schema_action_needs_exactly_one_permit() {
+    use kavach_authz::{AGENT_POLICIES, AGENT_SCHEMA};
+    // A new schema action with no permit is refused at load.
+    let schema = AGENT_SCHEMA.replace(
+        "action read_fields, send_reminder,",
+        "action read_fields, send_reminder, waive_fee,",
+    );
+    assert_ne!(schema, AGENT_SCHEMA);
+    let err = AgentAuthorizer::new(&schema, AGENT_POLICIES)
+        .err()
+        .expect("refused");
+    assert!(err.to_string().contains("waive_fee"), "{err}");
+
+    // An unconstrained permit is refused.
+    let extra =
+        format!("{AGENT_POLICIES}\n@id(\"catch-all\")\npermit (principal, action, resource);\n");
+    let err = AgentAuthorizer::new(AGENT_SCHEMA, &extra)
+        .err()
+        .expect("refused");
+    assert!(err.to_string().contains("exactly one action"), "{err}");
+
+    // A second permit for the same action is refused.
+    let extra = format!(
+        "{AGENT_POLICIES}\n@id(\"read-again\")\npermit (principal, action == Kavach::Agent::Action::\"read_fields\", resource);\n"
+    );
+    let err = AgentAuthorizer::new(AGENT_SCHEMA, &extra)
+        .err()
+        .expect("refused");
+    assert!(err.to_string().contains("2 permits"), "{err}");
+}
