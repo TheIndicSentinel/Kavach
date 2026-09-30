@@ -2261,6 +2261,7 @@ dependencies = [
  "kavach-domain",
  "kavach-evaluate",
  "kavach-evidence",
+ "kavach-storage",
  "serde",
  "serde_json",
  "sqlx",

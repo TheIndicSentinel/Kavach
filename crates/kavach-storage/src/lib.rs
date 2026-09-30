@@ -7,6 +7,8 @@ mod jobs_store;
 mod postgres;
 mod retention;
 mod startup;
+#[cfg(feature = "test-support")]
+pub mod testing;
 
 pub use admin::{AdminStoreError, AuditEntry, AuditInsert, MemoryAdminStore, RuntimePointers};
 pub use backends::{
