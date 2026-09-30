@@ -19,6 +19,8 @@ kavach-policy = { workspace = true }
 kavach-auth = { workspace = true }
 kavach-storage = { workspace = true }
 kavach-keys = { workspace = true }
+jsonwebtoken = { workspace = true }
+reqwest = { workspace = true }
 kavach-ports = { workspace = true }
 axum.workspace = true
 axum-server.workspace = true
@@ -53,6 +55,8 @@ http = "1.5.0"
 http-body-util = "0.1.3"
 tonic.workspace = true
 prost-types.workspace = true
+ed25519-dalek = { workspace = true }
+base64 = { workspace = true }
 
 [lints]
 workspace = true

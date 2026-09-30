@@ -36,6 +36,9 @@ pub struct AppState {
     batch_jobs: BatchJobBackend,
     /// When set, every pack load requires a valid signature from these keys.
     pack_signers: Option<TrustedSigners>,
+    oidc: Option<std::sync::Arc<crate::oidc::OidcVerifier>>,
+    insecure_dev: bool,
+    nonces: crate::hmac_auth::NonceCache,
 }
 
 impl AppState {
@@ -105,6 +108,17 @@ impl AppState {
         )
         .map_err(|e| ApiError::Internal(format!("evaluate service: {e}")))?;
 
+        let oidc = match &config.oidc {
+            Some(oidc) => {
+                let verifier = crate::oidc::OidcVerifier::load(oidc.clone())
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("oidc: {e}")))?;
+                verifier.spawn_refresher();
+                Some(verifier)
+            }
+            None => None,
+        };
+
         let access_control = match &config.access_control {
             AccessControlKind::None => None,
             AccessControlKind::Cedar {
@@ -129,6 +143,9 @@ impl AppState {
             incidents,
             batch_jobs,
             pack_signers,
+            oidc,
+            insecure_dev: config.insecure_dev,
+            nonces: crate::hmac_auth::NonceCache::default(),
         })
     }
 
@@ -147,6 +164,8 @@ impl AppState {
             pack_sha256: None,
             bootstrap_pack: false,
             pack_signers: None,
+            oidc: None,
+            insecure_dev: true,
         };
         Self::from_config(&config).await
     }
@@ -157,6 +176,18 @@ impl AppState {
 
     pub fn access_control(&self) -> Option<&KavachAuthorizer> {
         self.access_control.as_ref()
+    }
+
+    pub fn oidc(&self) -> Option<&std::sync::Arc<crate::oidc::OidcVerifier>> {
+        self.oidc.as_ref()
+    }
+
+    pub fn insecure_dev(&self) -> bool {
+        self.insecure_dev
+    }
+
+    pub fn nonces(&self) -> &crate::hmac_auth::NonceCache {
+        &self.nonces
     }
 
     pub fn metrics(&self) -> &Metrics {

@@ -31,4 +31,7 @@ COPY crates/kavach-auth/policies/ crates/kavach-auth/policies/
 USER kavach
 EXPOSE 8080 50051
 ENTRYPOINT ["kavach-api"]
-CMD ["--listen", "0.0.0.0:8080", "--grpc-listen", "0.0.0.0:50051", "--pack", "packs/finance/v0.yaml", "--model", "models/finance/credit-underwriting-v1.yaml", "--evidence-store", "postgres", "--access-control", "cedar", "--cedar-policy", "crates/kavach-auth/policies/kavach.cedar", "--cedar-entities", "crates/kavach-auth/policies/entities.example.json"]
+# Access control is Cedar by default; policy, entities and OIDC settings come
+# from the environment (KAVACH_CEDAR_POLICY, KAVACH_CEDAR_ENTITIES,
+# KAVACH_OIDC_*). No example principals are baked into the default command.
+CMD ["--listen", "0.0.0.0:8080", "--grpc-listen", "0.0.0.0:50051", "--pack", "packs/finance/v0.yaml", "--model", "models/finance/credit-underwriting-v1.yaml", "--evidence-store", "postgres"]

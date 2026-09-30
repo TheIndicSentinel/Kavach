@@ -9,3 +9,7 @@ console/*.tsbuildinfo
 
 # Locally downloaded tools (e.g. cvc5 for policy analysis)
 /.tools/
+
+# Pilot deployment config (entities, JWKS) — site-specific, never committed
+/deploy/pilot-config/
+/deploy/.env

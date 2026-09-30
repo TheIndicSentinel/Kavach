@@ -10,9 +10,7 @@ use axum::{
     Json, Router,
 };
 
-use hmac::{Hmac, Mac};
 use kavach_domain::EvaluateRequest;
-use sha2::Sha256;
 
 use kavach_auth::KavachAction;
 
@@ -29,8 +27,6 @@ use crate::retention::{
     update_retention_settings,
 };
 use crate::state::AppState;
-
-type HmacSha256 = Hmac<Sha256>;
 
 pub fn router(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
@@ -94,10 +90,23 @@ async fn metrics(
 
 async fn evaluate(
     State(state): State<Arc<AppState>>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Json<kavach_domain::EvaluateResponse>, ApiError> {
-    verify_hmac_if_configured(state.as_ref(), &headers, &body)?;
+    if let Some(secret) = state.hmac_secret() {
+        let path = uri.path_and_query().map_or(uri.path(), |pq| pq.as_str());
+        crate::hmac_auth::verify(
+            secret,
+            state.nonces(),
+            &headers,
+            method.as_str(),
+            path,
+            &body,
+            chrono::Utc::now().timestamp(),
+        )?;
+    }
     authorize_headers(state.as_ref(), &headers, KavachAction::Evaluate)?;
     let request: EvaluateRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::BadRequest(format!("invalid JSON body: {e}")))?;
@@ -105,61 +114,10 @@ async fn evaluate(
     Ok(Json(response))
 }
 
-fn verify_hmac_if_configured(
-    state: &AppState,
-    headers: &HeaderMap,
-    body: &[u8],
-) -> Result<(), ApiError> {
-    let Some(secret) = state.hmac_secret() else {
-        return Ok(());
-    };
-
-    let signature = headers
-        .get("x-kavach-signature")
-        .and_then(|value| value.to_str().ok())
-        .ok_or(ApiError::Unauthorized)?;
-
-    let expected = format!("sha256={}", hex_hmac(secret, body));
-    if constant_time_eq(signature.as_bytes(), expected.as_bytes()) {
-        Ok(())
-    } else {
-        Err(ApiError::Unauthorized)
-    }
-}
-
-fn hex_hmac(secret: &str, body: &[u8]) -> String {
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(body);
-    hex::encode(mac.finalize().into_bytes())
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter()
-        .zip(b.iter())
-        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-        == 0
-}
-
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = self.status_code();
         let body = Json(serde_json::json!({ "error": self.to_string() }));
         (status, body).into_response()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hex_hmac_is_deterministic() {
-        let digest = hex_hmac("secret", b"{}");
-        assert_eq!(digest.len(), 64);
-        assert_eq!(digest, hex_hmac("secret", b"{}"));
     }
 }

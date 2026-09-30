@@ -1,5 +1,19 @@
 const PRINCIPAL_KEY = "kavach.principal";
 const APPROVER_KEY = "kavach.approver";
+const TOKEN_KEY = "kavach.accessToken";
+
+/** OIDC access token from the bank IdP (ADR-008). Kept in sessionStorage only. */
+export function getAccessToken(): string {
+  return sessionStorage.getItem(TOKEN_KEY) ?? "";
+}
+
+export function setAccessToken(value: string): void {
+  if (value.trim()) {
+    sessionStorage.setItem(TOKEN_KEY, value.trim());
+  } else {
+    sessionStorage.removeItem(TOKEN_KEY);
+  }
+}
 
 export function getPrincipal(): string {
   return sessionStorage.getItem(PRINCIPAL_KEY) ?? "";
@@ -25,7 +39,15 @@ export function setApprover(value: string): void {
   }
 }
 
-function authHeaders(): HeadersInit {
+/**
+ * Bearer token when configured; otherwise the self-asserted principal header,
+ * which the API accepts only in --insecure-dev (development).
+ */
+function authHeaders(): Record<string, string> {
+  const token = getAccessToken();
+  if (token) {
+    return { Authorization: `Bearer ${token}` };
+  }
   const principal = getPrincipal();
   return principal ? { "X-Kavach-Principal": principal } : {};
 }
@@ -191,11 +213,15 @@ export type AuditEntry = {
   created_at: string;
 };
 
+/**
+ * The actor is the authenticated principal (bearer token) when configured.
+ * The approver header remains self-asserted until change requests land (H3).
+ */
 function dualControlHeaders(actor: string, approver: string): HeadersInit {
-  return {
-    "X-Kavach-Principal": actor,
-    "X-Kavach-Approver": approver,
-  };
+  const token = getAccessToken();
+  return token
+    ? { Authorization: `Bearer ${token}`, "X-Kavach-Approver": approver }
+    : { "X-Kavach-Principal": actor, "X-Kavach-Approver": approver };
 }
 
 export function fetchAuditLog(limit = 50): Promise<AuditEntry[]> {
