@@ -176,6 +176,7 @@ async fn cedar_test_state() -> Arc<AppState> {
             entities_path,
         },
         tls: None,
+        pack_sha256: None,
     };
     Arc::new(AppState::from_config(&config).await.expect("cedar state"))
 }
@@ -681,4 +682,90 @@ async fn console_serves_index_html() {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     let html = String::from_utf8(bytes.to_vec()).unwrap();
     assert!(html.contains("Kavach"));
+}
+
+/// Copies the finance pack/model into a temp registry with a second pack
+/// (`finance-v1`) so activate/rollback can be exercised without touching the repo.
+fn temp_registry() -> (PathBuf, PathBuf, PathBuf) {
+    let (pack, model) = fixture_paths();
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("kavach-pin-{}-{nanos}", std::process::id()));
+    let packs = root.join("packs/finance");
+    let models = root.join("models/finance");
+    std::fs::create_dir_all(&packs).unwrap();
+    std::fs::create_dir_all(&models).unwrap();
+    let v0 = std::fs::read_to_string(&pack).unwrap();
+    std::fs::write(packs.join("v0.yaml"), &v0).unwrap();
+    std::fs::write(
+        packs.join("v1.yaml"),
+        v0.replacen("id: finance-v0", "id: finance-v1", 1),
+    )
+    .unwrap();
+    let model_path = models.join("credit-underwriting-v1.yaml");
+    std::fs::copy(&model, &model_path).unwrap();
+    (root, packs.join("v0.yaml"), model_path)
+}
+
+async fn post_dual_control(app: axum::Router, uri: &str) -> StatusCode {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("x-kavach-principal", "admin-1")
+            .header("x-kavach-approver", "admin-2")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+    .status()
+}
+
+#[tokio::test]
+async fn runtime_exposes_pack_sha256() {
+    let (pack, model) = fixture_paths();
+    let state = AppState::from_paths_for_tests(&pack, &model, None)
+        .await
+        .expect("state");
+    let expected = kavach_policy::pack_digest(&std::fs::read(&pack).unwrap());
+    assert_eq!(
+        state.runtime().pack_sha256.as_deref(),
+        Some(expected.as_str())
+    );
+}
+
+#[tokio::test]
+async fn rollback_refuses_tampered_previous_pack() {
+    let (root, v0_path, model_path) = temp_registry();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&v0_path, &model_path, None)
+            .await
+            .expect("state"),
+    );
+
+    let status = post_dual_control(router(state.clone()), "/v1/packs/finance-v1/activate").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state.runtime().pack_id, "finance-v1");
+
+    // Tamper with the previous pack file after it was pinned at activation.
+    let original = std::fs::read_to_string(&v0_path).unwrap();
+    std::fs::write(&v0_path, format!("{original}\n# tampered\n")).unwrap();
+    let status = post_dual_control(router(state.clone()), "/v1/packs/rollback").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(
+        state.runtime().pack_id,
+        "finance-v1",
+        "runtime must not change"
+    );
+
+    // Restoring the pinned bytes makes rollback succeed.
+    std::fs::write(&v0_path, original).unwrap();
+    let status = post_dual_control(router(state.clone()), "/v1/packs/rollback").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state.runtime().pack_id, "finance-v0");
+
+    let _ = std::fs::remove_dir_all(root);
 }

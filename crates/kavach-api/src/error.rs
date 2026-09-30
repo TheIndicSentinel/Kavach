@@ -17,6 +17,9 @@ pub enum ApiError {
     #[error("not found: {0}")]
     NotFound(String),
 
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("evaluate: {0}")]
     Evaluate(#[from] EvaluateError),
 
@@ -36,6 +39,7 @@ impl ApiError {
                 | EvaluateError::PackNotEffective,
             ) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::Evaluate(EvaluateError::Policy(kavach_policy::PolicyError::Timeout {
                 ..
             })) => StatusCode::SERVICE_UNAVAILABLE,

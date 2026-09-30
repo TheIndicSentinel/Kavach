@@ -11,6 +11,12 @@ unmaintained = "none"
 
 [licenses]
 version = 2
+# Linked-crate licence allowlist (ADR-006 §6).
+# - "BSL-1.0" is the Boost Software License 1.0 (permissive) — NOT the
+#   Business Source License (BUSL), which is not allowed.
+# - MPL-2.0 is intentionally not allowed for linked crates. Network services
+#   such as OpenBao (MPL-2.0) and Keycloak (Apache-2.0) are not linked and are
+#   covered by the free-source rule and SBOM instead (PRD D6).
 allow = [
     "MIT",
     "MIT-0",

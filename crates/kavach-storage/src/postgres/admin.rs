@@ -48,7 +48,8 @@ impl PostgresAdminStore {
 
     pub async fn get_runtime_pointers(&self) -> Result<Option<RuntimePointers>, AdminStoreError> {
         let row = sqlx::query_as::<_, PointerRow>(
-            "SELECT pack_path, model_path, previous_pack_path, updated_at, updated_by, approved_by \
+            "SELECT pack_path, model_path, previous_pack_path, pack_sha256, previous_pack_sha256, \
+            updated_at, updated_by, approved_by \
             FROM runtime_pointers WHERE id = 1",
         )
         .fetch_optional(&self.pool)
@@ -63,12 +64,15 @@ impl PostgresAdminStore {
         pointers: RuntimePointers,
     ) -> Result<(), AdminStoreError> {
         sqlx::query(
-            "INSERT INTO runtime_pointers (id, pack_path, model_path, previous_pack_path, updated_at, updated_by, approved_by) \
-            VALUES (1, $1, $2, $3, $4, $5, $6) \
+            "INSERT INTO runtime_pointers (id, pack_path, model_path, previous_pack_path, \
+                pack_sha256, previous_pack_sha256, updated_at, updated_by, approved_by) \
+            VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8) \
             ON CONFLICT (id) DO UPDATE SET \
                 pack_path = EXCLUDED.pack_path, \
                 model_path = EXCLUDED.model_path, \
                 previous_pack_path = EXCLUDED.previous_pack_path, \
+                pack_sha256 = EXCLUDED.pack_sha256, \
+                previous_pack_sha256 = EXCLUDED.previous_pack_sha256, \
                 updated_at = EXCLUDED.updated_at, \
                 updated_by = EXCLUDED.updated_by, \
                 approved_by = EXCLUDED.approved_by",
@@ -76,6 +80,8 @@ impl PostgresAdminStore {
         .bind(&pointers.pack_path)
         .bind(&pointers.model_path)
         .bind(&pointers.previous_pack_path)
+        .bind(&pointers.pack_sha256)
+        .bind(&pointers.previous_pack_sha256)
         .bind(pointers.updated_at)
         .bind(&pointers.updated_by)
         .bind(&pointers.approved_by)
@@ -118,6 +124,8 @@ struct PointerRow {
     pack_path: String,
     model_path: String,
     previous_pack_path: Option<String>,
+    pack_sha256: Option<String>,
+    previous_pack_sha256: Option<String>,
     updated_at: DateTime<Utc>,
     updated_by: String,
     approved_by: String,
@@ -129,6 +137,8 @@ impl PointerRow {
             pack_path: self.pack_path,
             model_path: self.model_path,
             previous_pack_path: self.previous_pack_path,
+            pack_sha256: self.pack_sha256,
+            previous_pack_sha256: self.previous_pack_sha256,
             updated_at: self.updated_at,
             updated_by: self.updated_by,
             approved_by: self.approved_by,

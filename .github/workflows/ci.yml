@@ -46,6 +46,15 @@ jobs:
       - name: Build console
         run: ./scripts/build-console.sh
 
+      # Production npm dependency licence allowlist (PRD NFR-1). OFL-1.1 covers the
+      # @fontsource fonts; MPL-2.0 covers build-time CSS tooling (lightningcss) that is
+      # not included in the built console bundle.
+      - name: Console licence check
+        working-directory: console
+        run: >
+          npx --yes license-checker-rseidelsohn@4.4.2 --production --excludePrivatePackages
+          --onlyAllow "MIT;ISC;Apache-2.0;BSD-2-Clause;BSD-3-Clause;0BSD;OFL-1.1;MPL-2.0;BlueOak-1.0.0;CC0-1.0"
+
       - name: cargo fmt
         run: cargo fmt --all -- --check
 

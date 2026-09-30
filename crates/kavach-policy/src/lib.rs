@@ -7,4 +7,4 @@ mod loader;
 
 pub use engine::{PolicyEngine, PolicyEvaluation};
 pub use error::PolicyError;
-pub use loader::{LoadedPolicyPack, PackLoader};
+pub use loader::{normalize_digest, pack_digest, LoadedPolicyPack, PackLoader};
