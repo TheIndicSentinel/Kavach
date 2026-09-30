@@ -136,6 +136,7 @@ Every route except `/` needs `Authorization: Bearer <access token>` when Cedar i
 | `update_retention` | `{"evidence_retention_days": 180}` |
 | `erase_evidence` | `{"evidence_id": "…"}` |
 | `apply_retention` | `{}` — freezes the cutoff and the set of evidence it will tombstone |
+| `activate_model` | `{"model_id": "…", "version": "1.1.0"}` (`"allow_downgrade": true` for a lower version) |
 
 ```bash
 REQ=$(curl -s -X POST $API/v1/change-requests -H "Authorization: Bearer $MAKER" \
@@ -150,6 +151,14 @@ curl -s -X POST "$API/v1/change-requests/$(jq -r .id <<<"$REQ")/approve" -H "Aut
 - **No break-glass:** every change needs two people. Plan approver cover (holidays, incidents), including for DPDP erasure deadlines.
 - `/v1/runtime` shows `pointer_version`, `stored_pointer_version` and `pointer_drift`; a replica with drift serves an older pack until restarted.
 - Postgres 14 or newer is required (`CREATE OR REPLACE TRIGGER`).
+
+**Governed model record (ADR-010, Postgres).** The runtime pointer pins the active model file (path and SHA-256); `status` and `governance_mode` are governed state changed only by `update_model`, and are used by both `kavach-api` and `kavach-batch`. After the first start the YAML's own status and mode are ignored (a startup warning shows any difference).
+
+- To use a new model version or an edited model file, propose `activate_model`. Starting with a different or edited file is refused.
+- `--bootstrap-model` (env `KAVACH_BOOTSTRAP_MODEL`, Postgres only, audited) starts with a changed file and re-pins its path and digest; it never changes status or mode.
+- Start `kavach-api` before `kavach-batch`: batch never records a baseline and refuses to run on an ungoverned or changed model.
+- **Upgrading from H3a:** the first start pins the model file and records its state. If an approved `update_model` in the audit log differs from the YAML (H3a did not persist it), startup is refused; restart with `--bootstrap-model` to restore the approved values, then check `/v1/runtime`.
+- **Model signatures:** when `--pack-signers` is set, model files must be signed too. Give the signer the model role (`"roles": ["pack", "model"]` in `signers.json`; entries without `roles` stay pack-only) and run `kavach-keys sign-model --dir ./signing-keys --kid <kid> --model models/finance/credit-underwriting-v1.yaml`.
 
 **Upgrading from H2 (breaking).** `POST /v1/packs/{id}/activate`, `POST /v1/packs/rollback`, `PATCH /v1/models/{id}`, `PATCH /v1/admin/retention`, `POST /v1/admin/retention/apply`, `POST /v1/admin/evidence/{id}/erase` and the `X-Kavach-Approver` header are removed. Cedar actions `activate_pack` … `apply_retention` are replaced by `propose_*` / `approve_*` / `read_change_requests`; update custom policy files (see `crates/kavach-auth/policies/kavach.cedar`) and add approvers to a `change-approvers` group.
 

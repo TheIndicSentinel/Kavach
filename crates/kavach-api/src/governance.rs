@@ -28,6 +28,11 @@ pub struct RuntimeResponse {
     pub pack_sha256: Option<String>,
     /// Runtime pointer version this process is serving (0: none recorded).
     pub pointer_version: i64,
+    /// `sha256:<hex>` of the active model file.
+    pub model_sha256: Option<String>,
+    /// The active model was written for a different pack than the one
+    /// running (ADR-010 §4); evidence records the pack actually used.
+    pub model_pack_mismatch: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -88,18 +93,30 @@ pub async fn list_model_records(
     let runtime = state.runtime();
     let models = list_models(
         state.models_dir(),
-        &runtime.model_id,
-        &runtime.model_version,
+        &runtime.model_path,
+        &state.model_states().await?,
     )?;
     Ok(Json(models))
+}
+
+#[derive(Debug, Serialize)]
+pub struct ModelDetail {
+    #[serde(flatten)]
+    pub model: ModelRecord,
+    /// Status and mode shown are governed values when this is true.
+    pub governed: bool,
 }
 
 pub async fn get_model_record(
     State(state): State<Arc<AppState>>,
     credentials: Credentials,
     Path(model_id): Path<String>,
-) -> Result<Json<ModelRecord>, ApiError> {
+) -> Result<Json<ModelDetail>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
+    let states = state.model_states().await?;
     let model = get_model_by_id(state.models_dir(), &model_id)?;
-    Ok(Json(model))
+    Ok(Json(ModelDetail {
+        governed: states.iter().any(|s| s.model_id == model.model_id),
+        model: crate::registry::apply_state(model, &states),
+    }))
 }

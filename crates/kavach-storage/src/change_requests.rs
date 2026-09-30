@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::admin::{AuditInsert, MemoryAdminStore, RuntimePointers};
+use crate::admin::{AuditInsert, MemoryAdminStore, ModelState, RuntimePointers};
 use crate::retention::{MemoryRetentionStore, TombstoneReason};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -25,16 +25,18 @@ pub enum ChangeKind {
     UpdateRetention,
     EraseEvidence,
     ApplyRetention,
+    ActivateModel,
 }
 
 impl ChangeKind {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::ActivatePack,
         Self::RollbackPack,
         Self::UpdateModel,
         Self::UpdateRetention,
         Self::EraseEvidence,
         Self::ApplyRetention,
+        Self::ActivateModel,
     ];
 
     #[must_use]
@@ -46,6 +48,7 @@ impl ChangeKind {
             Self::UpdateRetention => "update_retention",
             Self::EraseEvidence => "erase_evidence",
             Self::ApplyRetention => "apply_retention",
+            Self::ActivateModel => "activate_model",
         }
     }
 
@@ -123,6 +126,8 @@ pub enum GovernanceEffect {
     /// mode until the governed model record lands); audit and status only.
     None,
     SetPointers(RuntimePointers),
+    /// Governed status and mode of a model (ADR-010).
+    SetModelState(ModelState),
     /// Refused when the stored value is no longer `expected_current`.
     SetRetentionDays {
         days: u32,
@@ -150,7 +155,8 @@ pub struct ApprovalCommit {
     /// Runtime pointer version the change was computed against; `None` for
     /// changes that do not depend on the runtime (retention, erasure).
     pub expected_pointer_version: Option<i64>,
-    pub effect: GovernanceEffect,
+    /// Written in order, in one transaction.
+    pub effects: Vec<GovernanceEffect>,
     pub audit: AuditInsert,
     pub outcome: Value,
     pub now: DateTime<Utc>,
@@ -366,7 +372,14 @@ impl MemoryChangeStore {
             Some(expected) if expected != version => Some(format!(
                 "stale_baseline: runtime pointer version {version}, request bound to {expected}"
             )),
-            _ => self.check_effect(&commit.effect)?,
+            _ => commit
+                .effects
+                .iter()
+                .map(|effect| self.check_effect(effect))
+                .collect::<Result<Vec<_>, _>>()?
+                .into_iter()
+                .flatten()
+                .next(),
         };
         if let Some(reason) = stale {
             let close = terminal(request, ChangeStatus::Failed, &reason);
@@ -377,7 +390,9 @@ impl MemoryChangeStore {
             });
         }
 
-        self.apply_effect(&commit.effect, &request.proposer, &commit.approver)?;
+        for effect in &commit.effects {
+            self.apply_effect(effect, &request.proposer, &commit.approver)?;
+        }
         let close = CloseRequest {
             request_id: request.id.clone(),
             status: ChangeStatus::Applied,
@@ -403,6 +418,9 @@ impl MemoryChangeStore {
                 self.admin
                     .set_runtime_pointers(pointers.clone())
                     .map_err(io)?;
+            }
+            GovernanceEffect::SetModelState(state) => {
+                self.admin.set_model_state(state.clone()).map_err(io)?;
             }
             GovernanceEffect::SetRetentionDays { days, .. } => {
                 self.retention

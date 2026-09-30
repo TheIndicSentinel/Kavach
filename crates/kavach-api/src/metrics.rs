@@ -13,6 +13,7 @@ pub struct Metrics {
     evaluate_total: IntCounterVec,
     evaluate_latency_ms: HistogramVec,
     incident_write_failures: prometheus::IntCounter,
+    model_pack_mismatch: prometheus::IntGauge,
 }
 
 impl Metrics {
@@ -41,12 +42,18 @@ impl Metrics {
         )?;
         registry.register(Box::new(evaluate_total.clone()))?;
         registry.register(Box::new(evaluate_latency_ms.clone()))?;
+        let model_pack_mismatch = prometheus::IntGauge::new(
+            "kavach_model_pack_mismatch",
+            "1 when the active model record names a different pack than the one running",
+        )?;
         registry.register(Box::new(incident_write_failures.clone()))?;
+        registry.register(Box::new(model_pack_mismatch.clone()))?;
         Ok(Self {
             registry: Arc::new(registry),
             evaluate_total,
             evaluate_latency_ms,
             incident_write_failures,
+            model_pack_mismatch,
         })
     }
 
@@ -57,6 +64,10 @@ impl Metrics {
         self.evaluate_latency_ms
             .with_label_values(&[transport])
             .observe(f64::from(u32::try_from(latency_ms).unwrap_or(u32::MAX)));
+    }
+
+    pub fn set_model_pack_mismatch(&self, mismatch: bool) {
+        self.model_pack_mismatch.set(i64::from(mismatch));
     }
 
     pub fn observe_incident_write_failure(&self) {

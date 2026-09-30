@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             evidence_store,
             database_url,
         } => {
-            verify_signature_if_configured(&pack, pack_signers.as_deref())?;
+            verify_signature_if_configured(&pack, &model, pack_signers.as_deref())?;
             let input_file = File::open(&input)?;
             let mut writer = BufWriter::new(File::create(&output)?);
             let context = BatchRunContext {
@@ -147,6 +147,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     )?;
                     let pool = StoragePool::connect(&database_url).await?;
                     check_governed_pack(&pool, &config.pack_path).await?;
+                    let config = BatchConfig {
+                        governed_model: Some(governed_model(&pool, &config.model_path).await?),
+                        ..config
+                    };
                     let mut job_store = pool.batch_job_store();
                     run_batch(
                         input_file,
@@ -227,10 +231,33 @@ async fn check_governed_pack(
     Ok(())
 }
 
-/// When trusted signers are configured, the pack must carry a valid
-/// `<pack>.sig` before any rows are evaluated.
+/// Postgres mode: the model the API governs — the pinned file with governed
+/// status and mode (ADR-010). Batch never records a baseline.
+async fn governed_model(
+    pool: &StoragePool,
+    model_path: &std::path::Path,
+) -> Result<kavach_domain::ModelRecord, Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(model_path)?;
+    let yaml: kavach_domain::ModelRecord = serde_yaml::from_slice(&bytes)?;
+    let governed = kavach_storage::govern_model(
+        &kavach_storage::AdminBackend::Postgres(pool.admin_store()),
+        model_path,
+        yaml,
+        &kavach_policy::pack_digest(&bytes),
+        kavach_storage::ModelStartupRole::Batch,
+    )
+    .await?;
+    if let Some(note) = &governed.yaml_divergence {
+        eprintln!("kavach-batch: {note}");
+    }
+    Ok(governed.model)
+}
+
+/// When trusted signers are configured, the pack and the model must carry
+/// valid signatures (`pack` and `model` signer roles) before any rows run.
 fn verify_signature_if_configured(
     pack: &std::path::Path,
+    model: &std::path::Path,
     signers: Option<&std::path::Path>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let Some(signers) = signers else {
@@ -239,6 +266,19 @@ fn verify_signature_if_configured(
     let trusted = kavach_keys::TrustedSigners::from_file(signers)?;
     let digest = kavach_policy::pack_digest(&std::fs::read(pack)?);
     kavach_keys::verify_pack_file(pack, &digest, &trusted)?;
+
+    let bytes = std::fs::read(model)?;
+    let record: kavach_domain::ModelRecord = serde_yaml::from_slice(&bytes)?;
+    let model_digest = kavach_policy::pack_digest(&bytes);
+    kavach_keys::verify_model_file(
+        model,
+        kavach_keys::ModelIdentity {
+            model_id: &record.model_id,
+            model_version: &record.version,
+            model_sha256: &model_digest,
+        },
+        &trusted,
+    )?;
     Ok(())
 }
 

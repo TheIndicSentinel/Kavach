@@ -97,3 +97,64 @@ fn trusted_signers_file_is_strict() {
         assert!(TrustedSigners::from_json(bad).is_err(), "{bad}");
     }
 }
+
+#[test]
+fn signer_roles_are_explicit_and_strict() {
+    let key = "11".repeat(32);
+    let entry =
+        |roles: &str| format!(r#"{{"signers":[{{"kid":"k1","public_key":"{key}"{roles}}}]}}"#);
+    assert!(TrustedSigners::from_json(&entry(r#","roles":["pack","model"]"#)).is_ok());
+    assert!(TrustedSigners::from_json(&entry(r#","roles":["model"]"#)).is_ok());
+    for bad in [
+        r#","roles":[]"#,
+        r#","roles":["admin"]"#,
+        r#","roles":["Pack"]"#,
+    ] {
+        assert!(TrustedSigners::from_json(&entry(bad)).is_err(), "{bad}");
+    }
+}
+
+#[tokio::test]
+async fn model_signatures_bind_id_version_digest_and_role() {
+    use kavach_keys::{sign_model, verify_model_signature, ModelIdentity, SignerRole};
+
+    let mut provider = InMemoryKeyProvider::new();
+    let public = provider.insert_seed("model-signer-1", [9u8; 32]).unwrap();
+    let identity = ModelIdentity {
+        model_id: "credit-underwriting-v1",
+        model_version: "1.1.0",
+        model_sha256: "sha256:aa",
+    };
+    let signature = sign_model(&provider, "model-signer-1", identity)
+        .await
+        .unwrap();
+
+    let model_signer =
+        TrustedSigners::with_roles(vec![(public.clone(), vec![SignerRole::Model])]).unwrap();
+    verify_model_signature(&signature, identity, &model_signer).unwrap();
+
+    // Another version, id or digest does not verify.
+    for other in [
+        ModelIdentity {
+            model_version: "1.0.0",
+            ..identity
+        },
+        ModelIdentity {
+            model_id: "other",
+            ..identity
+        },
+        ModelIdentity {
+            model_sha256: "sha256:bb",
+            ..identity
+        },
+    ] {
+        assert!(verify_model_signature(&signature, other, &model_signer).is_err());
+    }
+    // A pack-only signer cannot sign models, and the reverse.
+    let pack_signer = TrustedSigners::new(vec![public]).unwrap();
+    let err = verify_model_signature(&signature, identity, &pack_signer).unwrap_err();
+    assert!(
+        err.to_string().contains("not trusted to sign models"),
+        "{err}"
+    );
+}

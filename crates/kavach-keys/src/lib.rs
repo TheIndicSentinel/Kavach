@@ -11,10 +11,14 @@ use std::fs;
 use std::future::{ready, Future};
 use std::path::{Path, PathBuf};
 
+mod model_sig;
 mod pack_sig;
 
+pub use model_sig::{
+    sign_model, verify_model_file, verify_model_signature, ModelIdentity, ModelSignature,
+};
 pub use pack_sig::{
-    sign_pack, signature_path, verify_pack_file, verify_pack_signature, PackSignature,
+    sign_pack, signature_path, verify_pack_file, verify_pack_signature, PackSignature, SignerRole,
     TrustedSigners,
 };
 

@@ -66,6 +66,32 @@ struct UpdateModelParams {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ActivateModelParams {
+    model_id: String,
+    /// The exact version to activate (model files are found by id + version).
+    version: String,
+    /// Required to activate a lower version of the active model; part of
+    /// the change digest, so the approver sees it.
+    #[serde(default)]
+    allow_downgrade: bool,
+}
+
+/// True when `to` is lower than `from`, or when the versions differ and are
+/// not both dotted numbers (an explicit `allow_downgrade` is then required).
+fn is_downgrade(from: &str, to: &str) -> bool {
+    let parse = |v: &str| {
+        v.split('.')
+            .map(|part| part.parse::<u64>().ok())
+            .collect::<Option<Vec<_>>>()
+    };
+    match (parse(from), parse(to)) {
+        (Some(a), Some(b)) => b < a,
+        _ => from != to,
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UpdateRetentionParams {
     evidence_retention_days: u32,
 }
@@ -96,7 +122,8 @@ struct Prepared {
     params: Value,
     binding: Value,
     expected_version: Option<i64>,
-    effect: GovernanceEffect,
+    /// Written in order inside the approval transaction.
+    effects: Vec<GovernanceEffect>,
     live: Option<LiveSwap>,
     resource_type: &'static str,
     resource_id: String,
@@ -305,9 +332,14 @@ impl AppState {
         now: DateTime<Utc>,
     ) -> Result<ChangeRequest, ApiError> {
         let version_before = self.runtime().pointer_version;
-        let version_after = match prepared.effect {
-            GovernanceEffect::SetPointers(_) => prepared.expected_version.unwrap_or(0) + 1,
-            _ => version_before,
+        let moves_pointer = prepared
+            .effects
+            .iter()
+            .any(|e| matches!(e, GovernanceEffect::SetPointers(_)));
+        let version_after = if moves_pointer {
+            prepared.expected_version.unwrap_or(0) + 1
+        } else {
+            version_before
         };
         let mut payload = prepared.audit_payload;
         if let Value::Object(map) = &mut payload {
@@ -322,7 +354,7 @@ impl AppState {
             approver: approver.id.clone(),
             approver_key: approver_key.to_string(),
             expected_pointer_version: prepared.expected_version,
-            effect: prepared.effect,
+            effects: prepared.effects,
             audit: AuditInsert {
                 action: request.kind.as_str().into(),
                 resource_type: prepared.resource_type.into(),
@@ -450,6 +482,7 @@ impl AppState {
                 let _: NoParams = parse(params)?;
                 self.prepare_apply_retention(retention_cutoff).await
             }
+            ChangeKind::ActivateModel => self.prepare_activate_model(parse(params)?, actors).await,
         }
     }
 
@@ -464,10 +497,27 @@ impl AppState {
             previous_pack_path: previous.map(|p| p.pack_path.clone()),
             pack_sha256: runtime.pack_sha256.clone(),
             previous_pack_sha256: previous.and_then(|p| p.pack_sha256.clone()),
+            model_sha256: runtime.model_sha256.clone(),
             updated_at: Utc::now(),
             updated_by: actors.proposer.into(),
             approved_by: actors.approver.into(),
             version: 0,
+        }
+    }
+
+    /// The stored pointer (or one built from the runtime) re-written by this
+    /// change, so it advances the shared runtime version.
+    fn touch_pointers(
+        stored: Option<RuntimePointers>,
+        runtime: &RuntimeResponse,
+        actors: Actors<'_>,
+    ) -> RuntimePointers {
+        let base = stored.unwrap_or_else(|| Self::pack_pointers(runtime, None, actors));
+        RuntimePointers {
+            updated_at: Utc::now(),
+            updated_by: actors.proposer.into(),
+            approved_by: actors.approver.into(),
+            ..base
         }
     }
 
@@ -520,11 +570,11 @@ impl AppState {
                 "pack_sha256": runtime.pack_sha256,
             }),
             expected_version: Some(version),
-            effect: GovernanceEffect::SetPointers(Self::pack_pointers(
+            effects: vec![GovernanceEffect::SetPointers(Self::pack_pointers(
                 &runtime,
                 Some(&current),
                 actors,
-            )),
+            ))],
             resource_type: "policy_pack",
             resource_id: params.pack_id,
             audit_payload: json!({
@@ -583,7 +633,9 @@ impl AppState {
                 "pack_sha256": runtime.pack_sha256,
             }),
             expected_version: Some(version),
-            effect: GovernanceEffect::SetPointers(Self::pack_pointers(&runtime, None, actors)),
+            effects: vec![GovernanceEffect::SetPointers(Self::pack_pointers(
+                &runtime, None, actors,
+            ))],
             resource_type: "policy_pack",
             resource_id: runtime.pack_id.clone(),
             audit_payload: json!({
@@ -597,6 +649,25 @@ impl AppState {
                 runtime,
             }),
         })
+    }
+
+    /// Reloads the active pack for a model change, re-checking its pin and
+    /// signature.
+    async fn reload_active_pack(
+        &self,
+        current: &RuntimeResponse,
+        operation: &str,
+        actors: Actors<'_>,
+    ) -> Result<LoadedPolicyPack, ApiError> {
+        let pack_path = std::path::Path::new(&current.pack_path);
+        let pack = PackLoader::load_from_path(pack_path)
+            .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
+        let principals = (actors.proposer, actors.approver);
+        self.check_pack_pin(&pack, current.pack_sha256.as_deref(), operation, principals)
+            .await?;
+        self.check_pack_signature(&pack, pack_path, operation, principals)
+            .await?;
+        Ok(pack)
     }
 
     async fn prepare_update_model(
@@ -625,24 +696,37 @@ impl AppState {
         }
         precheck_model(&model)?;
 
-        let pack_path = std::path::Path::new(&current.pack_path);
-        let pack = PackLoader::load_from_path(pack_path)
-            .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
-        let principals = (actors.proposer, actors.approver);
-        self.check_pack_pin(
-            &pack,
-            current.pack_sha256.as_deref(),
-            "update_model",
-            principals,
-        )
-        .await?;
-        self.check_pack_signature(&pack, pack_path, "update_model", principals)
+        let pack = self
+            .reload_active_pack(&current, "update_model", actors)
             .await?;
-        let (_, version) = self.pointer_version().await?;
+        if self
+            .admin
+            .get_model_state(&model.model_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("model state: {e}")))?
+            .is_none()
+        {
+            return Err(ApiError::Conflict(format!(
+                "model {} is not governed; activate it with an activate_model change first",
+                model.model_id
+            )));
+        }
+        let (pointers, version) = self.pointer_version().await?;
 
         let runtime = RuntimeResponse {
             governance_mode: model.governance_mode,
             ..current
+        };
+        // The pointer write carries the change on the one runtime version
+        // counter that every change binds to.
+        let touched = Self::touch_pointers(pointers, &runtime, actors);
+        let state = kavach_storage::ModelState {
+            model_id: model.model_id.clone(),
+            status: model.status,
+            governance_mode: model.governance_mode,
+            updated_at: Utc::now(),
+            updated_by: actors.proposer.into(),
+            approved_by: actors.approver.into(),
         };
         let status = |s: ModelStatus| format!("{s:?}").to_lowercase();
         let mode = |m: GovernanceMode| format!("{m:?}").to_lowercase();
@@ -655,14 +739,156 @@ impl AppState {
                 "governance_mode": mode(before.governance_mode),
             }),
             expected_version: Some(version),
-            // Model state is runtime-only until the governed model record (H3b).
-            effect: GovernanceEffect::None,
+            effects: vec![
+                GovernanceEffect::SetPointers(touched),
+                GovernanceEffect::SetModelState(state),
+            ],
             resource_type: "model_record",
             resource_id: params.model_id,
             audit_payload: json!({
                 "status": status(model.status),
                 "governance_mode": mode(model.governance_mode),
                 "model_path": runtime.model_path,
+            }),
+            outcome: to_value(&runtime)?,
+            live: Some(LiveSwap {
+                pack,
+                model,
+                runtime,
+            }),
+        })
+    }
+
+    /// Activates a model file (a new version, or an edited file of the active
+    /// one) under the current pack. A model with governed state keeps it;
+    /// otherwise its YAML status and mode become the governed state.
+    /// The model file an `activate_model` change names, checked for signature,
+    /// "already active" and downgrade.
+    fn model_file_for_activation(
+        &self,
+        params: &ActivateModelParams,
+        current: &RuntimeResponse,
+    ) -> Result<(std::path::PathBuf, ModelRecord, String), ApiError> {
+        let path = crate::registry::model_path_by_version(
+            &self.models_dir,
+            &params.model_id,
+            &params.version,
+        )?;
+        let (yaml, digest) = super::read_model_file(&path, self.pack_signers.as_ref())?;
+        let path_str = path.display().to_string();
+        if current.model_path == path_str
+            && current.model_sha256.as_deref() == Some(digest.as_str())
+        {
+            return Err(ApiError::BadRequest(format!(
+                "model already active: {} {}",
+                params.model_id, params.version
+            )));
+        }
+        if yaml.model_id == current.model_id
+            && is_downgrade(&current.model_version, &yaml.version)
+            && !params.allow_downgrade
+        {
+            return Err(ApiError::Conflict(format!(
+                "model_downgrade: {} {} is lower than the active {}; set allow_downgrade to \
+                 activate it",
+                yaml.model_id, yaml.version, current.model_version
+            )));
+        }
+        Ok((path, yaml, digest))
+    }
+
+    async fn prepare_activate_model(
+        &self,
+        params: ActivateModelParams,
+        actors: Actors<'_>,
+    ) -> Result<Prepared, ApiError> {
+        let current = self.runtime();
+        let (path, yaml, digest) = self.model_file_for_activation(&params, &current)?;
+        let path_str = path.display().to_string();
+
+        let governed = self
+            .admin
+            .get_model_state(&yaml.model_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("model state: {e}")))?;
+        let model = match &governed {
+            Some(state) => ModelRecord {
+                status: state.status,
+                governance_mode: state.governance_mode,
+                ..yaml.clone()
+            },
+            None => yaml.clone(),
+        };
+        precheck_model(&model)?;
+
+        let pack = self
+            .reload_active_pack(&current, "activate_model", actors)
+            .await?;
+        let (pointers, version) = self.pointer_version().await?;
+
+        let runtime = RuntimeResponse {
+            model_id: model.model_id.clone(),
+            model_version: model.version.clone(),
+            sector: model.sector.clone(),
+            governance_mode: model.governance_mode,
+            model_path: path_str.clone(),
+            model_sha256: Some(digest.clone()),
+            ..current.clone()
+        };
+        let base = Self::touch_pointers(pointers, &current, actors);
+        let mut effects = vec![GovernanceEffect::SetPointers(RuntimePointers {
+            model_path: path_str.clone(),
+            model_sha256: Some(digest.clone()),
+            ..base
+        })];
+        if governed.is_none() {
+            effects.push(GovernanceEffect::SetModelState(
+                kavach_storage::ModelState {
+                    model_id: model.model_id.clone(),
+                    status: model.status,
+                    governance_mode: model.governance_mode,
+                    updated_at: Utc::now(),
+                    updated_by: actors.proposer.into(),
+                    approved_by: actors.approver.into(),
+                },
+            ));
+        }
+        let pack_mismatch = model.pack_id != current.pack_id;
+        let status = kavach_storage::status_str(model.status);
+        let mode = kavach_storage::mode_str(model.governance_mode);
+        Ok(Prepared {
+            params: to_value(&params)?,
+            binding: json!({
+                "pointer_version": version,
+                "model_id": model.model_id,
+                "model_version": model.version,
+                "model_path": path_str,
+                "model_sha256": digest,
+                "status": status,
+                "governance_mode": mode,
+                "state_source": if governed.is_some() { "governed" } else { "model_file" },
+                "model_pack_id": model.pack_id,
+                "active_pack_id": current.pack_id,
+                "warning": pack_mismatch.then(|| format!(
+                    "model {} names pack {}, but pack {} is active",
+                    model.model_id, model.pack_id, current.pack_id
+                )),
+            }),
+            expected_version: Some(version),
+            effects,
+            resource_type: "model_record",
+            resource_id: model.model_id.clone(),
+            audit_payload: json!({
+                "model_path": path_str,
+                "model_sha256": digest,
+                "model_version": model.version,
+                "previous_model_path": current.model_path,
+                "previous_model_sha256": current.model_sha256,
+                "previous_model_version": current.model_version,
+                "status": status,
+                "governance_mode": mode,
+                "model_pack_mismatch": pack_mismatch,
+                "allow_downgrade": params.allow_downgrade,
             }),
             outcome: to_value(&runtime)?,
             live: Some(LiveSwap {
@@ -692,10 +918,10 @@ impl AppState {
             params: to_value(&params)?,
             binding: json!({ "evidence_retention_days": current }),
             expected_version: None,
-            effect: GovernanceEffect::SetRetentionDays {
+            effects: vec![GovernanceEffect::SetRetentionDays {
                 days: params.evidence_retention_days,
                 expected_current: current,
-            },
+            }],
             resource_type: "tenant_settings",
             resource_id: "retention".into(),
             audit_payload: json!({
@@ -731,10 +957,10 @@ impl AppState {
             params: to_value(&params)?,
             binding: json!({ "evidence_id": params.evidence_id }),
             expected_version: None,
-            effect: GovernanceEffect::Tombstone {
+            effects: vec![GovernanceEffect::Tombstone {
                 evidence_id: params.evidence_id.clone(),
                 reason: TombstoneReason::DpdpErasure,
-            },
+            }],
             resource_type: "evidence",
             resource_id: params.evidence_id.clone(),
             audit_payload: json!({ "reason": TombstoneReason::DpdpErasure.as_str() }),
@@ -785,10 +1011,10 @@ impl AppState {
                 "candidates_sha256": evidence_set_digest(&ids),
             }),
             expected_version: None,
-            effect: GovernanceEffect::TombstoneSet {
+            effects: vec![GovernanceEffect::TombstoneSet {
                 cutoff,
                 evidence_ids: ids.clone(),
-            },
+            }],
             resource_type: "tenant_settings",
             resource_id: "retention".into(),
             audit_payload: json!({

@@ -22,6 +22,7 @@ const KIND_LABELS: Record<ChangeKind, string> = {
   update_retention: "Change retention period",
   erase_evidence: "Erase evidence (DPDP)",
   apply_retention: "Run retention",
+  activate_model: "Activate model version",
 };
 
 function statusVariant(status: ChangeStatus): "active" | "warning" | "muted" | "default" {

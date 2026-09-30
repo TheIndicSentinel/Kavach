@@ -66,7 +66,7 @@ Cedar has `propose_*` and `approve_*` actions per kind. The example policy lets 
 - One person can no longer change governance alone, provided the IdP gives each person one identity and the approver group only to people.
 - Every change needs two people: with only one admin available, nothing can change — including urgent DPDP erasure. There is no break-glass.
 - **Breaking:** the six mutation endpoints and `X-Kavach-Approver` are gone; clients propose and approve. Pilot scripts use `PILOT_ACTOR_TOKEN` and `PILOT_APPROVER_TOKEN`.
-- Model status and governance mode remain runtime-only (lost on restart) until the governed model record (H3b).
+- Model status and governance mode remain runtime-only (lost on restart) until the governed model record (H3b). *Resolved by ADR-010:* `update_model` persists, and `activate_model` is a seventh kind.
 
 ## Deferred
 

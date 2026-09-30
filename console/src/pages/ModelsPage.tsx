@@ -77,11 +77,14 @@ export default function ModelsPage() {
               {
                 key: "status",
                 header: "Status",
-                render: (row) => (
-                  <Badge variant={row.status === "production" ? "active" : "default"}>
-                    {row.status}
-                  </Badge>
-                ),
+                render: (row) =>
+                  row.governed ? (
+                    <Badge variant={row.status === "production" ? "active" : "default"}>
+                      {row.status}
+                    </Badge>
+                  ) : (
+                    <Badge variant="muted">not governed</Badge>
+                  ),
               },
               {
                 key: "origin",

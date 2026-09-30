@@ -137,6 +137,7 @@ async fn runtime_pointers_and_audit_round_trip() {
         updated_at: Utc::now(),
         updated_by: "admin-1".into(),
         approved_by: "admin-2".into(),
+        model_sha256: None,
         version: 0,
     };
     admin.set_runtime_pointers(pointers.clone()).await.unwrap();
@@ -273,4 +274,85 @@ async fn incidents_and_batch_jobs_round_trip() {
     assert_eq!(job.status, "completed");
     assert_eq!((job.succeeded_rows, job.failed_rows), (2, 1));
     assert_eq!(jobs.list(10).await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn batch_never_baselines_and_refuses_a_changed_model_file() {
+    use kavach_storage::{govern_model, AdminBackend, ModelStartupError, ModelStartupRole};
+
+    let Some(pool) = pool().await else { return };
+    let admin = AdminBackend::Postgres(pool.admin_store());
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../models/finance/credit-underwriting-v1.yaml");
+    let bytes = std::fs::read(&path).unwrap();
+    let yaml: kavach_domain::ModelRecord = serde_yaml::from_slice(&bytes).unwrap();
+    let digest = kavach_policy::pack_digest(&bytes);
+
+    // Nothing governed yet: batch refuses and writes nothing.
+    let err = govern_model(
+        &admin,
+        &path,
+        yaml.clone(),
+        &digest,
+        ModelStartupRole::Batch,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, ModelStartupError::NotGoverned(_)), "{err}");
+    assert!(admin.get_runtime_pointers().await.unwrap().is_none());
+
+    // The API records the baseline.
+    assert!(admin
+        .insert_pointers_if_absent(RuntimePointers {
+            pack_path: "packs/finance/v0.yaml".into(),
+            model_path: path.display().to_string(),
+            previous_pack_path: None,
+            pack_sha256: None,
+            previous_pack_sha256: None,
+            model_sha256: Some(digest.clone()),
+            updated_at: Utc::now(),
+            updated_by: "system:startup".into(),
+            approved_by: "system:startup".into(),
+            version: 0,
+        })
+        .await
+        .unwrap());
+    let api = ModelStartupRole::Api {
+        bootstrap_model: false,
+    };
+    govern_model(&admin, &path, yaml.clone(), &digest, api)
+        .await
+        .unwrap();
+
+    // Governed mode reaches batch even though the YAML says shadow.
+    sqlx::query("UPDATE model_state SET governance_mode = 'enforce'")
+        .execute(&pool.pool)
+        .await
+        .unwrap();
+    let governed = govern_model(
+        &admin,
+        &path,
+        yaml.clone(),
+        &digest,
+        ModelStartupRole::Batch,
+    )
+    .await
+    .unwrap();
+    assert_eq!(governed.model.governance_mode, GovernanceMode::Enforce);
+    assert!(governed.yaml_divergence.is_some());
+
+    // A changed file is refused; batch has no override.
+    let err = govern_model(
+        &admin,
+        &path,
+        yaml,
+        "sha256:changed",
+        ModelStartupRole::Batch,
+    )
+    .await
+    .unwrap_err();
+    assert!(
+        matches!(err, ModelStartupError::DigestMismatch { .. }),
+        "{err}"
+    );
 }

@@ -25,6 +25,7 @@ pub fn propose_action(kind: ChangeKind) -> KavachAction {
         ChangeKind::UpdateRetention => KavachAction::ProposeUpdateRetention,
         ChangeKind::EraseEvidence => KavachAction::ProposeEraseEvidence,
         ChangeKind::ApplyRetention => KavachAction::ProposeApplyRetention,
+        ChangeKind::ActivateModel => KavachAction::ProposeActivateModel,
     }
 }
 
@@ -37,6 +38,7 @@ pub fn approve_action(kind: ChangeKind) -> KavachAction {
         ChangeKind::UpdateRetention => KavachAction::ApproveUpdateRetention,
         ChangeKind::EraseEvidence => KavachAction::ApproveEraseEvidence,
         ChangeKind::ApplyRetention => KavachAction::ApproveApplyRetention,
+        ChangeKind::ActivateModel => KavachAction::ApproveActivateModel,
     }
 }
 

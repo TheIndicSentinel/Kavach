@@ -204,3 +204,71 @@ fn run_batch_processes_partner_finance_sample() {
     assert_eq!(first["status"], "ok");
     assert_eq!(first["policy_decision"], "PASS");
 }
+
+/// Records what the worker declares for the job.
+#[derive(Default)]
+struct RecordingJobs {
+    mode: Option<GovernanceMode>,
+}
+
+impl kavach_storage::BatchJobStore for RecordingJobs {
+    fn create_pending(
+        &mut self,
+        create: &kavach_storage::BatchJobCreate,
+    ) -> Result<String, kavach_storage::JobStoreError> {
+        self.mode = Some(create.governance_mode);
+        Ok("job-1".into())
+    }
+    fn mark_running(&mut self, _: &str, _: usize) -> Result<(), kavach_storage::JobStoreError> {
+        Ok(())
+    }
+    fn mark_completed(
+        &mut self,
+        _: &str,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+    ) -> Result<(), kavach_storage::JobStoreError> {
+        Ok(())
+    }
+    fn mark_failed(
+        &mut self,
+        _: &str,
+        _: &str,
+        _: usize,
+        _: usize,
+        _: usize,
+        _: usize,
+    ) -> Result<(), kavach_storage::JobStoreError> {
+        Ok(())
+    }
+}
+
+/// ADR-010: with a governed model, batch runs (and records the job) in the
+/// governed mode, not the one in the YAML file.
+#[test]
+fn run_batch_uses_the_governed_model() {
+    let mut jobs = RecordingJobs::default();
+    run_batch(
+        Cursor::new(String::new()),
+        &mut Vec::new(),
+        &BatchConfig {
+            pack_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../packs/finance/v0.yaml"),
+            model_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../models/finance/credit-underwriting-v1.yaml"),
+            governed_model: Some(finance_model_record(GovernanceMode::Enforce)),
+            ..BatchConfig::default()
+        },
+        &BatchRunContext {
+            input_path: "stdin".into(),
+            output_path: "stdout".into(),
+        },
+        MemoryChain::new(),
+        VecIncidentRecorder::default(),
+        &mut jobs,
+    )
+    .expect("batch run");
+    assert_eq!(jobs.mode, Some(GovernanceMode::Enforce));
+}

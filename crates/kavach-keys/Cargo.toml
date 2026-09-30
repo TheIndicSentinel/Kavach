@@ -15,6 +15,7 @@ kavach-ports = { workspace = true }
 kavach-policy = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 clap.workspace = true
 tokio.workspace = true
 ed25519-dalek = { workspace = true }

@@ -4,7 +4,9 @@ use kavach_domain::DecisionEvent;
 use kavach_evaluate::EvidenceStore;
 use kavach_evidence::MemoryChain;
 
-use crate::admin::{AdminStoreError, AuditEntry, AuditInsert, MemoryAdminStore, RuntimePointers};
+use crate::admin::{
+    AdminStoreError, AuditEntry, AuditInsert, MemoryAdminStore, ModelState, RuntimePointers,
+};
 use crate::incidents_store::{IncidentRecord, IncidentStoreError, MemoryIncidentStore};
 use crate::jobs_store::{BatchJobRecord, JobQueryError, MemoryBatchJobStore};
 use crate::postgres::{
@@ -153,6 +155,56 @@ impl AdminBackend {
         match self {
             Self::Memory(store) => store.set_runtime_pointers(pointers),
             Self::Postgres(store) => store.set_runtime_pointers(pointers).await,
+        }
+    }
+
+    /// First-start baseline: writes only when no pointer exists.
+    pub async fn insert_pointers_if_absent(
+        &self,
+        pointers: RuntimePointers,
+    ) -> Result<bool, AdminStoreError> {
+        match self {
+            Self::Memory(store) => store.insert_pointers_if_absent(pointers),
+            Self::Postgres(store) => store.insert_pointers_if_absent(&pointers).await,
+        }
+    }
+
+    pub async fn get_model_state(
+        &self,
+        model_id: &str,
+    ) -> Result<Option<ModelState>, AdminStoreError> {
+        match self {
+            Self::Memory(store) => store.get_model_state(model_id),
+            Self::Postgres(store) => store.get_model_state(model_id).await,
+        }
+    }
+
+    pub async fn list_model_states(&self) -> Result<Vec<ModelState>, AdminStoreError> {
+        match self {
+            Self::Memory(store) => store.list_model_states(),
+            Self::Postgres(store) => store.list_model_states().await,
+        }
+    }
+
+    pub async fn insert_model_state_if_absent(
+        &self,
+        state: ModelState,
+    ) -> Result<bool, AdminStoreError> {
+        match self {
+            Self::Memory(store) => store.insert_model_state_if_absent(state),
+            Self::Postgres(store) => store.insert_model_state_if_absent(&state).await,
+        }
+    }
+
+    /// Most recent audit row for `action` on `resource_id`.
+    pub async fn last_audit(
+        &self,
+        action: &str,
+        resource_id: &str,
+    ) -> Result<Option<AuditEntry>, AdminStoreError> {
+        match self {
+            Self::Memory(store) => store.last_audit(action, resource_id),
+            Self::Postgres(store) => store.last_audit(action, resource_id).await,
         }
     }
 }

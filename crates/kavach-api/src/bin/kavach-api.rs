@@ -127,6 +127,11 @@ struct Cli {
     #[arg(long, env = "KAVACH_BOOTSTRAP_PACK")]
     bootstrap_pack: bool,
 
+    /// Postgres recovery: start with a model file that differs from the pinned
+    /// one. Re-pins path and digest only (audited); status and mode stay governed.
+    #[arg(long, env = "KAVACH_BOOTSTRAP_MODEL")]
+    bootstrap_model: bool,
+
     /// Trusted pack signers file (JSON). When set, every pack load (startup,
     /// activate, rollback, model update) requires a valid `<pack>.sig`.
     #[arg(long, env = "KAVACH_PACK_SIGNERS")]
@@ -214,6 +219,7 @@ impl Cli {
             tls,
             pack_sha256: self.pack_sha256,
             bootstrap_pack: self.bootstrap_pack,
+            bootstrap_model: self.bootstrap_model,
             pack_signers: self.pack_signers,
             oidc,
             insecure_dev: self.insecure_dev,

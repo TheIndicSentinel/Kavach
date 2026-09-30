@@ -183,6 +183,7 @@ async fn cedar_test_state() -> Arc<AppState> {
         tls: None,
         pack_sha256: None,
         bootstrap_pack: false,
+        bootstrap_model: false,
         pack_signers: None,
         oidc: None,
         insecure_dev: true,
@@ -517,6 +518,7 @@ async fn change_requests_can_be_cancelled_rejected_and_expire() {
         tls: None,
         pack_sha256: None,
         bootstrap_pack: false,
+        bootstrap_model: false,
         pack_signers: None,
         oidc: None,
         insecure_dev: true,
@@ -1028,6 +1030,39 @@ async fn write_signature(provider: &kavach_keys::InMemoryKeyProvider, pack: &std
     .unwrap();
 }
 
+async fn write_model_signature(
+    provider: &kavach_keys::InMemoryKeyProvider,
+    model: &std::path::Path,
+) {
+    let bytes = std::fs::read(model).unwrap();
+    let record: kavach_domain::ModelRecord = serde_yaml::from_slice(&bytes).unwrap();
+    let digest = kavach_policy::pack_digest(&bytes);
+    let identity = kavach_keys::ModelIdentity {
+        model_id: &record.model_id,
+        model_version: &record.version,
+        model_sha256: &digest,
+    };
+    let sig = kavach_keys::sign_model(provider, "pack-signer-1", identity)
+        .await
+        .expect("sign model");
+    std::fs::write(
+        kavach_keys::signature_path(model),
+        serde_json::to_string(&sig).unwrap(),
+    )
+    .unwrap();
+}
+
+fn write_signers(path: &std::path::Path, public: &kavach_ports::PublicKey, roles: &[&str]) {
+    std::fs::write(
+        path,
+        serde_json::json!({
+            "signers": [{ "kid": public.kid, "public_key": hex::encode(public.bytes), "roles": roles }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+}
+
 #[tokio::test]
 async fn signed_packs_required_when_signers_configured() {
     let (root, v0_path, model_path) = temp_registry();
@@ -1036,14 +1071,7 @@ async fn signed_packs_required_when_signers_configured() {
     let mut provider = kavach_keys::InMemoryKeyProvider::new();
     let public = provider.insert_seed("pack-signer-1", [3u8; 32]).unwrap();
     let signers_path = root.join("signers.json");
-    std::fs::write(
-        &signers_path,
-        serde_json::json!({
-            "signers": [{ "kid": public.kid, "public_key": hex::encode(public.bytes) }]
-        })
-        .to_string(),
-    )
-    .unwrap();
+    write_signers(&signers_path, &public, &["pack", "model"]);
 
     let config = ApiConfig {
         pack_path: v0_path.clone(),
@@ -1054,6 +1082,7 @@ async fn signed_packs_required_when_signers_configured() {
         tls: None,
         pack_sha256: None,
         bootstrap_pack: false,
+        bootstrap_model: false,
         pack_signers: Some(signers_path),
         oidc: None,
         insecure_dev: true,
@@ -1065,6 +1094,29 @@ async fn signed_packs_required_when_signers_configured() {
     assert!(AppState::from_config(&config).await.is_err());
 
     write_signature(&provider, &v0_path).await;
+    // With signers configured, the model file needs a model signature too.
+    let Err(err) = AppState::from_config(&config).await else {
+        panic!("unsigned model must be refused");
+    };
+    assert!(
+        format!("{err:?}").contains("model signature missing"),
+        "{err:?}"
+    );
+    write_model_signature(&provider, &model_path).await;
+    // A pack-only signer cannot vouch for a model.
+    write_signers(config.pack_signers.as_ref().unwrap(), &public, &["pack"]);
+    let Err(err) = AppState::from_config(&config).await else {
+        panic!("pack-only signer must not verify a model");
+    };
+    assert!(
+        format!("{err:?}").contains("not trusted to sign models"),
+        "{err:?}"
+    );
+    write_signers(
+        config.pack_signers.as_ref().unwrap(),
+        &public,
+        &["pack", "model"],
+    );
     let state = Arc::new(
         AppState::from_config(&config)
             .await
@@ -1188,4 +1240,112 @@ async fn hmac_v2_accepts_once_and_rejects_replay_and_v1() {
         StatusCode::UNAUTHORIZED,
         "v1 body-only signature"
     );
+}
+
+/// ADR-010: model files without governed state are marked; a pack/model
+/// mismatch is visible in the runtime and in `activate_model` bindings.
+#[tokio::test]
+async fn ungoverned_models_and_pack_mismatch_are_visible() {
+    let (root, v0_path, model_path) = temp_registry();
+    let vendor = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../models/finance/credit-vendor-bureau-v1.yaml");
+    std::fs::copy(
+        &vendor,
+        model_path.with_file_name("credit-vendor-bureau-v1.yaml"),
+    )
+    .unwrap();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&v0_path, &model_path, None)
+            .await
+            .expect("state"),
+    );
+    let app = router(state.clone());
+    let viewer = as_principal("viewer-1");
+
+    let (_, models) = call(&app, "GET", "/v1/models", &viewer, None).await;
+    let governed = |id: &str| {
+        models
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["model_id"] == id)
+            .unwrap()["governed"]
+            .clone()
+    };
+    assert_eq!(governed("credit-underwriting-v1"), json!(true));
+    assert_eq!(governed("credit-vendor-bureau-v1"), json!(false));
+
+    let (_, runtime) = call(&app, "GET", "/v1/runtime", &viewer, None).await;
+    assert_eq!(runtime["model_pack_mismatch"], false);
+    assert!(runtime["model_sha256"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256:"));
+
+    // The model names finance-v0; after activating finance-v1 they differ.
+    assert_eq!(
+        apply_as_admins(&app, "activate_pack", json!({ "pack_id": "finance-v1" })).await,
+        StatusCode::OK
+    );
+    let (_, runtime) = call(&app, "GET", "/v1/runtime", &viewer, None).await;
+    assert_eq!(runtime["model_pack_mismatch"], true, "{runtime}");
+    let raw = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/metrics")
+                .header("x-kavach-principal", "admin-1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let text =
+        String::from_utf8(raw.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+    assert!(text.contains("kavach_model_pack_mismatch 1"), "{text}");
+
+    // Supplier controls run at proposal: the vendor draft is in enforce.
+    let admin = as_principal("admin-1");
+    let (status, body) = propose(
+        &app,
+        &admin,
+        "activate_model",
+        json!({ "model_id": "credit-vendor-bureau-v1", "version": "1.0.0" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(body["error"]
+        .as_str()
+        .unwrap()
+        .contains("supplier controls"));
+
+    // A new version of the active model still names finance-v0: the
+    // approver sees the mismatch in the binding.
+    std::fs::write(
+        model_path.with_file_name("credit-underwriting-v1_1.yaml"),
+        std::fs::read_to_string(&model_path).unwrap().replacen(
+            "version: \"1.0.0\"",
+            "version: \"1.1.0\"",
+            1,
+        ),
+    )
+    .unwrap();
+    let (status, request) = propose(
+        &app,
+        &admin,
+        "activate_model",
+        json!({ "model_id": "credit-underwriting-v1", "version": "1.1.0" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    assert!(request["binding"]["warning"]
+        .as_str()
+        .unwrap()
+        .contains("finance-v1"));
+    assert_eq!(
+        approve(&app, &as_principal("admin-2"), &request).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(state.runtime().model_version, "1.1.0");
+    let _ = std::fs::remove_dir_all(root);
 }
