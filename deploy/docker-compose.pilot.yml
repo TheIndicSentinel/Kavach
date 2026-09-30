@@ -1,20 +1,24 @@
 # Partner pilot stack — Postgres + kavach-api with embedded console.
 # Usage:
-#   cp deploy/pilot.env.example deploy/.env
+#   cp deploy/pilot.env.example deploy/.env      # then set every required value
+#   mkdir -p deploy/pilot-config                 # entities.json + jwks.json (see docs/INSTALL.md)
 #   docker compose -f deploy/docker-compose.pilot.yml up --build
 #
 # Batch shadow smoke (one-shot):
 #   docker compose -f deploy/docker-compose.pilot.yml run --rm batch-shadow
+#
+# Security defaults (ADR-008): Postgres is not published to the host; the
+# database password must be set; API principals come from OIDC access tokens
+# (the X-Kavach-Principal header is refused); no example principals ship.
 
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kavach}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env (e.g. openssl rand -hex 24)}
       POSTGRES_DB: ${POSTGRES_DB:-kavach}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+    # No `ports:` — the database is reachable only from this compose network.
     volumes:
       - kavach-pilot-pg:/var/lib/postgresql/data
     healthcheck:
@@ -31,7 +35,15 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      KAVACH_DATABASE_URL: postgres://${POSTGRES_USER:-kavach}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-kavach}
+      KAVACH_DATABASE_URL: postgres://${POSTGRES_USER:-kavach}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
+      KAVACH_CEDAR_POLICY: crates/kavach-auth/policies/kavach.cedar
+      KAVACH_CEDAR_ENTITIES: /etc/kavach/entities.json
+      KAVACH_OIDC_ISSUER: ${KAVACH_OIDC_ISSUER:?set KAVACH_OIDC_ISSUER in deploy/.env}
+      KAVACH_OIDC_AUDIENCE: ${KAVACH_OIDC_AUDIENCE:?set KAVACH_OIDC_AUDIENCE in deploy/.env}
+      KAVACH_OIDC_JWKS_FILE: /etc/kavach/jwks.json
+      KAVACH_OIDC_GROUPS_CLAIM: ${KAVACH_OIDC_GROUPS_CLAIM:-groups}
+    volumes:
+      - ./pilot-config:/etc/kavach:ro
     ports:
       - "${KAVACH_HTTP_PORT:-8080}:8080"
       - "${KAVACH_GRPC_PORT:-50051}:50051"
@@ -58,7 +70,7 @@ services:
       - --evidence-store
       - postgres
     environment:
-      KAVACH_DATABASE_URL: postgres://${POSTGRES_USER:-kavach}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-kavach}
+      KAVACH_DATABASE_URL: postgres://${POSTGRES_USER:-kavach}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
     volumes:
       - pilot-batch-out:/tmp
 

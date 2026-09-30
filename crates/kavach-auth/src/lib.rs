@@ -2,12 +2,13 @@
 
 mod error;
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::str::FromStr;
 
 use cedar_policy::{
-    Authorizer, Decision, Entities, EntityId, EntityTypeName, EntityUid, PolicySet, Request,
-    Schema, ValidationMode, Validator,
+    Authorizer, Decision, Entities, Entity, EntityId, EntityTypeName, EntityUid, PolicySet,
+    Request, Schema, ValidationMode, Validator,
 };
 pub use error::AuthError;
 
@@ -116,9 +117,28 @@ impl KavachAuthorizer {
         })
     }
 
+    /// Authorizes a principal known from the static entities file.
     pub fn authorize(&self, principal_id: &str, action: KavachAction) -> Result<bool, AuthError> {
+        self.authorize_with_groups(principal_id, &[], action)
+    }
+
+    /// Authorizes an authenticated principal whose group memberships come from
+    /// its credential (e.g. an OIDC `groups` claim). Groups are merged with any
+    /// memberships in the static entities file; group names are used as
+    /// literal entity ids.
+    pub fn authorize_with_groups(
+        &self,
+        principal_id: &str,
+        groups: &[String],
+        action: KavachAction,
+    ) -> Result<bool, AuthError> {
         let principal = user_uid(principal_id)?;
         let action_uid = action_uid(action)?;
+        let entities = if groups.is_empty() {
+            self.entities.clone()
+        } else {
+            self.entities_with_principal(&principal, groups)?
+        };
 
         let request = Request::new(
             principal,
@@ -131,10 +151,49 @@ impl KavachAuthorizer {
 
         let response = self
             .authorizer
-            .is_authorized(&request, &self.policies, &self.entities);
+            .is_authorized(&request, &self.policies, &entities);
 
         Ok(response.decision() == Decision::Allow)
     }
+
+    /// Static entities plus `principal` with parents = static memberships ∪
+    /// `groups`, validated against the schema.
+    fn entities_with_principal(
+        &self,
+        principal: &EntityUid,
+        groups: &[String],
+    ) -> Result<Entities, AuthError> {
+        let mut parents: HashSet<EntityUid> = groups
+            .iter()
+            .map(|g| group_uid(g))
+            .collect::<Result<_, _>>()?;
+        let mut others = Vec::new();
+        for entity in self.entities.iter() {
+            if entity.uid() == *principal {
+                parents.extend(entity.clone().into_inner().2);
+            } else {
+                others.push(entity.clone());
+            }
+        }
+        others.push(Entity::new_no_attrs(principal.clone(), parents));
+        Entities::from_entities(others, Some(&self.schema))
+            .map_err(|err| AuthError::ParseEntities(err.to_string()))
+    }
+}
+
+/// Group ids come from credentials; they are used literally and bounded.
+fn group_uid(group: &str) -> Result<EntityUid, AuthError> {
+    if group.is_empty() || group.len() > 256 || group.chars().any(char::is_control) {
+        return Err(AuthError::InvalidPrincipal(format!(
+            "invalid group name: {group:?}"
+        )));
+    }
+    let type_name = EntityTypeName::from_str("Kavach::Group")
+        .map_err(|err| AuthError::InvalidPrincipal(err.to_string()))?;
+    Ok(EntityUid::from_type_name_and_id(
+        type_name,
+        EntityId::new(group),
+    ))
 }
 
 /// Builds the principal uid from the raw header value. `EntityId::new` treats
@@ -230,6 +289,34 @@ mod tests {
             .err()
             .expect("unknown entity type must be rejected");
         assert!(matches!(err, AuthError::ParseEntities(_)), "{err}");
+    }
+
+    #[test]
+    fn groups_from_credentials_grant_group_permissions() {
+        let auth = fixture_authorizer();
+        // Unknown user with no groups: denied.
+        assert!(!auth
+            .authorize("sso-user-42", KavachAction::Evaluate)
+            .unwrap());
+        // Same user asserted into the operators group by its credential.
+        assert!(auth
+            .authorize_with_groups("sso-user-42", &["operators".into()], KavachAction::Evaluate)
+            .unwrap());
+        // A group that grants nothing still denies.
+        assert!(!auth
+            .authorize_with_groups("sso-user-42", &["nobody".into()], KavachAction::Evaluate)
+            .unwrap());
+        // Static memberships are kept when credential groups are added.
+        assert!(auth
+            .authorize_with_groups("viewer-1", &["unrelated".into()], KavachAction::ReadHealth)
+            .unwrap());
+        // Control characters in a group name are rejected.
+        assert!(auth
+            .authorize_with_groups("x", &["bad\u{7}group".into()], KavachAction::ReadHealth)
+            .is_err());
+        assert!(auth
+            .authorize_with_groups("x", &[String::new()], KavachAction::ReadHealth)
+            .is_err());
     }
 
     #[test]

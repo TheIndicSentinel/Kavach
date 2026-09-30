@@ -179,6 +179,8 @@ async fn cedar_test_state() -> Arc<AppState> {
         pack_sha256: None,
         bootstrap_pack: false,
         pack_signers: None,
+        oidc: None,
+        insecure_dev: true,
     };
     Arc::new(AppState::from_config(&config).await.expect("cedar state"))
 }
@@ -825,6 +827,8 @@ async fn signed_packs_required_when_signers_configured() {
         pack_sha256: None,
         bootstrap_pack: false,
         pack_signers: Some(signers_path),
+        oidc: None,
+        insecure_dev: true,
     };
 
     // Unsigned startup pack is refused.
@@ -887,4 +891,61 @@ async fn evaluate_idempotency_conflict_returns_409() {
     request.input["debt_ratio"] = serde_json::json!(0.99);
     let changed = post(serde_json::to_vec(&request).unwrap()).await.unwrap();
     assert_eq!(changed.status(), StatusCode::CONFLICT);
+}
+
+/// HMAC v2: a valid signature is accepted once; replay and v1 body-only
+/// signatures are rejected (ADR-008).
+#[tokio::test]
+async fn hmac_v2_accepts_once_and_rejects_replay_and_v1() {
+    let (pack, model) = fixture_paths();
+    let secret = "test-secret";
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, Some(secret.into()))
+            .await
+            .expect("state"),
+    );
+    let body = include_str!("../../../golden/finance/v0/credit_clean.json");
+    let request_json: serde_json::Value = serde_json::from_str(body).unwrap();
+    let mut request: EvaluateRequest =
+        serde_json::from_value(request_json["request"].clone()).unwrap();
+    let now = Utc::now();
+    request.decision_time = now;
+    request.consent.timestamp = now;
+    let payload = serde_json::to_vec(&request).unwrap();
+
+    let ts = now.timestamp().to_string();
+    let nonce = "nonce-h2a-000000000001";
+    let v2 = kavach_api::hmac_auth::sign(
+        secret,
+        &kavach_api::hmac_auth::string_to_sign(&ts, nonce, "POST", "/v1/evaluate", &payload),
+    );
+    let send = |sig: String, nonce: &'static str| {
+        router(state.clone()).oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/evaluate")
+                .header("content-type", "application/json")
+                .header("x-kavach-principal", "operator-1")
+                .header("x-kavach-timestamp", ts.clone())
+                .header("x-kavach-nonce", nonce)
+                .header("x-kavach-signature", sig)
+                .body(Body::from(payload.clone()))
+                .unwrap(),
+        )
+    };
+    assert_eq!(
+        send(v2.clone(), nonce).await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        send(v2, nonce).await.unwrap().status(),
+        StatusCode::UNAUTHORIZED,
+        "replay"
+    );
+    let v1 = kavach_api::hmac_auth::sign(secret, &payload);
+    assert_eq!(
+        send(v1, "nonce-h2a-000000000002").await.unwrap().status(),
+        StatusCode::UNAUTHORIZED,
+        "v1 body-only signature"
+    );
 }

@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
 use kavach_api::{
-    grpc_server_tls_config, resolve_access_control, router, serve_http, AccessControlKind,
-    AccessControlMode, ApiConfig, AppState, EvaluateServiceServer, EvidenceStoreKind,
-    GrpcEvaluateService, TlsConfig,
+    grpc_server_tls_config, resolve_access_control, router, serve_http, validate_principal_sources,
+    AccessControlKind, AccessControlMode, ApiConfig, AppState, EvaluateServiceServer,
+    EvidenceStoreKind, GrpcEvaluateService, JwksSource, OidcConfig, TlsConfig,
 };
 use tonic::transport::Server;
 
@@ -20,6 +20,63 @@ enum EvidenceStoreArg {
 enum AccessControlArg {
     None,
     Cedar,
+}
+
+/// OIDC / OAuth 2.0 JWT access tokens for API principals (ADR-008).
+#[derive(clap::Args)]
+#[allow(clippy::struct_field_names)] // field names become the `--oidc-*` flags
+struct OidcArgs {
+    /// Expected token issuer (`iss`), e.g. https://idp.bank.example/realms/kavach
+    #[arg(long, env = "KAVACH_OIDC_ISSUER")]
+    oidc_issuer: Option<String>,
+
+    /// Expected audience (`aud`) for Kavach API tokens.
+    #[arg(long, env = "KAVACH_OIDC_AUDIENCE")]
+    oidc_audience: Option<String>,
+
+    /// JWKS file with the issuer's signing keys (offline deployments).
+    #[arg(long, env = "KAVACH_OIDC_JWKS_FILE", conflicts_with = "oidc_jwks_url")]
+    oidc_jwks_file: Option<PathBuf>,
+
+    /// HTTPS JWKS URL at the bank's identity provider (fetched at startup and refreshed).
+    #[arg(long, env = "KAVACH_OIDC_JWKS_URL")]
+    oidc_jwks_url: Option<String>,
+
+    /// Claim holding the principal id.
+    #[arg(long, env = "KAVACH_OIDC_PRINCIPAL_CLAIM", default_value = "sub")]
+    oidc_principal_claim: String,
+
+    /// Claim holding the principal's groups (array of strings).
+    #[arg(long, env = "KAVACH_OIDC_GROUPS_CLAIM", default_value = "groups")]
+    oidc_groups_claim: String,
+
+    /// Allowed clock skew for `exp`/`nbf`.
+    #[arg(long, env = "KAVACH_OIDC_LEEWAY_SECONDS", default_value_t = 60)]
+    oidc_leeway_seconds: u64,
+}
+
+impl OidcArgs {
+    fn into_config(self) -> Result<Option<OidcConfig>, String> {
+        let jwks = match (self.oidc_jwks_file, self.oidc_jwks_url) {
+            (Some(path), None) => Some(JwksSource::File(path)),
+            (None, Some(url)) => Some(JwksSource::Url(url)),
+            _ => None,
+        };
+        match (self.oidc_issuer, self.oidc_audience, jwks) {
+            (None, None, None) => Ok(None),
+            (Some(issuer), Some(audience), Some(jwks)) => Ok(Some(OidcConfig {
+                issuer,
+                audience,
+                jwks,
+                principal_claim: self.oidc_principal_claim,
+                groups_claim: self.oidc_groups_claim,
+                leeway_seconds: self.oidc_leeway_seconds,
+            })),
+            _ => Err("OIDC needs --oidc-issuer, --oidc-audience and one of \
+                      --oidc-jwks-file / --oidc-jwks-url"
+                .into()),
+        }
+    }
 }
 
 #[derive(Parser)]
@@ -41,9 +98,13 @@ struct Cli {
     #[arg(long, env = "KAVACH_PACK_SHA256")]
     pack_sha256: Option<String>,
 
-    /// When set, requires `X-Kavach-Signature: sha256=<hex>` over the raw HTTP request body.
+    /// When set, `/v1/evaluate` requires an HMAC v2 signature
+    /// (`X-Kavach-Timestamp`, `X-Kavach-Nonce`, `X-Kavach-Signature`; ADR-008).
     #[arg(long, env = "KAVACH_HMAC_SECRET")]
     hmac_secret: Option<String>,
+
+    #[command(flatten)]
+    oidc: OidcArgs,
 
     #[arg(long, value_enum, default_value = "memory")]
     evidence_store: EvidenceStoreArg,
@@ -115,6 +176,8 @@ impl Cli {
             self.cedar_policy,
             self.cedar_entities,
         )?;
+        let oidc = self.oidc.into_config()?;
+        validate_principal_sources(&access_control, oidc.is_some(), self.insecure_dev)?;
 
         let tls = match (self.tls_cert, self.tls_key) {
             (Some(cert_path), Some(key_path)) => Some(TlsConfig::from_paths(
@@ -138,6 +201,8 @@ impl Cli {
             pack_sha256: self.pack_sha256,
             bootstrap_pack: self.bootstrap_pack,
             pack_signers: self.pack_signers,
+            oidc,
+            insecure_dev: self.insecure_dev,
         })
     }
 }
@@ -164,14 +229,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let insecure = matches!(config.access_control, AccessControlKind::None);
-    let caller_authenticated =
-        config.hmac_secret.is_some() || config.tls.as_ref().is_some_and(TlsConfig::is_mtls);
-    if !insecure && !caller_authenticated {
+    let principal_sources = match (config.oidc.is_some(), config.insecure_dev) {
+        (true, true) => "oidc-jwt+insecure-header",
+        (true, false) => "oidc-jwt",
+        (false, true) => "insecure-header",
+        (false, false) => "none",
+    };
+    if config.insecure_dev && !insecure {
         eprintln!(
-            "WARNING: kavach-api: Cedar authorizes the principal named in X-Kavach-Principal, \
-             but callers are not authenticated (no --hmac-secret, no mTLS client CA). Anyone \
-             who can reach this port can claim any principal. Configure HMAC or mTLS outside \
-             local development."
+            "WARNING: kavach-api: --insecure-dev accepts the self-asserted X-Kavach-Principal \
+             header. Anyone who can reach this port can claim any principal. Development only."
         );
     }
     if insecure {
@@ -182,7 +249,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
     eprintln!(
         "kavach-api listening http={} grpc={} transport={} evidence={:?} access_control={:?} \
-         insecure_dev={} pack_sha256={}",
+         principal_sources={principal_sources} insecure_dev={} pack_sha256={}",
         http_listen,
         grpc_listen,
         tls_mode,

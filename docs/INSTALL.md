@@ -18,7 +18,7 @@ Bank deployment model per [ADR-002](ADR-002-deployment-architecture.md): **two a
          │                      ▼
          │               React console (static, embedded)
          ▼
-    Corporate IdP ──▶ X-Kavach-Principal (Cedar RBAC, optional)
+    Corporate IdP ──▶ OIDC access token (Cedar RBAC principal)
 ```
 
 **Recommended first path:** batch shadow ingest (ADR-001 §6). Partners export daily NDJSON; `kavach-batch` writes governance results and evidence without blocking loan RPCs.
@@ -31,7 +31,7 @@ Bank deployment model per [ADR-002](ADR-002-deployment-architecture.md): **two a
 | PostgreSQL | 14+ with a dedicated database and role |
 | Node.js | 22+ — only to build the governance console |
 | TLS certificates | Required for production; mTLS optional for service-to-service |
-| IdP | Maps users/groups to `X-Kavach-Principal` when Cedar RBAC is enabled |
+| IdP | Issues OIDC access tokens (principal + groups) for Cedar RBAC (ADR-008) |
 
 ## Build
 
@@ -91,7 +91,10 @@ Paths default via env vars; CLI flags override.
   --evidence-store postgres \
   --access-control cedar \
   --cedar-policy crates/kavach-auth/policies/kavach.cedar \
-  --cedar-entities crates/kavach-auth/policies/entities.example.json
+  --cedar-entities /etc/kavach/entities.json \
+  --oidc-issuer https://idp.bank.example/realms/kavach \
+  --oidc-audience kavach-api \
+  --oidc-jwks-file /etc/kavach/jwks.json
 ```
 
 **Endpoints**
@@ -120,9 +123,9 @@ Paths default via env vars; CLI flags override.
 | `/v1/admin/batch-jobs/{job_id}` | GET | `read_batch_jobs` | Batch job detail |
 | `/` | GET | — | Governance console (when built) |
 
-Lifecycle mutations require `X-Kavach-Principal` (actor) and `X-Kavach-Approver` (distinct admin).
+Every route except `/` needs `Authorization: Bearer <access token>` when Cedar is on. Lifecycle mutations also need `X-Kavach-Approver` (a different admin; still self-asserted until H3). The actor is the token's principal.
 
-gRPC: `EvaluateService` on `--grpc-listen` (default `50051`). Pass principal via metadata `x-kavach-principal`.
+gRPC: `EvaluateService` on `--grpc-listen` (default `50051`). Pass the token in metadata `authorization: Bearer <token>`.
 
 **Secure defaults.** `--access-control` defaults to `cedar` (env `KAVACH_ACCESS_CONTROL`). Running without access control requires the explicit `--insecure-dev` flag (env `KAVACH_INSECURE_DEV`); the API then allows every request and prints a warning at startup. Never use it outside local development.
 
@@ -146,7 +149,27 @@ kavach-keys verify-pack --signers signers.json --pack packs/finance/v0.yaml
 
 `signers.json`: `{"signers":[{"kid":"pack-signer-1","public_key":"<hex>"}]}`. Deploy the `.sig` file next to each pack and start with `--pack-signers signers.json` (env `KAVACH_PACK_SIGNERS`). Without `--pack-signers`, behaviour is unchanged. Any byte change to a pack requires re-signing.
 
-**Caller authentication (current limits).** Cedar authorizes the principal named in `X-Kavach-Principal`; it does not authenticate the caller. `--hmac-secret` and mTLS (`--tls-client-ca`) reduce who can reach the API, but **neither binds the principal**: mTLS proves only that the client certificate chains to the CA, and HMAC covers only HTTP `/v1/evaluate` (not admin routes or gRPC) without replay protection. Until authenticated principals land (H2), run the API only on a network segment reachable by trusted callers, behind mTLS, and treat the principal header as advisory. The API prints a warning at startup when neither HMAC nor mTLS is set.
+**Caller authentication (OIDC access tokens, ADR-008).** With Cedar on, the API needs an authenticated principal source; startup fails without one unless `--insecure-dev` is set.
+
+| Flag | Env | Default | Meaning |
+|---|---|---|---|
+| `--oidc-issuer` | `KAVACH_OIDC_ISSUER` | — | Expected `iss` |
+| `--oidc-audience` | `KAVACH_OIDC_AUDIENCE` | — | Expected `aud` |
+| `--oidc-jwks-file` | `KAVACH_OIDC_JWKS_FILE` | — | JWKS on disk (offline) |
+| `--oidc-jwks-url` | `KAVACH_OIDC_JWKS_URL` | — | JWKS over HTTPS; refreshed every 10 min and on an unknown `kid` |
+| `--oidc-principal-claim` | `KAVACH_OIDC_PRINCIPAL_CLAIM` | `sub` | Claim used as the Cedar principal id |
+| `--oidc-groups-claim` | `KAVACH_OIDC_GROUPS_CLAIM` | `groups` | Array claim mapped to Cedar groups |
+| `--oidc-leeway-seconds` | `KAVACH_OIDC_LEEWAY_SECONDS` | `60` | Clock skew for `exp`/`nbf` |
+
+Issuer, audience and one JWKS source must be set together. Tokens must be signed with RS256, PS256, ES256 or EdDSA and carry a `kid`. Token groups become Cedar `Kavach::Group` parents (for example `admins`, `viewers`, `operators`), merged with memberships in `--cedar-entities`; name IdP groups to match your Cedar groups, or list users in the entities file. `X-Kavach-Principal` is refused (401) unless `--insecure-dev`; sending it together with a token is a 400.
+
+*Keycloak (development):* create a realm and a confidential client with the service-account flow, add an audience mapper for `kavach-api` and a *Group Membership* mapper named `groups` (full path off). Then `--oidc-issuer http(s)://<host>/realms/<realm>`, `--oidc-jwks-url https://<host>/realms/<realm>/protocol/openid-connect/certs` (or save that JSON as the JWKS file), and get a token with `curl -d grant_type=client_credentials -d client_id=... -d client_secret=... https://<host>/realms/<realm>/protocol/openid-connect/token`.
+
+mTLS (`--tls-client-ca`) restricts who can connect but does not yet map the certificate to a principal (H2b).
+
+**HMAC v2 on `/v1/evaluate`.** With `--hmac-secret`, send `X-Kavach-Timestamp` (unix seconds, ±300 s), `X-Kavach-Nonce` (16–128 characters `[A-Za-z0-9_-]`, single use) and `X-Kavach-Signature: sha256=<hex HMAC-SHA256>` over `v2\n{ts}\n{nonce}\n{METHOD}\n{path?query}\n` followed by the raw body. `scripts/pilot-phase3.sh` shows a working signer.
+
+**Upgrading from M1.5 (breaking).** Callers that sent only `X-Kavach-Principal` now get 401: issue access tokens, or run `--insecure-dev` locally. Body-only HMAC signatures are rejected; sign v2. The pilot compose file now requires `POSTGRES_PASSWORD`, `KAVACH_OIDC_ISSUER`/`KAVACH_OIDC_AUDIENCE`, and a `deploy/pilot-config/` directory with `entities.json` and `jwks.json`; Postgres is no longer published on the host.
 
 **PoC / dev (memory evidence, no Cedar — insecure, local only):**
 
@@ -219,7 +242,7 @@ Run two containers from the same image (different `CMD`):
 
 Both containers share `KAVACH_DATABASE_URL` and pack/model paths. Place Postgres in the same VPC subnet as the apps (ADR-001 latency SLO).
 
-Reverse proxy / API gateway terminates TLS and forwards `X-Kavach-Principal` from the IdP JWT or service account mapping.
+Reverse proxy / API gateway terminates TLS and passes the caller's `Authorization: Bearer` access token through unchanged (a trusted-proxy identity header is not supported yet; ADR-008).
 
 ## Partner integration checklist
 
@@ -237,7 +260,7 @@ See [PARTNER_PILOT.md](PARTNER_PILOT.md) for the full pilot playbook. Quick path
 ./scripts/verify.sh
 
 curl -s http://localhost:8080/health
-# With Cedar: curl -s -H 'X-Kavach-Principal: viewer-1' http://localhost:8080/health
+# With Cedar: curl -s -H "Authorization: Bearer ${TOKEN}" http://localhost:8080/health
 ```
 
 ## Related docs

@@ -9,6 +9,15 @@ APPROVER="${PILOT_APPROVER:-admin-2}"
 EVAL_PRINCIPAL="${PILOT_EVAL_PRINCIPAL:-}"
 MODEL_ID="${PILOT_MODEL_ID:-credit-underwriting-v1}"
 REQUEST_TEMPLATE="${PILOT_EVAL_REQUEST:-partner/finance/credit_underwriting_v1_request.json}"
+
+# Actor credentials: an OIDC access token (ADR-008), or — only when the API
+# runs with --insecure-dev — the self-asserted X-Kavach-Principal header.
+if [[ -n "${PILOT_ACTOR_TOKEN:-}" ]]; then
+  actor_auth=(-H "Authorization: Bearer ${PILOT_ACTOR_TOKEN}")
+else
+  actor_auth=(-H "X-Kavach-Principal: ${ACTOR}")
+fi
+
 EVAL_BODY_FILE="${PILOT_EVAL_BODY:-/tmp/kavach-pilot-phase3-eval.json}"
 
 echo "==> Phase 3.1 — capture runtime posture"
@@ -20,7 +29,7 @@ echo "==> Phase 3.2 — promote to enforce (dual control)"
 if [[ "${original_mode}" != "enforce" ]]; then
   curl -fsS -X PATCH "${API}/v1/models/${MODEL_ID}" \
     -H "Content-Type: application/json" \
-    -H "X-Kavach-Principal: ${ACTOR}" \
+    "${actor_auth[@]}" \
     -H "X-Kavach-Approver: ${APPROVER}" \
     -d '{"governance_mode":"enforce"}' >/dev/null
   echo "governance_mode set to enforce"
@@ -48,24 +57,36 @@ print("correlation_id:", template["correlation_id"])
 PY
 
 evaluate_args=(-fsS -X POST "${API}/v1/evaluate" -H "Content-Type: application/json" --data-binary "@${EVAL_BODY_FILE}")
-if [[ -n "${EVAL_PRINCIPAL}" ]]; then
+if [[ -n "${PILOT_EVAL_TOKEN:-}" ]]; then
+  evaluate_args+=(-H "Authorization: Bearer ${PILOT_EVAL_TOKEN}")
+elif [[ -n "${EVAL_PRINCIPAL}" ]]; then
   evaluate_args+=(-H "X-Kavach-Principal: ${EVAL_PRINCIPAL}")
 fi
 if [[ -n "${PILOT_HMAC_SECRET:-}" ]]; then
-  signature="$(PILOT_HMAC_SECRET="${PILOT_HMAC_SECRET}" python3 - "$EVAL_BODY_FILE" <<'PY'
+  # HMAC v2 (ADR-008): timestamp + single-use nonce + method + path + body.
+  hmac_lines="$(PILOT_HMAC_SECRET="${PILOT_HMAC_SECRET}" python3 - "$EVAL_BODY_FILE" <<'PY'
 import hashlib
 import hmac
 import os
+import secrets
 import sys
+import time
 from pathlib import Path
 
 secret = os.environ["PILOT_HMAC_SECRET"].encode()
 body = Path(sys.argv[1]).read_bytes()
-digest = hmac.new(secret, body, hashlib.sha256).hexdigest()
-print(f"sha256={digest}")
+ts = str(int(time.time()))
+nonce = secrets.token_hex(16)
+message = f"v2\n{ts}\n{nonce}\nPOST\n/v1/evaluate\n".encode() + body
+print(ts)
+print(nonce)
+print("sha256=" + hmac.new(secret, message, hashlib.sha256).hexdigest())
 PY
 )"
-  evaluate_args+=(-H "X-Kavach-Signature: ${signature}")
+  hmac_ts="$(sed -n 1p <<<"$hmac_lines")"
+  hmac_nonce="$(sed -n 2p <<<"$hmac_lines")"
+  hmac_sig="$(sed -n 3p <<<"$hmac_lines")"
+  evaluate_args+=(-H "X-Kavach-Timestamp: ${hmac_ts}" -H "X-Kavach-Nonce: ${hmac_nonce}" -H "X-Kavach-Signature: ${hmac_sig}")
 fi
 
 echo "==> Phase 3.4 — sync evaluate"
@@ -94,11 +115,11 @@ if [[ "${PILOT_SKIP_RESTORE:-}" != "1" && "${original_mode}" != "enforce" ]]; th
   echo "==> Phase 3.5 — restore governance mode (${original_mode})"
   curl -fsS -X PATCH "${API}/v1/models/${MODEL_ID}" \
     -H "Content-Type: application/json" \
-    -H "X-Kavach-Principal: ${ACTOR}" \
+    "${actor_auth[@]}" \
     -H "X-Kavach-Approver: ${APPROVER}" \
     -d "{\"governance_mode\":\"${original_mode}\"}" >/dev/null
   echo "restored governance_mode to ${original_mode}"
 fi
 
 echo "PASS: Phase 3 sync enforce exit criteria met (API path)"
-echo "Manual: enable Cedar/mTLS/HMAC in production; run kavach-evidence verify on exported chain"
+echo "Manual: use OIDC access tokens (PILOT_ACTOR_TOKEN / PILOT_EVAL_TOKEN) and HMAC v2 in production; run kavach-evidence verify on exported chain"

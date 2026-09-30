@@ -64,8 +64,12 @@ PY
 
 if [[ "${PILOT_API_URL:-}" != "" ]]; then
   echo "==> Phase 1.4 — batch jobs API (Postgres pilot)"
-  jobs="$(curl -fsS "${PILOT_API_URL}/v1/admin/batch-jobs?limit=5" \
-    ${PILOT_PRINCIPAL:+-H "X-Kavach-Principal: ${PILOT_PRINCIPAL}"})"
+  if [[ -n "${PILOT_TOKEN:-}" ]]; then
+    auth_header="Authorization: Bearer ${PILOT_TOKEN}"
+  else
+    auth_header="X-Kavach-Principal: ${PILOT_PRINCIPAL:-}"
+  fi
+  jobs="$(curl -fsS "${PILOT_API_URL}/v1/admin/batch-jobs?limit=5" -H "${auth_header}")"
   count="$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)))' <<<"$jobs")"
   echo "batch jobs visible: $count"
   if [[ "$count" -lt 1 ]]; then

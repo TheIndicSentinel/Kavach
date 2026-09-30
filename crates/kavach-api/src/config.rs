@@ -16,6 +16,28 @@ pub struct ApiConfig {
     /// Trusted pack signers (JSON). When set, every pack load requires a
     /// valid detached signature (`<pack>.sig`) from one of them.
     pub pack_signers: Option<PathBuf>,
+    /// OIDC/OAuth 2.0 JWT verification for API principals (ADR-008).
+    pub oidc: Option<crate::oidc::OidcConfig>,
+    /// Development only: accept the self-asserted `X-Kavach-Principal` header.
+    pub insecure_dev: bool,
+}
+
+/// Cedar access control needs an authenticated principal source (OIDC now,
+/// mTLS SAN in H2b) unless `--insecure-dev` explicitly allows the header.
+pub fn validate_principal_sources(
+    access_control: &AccessControlKind,
+    oidc_configured: bool,
+    insecure_dev: bool,
+) -> Result<(), String> {
+    match access_control {
+        AccessControlKind::Cedar { .. } if !oidc_configured && !insecure_dev => Err(
+            "cedar access control needs an authenticated principal source: configure OIDC \
+             (--oidc-issuer, --oidc-audience, --oidc-jwks-file or --oidc-jwks-url); \
+             the X-Kavach-Principal header is accepted only with --insecure-dev"
+                .into(),
+        ),
+        _ => Ok(()),
+    }
 }
 
 /// Requested access-control mode, before validation.

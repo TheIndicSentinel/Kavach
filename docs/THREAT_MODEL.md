@@ -36,7 +36,7 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 
 | Threat | Mitigation | Status |
 |---|---|---|
-| Spoofing (API caller) | The principal is the client-supplied `X-Kavach-Principal` header on every route. mTLS proves only that *some* client certificate chains to the CA and is **not bound to the principal**; HMAC covers only HTTP `/v1/evaluate` (not admin routes, not gRPC) and has no timestamp or nonce. Startup warning when neither is configured. | **Weak** — authenticated principal (mTLS SAN / OIDC JWT) planned in H2 |
+| Spoofing (API caller) | OIDC access token (JWT) on every HTTP route and gRPC call: issuer, audience, JWKS `kid`, `exp`/`nbf`, asymmetric algorithms only (ADR-008). `X-Kavach-Principal` accepted only with `--insecure-dev`; Cedar without an authenticated source refuses to start. HMAC v2 (timestamp + nonce + method + path) on `/v1/evaluate`. Residual: approver header still self-asserted (H3); mTLS not bound to the principal until H2b; tokens valid until expiry. | **Mitigated with OIDC** — mTLS SAN in H2b |
 | Spoofing (authorization disabled) | `--access-control` defaults to `cedar`; disabling requires `--insecure-dev` and prints a warning | **This release** |
 | Tampering / misconfiguration (API RBAC policies) | Policies strictly validated and entities/requests validated against the compiled-in Cedar schema at startup; principal header treated as a literal id | **This release** |
 | Spoofing (agent) | Keycloak client-credentials JWT via JWKS; `X-Kavach-Principal` not accepted on agent surfaces | Planned (M3) |
@@ -51,7 +51,7 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Tampering (evidence chain) | Hash chain + verify CLI detect in-place edits of individual rows; a database writer can rewrite/re-hash or truncate the chain undetected | Partial — signed heads, INSERT-only role, export planned (P1) |
 | Tampering (evidence, stronger) | Per-record signatures, signed checkpoints, JCS canonical hashing | Planned (M2, ADR-005) |
 | Tampering / forgery (mandate) | Strict JWS (EdDSA, JCS-canonical, verified before parsing); stored status + stored-token match + trusted-time validity; issuance only from SoR events signed by a key registered for that system; event replay, staleness and wildcard subjects rejected | **This release** (library; enforced on agent requests from M1.5/M1.6) |
-| Repudiation | Evidence rows carry service identity; admin audit records actor + approver names — but those names are caller-asserted and the audit table is mutable | Partial — H2/H3 and P1 |
+| Repudiation | Evidence rows carry service identity; admin audit records the authenticated actor and the approver name — the approver is still caller-asserted and the audit table is mutable | Partial — H3 and P1 |
 | Repudiation (approvals) | WebAuthn step-up bound to `action_hash`; single-use credential | Planned (M4) |
 | Information disclosure | No raw input in DB (digests); no telemetry by default | Implemented |
 | Information disclosure (agents) | Capability references; values resolved only in gateway; purpose-minimal fields | Planned (M3) |

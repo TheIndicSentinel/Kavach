@@ -8,7 +8,7 @@ On-prem pilot for Indian structured-credit integrations. This is the **first pro
 |---|---|
 | Partner integration engineer | LOS → `EvaluateRequest` mapping, NDJSON export, field validation |
 | Bank model risk / compliance | Shadow review, promotion to enforce, dual-control sign-off |
-| Bank platform ops | Postgres, containers, IdP → `X-Kavach-Principal`, CronJob for batch |
+| Bank platform ops | Postgres, containers, IdP access tokens for Kavach (ADR-008), CronJob for batch |
 
 ## Pilot phases
 
@@ -34,12 +34,12 @@ On-prem pilot for Indian structured-credit integrations. This is the **first pro
 **Automated API path:**
 
 ```bash
-# Cedar pilot (default entities include admin-1 / admin-2)
 export PILOT_API_URL=http://localhost:8080
-export PILOT_PRINCIPAL=viewer-1
-export PILOT_ACTOR=admin-1
-export PILOT_APPROVER=admin-2
+export PILOT_TOKEN=...          # access token of a viewer (reads)
+export PILOT_ACTOR_TOKEN=...    # access token of an admin (actor)
+export PILOT_APPROVER=admin-2   # a different admin (still self-asserted until H3)
 ./scripts/pilot-phase2.sh
+# Local --insecure-dev only: PILOT_PRINCIPAL=viewer-1 PILOT_ACTOR=admin-1 instead of tokens
 ```
 
 **Exit criteria:** Audit log captures all mutations; retention settings persisted; principals mapped from IdP.
@@ -48,8 +48,8 @@ export PILOT_APPROVER=admin-2
 
 1. Promote model to `production` if vendor (`origin: vendor`) before enforce.
 2. Switch model `governance_mode` to `enforce` via dual-control PATCH.
-3. Enable HMAC on HTTP evaluate (`KAVACH_HMAC_SECRET`) for scoring API path.
-4. Enable Cedar RBAC and mTLS per [INSTALL.md](INSTALL.md).
+3. Enable HMAC v2 on HTTP evaluate (`KAVACH_HMAC_SECRET`; timestamp + nonce) for the scoring API path.
+4. Keep Cedar RBAC with OIDC access tokens on; add mTLS per [INSTALL.md](INSTALL.md).
 
 **Exit criteria:** Sync evaluate returns `policy_decision == returned_decision`; evidence chain verifies with `kavach-evidence verify`.
 
@@ -57,21 +57,25 @@ export PILOT_APPROVER=admin-2
 
 ```bash
 export PILOT_API_URL=http://localhost:8080
-export PILOT_ACTOR=admin-1
-export PILOT_APPROVER=admin-2
-# export PILOT_EVAL_PRINCIPAL=operator-1   # when Cedar enabled
-# export PILOT_HMAC_SECRET=...             # when HMAC enabled
+export PILOT_ACTOR_TOKEN=...      # admin access token (actor)
+export PILOT_APPROVER=admin-2     # a different admin
+export PILOT_EVAL_TOKEN=...       # operator access token for /v1/evaluate
+# export PILOT_HMAC_SECRET=...    # when HMAC v2 is enabled
 ./scripts/pilot-phase3.sh
 ```
 
 ## Quick start (Docker pilot)
 
 ```bash
-cp deploy/pilot.env.example deploy/.env
+cp deploy/pilot.env.example deploy/.env   # set POSTGRES_PASSWORD and KAVACH_OIDC_*
+mkdir -p deploy/pilot-config
+# deploy/pilot-config/jwks.json      — your IdP's JWKS
+# deploy/pilot-config/entities.json  — Cedar users/groups (start from
+#                                      crates/kavach-auth/policies/entities.example.json)
 docker compose -f deploy/docker-compose.pilot.yml up --build -d
 
-# Health (Cedar enabled in pilot image — use example principal)
-curl -s -H 'X-Kavach-Principal: viewer-1' http://localhost:8080/health
+# Health (Cedar + OIDC in the pilot stack)
+curl -s -H "Authorization: Bearer ${PILOT_TOKEN}" http://localhost:8080/health
 
 # Console
 open http://localhost:8080/
@@ -88,6 +92,8 @@ docker compose -f deploy/docker-compose.pilot.yml --profile batch run --rm batch
 # Postgres-backed API (separate terminal) — then re-run with API check:
 # export PILOT_API_URL=http://localhost:8080 PILOT_PRINCIPAL=admin-1
 # ./scripts/pilot-phase1.sh
+# Local development: example principals via the header, which needs --insecure-dev.
+# Pilots use --oidc-issuer/--oidc-audience/--oidc-jwks-file instead (INSTALL.md).
 export KAVACH_DATABASE_URL=postgres://kavach:change-me@localhost:5432/kavach
 cargo run -p kavach-api -- \
   --pack packs/finance/v0.yaml \
@@ -95,7 +101,8 @@ cargo run -p kavach-api -- \
   --evidence-store postgres \
   --access-control cedar \
   --cedar-policy crates/kavach-auth/policies/kavach.cedar \
-  --cedar-entities crates/kavach-auth/policies/entities.example.json
+  --cedar-entities crates/kavach-auth/policies/entities.example.json \
+  --insecure-dev
 ```
 
 ## Deliverables checklist

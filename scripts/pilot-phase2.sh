@@ -10,9 +10,19 @@ READ_PRINCIPAL="${PILOT_PRINCIPAL:-}"
 TARGET_RETENTION_DAYS="${PILOT_RETENTION_DAYS:-180}"
 RESTORE_RETENTION_DAYS="${PILOT_RESTORE_RETENTION_DAYS:-365}"
 
-read_args=()
-if [[ -n "${READ_PRINCIPAL}" ]]; then
-  read_args+=(-H "X-Kavach-Principal: ${READ_PRINCIPAL}")
+read_args=(-H "X-Kavach-Pilot: phase2")
+if [[ -n "${PILOT_TOKEN:-}" ]]; then
+  read_args=(-H "Authorization: Bearer ${PILOT_TOKEN}")
+elif [[ -n "${READ_PRINCIPAL}" ]]; then
+  read_args=(-H "X-Kavach-Principal: ${READ_PRINCIPAL}")
+fi
+
+# Actor credentials: an OIDC access token (ADR-008), or — only when the API
+# runs with --insecure-dev — the self-asserted X-Kavach-Principal header.
+if [[ -n "${PILOT_ACTOR_TOKEN:-}" ]]; then
+  actor_auth=(-H "Authorization: Bearer ${PILOT_ACTOR_TOKEN}")
+else
+  actor_auth=(-H "X-Kavach-Principal: ${ACTOR}")
 fi
 
 echo "==> Phase 2.1 — API health"
@@ -30,7 +40,7 @@ echo "models listed: ${model_count}"
 echo "==> Phase 2.3 — dual-control rejection (actor equals approver)"
 if curl -fsS -X PATCH "${API}/v1/admin/retention" \
   -H "Content-Type: application/json" \
-  -H "X-Kavach-Principal: ${ACTOR}" \
+  "${actor_auth[@]}" \
   -H "X-Kavach-Approver: ${ACTOR}" \
   -d "{\"evidence_retention_days\":${TARGET_RETENTION_DAYS}}" >/dev/null 2>&1; then
   echo "FAIL: expected dual-control rejection when actor equals approver" >&2
@@ -41,13 +51,13 @@ echo "dual-control guard OK"
 echo "==> Phase 2.4 — retention update (dual control)"
 updated="$(curl -fsS -X PATCH "${API}/v1/admin/retention" \
   -H "Content-Type: application/json" \
-  -H "X-Kavach-Principal: ${ACTOR}" \
+  "${actor_auth[@]}" \
   -H "X-Kavach-Approver: ${APPROVER}" \
   -d "{\"evidence_retention_days\":${TARGET_RETENTION_DAYS}}")"
 python3 -c 'import json,sys; print("retention set to", json.loads(sys.argv[1])["evidence_retention_days"], "days")' "$updated"
 
 echo "==> Phase 2.5 — audit log contains retention mutation"
-audit="$(curl -fsS "${API}/v1/admin/audit?limit=20" -H "X-Kavach-Principal: ${ACTOR}")"
+audit="$(curl -fsS "${API}/v1/admin/audit?limit=20" "${actor_auth[@]}")"
 python3 - "$audit" "$ACTOR" "$APPROVER" <<'PY'
 import json
 import sys
@@ -69,7 +79,7 @@ PY
 echo "==> Phase 2.6 — restore retention default"
 curl -fsS -X PATCH "${API}/v1/admin/retention" \
   -H "Content-Type: application/json" \
-  -H "X-Kavach-Principal: ${ACTOR}" \
+  "${actor_auth[@]}" \
   -H "X-Kavach-Approver: ${APPROVER}" \
   -d "{\"evidence_retention_days\":${RESTORE_RETENTION_DAYS}}" >/dev/null
 echo "retention restored to ${RESTORE_RETENTION_DAYS} days"
