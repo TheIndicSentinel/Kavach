@@ -60,6 +60,11 @@ struct Cli {
     )]
     access_control: AccessControlArg,
 
+    /// Postgres mode only: start even if `--pack` differs from the governed
+    /// runtime pointer. Audited; for recovery, not routine use.
+    #[arg(long, env = "KAVACH_BOOTSTRAP_PACK")]
+    bootstrap_pack: bool,
+
     /// Required to run with `--access-control none`. Development only: every request is allowed.
     #[arg(long, env = "KAVACH_INSECURE_DEV")]
     insecure_dev: bool,
@@ -126,6 +131,7 @@ impl Cli {
             access_control,
             tls,
             pack_sha256: self.pack_sha256,
+            bootstrap_pack: self.bootstrap_pack,
         })
     }
 }

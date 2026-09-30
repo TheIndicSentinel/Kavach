@@ -5,10 +5,23 @@ mod error;
 use std::path::Path;
 use std::str::FromStr;
 
-use cedar_policy::{Authorizer, Decision, Entities, EntityUid, PolicySet, Request};
+use cedar_policy::{
+    Authorizer, Decision, Entities, EntityId, EntityTypeName, EntityUid, PolicySet, Request,
+    Schema, ValidationMode, Validator,
+};
 pub use error::AuthError;
 
 const SYSTEM_RESOURCE: &str = r#"Kavach::System::"api""#;
+
+/// Cedar schema for API RBAC. It is part of the API contract, so it is
+/// compiled in; deployments supply policies and entities.
+pub const API_SCHEMA: &str = include_str!("../policies/schema.cedarschema");
+
+fn api_schema() -> Result<Schema, AuthError> {
+    Schema::from_cedarschema_str(API_SCHEMA)
+        .map(|(schema, _warnings)| schema)
+        .map_err(|err| AuthError::Schema(err.to_string()))
+}
 
 /// API actions guarded by Cedar policies.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +71,7 @@ pub struct KavachAuthorizer {
     policies: PolicySet,
     entities: Entities,
     resource: EntityUid,
+    schema: Schema,
 }
 
 impl KavachAuthorizer {
@@ -77,9 +91,18 @@ impl KavachAuthorizer {
     }
 
     pub fn from_str(policy_text: &str, entities_json: &str) -> Result<Self, AuthError> {
+        let schema = api_schema()?;
         let policies = PolicySet::from_str(policy_text)
             .map_err(|err| AuthError::ParsePolicy(err.to_string()))?;
-        let entities = Entities::from_json_str(entities_json, None)
+        let validation = Validator::new(schema.clone()).validate(&policies, ValidationMode::Strict);
+        if !validation.validation_passed() {
+            let errors: Vec<String> = validation
+                .validation_errors()
+                .map(ToString::to_string)
+                .collect();
+            return Err(AuthError::InvalidPolicy(errors.join("; ")));
+        }
+        let entities = Entities::from_json_str(entities_json, Some(&schema))
             .map_err(|err| AuthError::ParseEntities(err.to_string()))?;
         let resource = EntityUid::from_str(SYSTEM_RESOURCE)
             .map_err(|err| AuthError::Request(err.to_string()))?;
@@ -89,6 +112,7 @@ impl KavachAuthorizer {
             policies,
             entities,
             resource,
+            schema,
         })
     }
 
@@ -101,7 +125,7 @@ impl KavachAuthorizer {
             action_uid,
             self.resource.clone(),
             cedar_policy::Context::empty(),
-            None,
+            Some(&self.schema),
         )
         .map_err(|err| AuthError::Request(err.to_string()))?;
 
@@ -113,9 +137,21 @@ impl KavachAuthorizer {
     }
 }
 
+/// Builds the principal uid from the raw header value. `EntityId::new` treats
+/// the value literally, so quotes or Cedar syntax in a header cannot change
+/// the entity being authorized.
 fn user_uid(principal_id: &str) -> Result<EntityUid, AuthError> {
-    EntityUid::from_str(&format!(r#"Kavach::User::"{principal_id}""#))
-        .map_err(|err| AuthError::InvalidPrincipal(err.to_string()))
+    if principal_id.is_empty() || principal_id.len() > 256 {
+        return Err(AuthError::InvalidPrincipal(
+            "principal must be 1-256 characters".into(),
+        ));
+    }
+    let type_name = EntityTypeName::from_str("Kavach::User")
+        .map_err(|err| AuthError::InvalidPrincipal(err.to_string()))?;
+    Ok(EntityUid::from_type_name_and_id(
+        type_name,
+        EntityId::new(principal_id),
+    ))
 }
 
 fn action_uid(action: KavachAction) -> Result<EntityUid, AuthError> {
@@ -174,5 +210,34 @@ mod tests {
     fn unknown_principal_is_denied() {
         let auth = fixture_authorizer();
         assert!(!auth.authorize("unknown", KavachAction::ReadHealth).unwrap());
+    }
+
+    #[test]
+    fn policy_with_unknown_action_fails_schema_validation() {
+        let policy = r#"permit (principal, action == Kavach::Action::"evaluat", resource);"#;
+        let entities = include_str!("../policies/entities.example.json");
+        let err = KavachAuthorizer::from_str(policy, entities)
+            .err()
+            .expect("typo in action must be rejected");
+        assert!(matches!(err, AuthError::InvalidPolicy(_)), "{err}");
+    }
+
+    #[test]
+    fn entities_with_unknown_type_fail_schema_validation() {
+        let policy = include_str!("../policies/kavach.cedar");
+        let entities = r#"[{"uid":{"type":"Kavach::Robot","id":"r1"},"attrs":{},"parents":[]}]"#;
+        let err = KavachAuthorizer::from_str(policy, entities)
+            .err()
+            .expect("unknown entity type must be rejected");
+        assert!(matches!(err, AuthError::ParseEntities(_)), "{err}");
+    }
+
+    #[test]
+    fn principal_header_is_treated_literally() {
+        let auth = fixture_authorizer();
+        // A value crafted to look like Cedar syntax is just an unknown user.
+        let crafted = r#"admin-1" in Kavach::Group::"admins"#;
+        assert!(!auth.authorize(crafted, KavachAction::Evaluate).unwrap());
+        assert!(auth.authorize("", KavachAction::Evaluate).is_err());
     }
 }

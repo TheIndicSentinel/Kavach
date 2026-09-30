@@ -350,3 +350,34 @@ fn clock_skew_rejected() {
 
     assert!(matches!(err, EvaluateError::Validation(_)));
 }
+
+/// Pack selection uses trusted server time, not the client's `decision_time`
+/// (ADR-003 §8): a client claiming a time inside the skew window but after
+/// `effective_from` must not activate a pack that is not yet effective.
+#[test]
+fn pack_effective_uses_server_time_not_client_time() {
+    let fixtures = load_fixtures(&workspace_golden_v0_dir()).expect("fixtures");
+    let fixture = fixtures
+        .into_iter()
+        .find(|f| f.name == "credit_clean")
+        .expect("credit_clean fixture");
+    let server_now = Utc.with_ymd_and_hms(2026, 9, 1, 12, 0, 0).unwrap();
+
+    let mut pack = finance_pack();
+    pack.pack.effective_from = server_now + chrono::Duration::seconds(60);
+    let mut service = EvaluateService::new(
+        pack,
+        finance_model_record(GovernanceMode::Enforce),
+        MemoryChain::new(),
+        VecIncidentRecorder::default(),
+        EvaluateConfig::default(),
+    )
+    .expect("service");
+
+    let mut request = fixture.request;
+    request.decision_time = server_now + chrono::Duration::seconds(120);
+    let err = service
+        .evaluate(EvaluatePath::Sync, &request, server_now)
+        .expect_err("pack is not yet effective at server time");
+    assert!(matches!(err, EvaluateError::PackNotEffective), "{err}");
+}

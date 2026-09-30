@@ -11,7 +11,7 @@ pub enum EvaluateError {
     #[error("model mismatch: {0}")]
     ModelMismatch(String),
 
-    #[error("pack not effective at decision_time")]
+    #[error("pack not effective at server time")]
     PackNotEffective,
 
     #[error("policy: {0}")]

@@ -14,6 +14,10 @@ This document states exactly what Kavach guarantees, what is planned, and what i
 | Access control is on by default | `--access-control` defaults to `cedar`; disabling requires `--insecure-dev` and prints a warning | `crates/kavach-api/src/config.rs` tests |
 | If a pack file's bytes change after a digest was recorded, **rollback and model update** refuse to load it | SHA-256 digest recorded on activation; mismatch → HTTP 409, audited (`*_refused`); reloads with no recorded digest are allowed but audited (`*_unpinned`) | `rollback_refuses_tampered_previous_pack` |
 | **Startup** refuses a pack whose bytes differ from an operator-supplied digest | `--pack-sha256` / `KAVACH_PACK_SHA256` on `kavach-api` and `kavach-batch run` (optional) | `crates/kavach-policy` loader tests |
+| **Postgres mode:** API and batch refuse to start with a pack path or bytes that differ from the governed runtime pointer | Pointer row written only by dual-controlled activate/rollback (plus an audited first-start baseline); `--bootstrap-pack` override is audited (API only) | `crates/kavach-storage` startup tests |
+| API RBAC policies are validated against the Cedar schema; a typo'd action or unknown entity type fails startup | Compiled-in schema, strict validation; principal header used as a literal id | `crates/kavach-auth` tests |
+| Pack selection on `/v1/evaluate` uses trusted server time | Client `decision_time` validated (±300 s) and recorded only | `pack_effective_uses_server_time_not_client_time` |
+| Packs are bounded in size and complexity | ≤ 256 KiB, ≤ 200 rules, expressions ≤ 2048 chars, `timeout_ms` 1–1000 | `load_limits_reject_oversized_packs` |
 | A failed pack/model change leaves live traffic on the previous pack | Validate, then persist pointers and audit, and only then swap the live evaluator | `crates/kavach-api` lifecycle code |
 | When evidence cannot be written in enforce mode, the decision is `BLOCK` | ADR-001 fail-closed matrix | `crates/kavach-evaluate` tests |
 
@@ -37,15 +41,16 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 - **Resources not routed through Kavach.** The agent guarantees apply only to resources brokered by the Kavach gateway and credential broker, deployed with the network isolation in ADR-007.
 - **`--insecure-dev` mode.** Every request is allowed; for local development only.
 - **Caller authentication by default.** With Cedar on, the principal is the name the client sends in `X-Kavach-Principal`. Callers are authenticated only when HMAC (`--hmac-secret`) or mTLS (`--tls-client-ca`) is configured; the API warns at startup when neither is.
-- **Pack integrity at startup without a pin.** Without `--pack-sha256`, a restart loads whatever bytes are at `--pack` and records their digest as current; the Postgres pointer row is not yet the startup source of truth (planned next). API and batch must be started with the same pin to guarantee they evaluate the same bytes.
+- **Pack integrity at startup in memory mode.** Without Postgres (memory evidence store, development) there is no pointer row; without `--pack-sha256` a restart loads whatever bytes are at `--pack`.
+- **First-start baseline.** In a new database, the first API start records its `--pack` as the governed baseline without dual control (audited as `startup_baseline_recorded`); verify it before enabling enforce mode.
 - **Pack integrity during evaluation.** Evaluation uses the compiled pack held in memory and does not re-read or re-hash the file.
 - **Pack authenticity.** A digest proves "same bytes as last measured", not "approved by a trusted signer". Signed packs are planned (M1).
 - **Pack bytes on the evidence chain.** Evidence identifies packs by `pack_id` and `pack_version`, not by digest; the new agent record type carries the digest (ADR-005).
 - **Integrity of the runtime pointer row.** Anyone with write access to Postgres can change pointer paths and digests; governance events on the evidence chain are planned (ADR-005).
 - **Legal or regulatory compliance.** Packs are controls *mapped to* regulations and are labelled guidance; they are not legal advice or a compliance certification.
 - **v1 evidence signatures.** Existing `decision_event` records are hash-chained but not signed; checkpoint signing arrives with ADR-005.
-- **Client-supplied time on `/v1/evaluate`.** `decision_time` is still used (within ±300 s) for pack-effective selection until ADR-003 §8 is implemented.
-- **CEL memory limits.** `max_alloc_bytes` is declared in the pack schema but not yet enforced.
+- **Client time inside CEL rules.** Rules can read `request.decision_time`; they must not base time decisions on it until the trusted `now` variable lands (M1.5).
+- **CEL memory limits.** The CEL interpreter has no allocation limit, and the timeout is checked between rules, so one expensive expression is not interrupted; packs are bounded by load-time limits instead, and `max_alloc_bytes` is advisory.
 - **High availability, HSM/KMS key protection, air-gapped deployment** — Stage 2.
 - **Correctness of data in the customer's systems of record.**
 - **Production hardening of the reference implementation.** The MVP demo is a reference implementation, not a security certification.

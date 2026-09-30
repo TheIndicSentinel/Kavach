@@ -6,6 +6,7 @@ mod incidents_store;
 mod jobs_store;
 mod postgres;
 mod retention;
+mod startup;
 
 pub use admin::{AdminStoreError, AuditEntry, AuditInsert, MemoryAdminStore, RuntimePointers};
 pub use backends::{
@@ -22,3 +23,4 @@ pub use retention::{
     MemoryRetentionStore, RetentionApplyReport, RetentionSettings, RetentionStoreError,
     TombstoneReason, TombstoneRecord,
 };
+pub use startup::{check_startup_pack, StartupPackCheck, StartupPackError};

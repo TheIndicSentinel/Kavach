@@ -10,6 +10,9 @@ pub struct ApiConfig {
     pub tls: Option<TlsConfig>,
     /// Expected `sha256:<hex>` (or bare hex) of the startup pack file.
     pub pack_sha256: Option<String>,
+    /// Postgres mode: start even if `--pack` differs from the governed
+    /// runtime pointer (audited recovery override).
+    pub bootstrap_pack: bool,
 }
 
 /// Requested access-control mode, before validation.

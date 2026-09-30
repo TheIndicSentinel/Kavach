@@ -128,6 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "postgres evidence store requires --database-url or KAVACH_DATABASE_URL",
                     )?;
                     let pool = StoragePool::connect(&database_url).await?;
+                    check_governed_pack(&pool, &config.pack_path).await?;
                     let mut job_store = pool.batch_job_store();
                     run_batch(
                         input_file,
@@ -185,5 +186,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
     }
+    Ok(())
+}
+
+/// Postgres mode: batch must evaluate the pack the API governs. Batch never
+/// records governance state, so any mismatch is refused (no bootstrap).
+async fn check_governed_pack(
+    pool: &StoragePool,
+    pack_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let digest = kavach_policy::pack_digest(&std::fs::read(pack_path)?);
+    let pointers = pool.admin_store().get_runtime_pointers().await?;
+    kavach_storage::check_startup_pack(pointers.as_ref(), pack_path, Some(&digest))?;
     Ok(())
 }

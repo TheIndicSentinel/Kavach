@@ -133,9 +133,9 @@ Reference hardware for PRD NFR-2: 4 CPU cores, 16 GB RAM, local PostgreSQL 16. `
 - Agent decisions are explainable (determining policy IDs + CEL rule hits) and the three core safety properties are machine-proven rather than only tested.
 - D15 in the PRD is updated to the §5 wording.
 - **Follow-ups found during exploration:**
-  - Load and validate `schema.cedarschema` for the existing API RBAC policy set.
-  - Enforce CEL `max_alloc_bytes` (declared in the pack schema but not enforced) or remove the field.
-  - Add a note to `DECISION_EVENT_COMPAT.md` describing the §8 evaluate-path time change.
+  - ~~Load and validate `schema.cedarschema` for the existing API RBAC policy set~~ — done in M1.2 (compiled-in schema, strict validation).
+  - ~~Enforce CEL `max_alloc_bytes` or remove the field~~ — M1.2: not enforceable in `cel-interpreter`; kept as advisory and replaced by load-time pack limits.
+  - ~~Add a note to `DECISION_EVENT_COMPAT.md` describing the §8 evaluate-path time change~~ — done in M1.2 (pack selection by server time; trusted `now` in CEL arrives with M1.5).
 - Developer experience on macOS requires the explicit `allow_unverified` profile; production deployments must run on hosts with kernel clock-sync status.
 
 ## References

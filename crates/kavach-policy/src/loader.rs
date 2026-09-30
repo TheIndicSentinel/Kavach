@@ -32,6 +32,33 @@ impl LoadedPolicyPack {
     }
 }
 
+fn validate_limits(pack: &PolicyPack) -> Result<(), PolicyError> {
+    if pack.rules.len() > MAX_RULES {
+        return Err(PolicyError::Validation(format!(
+            "pack has {} rules; limit is {MAX_RULES}",
+            pack.rules.len()
+        )));
+    }
+    if let Some(rule) = pack
+        .rules
+        .iter()
+        .find(|r| r.expression.chars().count() > MAX_EXPRESSION_CHARS)
+    {
+        return Err(PolicyError::Validation(format!(
+            "rule `{}` expression exceeds {MAX_EXPRESSION_CHARS} characters",
+            rule.id
+        )));
+    }
+    if let Some(limits) = &pack.cel_runtime_limits {
+        if limits.timeout_ms == 0 || limits.timeout_ms > MAX_TIMEOUT_MS {
+            return Err(PolicyError::Validation(format!(
+                "cel_runtime_limits.timeout_ms must be 1..={MAX_TIMEOUT_MS}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// `sha256:<lowercase hex>` of `bytes`.
 pub fn pack_digest(bytes: &[u8]) -> String {
     format!("sha256:{:x}", Sha256::digest(bytes))
@@ -55,9 +82,22 @@ pub struct CompiledRule {
 
 pub struct PackLoader;
 
+/// Load-time bounds that stand in for CEL memory limits (the interpreter has
+/// no allocation-limit API, and the timeout is only checked between rules).
+pub const MAX_PACK_BYTES: usize = 256 * 1024;
+pub const MAX_RULES: usize = 200;
+pub const MAX_EXPRESSION_CHARS: usize = 2048;
+pub const MAX_TIMEOUT_MS: u64 = 1000;
+
 impl PackLoader {
     pub fn load_from_path(path: &Path) -> Result<LoadedPolicyPack, PolicyError> {
         let bytes = fs::read(path)?;
+        if bytes.len() > MAX_PACK_BYTES {
+            return Err(PolicyError::Validation(format!(
+                "pack file is {} bytes; limit is {MAX_PACK_BYTES}",
+                bytes.len()
+            )));
+        }
         let pack: PolicyPack = serde_yaml::from_slice(&bytes)?;
         let mut loaded = Self::load_from_pack(pack)?;
         loaded.digest = Some(pack_digest(&bytes));
@@ -70,6 +110,7 @@ impl PackLoader {
                 "pack must contain at least one rule".into(),
             ));
         }
+        validate_limits(&pack)?;
 
         let mut compiled_rules = Vec::with_capacity(pack.rules.len());
         for rule in &pack.rules {
@@ -110,6 +151,28 @@ mod tests {
         let expected = pack_digest(&fs::read(&path).expect("read pack"));
         assert_eq!(loaded.digest.as_deref(), Some(expected.as_str()));
         assert!(expected.starts_with("sha256:") && expected.len() == 7 + 64);
+    }
+
+    #[test]
+    fn load_limits_reject_oversized_packs() {
+        let base = PackLoader::load_from_path(&finance_pack_path())
+            .expect("load pack")
+            .pack;
+
+        let mut long_expr = base.clone();
+        long_expr.rules[0].expression = format!("true || {}", "true || ".repeat(400));
+        assert!(PackLoader::load_from_pack(long_expr).is_err());
+
+        let mut many_rules = base.clone();
+        let rule = many_rules.rules[0].clone();
+        many_rules.rules = vec![rule; MAX_RULES + 1];
+        assert!(PackLoader::load_from_pack(many_rules).is_err());
+
+        let mut slow = base;
+        if let Some(limits) = slow.cel_runtime_limits.as_mut() {
+            limits.timeout_ms = MAX_TIMEOUT_MS + 1;
+        }
+        assert!(PackLoader::load_from_pack(slow).is_err());
     }
 
     #[test]
