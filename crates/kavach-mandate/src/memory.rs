@@ -23,38 +23,117 @@ impl InMemoryMandateStore {
         Self::default()
     }
 
-    fn insert_sync(&self, record: StoredMandate) -> Result<(), PortError> {
-        let key = (record.mandate.tenant_id.clone(), record.mandate.id.clone());
+    /// Overwrites or removes a record **without** the store's checks, so tests
+    /// can simulate a store that violates the invariant (tampered, revoked or
+    /// missing ancestor). Never used by the service.
+    pub fn overwrite_unchecked(&self, tenant_id: &str, id: &str, record: Option<StoredMandate>) {
+        let mut records = self.records.lock().expect("lock");
+        let key = (tenant_id.to_string(), id.to_string());
+        match record {
+            Some(record) => records.insert(key, record),
+            None => records.remove(&key),
+        };
+    }
+
+    fn insert_sync(&self, record: StoredMandate, child: bool) -> Result<(), PortError> {
+        let tenant = record.mandate.tenant_id.clone();
+        let key = (tenant.clone(), record.mandate.id.clone());
         let mut records = self.records.lock().map_err(|_| poisoned())?;
         if records.contains_key(&key) {
             return Err(PortError::rejected(format!("mandate {} exists", key.1)));
+        }
+        match (child, record.mandate.parent_id.as_deref()) {
+            (false, None) => {}
+            (false, Some(_)) => {
+                return Err(PortError::rejected(
+                    "a delegated mandate needs insert_child",
+                ));
+            }
+            (true, None) => return Err(PortError::rejected("insert_child needs a parent")),
+            (true, Some(parent)) => {
+                let active = records
+                    .get(&(tenant, parent.to_string()))
+                    .is_some_and(|p| p.status == MandateStatus::Active);
+                if !active {
+                    return Err(PortError::rejected(format!(
+                        "parent mandate {parent} is not active"
+                    )));
+                }
+            }
         }
         records.insert(key, record);
         Ok(())
     }
 
-    fn revoke_sync(
+    fn ancestors_sync(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        limit: usize,
+    ) -> Result<Vec<StoredMandate>, PortError> {
+        let records = self.records.lock().map_err(|_| poisoned())?;
+        let get = |id: &str| records.get(&(tenant_id.to_string(), id.to_string()));
+        let mut chain = Vec::new();
+        let mut current = get(id);
+        while let Some(parent_id) = current.and_then(|r| r.mandate.parent_id.as_deref()) {
+            if chain.len() >= limit {
+                break;
+            }
+            let Some(parent) = get(parent_id) else { break };
+            chain.push(parent.clone());
+            current = Some(parent);
+        }
+        Ok(chain)
+    }
+
+    fn revoke_tree_sync(
         &self,
         tenant_id: &str,
         id: &str,
         reason: RevocationReason,
-    ) -> Result<bool, PortError> {
+    ) -> Result<Vec<(String, RevocationReason)>, PortError> {
         let mut records = self.records.lock().map_err(|_| poisoned())?;
-        let record = records
-            .get_mut(&(tenant_id.to_string(), id.to_string()))
-            .ok_or_else(|| PortError::rejected(format!("unknown mandate {id}")))?;
-        if record.status == MandateStatus::Revoked {
-            return Ok(false);
+        if !records.contains_key(&(tenant_id.to_string(), id.to_string())) {
+            return Err(PortError::rejected(format!("unknown mandate {id}")));
         }
-        record.status = MandateStatus::Revoked;
-        record.revoked_reason = Some(reason);
-        Ok(true)
+        let mut changed = Vec::new();
+        let mut pending = vec![(id.to_string(), reason)];
+        while let Some((current, why)) = pending.pop() {
+            let children: Vec<String> = records
+                .values()
+                .filter(|s| {
+                    s.mandate.tenant_id == tenant_id
+                        && s.mandate.parent_id.as_deref() == Some(current.as_str())
+                })
+                .map(|s| s.mandate.id.clone())
+                .collect();
+            if let Some(record) = records.get_mut(&(tenant_id.to_string(), current.clone())) {
+                if record.status != MandateStatus::Revoked {
+                    record.status = MandateStatus::Revoked;
+                    record.revoked_reason = Some(why);
+                    changed.push((current.clone(), why));
+                }
+            }
+            pending.extend(
+                children
+                    .into_iter()
+                    .map(|child| (child, RevocationReason::ParentRevoked)),
+            );
+        }
+        Ok(changed)
     }
 }
 
 impl MandateStore for InMemoryMandateStore {
     fn insert(&self, record: StoredMandate) -> impl Future<Output = Result<(), PortError>> + Send {
-        ready(self.insert_sync(record))
+        ready(self.insert_sync(record, false))
+    }
+
+    fn insert_child(
+        &self,
+        record: StoredMandate,
+    ) -> impl Future<Output = Result<(), PortError>> + Send {
+        ready(self.insert_sync(record, true))
     }
 
     fn get(
@@ -70,32 +149,22 @@ impl MandateStore for InMemoryMandateStore {
         )
     }
 
-    fn revoke(
+    fn ancestors(
+        &self,
+        tenant_id: &str,
+        id: &str,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<StoredMandate>, PortError>> + Send {
+        ready(self.ancestors_sync(tenant_id, id, limit))
+    }
+
+    fn revoke_tree(
         &self,
         tenant_id: &str,
         id: &str,
         reason: RevocationReason,
-    ) -> impl Future<Output = Result<bool, PortError>> + Send {
-        ready(self.revoke_sync(tenant_id, id, reason))
-    }
-
-    fn children(
-        &self,
-        tenant_id: &str,
-        parent_id: &str,
-    ) -> impl Future<Output = Result<Vec<String>, PortError>> + Send {
-        ready(self.records.lock().map_err(|_| poisoned()).map(|r| {
-            let mut ids: Vec<String> = r
-                .values()
-                .filter(|s| {
-                    s.mandate.tenant_id == tenant_id
-                        && s.mandate.parent_id.as_deref() == Some(parent_id)
-                })
-                .map(|s| s.mandate.id.clone())
-                .collect();
-            ids.sort();
-            ids
-        }))
+    ) -> impl Future<Output = Result<Vec<(String, RevocationReason)>, PortError>> + Send {
+        ready(self.revoke_tree_sync(tenant_id, id, reason))
     }
 }
 

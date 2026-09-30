@@ -85,12 +85,13 @@ async fn issuance_validation_rules() {
     let token = sign_event(&f.sor, "lms-issuer-1", &event(f.now, "evt-c")).await;
     assert!(f.service.issue_from_event(&token).await.is_err());
 
-    // Template ceiling above the holder's passport.
+    // Template ceiling above the holder's passport: refused at config load.
     let mut tmpl = template();
     tmpl.ceilings.insert("waiver_bps".into(), 5000);
-    let f = fixture_with(vec![consent(t0())], tmpl);
-    let token = sign_event(&f.sor, "lms-issuer-1", &event(f.now, "evt-t")).await;
-    assert!(f.service.issue_from_event(&token).await.is_err());
+    let err = try_fixture(vec![consent(t0())], vec![tmpl], passports())
+        .err()
+        .unwrap();
+    assert_eq!(err.class, ErrorClass::Invalid);
 }
 
 #[tokio::test]
@@ -196,7 +197,8 @@ async fn revocation_cascades_and_expiry_is_enforced() {
         .revoke(TENANT, &parent.mandate.id, RevocationReason::Dispute)
         .await
         .unwrap();
-    assert_eq!(revoked.len(), 2);
+    assert_eq!(revoked.revoked.len(), 2);
+    assert!(revoked.publish_errors.is_empty());
     for token in [&parent.token, &child.token] {
         let err = f.service.verify_active(token).await.unwrap_err();
         assert_eq!(err.class, ErrorClass::Rejected);

@@ -201,6 +201,46 @@ pub struct DelegationRequest {
     pub window: Option<ContactWindow>,
     pub ceilings: BTreeMap<String, i64>,
     pub exp: Option<DateTime<Utc>>,
+    /// Agents the child may delegate to in turn (intersected with the
+    /// parent's). Empty — the default — means the child cannot delegate.
+    #[serde(default)]
+    pub allowed_agents: BTreeSet<String>,
+}
+
+/// Regulatory floor for contacting a borrower, in IST minutes of day:
+/// 08:00 (inclusive) to 19:00 (exclusive). Mandates may only narrow it.
+///
+/// Source: RBI directions on recovery agents (contact between 08:00 and
+/// 19:00); pending compliance sign-off — treat as guidance (ADR-011).
+/// The shipped Cedar policy repeats these values; a test keeps them equal.
+pub const CONTACT_FLOOR_FROM_MIN: u16 = 8 * 60;
+pub const CONTACT_FLOOR_TO_MIN: u16 = 19 * 60;
+
+/// Actions that contact the subject (window, floor, channel and daily cap
+/// apply).
+pub const CONTACT_ACTIONS: [&str; 2] = ["send_reminder", "place_call"];
+
+/// Channels a mandate may name.
+pub const ALLOWED_CHANNELS: [&str; 3] = ["sms", "voice", "whatsapp"];
+
+/// Longest chain of delegation (a root has depth 0).
+pub const MAX_DELEGATION_DEPTH: u8 = 4;
+
+/// Longest mandate lifetime a template may ask for (30 days).
+pub const MAX_MANDATE_TTL_SECONDS: i64 = 30 * 24 * 3600;
+
+/// Basis points: ceilings and waivers are within `0..=MAX_BPS`.
+pub const MAX_BPS: i64 = 10_000;
+
+impl ContactWindow {
+    /// True when the window is well formed and inside the contact floor.
+    #[must_use]
+    pub fn within_floor(&self) -> bool {
+        self.from_min < self.to_min
+            && self.from_min >= CONTACT_FLOOR_FROM_MIN
+            && self.to_min <= CONTACT_FLOOR_TO_MIN
+            && self.max_per_day > 0
+    }
 }
 
 /// Returns true when `s` is a well-formed capability reference

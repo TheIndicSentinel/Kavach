@@ -103,7 +103,9 @@ pub struct AuthzRequest<'a> {
     pub channel: Option<String>,
     pub waiver_bps: Option<i64>,
     /// Contacts already made today (IST day) for this subject.
-    pub contacts_today: i64,
+    /// Contacts already made today (IST). Unsigned: a negative count cannot
+    /// defeat the daily cap. Caller-supplied until H5 derives it server-side.
+    pub contacts_today: u32,
     pub task_tainted: bool,
     pub agent_state: AgentState,
     /// True only if an approval exists bound to this request's `action_hash`.
@@ -146,6 +148,7 @@ impl AgentAuthorizer {
                 .collect();
             return Err(AuthzError::Policy(errors.join("; ")));
         }
+        check_permit_coverage(&schema, &policies)?;
         let mut escalate_ids = BTreeSet::new();
         for policy in policies.policies() {
             if policy.annotation("id").is_none_or(str::is_empty) {
@@ -222,6 +225,49 @@ impl AgentAuthorizer {
     }
 }
 
+/// Every action in the schema must have exactly one permit, and that permit
+/// must name the action with `action == ...` (no unconstrained or `in`
+/// permits). Derived from the schema, so a new action without its own permit
+/// fails at load instead of inheriting another action's rights (ADR-011).
+fn check_permit_coverage(schema: &Schema, policies: &PolicySet) -> Result<(), AuthzError> {
+    let mut permits: std::collections::BTreeMap<String, usize> =
+        schema.actions().map(|uid| (uid.to_string(), 0)).collect();
+    if permits.is_empty() {
+        return Err(AuthzError::Policy("schema declares no actions".into()));
+    }
+    for policy in policies.policies() {
+        if policy.effect() != cedar_policy::Effect::Permit {
+            continue;
+        }
+        let cedar_policy::ActionConstraint::Eq(action) = policy.action_constraint() else {
+            return Err(AuthzError::Policy(format!(
+                "permit {} must name exactly one action (action == ...)",
+                policy.id()
+            )));
+        };
+        let count = permits.get_mut(&action.to_string()).ok_or_else(|| {
+            AuthzError::Policy(format!(
+                "permit {} names action {action} that the schema does not declare",
+                policy.id()
+            ))
+        })?;
+        *count += 1;
+    }
+    let wrong: Vec<String> = permits
+        .iter()
+        .filter(|(_, n)| **n != 1)
+        .map(|(a, n)| format!("{a} has {n} permits"))
+        .collect();
+    if wrong.is_empty() {
+        Ok(())
+    } else {
+        Err(AuthzError::Policy(format!(
+            "every schema action needs exactly one permit: {}",
+            wrong.join(", ")
+        )))
+    }
+}
+
 fn outcome(decision: Decision, determining_policies: Vec<String>, reason: &str) -> AuthzOutcome {
     AuthzOutcome {
         decision,
@@ -288,10 +334,13 @@ pub fn build_context(req: &AuthzRequest<'_>) -> serde_json::Value {
         "has_waiver_ceiling": ceiling.is_some(),
         "waiver_ceiling_bps": ceiling.unwrap_or(0),
         "ist_minute_of_day": ist_minute_of_day(req.now),
-        "contacts_today": req.contacts_today,
+        "contacts_today": i64::from(req.contacts_today),
         "requested_fields": req.requested_fields,
+        "has_requested_fields": !req.requested_fields.is_empty(),
         "channel": req.channel.clone().unwrap_or_default(),
+        "has_channel": req.channel.as_ref().is_some_and(|c| !c.is_empty()),
         "waiver_bps": req.waiver_bps.unwrap_or(0),
+        "has_waiver": req.waiver_bps.is_some(),
         "task_tainted": req.task_tainted,
         "agent_restricted": req.agent_state != AgentState::Active,
         "approval_valid": req.approval_valid,

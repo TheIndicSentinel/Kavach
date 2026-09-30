@@ -120,6 +120,15 @@ pub fn consent(now: DateTime<Utc>) -> ConsentRecord {
 }
 
 pub fn fixture_with(consents: Vec<ConsentRecord>, tmpl: MandateTemplate) -> Fixture {
+    try_fixture(consents, vec![tmpl], passports()).expect("valid mandate config")
+}
+
+/// Builds the service; `Err` when `MandateConfig::validate` refuses it.
+pub fn try_fixture(
+    consents: Vec<ConsentRecord>,
+    templates: Vec<MandateTemplate>,
+    passports: Vec<AgentPassport>,
+) -> Result<Fixture, kavach_ports::PortError> {
     let now = t0();
     let mut kavach = InMemoryKeyProvider::new();
     let kavach_pub = kavach.insert_seed("kavach-mandate-1", [1u8; 32]).unwrap();
@@ -140,8 +149,8 @@ pub fn fixture_with(consents: Vec<ConsentRecord>, tmpl: MandateTemplate) -> Fixt
                 key: crm_pub,
             },
         ],
-        templates: vec![tmpl],
-        passports: passports(),
+        templates,
+        passports,
         event_freshness_seconds: 300,
         replay_window_seconds: 24 * 3600,
     };
@@ -155,8 +164,8 @@ pub fn fixture_with(consents: Vec<ConsentRecord>, tmpl: MandateTemplate) -> Fixt
             clock: FakeClock::synced_at(now),
         },
         config,
-    );
-    Fixture { service, sor, now }
+    )?;
+    Ok(Fixture { service, sor, now })
 }
 
 pub fn fixture() -> Fixture {

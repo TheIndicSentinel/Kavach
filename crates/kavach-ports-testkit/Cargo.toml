@@ -8,7 +8,9 @@ authors.workspace = true
 
 [dependencies]
 kavach-ports = { workspace = true }
+kavach-domain = { workspace = true }
 chrono.workspace = true
+tokio.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true

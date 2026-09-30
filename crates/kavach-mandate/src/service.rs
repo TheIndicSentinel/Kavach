@@ -5,7 +5,8 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Duration, Utc};
 use kavach_domain::mandate::{
     is_capability_ref, AgentPassport, DelegationRequest, Mandate, MandateSource, MandateStatus,
-    MandateTemplate, RevocationReason, SorEvent, MANDATE_FORMAT_VERSION,
+    MandateTemplate, RevocationReason, SorEvent, CONTACT_ACTIONS, MANDATE_FORMAT_VERSION,
+    MAX_DELEGATION_DEPTH,
 };
 use kavach_ports::{
     ConsentSource, DomainEvent, EventBus, KeyProvider, MandateStore, PortError, ReplayGuard,
@@ -21,6 +22,16 @@ use crate::jws::{self, TYP_MANDATE, TYP_SOR_EVENT};
 pub struct IssuedMandate {
     pub mandate: Mandate,
     pub token: String,
+}
+
+/// Result of a revocation. The revocation itself is committed when this is
+/// returned; `publish_errors` lists mandates whose revocation event could not
+/// be published, so downstream caches and credentials were not told. Until an
+/// outbox exists, short credential TTLs are the backstop (ADR-011).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokeOutcome {
+    pub revoked: Vec<String>,
+    pub publish_errors: Vec<(String, String)>,
 }
 
 /// Adapters the service depends on (ADR-006).
@@ -47,8 +58,14 @@ where
     E: EventBus,
     T: TimeSource,
 {
-    pub fn new(deps: MandateDeps<K, R, C, S, E, T>, config: MandateConfig) -> Self {
-        Self { deps, config }
+    /// Validates the governed configuration (templates, passports, windows,
+    /// ceilings, delegation) before any mandate can be issued.
+    pub fn new(
+        deps: MandateDeps<K, R, C, S, E, T>,
+        config: MandateConfig,
+    ) -> Result<Self, PortError> {
+        config.validate()?;
+        Ok(Self { deps, config })
     }
 
     pub fn store(&self) -> &S {
@@ -76,6 +93,11 @@ where
             })?;
         let passport = self.check_holder(&event, template)?;
         check_scope_within_passport(template, passport)?;
+        if requires_window(&template.actions) && template.window.is_none() {
+            return Err(PortError::rejected(
+                "template grants contact actions without a contact window",
+            ));
+        }
         let consent_exp = self.check_consents(&event, &template.purpose, now).await?;
 
         let exp = (now + Duration::seconds(template.ttl_seconds)).min(consent_exp);
@@ -111,38 +133,100 @@ where
             exp,
             nonce: uuid::Uuid::new_v4().to_string(),
         };
-        self.sign_store_publish(mandate).await
+        self.sign_store_publish(mandate, false).await
     }
 
-    /// Verifies a mandate token: signature, canonical form, stored status
-    /// `Active`, the stored token matches, and trusted time is within
-    /// `[nbf, exp)`. A valid signature alone is not sufficient (ADR-004 §3).
+    /// Verifies a mandate token and its whole delegation chain (ADR-004 §3,
+    /// ADR-011). For the mandate and every ancestor: signature, the stored
+    /// token matches, stored status `Active`, trusted time within
+    /// `[nbf, exp)`; and each link is a valid narrowing of its parent. A
+    /// valid signature alone is not sufficient.
     pub async fn verify_active(&self, token: &str) -> Result<Mandate, PortError> {
-        let (_, mandate): (String, Mandate) =
+        let (_, claimed): (String, Mandate) =
             jws::verify(token, TYP_MANDATE, &self.config.mandate_keys)?;
         let stored = self
             .deps
             .store
-            .get(&mandate.tenant_id, &mandate.id)
+            .get(&claimed.tenant_id, &claimed.id)
             .await?
-            .ok_or_else(|| PortError::rejected(format!("unknown mandate {}", mandate.id)))?;
+            .ok_or_else(|| PortError::rejected(format!("unknown mandate {}", claimed.id)))?;
         if stored.token != token {
             return Err(PortError::rejected("token does not match stored mandate"));
+        }
+        let now = self.deps.clock.now().utc;
+        let mandate = self.check_record(&stored, now)?;
+        if mandate.depth == 0 {
+            return if mandate.parent_id.is_none() {
+                Ok(mandate)
+            } else {
+                Err(PortError::rejected("a root mandate cannot have a parent"))
+            };
+        }
+
+        let chain = self
+            .deps
+            .store
+            .ancestors(
+                &mandate.tenant_id,
+                &mandate.id,
+                usize::from(MAX_DELEGATION_DEPTH) + 1,
+            )
+            .await?;
+        if chain.len() != usize::from(mandate.depth) {
+            return Err(PortError::rejected(format!(
+                "mandate {} has an incomplete delegation chain",
+                mandate.id
+            )));
+        }
+        let mut child = mandate.clone();
+        for stored in &chain {
+            let parent = self.check_record(stored, now)?;
+            if child.parent_id.as_deref() != Some(parent.id.as_str())
+                || !crate::delegation::is_within(&child, &parent)
+            {
+                return Err(PortError::rejected(format!(
+                    "mandate {} is not a valid delegation of {}",
+                    child.id, parent.id
+                )));
+            }
+            child = parent;
+        }
+        if child.depth != 0 || child.parent_id.is_some() {
+            return Err(PortError::rejected(
+                "delegation chain does not end at a root",
+            ));
+        }
+        Ok(mandate)
+    }
+
+    /// One stored mandate: its token verifies and decodes to the stored
+    /// value, status `Active`, and `now` within `[nbf, exp)`.
+    fn check_record(
+        &self,
+        stored: &StoredMandate,
+        now: DateTime<Utc>,
+    ) -> Result<Mandate, PortError> {
+        let (_, decoded): (String, Mandate) =
+            jws::verify(&stored.token, TYP_MANDATE, &self.config.mandate_keys)?;
+        if decoded != stored.mandate {
+            return Err(PortError::rejected(format!(
+                "stored mandate {} differs from its signed token",
+                stored.mandate.id
+            )));
         }
         if stored.status != MandateStatus::Active {
             return Err(PortError::rejected(format!(
                 "mandate {} is revoked",
-                mandate.id
+                decoded.id
             )));
         }
-        let now = self.deps.clock.now().utc;
-        if now < mandate.nbf || now >= mandate.exp {
+        if now < decoded.nbf || now >= decoded.exp {
             return Err(PortError::rejected(format!(
                 "mandate {} is not valid at this time",
-                mandate.id
+                decoded.id
             )));
         }
-        Ok(mandate)
+        Ok(decoded)
     }
 
     /// Issues a narrower child mandate for `to_agent` (ADR-004 §6).
@@ -164,7 +248,7 @@ where
         if parent.holder != by_agent {
             return Err(PortError::rejected("only the mandate holder may delegate"));
         }
-        if parent.depth >= parent.delegation.max_depth {
+        if parent.depth >= parent.delegation.max_depth || parent.depth >= MAX_DELEGATION_DEPTH {
             return Err(PortError::rejected("delegation depth limit reached"));
         }
         if !parent.delegation.allowed_agents.contains(to_agent) {
@@ -198,36 +282,43 @@ where
                 "delegated mandate would exceed its parent",
             ));
         }
-        self.sign_store_publish(child).await
+        // Inserted only while the parent is still active (atomic in the store).
+        self.sign_store_publish(child, true).await
     }
 
-    /// Revokes a mandate and, transitively, every mandate delegated from it.
-    /// Returns the ids that changed state.
+    /// Revokes a mandate and every mandate delegated from it, atomically in
+    /// the store; then publishes one event per revoked mandate. A publish
+    /// failure does not undo the revocation and is reported, not returned as
+    /// an error.
     pub async fn revoke(
         &self,
         tenant_id: &str,
         id: &str,
         reason: RevocationReason,
-    ) -> Result<Vec<String>, PortError> {
-        let mut revoked = Vec::new();
-        let mut pending = vec![(id.to_string(), reason)];
-        while let Some((current, why)) = pending.pop() {
-            if self.deps.store.revoke(tenant_id, &current, why).await? {
-                self.deps
-                    .events
-                    .publish(DomainEvent::MandateRevoked {
-                        tenant_id: tenant_id.to_string(),
-                        mandate_id: current.clone(),
-                        reason: why,
-                    })
-                    .await?;
-                revoked.push(current.clone());
+    ) -> Result<RevokeOutcome, PortError> {
+        let changed = self.deps.store.revoke_tree(tenant_id, id, reason).await?;
+        let mut outcome = RevokeOutcome {
+            revoked: Vec::with_capacity(changed.len()),
+            publish_errors: Vec::new(),
+        };
+        for (mandate_id, why) in changed {
+            if let Err(err) = self
+                .deps
+                .events
+                .publish(DomainEvent::MandateRevoked {
+                    tenant_id: tenant_id.to_string(),
+                    mandate_id: mandate_id.clone(),
+                    reason: why,
+                })
+                .await
+            {
+                outcome
+                    .publish_errors
+                    .push((mandate_id.clone(), err.to_string()));
             }
-            for child in self.deps.store.children(tenant_id, &current).await? {
-                pending.push((child, RevocationReason::ParentRevoked));
-            }
+            outcome.revoked.push(mandate_id);
         }
-        Ok(revoked)
+        Ok(outcome)
     }
 
     async fn verify_event(&self, token: &str, now: DateTime<Utc>) -> Result<SorEvent, PortError> {
@@ -316,7 +407,11 @@ where
         earliest.ok_or_else(|| PortError::rejected("no consent expiry"))
     }
 
-    async fn sign_store_publish(&self, mandate: Mandate) -> Result<IssuedMandate, PortError> {
+    async fn sign_store_publish(
+        &self,
+        mandate: Mandate,
+        child: bool,
+    ) -> Result<IssuedMandate, PortError> {
         let token = jws::sign(
             &self.deps.keys,
             &self.config.signing_kid,
@@ -324,15 +419,17 @@ where
             &mandate,
         )
         .await?;
-        self.deps
-            .store
-            .insert(StoredMandate {
-                mandate: mandate.clone(),
-                token: token.clone(),
-                status: MandateStatus::Active,
-                revoked_reason: None,
-            })
-            .await?;
+        let record = StoredMandate {
+            mandate: mandate.clone(),
+            token: token.clone(),
+            status: MandateStatus::Active,
+            revoked_reason: None,
+        };
+        if child {
+            self.deps.store.insert_child(record).await?;
+        } else {
+            self.deps.store.insert(record).await?;
+        }
         self.deps
             .events
             .publish(DomainEvent::MandateIssued {
@@ -344,9 +441,14 @@ where
     }
 }
 
+/// True when `actions` include one that contacts the subject.
+pub(crate) fn requires_window(actions: &BTreeSet<String>) -> bool {
+    CONTACT_ACTIONS.iter().any(|a| actions.contains(*a))
+}
+
 /// Issuance validation against the holder's passport (ADR-004 §5): the
 /// template's scope must not exceed what the agent may ever be granted.
-fn check_scope_within_passport(
+pub(crate) fn check_scope_within_passport(
     template: &MandateTemplate,
     passport: &AgentPassport,
 ) -> Result<(), PortError> {

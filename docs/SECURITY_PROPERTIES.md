@@ -49,6 +49,8 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 |---|---|---|
 | For **brokered resources**, an agent without authority holds no credential to act | ADR-006, ADR-007 | 1, 11 |
 | Actions stay within the mandate's subject, purpose, window, fields and ceilings | ADR-003, ADR-004 | 3, 4, 5 — enforced by `kavach-authz` Cedar policies; subject binding, waiver ceiling and contact window **formally proven in CI** (`kavach-cedar-analysis`, cvc5) along with "no policy can raise an evaluation error"; exposed via `/v1/authorize` in M1.6 |
+| Agent contact happens only 08:00–19:00 IST, within a mandate window, on a mandate channel, below the daily cap; missing or out-of-range parameters (waiver, channel, fields, negative counts) are refused; each action needs its own permit | ADR-011 | 3, 4, 5 — library level in `kavach-authz`: 16 properties **formally proven in CI** (cvc5) with 7 weakened-policy mutants caught; permit coverage derived from the schema and checked at load; enforced on agent requests from H5 |
+| A delegated mandate is valid only while its whole chain is valid; revocation and delegation cannot leave an active child under a revoked parent | ADR-011 | 7 — library level in `kavach-mandate`: signature, stored value, status, time and narrowing checked for every ancestor; atomic `insert_child`/`revoke_tree` with a contract suite (including a delegate-vs-revoke race) that the H5 Postgres store must also pass |
 | Delegated authority only narrows | ADR-004 §6 | 7 — narrowing implemented and property-tested (2,000 cases) in `kavach-mandate`; enforced on agent requests from M1.6 |
 | Critical actions need a human approval bound to the exact action, yielding a single-use credential | ADR-003 §5, PRD D17 | 6 — `@escalate` → `HUMAN_REVIEW` implemented and tested in `kavach-authz`; approval binding and single-use credentials arrive with M4 |
 | A minimal signed decision record is written before any credential for a critical action | ADR-005 §6 | 10 |
@@ -57,6 +59,9 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 
 ## Not guaranteed
 
+- **Agent inputs that are still caller-supplied.** In the agent-authorization library, the delegating agent (`by_agent`) and `contacts_today` come from the caller until H5 derives them from authenticated agent identity and stored counters. Until then they are unsafe inputs (ADR-011).
+- **Contact-hours source.** The 08:00–19:00 IST floor follows RBI directions on recovery agents as summarised in our research; it awaits compliance sign-off and is guidance, not legal advice.
+- **Delivery time on asynchronous channels.** Authorising a WhatsApp or SMS contact at 18:59 does not guarantee delivery before 19:00; a send-by deadline is planned with the H5 gateway.
 - **Resources not routed through Kavach.** The agent guarantees apply only to resources brokered by the Kavach gateway and credential broker, deployed with the network isolation in ADR-007.
 - **`--insecure-dev` mode.** Every request is allowed; for local development only.
 - **Two identities for one person.** Distinct approval assumes the IdP gives each person one identity and assigns `change-approvers` only to people; two accounts for one person pass as two principals. That is an IdP and process control.

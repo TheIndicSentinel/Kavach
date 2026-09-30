@@ -32,7 +32,8 @@ fn ceilings() -> impl Strategy<Value = BTreeMap<String, i64>> {
 
 fn window() -> impl Strategy<Value = Option<ContactWindow>> {
     proptest::option::of(
-        (0u16..1400, 1u16..40, 0u16..10).prop_map(|(from, len, max)| ContactWindow {
+        // Mostly inside the 08:00-19:00 floor, sometimes outside it.
+        (420u16..1150, 1u16..60, 0u16..10).prop_map(|(from, len, max)| ContactWindow {
             tz: TimeZoneId::AsiaKolkata,
             from_min: from,
             to_min: (from + len).min(1440),
@@ -52,7 +53,7 @@ prop_compose! {
             principal: "p".into(), holder: "h".into(), subject_ref: SUBJECT.into(),
             purpose: "loan_recovery".into(), consent_refs: set(&["C-1"]),
             actions, data_fields: fields, channels, window, ceilings,
-            delegation: DelegationRules { max_depth, allowed_agents: set(&["child"]) },
+            delegation: DelegationRules { max_depth, allowed_agents: set(&["child", "grandchild"]) },
             parent_id: None, depth: 0, nbf: now, exp: now + Duration::hours(exp_h),
             nonce: "n".into(),
         }
@@ -62,10 +63,12 @@ prop_compose! {
 prop_compose! {
     fn request()(actions in subset_of(&ACTIONS), fields in subset_of(&FIELDS),
                  channels in subset_of(&CHANNELS), window in window(), ceilings in ceilings(),
-                 exp_h in proptest::option::of(1i64..400)) -> DelegationRequest {
+                 exp_h in proptest::option::of(1i64..400),
+                 allowed in subset_of(&["child", "grandchild", "stranger"])) -> DelegationRequest {
         DelegationRequest {
             actions, data_fields: fields, channels, window, ceilings,
             exp: exp_h.map(|h| t0() + Duration::hours(h)),
+            allowed_agents: allowed,
         }
     }
 }
@@ -98,6 +101,11 @@ proptest! {
             if let Some(req_exp) = request.exp {
                 prop_assert!(child.exp <= req_exp);
             }
+            // Re-delegation only to agents both the parent and the request name.
+            prop_assert!(child.delegation.allowed_agents.is_subset(&request.allowed_agents));
+            prop_assert!(child.delegation.allowed_agents.is_subset(&parent.delegation.allowed_agents));
+            // A delegated window always fits the contact floor.
+            prop_assert!(child.window.is_none_or(|w| w.within_floor()));
             prop_assert!(!child.actions.is_empty());
         }
     }
