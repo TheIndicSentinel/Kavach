@@ -134,6 +134,18 @@ gRPC: `EvaluateService` on `--grpc-listen` (default `50051`). Pass principal via
 - **Postgres mode:** the governed runtime pointer decides the startup pack. The first start in a new database records `--pack` as the baseline (audited `startup_baseline_recorded`). Afterwards, `kavach-api` and `kavach-batch` refuse to start if `--pack` is a different path or its bytes differ from the digest recorded at activation — change packs through dual-controlled activate. For recovery only, `kavach-api --bootstrap-pack` (env `KAVACH_BOOTSTRAP_PACK`) starts anyway and records `startup_bootstrap_override` in the audit log.
 - **Pack limits:** ≤ 256 KiB, ≤ 200 rules, expressions ≤ 2048 characters, `cel_runtime_limits.timeout_ms` 1–1000. `max_alloc_bytes` is accepted but advisory.
 
+**Signed packs.** Configure trusted signers to require a valid detached signature for every pack load (startup, activate, rollback, model update, and `kavach-batch run`):
+
+```bash
+# On a signing workstation (not the API host)
+kavach-keys generate   --dir ./signing-keys --kid pack-signer-1
+kavach-keys public-key --dir ./signing-keys --kid pack-signer-1   # -> signers.json entry
+kavach-keys sign-pack  --dir ./signing-keys --kid pack-signer-1 --pack packs/finance/v0.yaml
+kavach-keys verify-pack --signers signers.json --pack packs/finance/v0.yaml
+```
+
+`signers.json`: `{"signers":[{"kid":"pack-signer-1","public_key":"<hex>"}]}`. Deploy the `.sig` file next to each pack and start with `--pack-signers signers.json` (env `KAVACH_PACK_SIGNERS`). Without `--pack-signers`, behaviour is unchanged. Any byte change to a pack requires re-signing.
+
 **Caller authentication.** Cedar authorizes the principal named in `X-Kavach-Principal`; it does not authenticate the caller. Configure `--hmac-secret` or mTLS (`--tls-client-ca`) outside local development — the API prints a warning at startup when neither is set.
 
 **PoC / dev (memory evidence, no Cedar — insecure, local only):**

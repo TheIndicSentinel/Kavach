@@ -18,6 +18,8 @@ kavach-evidence = { workspace = true }
 kavach-policy = { workspace = true }
 kavach-auth = { workspace = true }
 kavach-storage = { workspace = true }
+kavach-keys = { workspace = true }
+kavach-ports = { workspace = true }
 axum.workspace = true
 axum-server.workspace = true
 rustls.workspace = true

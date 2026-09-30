@@ -230,7 +230,7 @@ fn evidence_failure_enforce_returns_block_without_row() {
             &fixture.request,
             server_now_for(fixture.request.decision_time),
         )
-        .expect("infra path");
+        .unwrap_or_else(|e| panic!("infra path returned an error: {e:?}"));
 
     assert_eq!(
         result.response.returned_decision,
@@ -277,7 +277,7 @@ fn evidence_failure_shadow_returns_pass_without_row() {
             &fixture.request,
             server_now_for(fixture.request.decision_time),
         )
-        .expect("infra path");
+        .unwrap_or_else(|e| panic!("infra path returned an error: {e:?}"));
 
     assert_eq!(
         result.response.returned_decision,

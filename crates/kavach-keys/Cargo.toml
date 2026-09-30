@@ -6,15 +6,23 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[[bin]]
+name = "kavach-keys"
+path = "src/bin/kavach-keys.rs"
+
 [dependencies]
 kavach-ports = { workspace = true }
+kavach-policy = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+tokio.workspace = true
 ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
 
 [dev-dependencies]
 kavach-ports-testkit = { workspace = true }
-tokio.workspace = true
 
 [lints]
 workspace = true

@@ -65,6 +65,11 @@ struct Cli {
     #[arg(long, env = "KAVACH_BOOTSTRAP_PACK")]
     bootstrap_pack: bool,
 
+    /// Trusted pack signers file (JSON). When set, every pack load (startup,
+    /// activate, rollback, model update) requires a valid `<pack>.sig`.
+    #[arg(long, env = "KAVACH_PACK_SIGNERS")]
+    pack_signers: Option<PathBuf>,
+
     /// Required to run with `--access-control none`. Development only: every request is allowed.
     #[arg(long, env = "KAVACH_INSECURE_DEV")]
     insecure_dev: bool,
@@ -132,6 +137,7 @@ impl Cli {
             tls,
             pack_sha256: self.pack_sha256,
             bootstrap_pack: self.bootstrap_pack,
+            pack_signers: self.pack_signers,
         })
     }
 }
