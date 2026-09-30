@@ -2138,6 +2138,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-clocksync"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "kavach-ports",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
 name = "kavach-domain"
 version = "0.1.0"
 dependencies = [

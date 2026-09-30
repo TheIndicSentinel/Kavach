@@ -146,3 +146,36 @@ jobs:
       # that deliberately weakened policies are detected.
       - name: Prove agent policy properties
         run: cargo run --locked -p kavach-cedar-analysis
+
+  clock-sync-probe:
+    name: Trusted-time probe (host and container)
+    runs-on: ubuntu-24.04
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build probe
+        run: cargo build --locked --release -p kavach-clocksync --bin kavach-clocksync
+
+      # Classify only: runners may or may not report kernel sync, so the job
+      # checks that each environment yields a classification, and records
+      # which one (ADR-003 §7). The container runs use the same glibc as the
+      # runner (ubuntu:24.04) so the host-built binary loads.
+      - name: Probe on host, in a container (default seccomp) and unconfined
+        run: |
+          probe=target/release/kavach-clocksync
+          check() {
+            echo "$1: $2"
+            echo "$2" | python3 -c 'import json,sys; s=json.load(sys.stdin)["sync"]["status"]; assert s in ("synced","unsynced","unknown"), s'
+          }
+          check "host" "$($probe)"
+          check "container-default-seccomp" "$(docker run --rm -v "$PWD/$probe:/probe:ro" ubuntu:24.04 /probe)"
+          check "container-seccomp-unconfined" "$(docker run --rm --security-opt seccomp=unconfined -v "$PWD/$probe:/probe:ro" ubuntu:24.04 /probe)"

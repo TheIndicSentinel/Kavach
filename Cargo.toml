@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/kavach-cedar-analysis",
+    "crates/kavach-clocksync",
     "crates/kavach-authz",
     "crates/kavach-mandate",
     "crates/kavach-ports",
@@ -18,6 +19,7 @@ members = [
 ]
 default-members = [
     "crates/kavach-authz",
+    "crates/kavach-clocksync",
     "crates/kavach-mandate",
     "crates/kavach-ports",
     "crates/kavach-ports-testkit",
