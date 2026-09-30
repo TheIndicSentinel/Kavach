@@ -38,6 +38,7 @@ pub struct AppState {
     pack_signers: Option<TrustedSigners>,
     oidc: Option<std::sync::Arc<crate::oidc::OidcVerifier>>,
     insecure_dev: bool,
+    mtls_principal_san: Option<crate::mtls::MtlsSanKind>,
     nonces: crate::hmac_auth::NonceCache,
 }
 
@@ -145,6 +146,7 @@ impl AppState {
             pack_signers,
             oidc,
             insecure_dev: config.insecure_dev,
+            mtls_principal_san: config.mtls_principal_san,
             nonces: crate::hmac_auth::NonceCache::default(),
         })
     }
@@ -166,6 +168,7 @@ impl AppState {
             pack_signers: None,
             oidc: None,
             insecure_dev: true,
+            mtls_principal_san: None,
         };
         Self::from_config(&config).await
     }
@@ -184,6 +187,10 @@ impl AppState {
 
     pub fn insecure_dev(&self) -> bool {
         self.insecure_dev
+    }
+
+    pub fn mtls_principal_san(&self) -> Option<crate::mtls::MtlsSanKind> {
+        self.mtls_principal_san
     }
 
     pub fn nonces(&self) -> &crate::hmac_auth::NonceCache {

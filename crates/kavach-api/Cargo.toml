@@ -24,6 +24,8 @@ reqwest = { workspace = true }
 kavach-ports = { workspace = true }
 axum.workspace = true
 axum-server.workspace = true
+tokio-rustls.workspace = true
+x509-parser.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
 tokio.workspace = true
@@ -57,6 +59,7 @@ tonic.workspace = true
 prost-types.workspace = true
 ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
+rcgen.workspace = true
 
 [lints]
 workspace = true

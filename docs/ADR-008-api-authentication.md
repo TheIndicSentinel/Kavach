@@ -16,10 +16,10 @@ Regulated financial institutions standardise on two mechanisms: **mTLS** with ba
 ### 1. Principal sources and precedence
 
 1. **`Authorization: Bearer <JWT>`** — an OIDC/OAuth 2.0 access token (RFC 7519, RFC 9068 profile) verified locally (§2). *Primary.*
-2. **mTLS client-certificate SAN** — for machine callers without an IdP (loan-origination systems, batch). *Implemented in H2b.*
+2. **mTLS client-certificate SAN** — for machine callers without an IdP (loan-origination systems, batch). With `--mtls-principal-san uri|dns` (requires `--tls-client-ca`), the verified leaf certificate's **single** SAN of that type is the principal id (for example a SPIFFE id `spiffe://bank.example/los`); zero or several SANs of that type give no principal. Groups come from the entities file. HTTP reads the certificate through a TLS acceptor that attaches it to each request on the connection; gRPC reads `peer_certs()`.
 3. **`X-Kavach-Principal` header** — accepted **only with `--insecure-dev`**. Never trusted otherwise.
 
-A request carrying both a bearer token and `X-Kavach-Principal` is rejected (`400`). With Cedar access control on, startup fails unless an authenticated source (OIDC now; mTLS in H2b) is configured or `--insecure-dev` is set.
+A token wins over a certificate principal: the token names the acting principal, the certificate the calling workload (which TLS has already verified). `X-Kavach-Principal` together with a token or a certificate principal is rejected (`400`). With Cedar access control on, startup fails unless an authenticated source (OIDC or mTLS principals) is configured or `--insecure-dev` is set.
 
 ### 2. Token verification (RFC 8725 practices)
 
@@ -41,6 +41,8 @@ The **actor** of lifecycle changes is the authenticated principal. The **approve
 
 ### 5. Deployment defaults
 
+TLS uses the ring crypto provider explicitly; `aws-lc-rs` is banned in `deny.toml`, because with two providers compiled in rustls cannot choose a process default.
+
 The pilot compose file no longer publishes Postgres, requires a database password, requires OIDC settings, mounts site-specific `entities.json`/`jwks.json`, and ships no example principals in the default container command.
 
 ## Consequences
@@ -51,7 +53,7 @@ The pilot compose file no longer publishes Postgres, requires a database passwor
 
 ## Deferred
 
-- **mTLS SAN principals** (H2b).
+- **Certificate revocation** (CRL/OCSP) for client certificates; keep certificate lifetimes short.
 - **Trusted-proxy header** (API gateway injects identity over an allowlisted mTLS connection) — only if a pilot bank requires it.
 - **RFC 8705 certificate-bound access tokens** (FAPI-grade) — P1.
 - **Console OIDC login** (authorization code + PKCE); the console currently accepts a pasted access token.

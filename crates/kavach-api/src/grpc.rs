@@ -4,6 +4,7 @@ use kavach_auth::KavachAction;
 use tonic::{Request, Response, Status};
 
 use crate::auth::authorize_metadata;
+use crate::mtls::PeerCertificate;
 
 use crate::convert::{domain_to_proto, proto_to_domain};
 use crate::error::ApiError;
@@ -31,9 +32,15 @@ impl EvaluateService for GrpcEvaluateService {
         &self,
         request: Request<ProtoEvaluateRequest>,
     ) -> Result<Response<ProtoEvaluateResponse>, Status> {
+        let peer = request.peer_certs().and_then(|chain| {
+            chain
+                .first()
+                .map(|leaf| PeerCertificate::from_der(leaf.as_ref()))
+        });
         authorize_metadata(
             self.state.as_ref(),
             request.metadata(),
+            peer.as_ref(),
             KavachAction::Evaluate,
         )
         .map_err(|e| status_from_api(&e))?;

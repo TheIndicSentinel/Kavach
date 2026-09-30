@@ -91,6 +91,7 @@ async fn state() -> Arc<AppState> {
             leeway_seconds: 30,
         }),
         insecure_dev: false,
+        mtls_principal_san: None,
     };
     Arc::new(AppState::from_config(&config).await.expect("state"))
 }
@@ -280,7 +281,31 @@ fn cedar_without_an_authenticated_source_is_refused() {
         policy_path: "p".into(),
         entities_path: "e".into(),
     };
-    assert!(kavach_api::validate_principal_sources(&cedar, false, false).is_err());
-    assert!(kavach_api::validate_principal_sources(&cedar, true, false).is_ok());
-    assert!(kavach_api::validate_principal_sources(&cedar, false, true).is_ok());
+    let mut config = ApiConfig {
+        pack_path: "p".into(),
+        model_path: "m".into(),
+        hmac_secret: None,
+        evidence_store: EvidenceStoreKind::Memory,
+        access_control: cedar,
+        tls: None,
+        pack_sha256: None,
+        bootstrap_pack: false,
+        pack_signers: None,
+        oidc: None,
+        insecure_dev: false,
+        mtls_principal_san: None,
+    };
+    assert!(kavach_api::validate_principal_sources(&config).is_err());
+    config.insecure_dev = true;
+    assert!(kavach_api::validate_principal_sources(&config).is_ok());
+    config.insecure_dev = false;
+    config.oidc = Some(OidcConfig {
+        issuer: ISSUER.into(),
+        audience: AUDIENCE.into(),
+        jwks: JwksSource::File("jwks.json".into()),
+        principal_claim: "sub".into(),
+        groups_claim: "groups".into(),
+        leeway_seconds: 30,
+    });
+    assert!(kavach_api::validate_principal_sources(&config).is_ok());
 }

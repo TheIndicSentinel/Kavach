@@ -9,6 +9,7 @@ use rustls::{RootCertStore, ServerConfig};
 use rustls_pemfile::Item;
 
 use crate::config::TlsConfig;
+use crate::mtls::PeerCertAcceptor;
 
 fn io_other<E>(err: E) -> std::io::Error
 where
@@ -38,6 +39,12 @@ fn parse_certs(cert_pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, std::io:
         .map_err(io_other)
 }
 
+/// The explicit crypto provider, so TLS never depends on which rustls
+/// provider features other crates happen to enable.
+fn ring_provider() -> Arc<rustls::crypto::CryptoProvider> {
+    Arc::new(rustls::crypto::ring::default_provider())
+}
+
 async fn build_rustls_config(config: &TlsConfig) -> Result<RustlsConfig, std::io::Error> {
     let (cert_pem, key_pem) = config.read_server_pem().await?;
     let certs = parse_certs(&cert_pem)?;
@@ -49,15 +56,20 @@ async fn build_rustls_config(config: &TlsConfig) -> Result<RustlsConfig, std::io
         for cert in ca_certs {
             roots.add(cert).map_err(io_other)?;
         }
-        let client_verifier = WebPkiClientVerifier::builder(Arc::new(roots))
-            .build()
-            .map_err(io_other)?;
-        ServerConfig::builder()
+        let client_verifier =
+            WebPkiClientVerifier::builder_with_provider(Arc::new(roots), ring_provider())
+                .build()
+                .map_err(io_other)?;
+        ServerConfig::builder_with_provider(ring_provider())
+            .with_safe_default_protocol_versions()
+            .map_err(io_other)?
             .with_client_cert_verifier(client_verifier)
             .with_single_cert(certs, key)
             .map_err(io_other)?
     } else {
-        ServerConfig::builder()
+        ServerConfig::builder_with_provider(ring_provider())
+            .with_safe_default_protocol_versions()
+            .map_err(io_other)?
             .with_no_client_auth()
             .with_single_cert(certs, key)
             .map_err(io_other)?
@@ -72,14 +84,26 @@ pub async fn serve_http(
     addr: SocketAddr,
     tls: Option<&TlsConfig>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    serve_http_on(app, std::net::TcpListener::bind(addr)?, tls).await
+}
+
+/// Serves on an already-bound listener. With TLS, every request carries the
+/// client certificate's SANs as a [`crate::mtls::PeerCertificate`] extension
+/// (empty when the client sent no certificate).
+pub async fn serve_http_on(
+    app: Router,
+    listener: std::net::TcpListener,
+    tls: Option<&TlsConfig>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    listener.set_nonblocking(true)?;
     match tls {
         None => {
-            let listener = tokio::net::TcpListener::bind(addr).await?;
-            axum::serve(listener, app).await?;
+            axum::serve(tokio::net::TcpListener::from_std(listener)?, app).await?;
         }
         Some(config) => {
             let rustls = build_rustls_config(config).await?;
-            axum_server::bind_rustls(addr, rustls)
+            axum_server::from_tcp(listener)
+                .acceptor(PeerCertAcceptor::new(rustls))
                 .serve(app.into_make_service())
                 .await?;
         }

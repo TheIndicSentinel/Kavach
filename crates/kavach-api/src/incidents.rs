@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Query, State},
-    http::HeaderMap,
     Json,
 };
 use kavach_auth::KavachAction;
 use kavach_storage::IncidentRecord;
 use serde::Deserialize;
 
-use crate::auth::authorize_headers;
+use crate::auth::{authorize_credentials, Credentials};
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -25,10 +24,10 @@ fn default_incident_limit() -> u32 {
 
 pub async fn list_incidents(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    credentials: Credentials,
     Query(query): Query<IncidentQuery>,
 ) -> Result<Json<Vec<IncidentRecord>>, ApiError> {
-    authorize_headers(&state, &headers, KavachAction::ReadIncidents)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadIncidents)?;
     let limit = query.limit.clamp(1, 200);
     let records = state
         .incidents()

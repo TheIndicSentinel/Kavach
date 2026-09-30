@@ -77,6 +77,7 @@ Paths default via env vars; CLI flags override.
 | `KAVACH_HMAC_SECRET` | optional | When set, HTTP evaluate requires `X-Kavach-Signature: sha256=<hex>` over raw body |
 | `KAVACH_TLS_CERT`, `KAVACH_TLS_KEY` | prod | Server TLS for HTTP and gRPC |
 | `KAVACH_TLS_CLIENT_CA` | optional | When set with cert/key, enables mTLS (client cert required) |
+| `KAVACH_MTLS_PRINCIPAL_SAN` | optional | `uri` or `dns`: the client certificate SAN becomes the principal (needs `KAVACH_TLS_CLIENT_CA`) |
 | `KAVACH_CEDAR_POLICY` | Cedar | Cedar policy file |
 | `KAVACH_CEDAR_ENTITIES` | Cedar | Cedar entities JSON |
 
@@ -165,7 +166,14 @@ Issuer, audience and one JWKS source must be set together. Tokens must be signed
 
 *Keycloak (development):* create a realm and a confidential client with the service-account flow, add an audience mapper for `kavach-api` and a *Group Membership* mapper named `groups` (full path off). Then `--oidc-issuer http(s)://<host>/realms/<realm>`, `--oidc-jwks-url https://<host>/realms/<realm>/protocol/openid-connect/certs` (or save that JSON as the JWKS file), and get a token with `curl -d grant_type=client_credentials -d client_id=... -d client_secret=... https://<host>/realms/<realm>/protocol/openid-connect/token`.
 
-mTLS (`--tls-client-ca`) restricts who can connect but does not yet map the certificate to a principal (H2b).
+**mTLS principals (machine callers).** With `--tls-cert`, `--tls-key`, `--tls-client-ca` and `--mtls-principal-san uri` (env `KAVACH_MTLS_PRINCIPAL_SAN`; `dns` also supported), the client certificate's single URI SAN is the Cedar principal on HTTP and gRPC. Add that id to the entities file with its groups, for example:
+
+```json
+{ "uid": { "type": "Kavach::User", "id": "spiffe://bank.example/los" }, "attrs": {},
+  "parents": [{ "type": "Kavach::Group", "id": "operators" }] }
+```
+
+A certificate with no SAN, or several SANs, of the configured type gets 401. A bearer token, when also sent, takes precedence. Client certificates are not checked for revocation; issue short-lived ones. Without `--mtls-principal-san`, mTLS only restricts who can connect.
 
 **HMAC v2 on `/v1/evaluate`.** With `--hmac-secret`, send `X-Kavach-Timestamp` (unix seconds, ±300 s), `X-Kavach-Nonce` (16–128 characters `[A-Za-z0-9_-]`, single use) and `X-Kavach-Signature: sha256=<hex HMAC-SHA256>` over `v2\n{ts}\n{nonce}\n{METHOD}\n{path?query}\n` followed by the raw body. `scripts/pilot-phase3.sh` shows a working signer.
 
