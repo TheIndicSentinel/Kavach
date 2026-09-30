@@ -114,8 +114,6 @@ export type PackSummary = {
   rule_count: number;
   source_path: string;
   active: boolean;
-  /** False: no governed state yet; activate it with an activate_model change. */
-  governed: boolean;
 };
 
 export type PolicyPack = {
@@ -148,6 +146,8 @@ export type ModelSummary = {
   owner: string;
   source_path: string;
   active: boolean;
+  /** False: no governed state yet; activate it with an activate_model change. */
+  governed: boolean;
 };
 
 export type ModelRecord = {
