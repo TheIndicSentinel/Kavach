@@ -6,7 +6,7 @@ use clap::{Parser, ValueEnum};
 use kavach_api::{
     grpc_server_tls_config, resolve_access_control, router, serve_http, validate_principal_sources,
     AccessControlKind, AccessControlMode, ApiConfig, AppState, EvaluateServiceServer,
-    EvidenceStoreKind, GrpcEvaluateService, JwksSource, OidcConfig, TlsConfig,
+    EvidenceStoreKind, GrpcEvaluateService, JwksSource, MtlsSanKind, OidcConfig, TlsConfig,
 };
 use tonic::transport::Server;
 
@@ -152,6 +152,11 @@ struct Cli {
     /// When set with cert/key, require client certificate (mTLS).
     #[arg(long, env = "KAVACH_TLS_CLIENT_CA")]
     tls_client_ca: Option<PathBuf>,
+
+    /// Use the client certificate's single SAN of this type (uri, e.g. a
+    /// SPIFFE id, or dns) as the principal. Requires --tls-client-ca.
+    #[arg(long, env = "KAVACH_MTLS_PRINCIPAL_SAN", value_enum)]
+    mtls_principal_san: Option<MtlsSanKind>,
 }
 
 impl Cli {
@@ -177,7 +182,6 @@ impl Cli {
             self.cedar_entities,
         )?;
         let oidc = self.oidc.into_config()?;
-        validate_principal_sources(&access_control, oidc.is_some(), self.insecure_dev)?;
 
         let tls = match (self.tls_cert, self.tls_key) {
             (Some(cert_path), Some(key_path)) => Some(TlsConfig::from_paths(
@@ -191,7 +195,7 @@ impl Cli {
             }
         };
 
-        Ok(ApiConfig {
+        let config = ApiConfig {
             pack_path: self.pack,
             model_path: self.model,
             hmac_secret: self.hmac_secret,
@@ -203,7 +207,10 @@ impl Cli {
             pack_signers: self.pack_signers,
             oidc,
             insecure_dev: self.insecure_dev,
-        })
+            mtls_principal_san: self.mtls_principal_san,
+        };
+        validate_principal_sources(&config)?;
+        Ok(config)
     }
 }
 
@@ -229,11 +236,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let insecure = matches!(config.access_control, AccessControlKind::None);
-    let principal_sources = match (config.oidc.is_some(), config.insecure_dev) {
-        (true, true) => "oidc-jwt+insecure-header",
-        (true, false) => "oidc-jwt",
-        (false, true) => "insecure-header",
-        (false, false) => "none",
+    let principal_sources = [
+        (config.oidc.is_some(), "oidc-jwt"),
+        (config.mtls_principal_san.is_some(), "mtls-san"),
+        (config.insecure_dev, "insecure-header"),
+    ]
+    .iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, name)| *name)
+    .collect::<Vec<_>>()
+    .join("+");
+    let principal_sources = if principal_sources.is_empty() {
+        "none".to_string()
+    } else {
+        principal_sources
     };
     if config.insecure_dev && !insecure {
         eprintln!(

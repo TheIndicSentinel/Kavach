@@ -20,22 +20,33 @@ pub struct ApiConfig {
     pub oidc: Option<crate::oidc::OidcConfig>,
     /// Development only: accept the self-asserted `X-Kavach-Principal` header.
     pub insecure_dev: bool,
+    /// mTLS principals: the client certificate SAN of this type names the
+    /// principal (requires `--tls-client-ca`).
+    pub mtls_principal_san: Option<crate::mtls::MtlsSanKind>,
 }
 
-/// Cedar access control needs an authenticated principal source (OIDC now,
-/// mTLS SAN in H2b) unless `--insecure-dev` explicitly allows the header.
-pub fn validate_principal_sources(
-    access_control: &AccessControlKind,
-    oidc_configured: bool,
-    insecure_dev: bool,
-) -> Result<(), String> {
-    match access_control {
-        AccessControlKind::Cedar { .. } if !oidc_configured && !insecure_dev => Err(
-            "cedar access control needs an authenticated principal source: configure OIDC \
-             (--oidc-issuer, --oidc-audience, --oidc-jwks-file or --oidc-jwks-url); \
-             the X-Kavach-Principal header is accepted only with --insecure-dev"
-                .into(),
-        ),
+/// Cedar access control needs an authenticated principal source (OIDC or
+/// mTLS SAN) unless `--insecure-dev` explicitly allows the header. mTLS
+/// principals need client-certificate verification.
+pub fn validate_principal_sources(config: &ApiConfig) -> Result<(), String> {
+    let mtls = config.mtls_principal_san.is_some();
+    if mtls && !config.tls.as_ref().is_some_and(TlsConfig::is_mtls) {
+        return Err(
+            "--mtls-principal-san needs mTLS: set --tls-cert, --tls-key and --tls-client-ca".into(),
+        );
+    }
+    match config.access_control {
+        AccessControlKind::Cedar { .. }
+            if config.oidc.is_none() && !mtls && !config.insecure_dev =>
+        {
+            Err(
+                "cedar access control needs an authenticated principal source: configure OIDC \
+                 (--oidc-issuer, --oidc-audience, --oidc-jwks-file or --oidc-jwks-url) or mTLS \
+                 principals (--mtls-principal-san with --tls-client-ca); the X-Kavach-Principal \
+                 header is accepted only with --insecure-dev"
+                    .into(),
+            )
+        }
         _ => Ok(()),
     }
 }

@@ -23,7 +23,7 @@
 ## Trust boundaries
 
 ```
-Callers / LOS / console users ──(mTLS or HMAC + Cedar principal)──► kavach-api ──► Postgres
+Callers / LOS / console users ──(OIDC token or mTLS certificate → Cedar principal)──► kavach-api ──► Postgres
                                                                         │
                             (planned, ADR-007)                           ▼
 agent_net (no egress) ──► kavach-dataplane ──► backend_net (SoR, tools, OpenBao, Keycloak)
@@ -36,7 +36,7 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 
 | Threat | Mitigation | Status |
 |---|---|---|
-| Spoofing (API caller) | OIDC access token (JWT) on every HTTP route and gRPC call: issuer, audience, JWKS `kid`, `exp`/`nbf`, asymmetric algorithms only (ADR-008). `X-Kavach-Principal` accepted only with `--insecure-dev`; Cedar without an authenticated source refuses to start. HMAC v2 (timestamp + nonce + method + path) on `/v1/evaluate`. Residual: approver header still self-asserted (H3); mTLS not bound to the principal until H2b; tokens valid until expiry. | **Mitigated with OIDC** — mTLS SAN in H2b |
+| Spoofing (API caller) | OIDC access token (JWT) on every HTTP route and gRPC call: issuer, audience, JWKS `kid`, `exp`/`nbf`, asymmetric algorithms only (ADR-008). `X-Kavach-Principal` accepted only with `--insecure-dev`; Cedar without an authenticated source refuses to start. HMAC v2 (timestamp + nonce + method + path) on `/v1/evaluate`. mTLS principals: the verified client certificate's single URI/DNS SAN (`--mtls-principal-san`), HTTP and gRPC. Residual: approver header still self-asserted (H3); tokens valid until expiry; no client-certificate revocation checks. | **Mitigated** (OIDC or mTLS principals) |
 | Spoofing (authorization disabled) | `--access-control` defaults to `cedar`; disabling requires `--insecure-dev` and prints a warning | **This release** |
 | Tampering / misconfiguration (API RBAC policies) | Policies strictly validated and entities/requests validated against the compiled-in Cedar schema at startup; principal header treated as a literal id | **This release** |
 | Spoofing (agent) | Keycloak client-credentials JWT via JWKS; `X-Kavach-Principal` not accepted on agent surfaces | Planned (M3) |

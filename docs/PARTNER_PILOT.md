@@ -49,7 +49,7 @@ export PILOT_APPROVER=admin-2   # a different admin (still self-asserted until H
 1. Promote model to `production` if vendor (`origin: vendor`) before enforce.
 2. Switch model `governance_mode` to `enforce` via dual-control PATCH.
 3. Enable HMAC v2 on HTTP evaluate (`KAVACH_HMAC_SECRET`; timestamp + nonce) for the scoring API path.
-4. Keep Cedar RBAC with OIDC access tokens on; add mTLS per [INSTALL.md](INSTALL.md).
+4. Keep Cedar RBAC on. Machine callers (LOS scoring) can use mTLS certificate principals (`--mtls-principal-san uri`) instead of tokens; see [INSTALL.md](INSTALL.md).
 
 **Exit criteria:** Sync evaluate returns `policy_decision == returned_decision`; evidence chain verifies with `kavach-evidence verify`.
 

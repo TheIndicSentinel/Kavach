@@ -3,17 +3,25 @@
 //! Principal sources, in order:
 //! 1. `Authorization: Bearer <jwt>` verified against the configured OIDC
 //!    issuer (groups from the token feed Cedar).
-//! 2. (H2b) the mTLS client-certificate SAN.
+//! 2. The mTLS client-certificate SAN, when `--mtls-principal-san` is set
+//!    (groups from the entities file). A token wins over the certificate: the
+//!    token names the acting principal, the certificate the workload.
 //! 3. `X-Kavach-Principal` — **only with `--insecure-dev`**; never trusted
 //!    otherwise.
 //!
-//! Sending a bearer token and `X-Kavach-Principal` together is rejected.
+//! Sending `X-Kavach-Principal` together with a token or a certificate
+//! principal is rejected.
 
+use std::convert::Infallible;
+
+use axum::extract::FromRequestParts;
+use axum::http::request::Parts;
 use axum::http::HeaderMap;
 use kavach_auth::KavachAction;
 use tonic::metadata::MetadataMap;
 
 use crate::error::ApiError;
+use crate::mtls::PeerCertificate;
 use crate::oidc::OidcError;
 use crate::state::AppState;
 
@@ -25,6 +33,8 @@ const APPROVER_HEADER: &str = "x-kavach-approver";
 pub enum PrincipalSource {
     /// Verified OIDC/OAuth 2.0 JWT access token.
     Jwt,
+    /// Verified mTLS client-certificate SAN.
+    MtlsSan,
     /// Self-asserted header, accepted only in `--insecure-dev`.
     InsecureHeader,
 }
@@ -35,6 +45,28 @@ pub struct AuthenticatedPrincipal {
     pub id: String,
     pub groups: Vec<String>,
     pub source: PrincipalSource,
+}
+
+/// Credential material of an HTTP request: its headers and, over TLS, the
+/// client certificate attached by [`crate::mtls::PeerCertAcceptor`].
+#[derive(Debug, Clone)]
+pub struct Credentials {
+    pub headers: HeaderMap,
+    pub peer: Option<PeerCertificate>,
+}
+
+impl<S: Send + Sync> FromRequestParts<S> for Credentials {
+    type Rejection = Infallible;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        _state: &S,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        std::future::ready(Ok(Self {
+            headers: parts.headers.clone(),
+            peer: parts.extensions.get::<PeerCertificate>().cloned(),
+        }))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -57,32 +89,48 @@ fn bearer_token(authorization: Option<&str>) -> Result<Option<&str>, ApiError> {
     Ok(Some(token.trim()))
 }
 
+fn verify_token(state: &AppState, token: &str) -> Result<AuthenticatedPrincipal, ApiError> {
+    let verifier = state.oidc().ok_or(ApiError::Unauthorized)?;
+    match verifier.verify(token) {
+        Ok(token_claims) => Ok(AuthenticatedPrincipal {
+            id: token_claims.principal,
+            groups: token_claims.groups,
+            source: PrincipalSource::Jwt,
+        }),
+        Err(OidcError::UnknownKid(_)) => {
+            verifier.request_refresh();
+            Err(ApiError::Unauthorized)
+        }
+        Err(_) => Err(ApiError::Unauthorized),
+    }
+}
+
 /// Resolves the request principal from the credential material presented.
 pub fn resolve_principal(
     state: &AppState,
     authorization: Option<&str>,
     principal_header: Option<&str>,
+    peer: Option<&PeerCertificate>,
 ) -> Result<AuthenticatedPrincipal, ApiError> {
-    match (bearer_token(authorization)?, principal_header) {
-        (Some(_), Some(_)) => Err(ApiError::BadRequest(
+    let token = bearer_token(authorization)?;
+    let cert_principal = state
+        .mtls_principal_san()
+        .zip(peer)
+        .and_then(|(kind, peer)| peer.principal(kind).ok());
+    match (token, cert_principal, principal_header) {
+        (Some(_), _, Some(_)) => Err(ApiError::BadRequest(
             "send either a bearer token or X-Kavach-Principal, not both".into(),
         )),
-        (Some(token), None) => {
-            let verifier = state.oidc().ok_or(ApiError::Unauthorized)?;
-            match verifier.verify(token) {
-                Ok(token_claims) => Ok(AuthenticatedPrincipal {
-                    id: token_claims.principal,
-                    groups: token_claims.groups,
-                    source: PrincipalSource::Jwt,
-                }),
-                Err(OidcError::UnknownKid(_)) => {
-                    verifier.request_refresh();
-                    Err(ApiError::Unauthorized)
-                }
-                Err(_) => Err(ApiError::Unauthorized),
-            }
-        }
-        (None, Some(principal)) if state.insecure_dev() => Ok(AuthenticatedPrincipal {
+        (None, Some(_), Some(_)) => Err(ApiError::BadRequest(
+            "X-Kavach-Principal is not accepted with a client-certificate principal".into(),
+        )),
+        (Some(token), _, None) => verify_token(state, token),
+        (None, Some(id), None) => Ok(AuthenticatedPrincipal {
+            id: id.to_string(),
+            groups: vec![],
+            source: PrincipalSource::MtlsSan,
+        }),
+        (None, None, Some(principal)) if state.insecure_dev() => Ok(AuthenticatedPrincipal {
             id: principal.to_string(),
             groups: vec![],
             source: PrincipalSource::InsecureHeader,
@@ -99,32 +147,36 @@ fn metadata<'a>(metadata: &'a MetadataMap, name: &str) -> Option<&'a str> {
     metadata.get(name).and_then(|value| value.to_str().ok())
 }
 
-pub fn resolve_headers(
+pub fn resolve_credentials(
     state: &AppState,
-    headers: &HeaderMap,
+    credentials: &Credentials,
 ) -> Result<AuthenticatedPrincipal, ApiError> {
     resolve_principal(
         state,
-        header(headers, "authorization"),
-        header(headers, PRINCIPAL_HEADER),
+        header(&credentials.headers, "authorization"),
+        header(&credentials.headers, PRINCIPAL_HEADER),
+        credentials.peer.as_ref(),
     )
 }
 
-pub fn authorize_headers(
+pub fn authorize_credentials(
     state: &AppState,
-    headers: &HeaderMap,
+    credentials: &Credentials,
     action: KavachAction,
 ) -> Result<(), ApiError> {
     if state.access_control().is_none() {
         return Ok(());
     }
-    let principal = resolve_headers(state, headers)?;
+    let principal = resolve_credentials(state, credentials)?;
     authorize_principal(state, &principal, action)
 }
 
+/// gRPC: token from `authorization` metadata, certificate from the TLS
+/// connection (`Request::peer_certs`).
 pub fn authorize_metadata(
     state: &AppState,
     md: &MetadataMap,
+    peer: Option<&PeerCertificate>,
     action: KavachAction,
 ) -> Result<(), ApiError> {
     if state.access_control().is_none() {
@@ -134,17 +186,18 @@ pub fn authorize_metadata(
         state,
         metadata(md, "authorization"),
         metadata(md, PRINCIPAL_HEADER),
+        peer,
     )?;
     authorize_principal(state, &principal, action)
 }
 
 pub fn authorize_dual_control(
     state: &AppState,
-    headers: &HeaderMap,
+    credentials: &Credentials,
     action: KavachAction,
 ) -> Result<DualControlPrincipals, ApiError> {
-    let actor = resolve_headers(state, headers)?;
-    let approver = header(headers, APPROVER_HEADER).ok_or(ApiError::BadRequest(
+    let actor = resolve_credentials(state, credentials)?;
+    let approver = header(&credentials.headers, APPROVER_HEADER).ok_or(ApiError::BadRequest(
         "dual control requires X-Kavach-Approver header".into(),
     ))?;
     if actor.id == approver {

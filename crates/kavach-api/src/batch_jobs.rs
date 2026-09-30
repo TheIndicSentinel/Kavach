@@ -2,14 +2,13 @@ use std::sync::Arc;
 
 use axum::{
     extract::{Path, Query, State},
-    http::HeaderMap,
     Json,
 };
 use kavach_auth::KavachAction;
 use kavach_storage::{BatchJobRecord, JobQueryError};
 use serde::Deserialize;
 
-use crate::auth::authorize_headers;
+use crate::auth::{authorize_credentials, Credentials};
 use crate::error::ApiError;
 use crate::state::AppState;
 
@@ -25,10 +24,10 @@ fn default_batch_job_limit() -> u32 {
 
 pub async fn list_batch_jobs(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    credentials: Credentials,
     Query(query): Query<BatchJobQuery>,
 ) -> Result<Json<Vec<BatchJobRecord>>, ApiError> {
-    authorize_headers(&state, &headers, KavachAction::ReadBatchJobs)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadBatchJobs)?;
     let limit = query.limit.clamp(1, 200);
     let records = state
         .batch_jobs()
@@ -40,10 +39,10 @@ pub async fn list_batch_jobs(
 
 pub async fn get_batch_job(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    credentials: Credentials,
     Path(job_id): Path<String>,
 ) -> Result<Json<BatchJobRecord>, ApiError> {
-    authorize_headers(&state, &headers, KavachAction::ReadBatchJobs)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadBatchJobs)?;
     let record = state
         .batch_jobs()
         .get(&job_id)

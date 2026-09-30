@@ -39,6 +39,9 @@ license-files = [{ path = "LICENSE", hash = 0x0 }]
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# One rustls crypto provider (ring). With aws-lc-rs also compiled in, rustls
+# cannot choose a process default and TLS servers fail at startup.
+deny = [{ crate = "aws-lc-rs", reason = "rustls must use only the ring provider" }]
 
 [sources]
 unknown-registry = "deny"

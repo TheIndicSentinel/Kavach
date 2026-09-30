@@ -4,7 +4,6 @@ use axum::{
     body::Bytes,
     extract::State,
     http::header,
-    http::HeaderMap,
     response::{IntoResponse, Response},
     routing::{get, patch, post},
     Json, Router,
@@ -14,7 +13,7 @@ use kavach_domain::EvaluateRequest;
 
 use kavach_auth::KavachAction;
 
-use crate::auth::authorize_headers;
+use crate::auth::{authorize_credentials, Credentials};
 use crate::batch_jobs::{get_batch_job, list_batch_jobs};
 use crate::error::ApiError;
 use crate::governance::{
@@ -64,17 +63,17 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 async fn health(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    credentials: Credentials,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    authorize_headers(&state, &headers, KavachAction::ReadHealth)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadHealth)?;
     Ok(Json(serde_json::json!({ "status": "ok" })))
 }
 
 async fn metrics(
     State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
+    credentials: Credentials,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize_headers(&state, &headers, KavachAction::ReadMetrics)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadMetrics)?;
     let body = state
         .metrics()
         .gather_text()
@@ -92,7 +91,7 @@ async fn evaluate(
     State(state): State<Arc<AppState>>,
     method: axum::http::Method,
     uri: axum::http::Uri,
-    headers: HeaderMap,
+    credentials: Credentials,
     body: Bytes,
 ) -> Result<Json<kavach_domain::EvaluateResponse>, ApiError> {
     if let Some(secret) = state.hmac_secret() {
@@ -100,14 +99,14 @@ async fn evaluate(
         crate::hmac_auth::verify(
             secret,
             state.nonces(),
-            &headers,
+            &credentials.headers,
             method.as_str(),
             path,
             &body,
             chrono::Utc::now().timestamp(),
         )?;
     }
-    authorize_headers(state.as_ref(), &headers, KavachAction::Evaluate)?;
+    authorize_credentials(state.as_ref(), &credentials, KavachAction::Evaluate)?;
     let request: EvaluateRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::BadRequest(format!("invalid JSON body: {e}")))?;
     let response = state.evaluate("http", &request)?;

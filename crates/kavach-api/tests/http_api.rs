@@ -181,6 +181,7 @@ async fn cedar_test_state() -> Arc<AppState> {
         pack_signers: None,
         oidc: None,
         insecure_dev: true,
+        mtls_principal_san: None,
     };
     Arc::new(AppState::from_config(&config).await.expect("cedar state"))
 }
@@ -829,6 +830,7 @@ async fn signed_packs_required_when_signers_configured() {
         pack_signers: Some(signers_path),
         oidc: None,
         insecure_dev: true,
+        mtls_principal_san: None,
     };
 
     // Unsigned startup pack is refused.
