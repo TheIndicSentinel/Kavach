@@ -38,6 +38,30 @@ pub struct AppendDecisionEvent {
     pub idempotency_key: Option<String>,
 }
 
+/// Checks that a retry matching a stored row by `(model_id, correlation_id)`
+/// is the same request (ADR-001 §11): same input digest, and the same
+/// `idempotency_key` when both carry one. A mismatch is a conflict, never a
+/// replay of the stored decision.
+pub fn check_idempotent_replay(
+    existing: &DecisionEvent,
+    input: &AppendDecisionEvent,
+) -> Result<(), EvidenceError> {
+    let conflict = |reason: &str| EvidenceError::IdempotencyConflict {
+        model_id: input.model_id.clone(),
+        correlation_id: input.correlation_id.clone(),
+        reason: reason.to_string(),
+    };
+    if existing.input_digest != input.input_digest {
+        return Err(conflict("input differs from the stored request"));
+    }
+    if let (Some(stored), Some(given)) = (&existing.idempotency_key, &input.idempotency_key) {
+        if stored != given {
+            return Err(conflict("idempotency_key differs from the stored request"));
+        }
+    }
+    Ok(())
+}
+
 /// In-memory append-only chain for Milestone A (Postgres adapter follows in A.4).
 #[derive(Debug, Default)]
 pub struct MemoryChain {
@@ -86,6 +110,7 @@ impl MemoryChain {
 
         if let Some(existing) = self.idempotency_index.get(&idempotency) {
             if let Some(event) = self.events.iter().find(|e| e.evidence_id == *existing) {
+                check_idempotent_replay(event, &input)?;
                 return Ok(event.clone());
             }
         }

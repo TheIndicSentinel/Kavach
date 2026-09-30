@@ -15,9 +15,15 @@ impl EvidenceStore for MemoryChain {
     }
 }
 
+/// An incident could not be persisted. Callers must surface it (metric, log);
+/// infra failures must never become invisible (ADR-001 §5).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("incident write failed: {0}")]
+pub struct IncidentWriteError(pub String);
+
 /// Shadow-mode infra failure path — no fake evidence row (ADR-001 §5).
 pub trait IncidentRecorder {
-    fn record(&mut self, incident: EvaluateIncident);
+    fn record(&mut self, incident: EvaluateIncident) -> Result<(), IncidentWriteError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,8 +39,9 @@ pub struct VecIncidentRecorder {
 }
 
 impl IncidentRecorder for VecIncidentRecorder {
-    fn record(&mut self, incident: EvaluateIncident) {
+    fn record(&mut self, incident: EvaluateIncident) -> Result<(), IncidentWriteError> {
         self.incidents.push(incident);
+        Ok(())
     }
 }
 
@@ -42,5 +49,7 @@ impl IncidentRecorder for VecIncidentRecorder {
 pub struct NoopIncidentRecorder;
 
 impl IncidentRecorder for NoopIncidentRecorder {
-    fn record(&mut self, _incident: EvaluateIncident) {}
+    fn record(&mut self, _incident: EvaluateIncident) -> Result<(), IncidentWriteError> {
+        Ok(())
+    }
 }

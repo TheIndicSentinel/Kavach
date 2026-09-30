@@ -14,6 +14,10 @@ pub enum EvaluateError {
     #[error("pack not effective at server time")]
     PackNotEffective,
 
+    /// Same idempotency key with a different request (ADR-001 §11).
+    #[error("idempotency conflict: {0}")]
+    IdempotencyConflict(String),
+
     #[error("policy: {0}")]
     Policy(#[from] PolicyError),
 

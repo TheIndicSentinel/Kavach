@@ -61,6 +61,9 @@ pub fn status_from_api(err: &ApiError) -> Status {
             kavach_policy::PolicyError::Timeout { .. },
         )) => tonic::Code::Unavailable,
         ApiError::NotFound(_) => tonic::Code::NotFound,
+        ApiError::Evaluate(kavach_evaluate::EvaluateError::IdempotencyConflict(_)) => {
+            tonic::Code::AlreadyExists
+        }
         ApiError::Conflict(_) => tonic::Code::FailedPrecondition,
         ApiError::Evaluate(_) | ApiError::Internal(_) => tonic::Code::Internal,
     };

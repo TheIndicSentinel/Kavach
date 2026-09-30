@@ -17,7 +17,7 @@ On-prem pilot for Indian structured-credit integrations. This is the **first pro
 1. Deploy pilot stack ([deploy/docker-compose.pilot.yml](../deploy/docker-compose.pilot.yml)) or bank VPC equivalent.
 2. Map LOS export to [`partner/finance/credit_underwriting_v1_request.json`](../partner/finance/credit_underwriting_v1_request.json).
 3. Validate against [`schemas/evaluate-request.schema.json`](../schemas/evaluate-request.schema.json).
-4. Run `kavach-batch run` with `governance_mode: shadow` on the active model record.
+4. Run `kavach-batch run` with `governance_mode: shadow` on the active model record. For a historical LOS export, pass the export's period as `--decision-from/--decision-to` (RFC 3339) so rows are not rejected for being older than ±300 s.
 5. Review batch output NDJSON: `policy_decision`, `returned_decision`, `reason_codes`.
 6. Confirm batch jobs appear in console **Governance → Batch jobs** (Postgres evidence store).
 

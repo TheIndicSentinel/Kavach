@@ -708,6 +708,14 @@ impl AppState {
         let result = service
             .evaluate(EvaluatePath::Sync, request, Utc::now())
             .map_err(ApiError::Evaluate)?;
+        if let Some(err) = &result.incident_write_error {
+            // Never let an infra failure become invisible (ADR-001 §5).
+            self.metrics.observe_incident_write_failure();
+            eprintln!(
+                "ALERT kavach-api: incident not persisted (correlation_id={}, model_id={}): {err}",
+                request.correlation_id, request.model_id
+            );
+        }
         Ok(result.response)
     }
 }

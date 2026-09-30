@@ -39,7 +39,9 @@ impl ApiError {
                 | EvaluateError::PackNotEffective,
             ) => StatusCode::BAD_REQUEST,
             Self::NotFound(_) => StatusCode::NOT_FOUND,
-            Self::Conflict(_) => StatusCode::CONFLICT,
+            Self::Conflict(_) | Self::Evaluate(EvaluateError::IdempotencyConflict(_)) => {
+                StatusCode::CONFLICT
+            }
             Self::Evaluate(EvaluateError::Policy(kavach_policy::PolicyError::Timeout {
                 ..
             })) => StatusCode::SERVICE_UNAVAILABLE,

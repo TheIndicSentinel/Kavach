@@ -2,5 +2,6 @@
 //! `kavach_evaluate::{EvidenceStore, IncidentRecorder, ...}` imports keep working.
 
 pub use kavach_ports::{
-    EvaluateIncident, EvidenceStore, IncidentRecorder, NoopIncidentRecorder, VecIncidentRecorder,
+    EvaluateIncident, EvidenceStore, IncidentRecorder, IncidentWriteError, NoopIncidentRecorder,
+    VecIncidentRecorder,
 };

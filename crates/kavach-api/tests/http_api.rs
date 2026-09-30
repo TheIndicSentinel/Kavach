@@ -850,3 +850,41 @@ async fn signed_packs_required_when_signers_configured() {
 
     let _ = std::fs::remove_dir_all(root);
 }
+
+/// ADR-001 §11: same correlation id with a different body is a conflict (409),
+/// never a replay of the stored decision.
+#[tokio::test]
+async fn evaluate_idempotency_conflict_returns_409() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let body = include_str!("../../../golden/finance/v0/credit_clean.json");
+    let request_json: serde_json::Value = serde_json::from_str(body).unwrap();
+    let mut request: EvaluateRequest =
+        serde_json::from_value(request_json["request"].clone()).unwrap();
+    let now = Utc::now();
+    request.decision_time = now;
+    request.consent.timestamp = now;
+
+    let post = |payload: Vec<u8>| {
+        router(state.clone()).oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/evaluate")
+                .header("content-type", "application/json")
+                .body(Body::from(payload))
+                .unwrap(),
+        )
+    };
+    let first = post(serde_json::to_vec(&request).unwrap()).await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let same = post(serde_json::to_vec(&request).unwrap()).await.unwrap();
+    assert_eq!(same.status(), StatusCode::OK, "identical retry is a replay");
+
+    request.input["debt_ratio"] = serde_json::json!(0.99);
+    let changed = post(serde_json::to_vec(&request).unwrap()).await.unwrap();
+    assert_eq!(changed.status(), StatusCode::CONFLICT);
+}

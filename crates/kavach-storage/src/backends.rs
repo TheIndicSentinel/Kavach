@@ -71,11 +71,14 @@ impl Clone for IncidentBackend {
 }
 
 impl kavach_evaluate::IncidentRecorder for IncidentBackend {
-    fn record(&mut self, incident: kavach_evaluate::EvaluateIncident) {
+    fn record(
+        &mut self,
+        incident: kavach_evaluate::EvaluateIncident,
+    ) -> Result<(), kavach_evaluate::IncidentWriteError> {
         match self {
-            Self::Memory(store) => {
-                let _ = store.record_incident(incident);
-            }
+            Self::Memory(store) => store
+                .record_incident(incident)
+                .map_err(|e| kavach_evaluate::IncidentWriteError(e.to_string())),
             Self::Postgres(store) => store.record(incident),
         }
     }

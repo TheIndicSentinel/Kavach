@@ -12,6 +12,7 @@ pub struct Metrics {
     registry: Arc<Registry>,
     evaluate_total: IntCounterVec,
     evaluate_latency_ms: HistogramVec,
+    incident_write_failures: prometheus::IntCounter,
 }
 
 impl Metrics {
@@ -34,12 +35,18 @@ impl Metrics {
             ]),
             &["transport"],
         )?;
+        let incident_write_failures = prometheus::IntCounter::new(
+            "kavach_incident_write_failures_total",
+            "Incidents that could not be persisted (evidence or policy failure made invisible otherwise)",
+        )?;
         registry.register(Box::new(evaluate_total.clone()))?;
         registry.register(Box::new(evaluate_latency_ms.clone()))?;
+        registry.register(Box::new(incident_write_failures.clone()))?;
         Ok(Self {
             registry: Arc::new(registry),
             evaluate_total,
             evaluate_latency_ms,
+            incident_write_failures,
         })
     }
 
@@ -50,6 +57,10 @@ impl Metrics {
         self.evaluate_latency_ms
             .with_label_values(&[transport])
             .observe(f64::from(u32::try_from(latency_ms).unwrap_or(u32::MAX)));
+    }
+
+    pub fn observe_incident_write_failure(&self) {
+        self.incident_write_failures.inc();
     }
 
     pub fn observe_client_error(&self, transport: &str) {

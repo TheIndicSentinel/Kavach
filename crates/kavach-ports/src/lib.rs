@@ -14,7 +14,8 @@ mod time;
 
 pub use error::{ErrorClass, PortError};
 pub use evidence::{
-    EvaluateIncident, EvidenceStore, IncidentRecorder, NoopIncidentRecorder, VecIncidentRecorder,
+    EvaluateIncident, EvidenceStore, IncidentRecorder, IncidentWriteError, NoopIncidentRecorder,
+    VecIncidentRecorder,
 };
 pub use keys::{verify_ed25519, KeyAlgorithm, KeyProvider, PublicKey};
 pub use mandate::{ConsentSource, DomainEvent, EventBus, MandateStore, StoredMandate};
