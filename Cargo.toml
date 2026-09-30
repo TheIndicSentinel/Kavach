@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/kavach-cedar-analysis",
     "crates/kavach-authz",
     "crates/kavach-mandate",
     "crates/kavach-ports",
@@ -67,7 +68,8 @@ serde_json_canonicalizer = "0.3.2"
 base64 = "0.22.1"
 kavach-authz = { path = "crates/kavach-authz", version = "0.1.0" }
 chrono-tz = "0.10.4"
-cedar-policy = "4.12.0"
+cedar-policy-symcc = "=0.7.0"
+cedar-policy = "=4.13.0"
 clap = { version = "4.5.47", features = ["derive", "env"] }
 axum = { version = "0.8.8", features = ["json"] }
 tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "net"] }

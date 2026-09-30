@@ -102,3 +102,29 @@ jobs:
 
       - name: cargo deny
         run: cargo deny check
+
+  cedar-analysis:
+    name: Agent policy analysis (Cedar + cvc5)
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # Pinned cvc5 1.3.1 non-GPL static build (BSD-3-Clause), SHA-256 verified.
+      - name: Install cvc5
+        run: |
+          ./scripts/fetch-cvc5.sh
+          echo "CVC5=$PWD/.tools/cvc5/bin/cvc5" >> "$GITHUB_ENV"
+
+      # Proves the PRD properties for crates/kavach-authz/policies and checks
+      # that deliberately weakened policies are detected.
+      - name: Prove agent policy properties
+        run: cargo run --locked -p kavach-cedar-analysis

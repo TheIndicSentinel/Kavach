@@ -194,6 +194,18 @@ Export the evidence chain to NDJSON, then:
 ./target/release/kavach-evidence verify --file /path/to/export.ndjson
 ```
 
+### Agent policy analysis (development / CI)
+
+The agent authorization policies (`crates/kavach-authz/policies/`) are formally analysed on every CI run. To run the analysis locally:
+
+```bash
+./scripts/fetch-cvc5.sh                      # pinned cvc5 1.3.1 (BSD build), SHA-256 verified, into .tools/
+export CVC5="$PWD/.tools/cvc5/bin/cvc5"
+cargo run -p kavach-cedar-analysis          # PROVEN / CAUGHT lines; exit code 1 on any failure
+```
+
+`./scripts/verify.sh` runs the analysis when `CVC5` is set. Any change to the agent schema or policies must keep this job green.
+
 ## Container deployment (outline)
 
 Run two containers from the same image (different `CMD`):

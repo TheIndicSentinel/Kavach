@@ -29,7 +29,7 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 | Property | ADR | Acceptance scenario |
 |---|---|---|
 | For **brokered resources**, an agent without authority holds no credential to act | ADR-006, ADR-007 | 1, 11 |
-| Actions stay within the mandate's subject, purpose, window, fields and ceilings | ADR-003, ADR-004 | 3, 4, 5 — enforced by `kavach-authz` Cedar policies with library-level scenario tests; formal proofs in CI arrive with M1.5b; exposed via `/v1/authorize` in M1.6 |
+| Actions stay within the mandate's subject, purpose, window, fields and ceilings | ADR-003, ADR-004 | 3, 4, 5 — enforced by `kavach-authz` Cedar policies; subject binding, waiver ceiling and contact window **formally proven in CI** (`kavach-cedar-analysis`, cvc5) along with "no policy can raise an evaluation error"; exposed via `/v1/authorize` in M1.6 |
 | Delegated authority only narrows | ADR-004 §6 | 7 — narrowing implemented and property-tested (2,000 cases) in `kavach-mandate`; enforced on agent requests from M1.6 |
 | Critical actions need a human approval bound to the exact action, yielding a single-use credential | ADR-003 §5, PRD D17 | 6 — `@escalate` → `HUMAN_REVIEW` implemented and tested in `kavach-authz`; approval binding and single-use credentials arrive with M4 |
 | A minimal signed decision record is written before any credential for a critical action | ADR-005 §6 | 10 |

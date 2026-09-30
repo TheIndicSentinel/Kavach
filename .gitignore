@@ -6,3 +6,6 @@
 console/node_modules/
 console/dist/
 console/*.tsbuildinfo
+
+# Locally downloaded tools (e.g. cvc5 for policy analysis)
+/.tools/
