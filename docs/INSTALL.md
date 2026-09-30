@@ -146,7 +146,7 @@ kavach-keys verify-pack --signers signers.json --pack packs/finance/v0.yaml
 
 `signers.json`: `{"signers":[{"kid":"pack-signer-1","public_key":"<hex>"}]}`. Deploy the `.sig` file next to each pack and start with `--pack-signers signers.json` (env `KAVACH_PACK_SIGNERS`). Without `--pack-signers`, behaviour is unchanged. Any byte change to a pack requires re-signing.
 
-**Caller authentication.** Cedar authorizes the principal named in `X-Kavach-Principal`; it does not authenticate the caller. Configure `--hmac-secret` or mTLS (`--tls-client-ca`) outside local development — the API prints a warning at startup when neither is set.
+**Caller authentication (current limits).** Cedar authorizes the principal named in `X-Kavach-Principal`; it does not authenticate the caller. `--hmac-secret` and mTLS (`--tls-client-ca`) reduce who can reach the API, but **neither binds the principal**: mTLS proves only that the client certificate chains to the CA, and HMAC covers only HTTP `/v1/evaluate` (not admin routes or gRPC) without replay protection. Until authenticated principals land (H2), run the API only on a network segment reachable by trusted callers, behind mTLS, and treat the principal header as advisory. The API prints a warning at startup when neither HMAC nor mTLS is set.
 
 **PoC / dev (memory evidence, no Cedar — insecure, local only):**
 

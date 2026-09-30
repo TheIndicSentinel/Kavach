@@ -73,6 +73,8 @@ Sector-agnostic **types** from day one (`sector` field, pack-driven rules). v1 s
 
 `kavach-detect`: one trait, one finance implementation (Aadhaar/PAN/UPI/IFSC). General detectors in Milestone C.
 
+*Amendment (2026-10, H0):* `kavach-detect` has **not been created yet**; detectors are planned with the agent risk work (MVP M4). Crates added since this ADR: `kavach-ports`, `kavach-ports-testkit`, `kavach-keys`, `kavach-mandate`, `kavach-authz`, `kavach-cedar-analysis` (CI-only).
+
 ## Consequences
 
 - Single binary option remains valid for PoC (`kavach-api` embeds evaluate).  
