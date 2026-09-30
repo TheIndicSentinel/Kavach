@@ -36,10 +36,14 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 
 | Threat | Mitigation | Status |
 |---|---|---|
-| Spoofing (API caller) | mTLS or HMAC; Cedar principal authorization | Implemented |
-| Spoofing (unauthenticated default) | `--access-control` defaults to `cedar`; disabling requires `--insecure-dev` and prints a warning | **This release** |
+| Spoofing (API caller) | mTLS or HMAC — **available, off by default**; without them Cedar authorizes a client-supplied principal name | Implemented (optional); startup warning when neither is configured — **This release** |
+| Spoofing (authorization disabled) | `--access-control` defaults to `cedar`; disabling requires `--insecure-dev` and prints a warning | **This release** |
 | Spoofing (agent) | Keycloak client-credentials JWT via JWKS; `X-Kavach-Principal` not accepted on agent surfaces | Planned (M3) |
-| Tampering (pack file) | SHA-256 pinning: `--pack-sha256` at startup; digest recorded on activation; rollback / model update refuse a changed file (409, audited) | **This release** |
+| Tampering (pack file, reload) | Digest recorded on activation; rollback / model update refuse changed bytes (409, audited); unpinned reloads audited | **This release** |
+| Tampering (pack file, restart) | `--pack-sha256` startup pin (optional, API and batch) | **This release** (optional) |
+| Tampering (pack file, restart without pin) | Postgres pointer row becomes the startup source of truth; API/batch refuse a `--pack` that disagrees | Planned (next PR) |
+| Tampering (runtime pointer row) | Governance events (activate/rollback) recorded on the evidence chain | Planned (M2, ADR-005) |
+| Inconsistent governance state on failure | Validate → persist + audit → swap live evaluator | **This release** |
 | Tampering (pack content, insider) | Dual control on activate/rollback; admin audit log | Implemented |
 | Tampering (pack authenticity) | Signed packs (Ed25519 via `KeyProvider`); Cedar analysis before activation | Planned (M1) |
 | Tampering (evidence chain) | Hash chain + offline verify CLI | Implemented |
@@ -92,13 +96,14 @@ Item names follow the OWASP GenAI Security Project list (Dec 2025); verify IDs a
 ## Insider: pack edit
 
 - Dual control on activate and rollback; admin audit log — Implemented  
-- Pack file edited on disk after activation → detected by digest pin, reload refused and audited — **This release**  
+- Pack file edited on disk after activation → rollback / model update refuse it (409, audited) — **This release**. A restart without `--pack-sha256` re-measures the edited file — closed by pointer-row startup (next PR) and signed packs (M1)  
+- Any byte change, including comments, requires dual-control re-activation; integrity is byte-level by design  
 - Signed packs so an insider cannot introduce an unsigned pack — Planned (M1)  
 
 ## Restore
 
 - Postgres restore → run `kavach-evidence verify` before accepting traffic  
-- After restore, compare `/v1/runtime` `pack_sha256` with the expected digest before enabling enforce mode  
+- After restore, start with `--pack-sha256` (or compare `/v1/runtime` `pack_sha256` with the expected digest) before enabling enforce mode — a matching `/v1/runtime` digest without a pin only proves which bytes were loaded, not that they are the approved ones  
 
 ## Out of scope for the current release
 

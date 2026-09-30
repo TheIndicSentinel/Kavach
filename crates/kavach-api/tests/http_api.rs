@@ -760,6 +760,21 @@ async fn rollback_refuses_tampered_previous_pack() {
         "finance-v1",
         "runtime must not change"
     );
+    let audit = router(state.clone())
+        .oneshot(
+            Request::builder()
+                .uri("/v1/admin/audit")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let audit_body = audit.into_body().collect().await.unwrap().to_bytes();
+    let audit_text = String::from_utf8_lossy(&audit_body);
+    assert!(
+        audit_text.contains("rollback_pack_refused") && audit_text.contains("pack_digest_mismatch"),
+        "refusal must be audited: {audit_text}"
+    );
 
     // Restoring the pinned bytes makes rollback succeed.
     std::fs::write(&v0_path, original).unwrap();

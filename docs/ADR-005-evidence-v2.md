@@ -39,14 +39,17 @@ Add `tenant_id TEXT NOT NULL DEFAULT 'default'` to every table. Singleton tables
 - The existing chain becomes partition `('default', 0)`. `seq` is backfilled by walking `prev_hash` links from genesis. **Existing hashes are never recomputed.**
 - The MVP uses one partition; adding partitions is configuration, not code.
 
-### 4. Two record kinds on one chain
+### 4. Record kinds on one chain
 
 | Kind | Format | Hash algorithm |
 |---|---|---|
 | `decision_event` | v1 `DecisionEvent`, unchanged | `v1` — existing struct-order serde payload (partner compatibility) |
 | `agent_decision` | Agent Decision Record v1 | `v2` — SHA-256 over a domain-separation prefix `kavach-evidence-v2` ‖ `prev_hash` ‖ RFC 8785 (JCS) canonical payload |
+| `governance_event` | Governance Event v1 (§11) | `v2` |
 
-Every record carries `kind` and `hash_alg`. Records of both kinds link into the same partition chain through `prev_hash`.
+Every record carries `kind` and `hash_alg`. Records of all kinds link into the same partition chain through `prev_hash`.
+
+`policy_versions.packs` identifies each pack by `id`, `version` **and `sha256`** (digest of the pack file bytes), so every agent decision is bound to the exact rules that produced it. v1 `decision_event` records keep identifying packs by label only (partner compatibility); an auditor links them to pack bytes through the governance events in §11.
 
 Agent Decision Record v1 fields: `record_id, tenant_id, partition_id, seq, prev_hash, kind, hash_alg, actor, chain[], mandate_id, purpose, consent_refs, action, resource_ref_ct (ciphertext, §7), params_hash, policy_versions {cedar, cel, packs}, signals[], policy_decision, returned_decision, obligations[], approval_ref?, credential_id?, time_sync, ts, hash, sig`.
 
@@ -89,6 +92,10 @@ The verify CLI is extended to:
 - verify a segment starting from a signed checkpoint (not only from genesis);
 - verify the tenant-wide Merkle root;
 - run fully offline.
+
+### 11. Governance events on the chain
+
+Pack activation, rollback and model-record changes are appended to the tenant's chain as `governance_event` records (actor, approver, action, pack/model identifiers and digests), signed like agent records. This makes changes to the runtime pointer row tamper-evident: the pointer row in Postgres is a cache of the latest governance event, not an independent source of truth.
 
 ## Consequences
 

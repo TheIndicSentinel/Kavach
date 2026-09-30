@@ -363,20 +363,10 @@ impl AppState {
             pack_sha256: loaded_pack.digest.clone(),
         };
 
-        {
-            let mut service = self
-                .service
-                .lock()
-                .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
-            service
-                .reload_pack_and_model(loaded_pack, model)
-                .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
-        }
-
-        *self
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
+        // Validate everything that can fail before persisting, then persist
+        // pointers and audit, and only then swap the live evaluator. If
+        // persistence fails, live traffic stays on the previous pack.
+        precheck_model(&model)?;
 
         self.admin
             .set_runtime_pointers(RuntimePointers {
@@ -409,6 +399,7 @@ impl AppState {
             .await
             .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
 
+        self.swap_live(loaded_pack, model, &runtime)?;
         Ok(runtime)
     }
 
@@ -456,20 +447,10 @@ impl AppState {
             pack_sha256: loaded_pack.digest.clone(),
         };
 
-        {
-            let mut service = self
-                .service
-                .lock()
-                .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
-            service
-                .reload_pack_and_model(loaded_pack, model)
-                .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
-        }
-
-        *self
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
+        // Validate everything that can fail before persisting, then persist
+        // pointers and audit, and only then swap the live evaluator. If
+        // persistence fails, live traffic stays on the previous pack.
+        precheck_model(&model)?;
 
         self.admin
             .set_runtime_pointers(RuntimePointers {
@@ -500,6 +481,7 @@ impl AppState {
             .await
             .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
 
+        self.swap_live(loaded_pack, model, &runtime)?;
         Ok(runtime)
     }
 
@@ -551,20 +533,10 @@ impl AppState {
             pack_sha256: current.pack_sha256,
         };
 
-        {
-            let mut service = self
-                .service
-                .lock()
-                .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
-            service
-                .reload_pack_and_model(loaded_pack, model)
-                .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
-        }
-
-        *self
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
+        // Validate everything that can fail before persisting, then persist
+        // pointers and audit, and only then swap the live evaluator. If
+        // persistence fails, live traffic stays on the previous pack.
+        precheck_model(&model)?;
 
         self.admin
             .append_audit(AuditInsert {
@@ -582,12 +554,34 @@ impl AppState {
             .await
             .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
 
+        self.swap_live(loaded_pack, model, &runtime)?;
         Ok(runtime)
+    }
+
+    /// Swaps the live evaluator and runtime view. Called only after the change
+    /// has been persisted and audited; `precheck_model` has already validated
+    /// the only fallible step of the reload.
+    fn swap_live(
+        &self,
+        loaded_pack: LoadedPolicyPack,
+        model: ModelRecord,
+        runtime: &RuntimeResponse,
+    ) -> Result<(), ApiError> {
+        self.service
+            .lock()
+            .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?
+            .reload_pack_and_model(loaded_pack, model)
+            .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
+        *self
+            .runtime
+            .lock()
+            .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
+        Ok(())
     }
 
     /// Refuses to reload a pack whose file changed since it was pinned; the
     /// refusal is written to the admin audit log. A missing pin (pointers
-    /// recorded before digests existed) is accepted and logged.
+    /// recorded before digests existed) is accepted and audited.
     async fn check_pack_pin(
         &self,
         loaded: &LoadedPolicyPack,
@@ -596,7 +590,22 @@ impl AppState {
         principals: &DualControlPrincipals,
     ) -> Result<(), ApiError> {
         let Some(expected) = expected else {
-            eprintln!("kavach-api: {operation}: digest_unpinned (no recorded pack digest)");
+            // Pointers recorded before digests existed: allowed, but audited
+            // so the fail-open reload is visible to governance reviewers.
+            self.admin
+                .append_audit(AuditInsert {
+                    action: format!("{operation}_unpinned"),
+                    resource_type: "policy_pack".into(),
+                    resource_id: loaded.pack.id.clone(),
+                    actor_principal: principals.actor.clone(),
+                    approver_principal: principals.approver.clone(),
+                    payload: serde_json::json!({
+                        "reason": "digest_unpinned",
+                        "actual_sha256": loaded.digest,
+                    }),
+                })
+                .await
+                .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
             return Ok(());
         };
         let Err(err) = loaded.verify_pin(Some(expected)) else {
@@ -647,4 +656,12 @@ fn map_retention_error(error: RetentionStoreError) -> ApiError {
         }
         RetentionStoreError::Io(message) => ApiError::Internal(message),
     }
+}
+
+/// Validates the parts of a pack/model reload that can fail, so the live swap
+/// after persistence cannot fail on them.
+fn precheck_model(model: &ModelRecord) -> Result<(), ApiError> {
+    kavach_evaluate::compile_input_validator(&model.input_schema)
+        .map(|_| ())
+        .map_err(|e| ApiError::BadRequest(format!("model input schema: {e}")))
 }

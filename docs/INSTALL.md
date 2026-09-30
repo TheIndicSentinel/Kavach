@@ -128,6 +128,12 @@ gRPC: `EvaluateService` on `--grpc-listen` (default `50051`). Pass principal via
 
 **Pack integrity pinning.** At startup the API logs the SHA-256 of the active pack (`pack_sha256=sha256:<hex>`) and `/v1/runtime` returns it. Pass `--pack-sha256 <digest>` (env `KAVACH_PACK_SHA256`; also supported by `kavach-batch run`) to refuse startup if the pack file differs. Activation records the digest; rollback and model updates refuse to reload a pack file whose digest changed since it was pinned (HTTP 409 `pack_digest_mismatch`, recorded in the admin audit log). Compute a digest with `shasum -a 256 packs/finance/v0.yaml`.
 
+- Integrity is **byte-level**: any change to a pack file, including comments, requires dual-control re-activation before rollback or model update will reload it.
+- Start `kavach-api` and `kavach-batch` with the **same** `--pack-sha256` so both evaluate identical bytes.
+- Without `--pack-sha256`, a restart loads whatever is at `--pack` and reports its digest; the pin is what makes restart fail on substituted bytes.
+
+**Caller authentication.** Cedar authorizes the principal named in `X-Kavach-Principal`; it does not authenticate the caller. Configure `--hmac-secret` or mTLS (`--tls-client-ca`) outside local development — the API prints a warning at startup when neither is set.
+
 **PoC / dev (memory evidence, no Cedar — insecure, local only):**
 
 ```bash

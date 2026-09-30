@@ -152,6 +152,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     };
 
     let insecure = matches!(config.access_control, AccessControlKind::None);
+    let caller_authenticated =
+        config.hmac_secret.is_some() || config.tls.as_ref().is_some_and(TlsConfig::is_mtls);
+    if !insecure && !caller_authenticated {
+        eprintln!(
+            "WARNING: kavach-api: Cedar authorizes the principal named in X-Kavach-Principal, \
+             but callers are not authenticated (no --hmac-secret, no mTLS client CA). Anyone \
+             who can reach this port can claim any principal. Configure HMAC or mTLS outside \
+             local development."
+        );
+    }
     if insecure {
         eprintln!(
             "WARNING: kavach-api running with --insecure-dev: access control is DISABLED and \
