@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/kavach-ports",
+    "crates/kavach-ports-testkit",
+    "crates/kavach-keys",
     "crates/kavach-domain",
     "crates/kavach-policy",
     "crates/kavach-evidence",
@@ -11,6 +14,9 @@ members = [
     "crates/kavach-batch",
 ]
 default-members = [
+    "crates/kavach-ports",
+    "crates/kavach-ports-testkit",
+    "crates/kavach-keys",
     "crates/kavach-domain",
     "crates/kavach-policy",
     "crates/kavach-evidence",
@@ -45,6 +51,13 @@ kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0" }
 kavach-storage = { path = "crates/kavach-storage", version = "0.1.0" }
 kavach-auth = { path = "crates/kavach-auth", version = "0.1.0" }
 kavach-batch = { path = "crates/kavach-batch", version = "0.1.0" }
+kavach-ports = { path = "crates/kavach-ports", version = "0.1.0" }
+kavach-ports-testkit = { path = "crates/kavach-ports-testkit", version = "0.1.0" }
+kavach-keys = { path = "crates/kavach-keys", version = "0.1.0" }
+ed25519-dalek = "2.2.0"
+getrandom = "0.3.3"
+hex = "0.4.3"
+proptest = "1.11.0"
 cedar-policy = "4.12.0"
 clap = { version = "4.5.47", features = ["derive", "env"] }
 axum = { version = "0.8.8", features = ["json"] }

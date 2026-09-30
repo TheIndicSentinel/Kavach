@@ -1,0 +1,17 @@
+[package]
+name = "kavach-ports-testkit"
+description = "Test doubles and shared conformance suites for kavach-ports adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kavach-ports = { workspace = true }
+chrono.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true
