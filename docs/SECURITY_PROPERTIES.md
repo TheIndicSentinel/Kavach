@@ -30,7 +30,7 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 |---|---|---|
 | For **brokered resources**, an agent without authority holds no credential to act | ADR-006, ADR-007 | 1, 11 |
 | Actions stay within the mandate's subject, purpose, window, fields and ceilings | ADR-003, ADR-004 | 3, 4, 5 |
-| Delegated authority only narrows | ADR-004 §6 | 7 |
+| Delegated authority only narrows | ADR-004 §6 | 7 — narrowing implemented and property-tested (2,000 cases) in `kavach-mandate`; enforced on agent requests from M1.6 |
 | Critical actions need a human approval bound to the exact action, yielding a single-use credential | ADR-003 §5, PRD D17 | 6 |
 | A minimal signed decision record is written before any credential for a critical action | ADR-005 §6 | 10 |
 | Critical actions are blocked when a required dependency or trusted time is unavailable | ADR-003 §7, ADR-006 §3 | 12 |

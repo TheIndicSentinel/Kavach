@@ -50,7 +50,7 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Tampering (pack semantics) | Cedar analysis of agent policies before activation | Planned (M1.5) |
 | Tampering (evidence chain) | Hash chain + offline verify CLI | Implemented |
 | Tampering (evidence, stronger) | Per-record signatures, signed checkpoints, JCS canonical hashing | Planned (M2, ADR-005) |
-| Tampering (mandate) | JWS signature + store status check; issuance only from signed SoR events | Planned (M1, ADR-004) |
+| Tampering / forgery (mandate) | Strict JWS (EdDSA, JCS-canonical, verified before parsing); stored status + stored-token match + trusted-time validity; issuance only from SoR events signed by a key registered for that system; event replay, staleness and wildcard subjects rejected | **This release** (library; enforced on agent requests from M1.5/M1.6) |
 | Repudiation | Append-only evidence; service identity per row; admin audit with actor + approver | Implemented |
 | Repudiation (approvals) | WebAuthn step-up bound to `action_hash`; single-use credential | Planned (M4) |
 | Information disclosure | No raw input in DB (digests); no telemetry by default | Implemented |

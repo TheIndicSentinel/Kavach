@@ -1,0 +1,26 @@
+[package]
+name = "kavach-mandate"
+description = "Task Mandates: SoR event verification, issuance, delegation, revocation (ADR-004)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kavach-domain = { workspace = true }
+kavach-ports = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer = { workspace = true }
+base64 = { workspace = true }
+chrono.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+kavach-keys = { workspace = true }
+kavach-ports-testkit = { workspace = true }
+tokio.workspace = true
+proptest = { workspace = true }
+
+[lints]
+workspace = true
