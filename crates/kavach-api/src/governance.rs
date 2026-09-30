@@ -25,6 +25,8 @@ pub struct RuntimeResponse {
     pub governance_mode: GovernanceMode,
     pub pack_path: String,
     pub model_path: String,
+    /// `sha256:<hex>` of the active pack file (additive field).
+    pub pack_sha256: Option<String>,
 }
 
 pub async fn runtime(

@@ -30,6 +30,10 @@ pub struct RuntimePointers {
     pub pack_path: String,
     pub model_path: String,
     pub previous_pack_path: Option<String>,
+    /// `sha256:<hex>` of the active pack file at activation time.
+    pub pack_sha256: Option<String>,
+    /// `sha256:<hex>` of the previous pack file, checked on rollback.
+    pub previous_pack_sha256: Option<String>,
     pub updated_at: DateTime<Utc>,
     pub updated_by: String,
     pub approved_by: String,

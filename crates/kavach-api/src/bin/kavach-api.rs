@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
 use kavach_api::{
-    grpc_server_tls_config, router, serve_http, AccessControlKind, ApiConfig, AppState,
-    EvaluateServiceServer, EvidenceStoreKind, GrpcEvaluateService, TlsConfig,
+    grpc_server_tls_config, resolve_access_control, router, serve_http, AccessControlKind,
+    AccessControlMode, ApiConfig, AppState, EvaluateServiceServer, EvidenceStoreKind,
+    GrpcEvaluateService, TlsConfig,
 };
 use tonic::transport::Server;
 
@@ -36,6 +37,10 @@ struct Cli {
     #[arg(long, env = "KAVACH_MODEL_PATH")]
     model: PathBuf,
 
+    /// Expected SHA-256 of the pack file (`sha256:<hex>` or bare hex). Startup fails on mismatch.
+    #[arg(long, env = "KAVACH_PACK_SHA256")]
+    pack_sha256: Option<String>,
+
     /// When set, requires `X-Kavach-Signature: sha256=<hex>` over the raw HTTP request body.
     #[arg(long, env = "KAVACH_HMAC_SECRET")]
     hmac_secret: Option<String>,
@@ -46,8 +51,18 @@ struct Cli {
     #[arg(long, env = "KAVACH_DATABASE_URL")]
     database_url: Option<String>,
 
-    #[arg(long, value_enum, default_value = "none")]
+    /// Access control for API principals. Defaults to Cedar (secure by default).
+    #[arg(
+        long,
+        value_enum,
+        default_value = "cedar",
+        env = "KAVACH_ACCESS_CONTROL"
+    )]
     access_control: AccessControlArg,
+
+    /// Required to run with `--access-control none`. Development only: every request is allowed.
+    #[arg(long, env = "KAVACH_INSECURE_DEV")]
+    insecure_dev: bool,
 
     /// Cedar policy file (required when --access-control cedar).
     #[arg(long, env = "KAVACH_CEDAR_POLICY")]
@@ -80,21 +95,16 @@ impl Cli {
             }
         };
 
-        let access_control = match self.access_control {
-            AccessControlArg::None => AccessControlKind::None,
-            AccessControlArg::Cedar => {
-                let policy_path = self
-                    .cedar_policy
-                    .ok_or("cedar access control requires --cedar-policy or KAVACH_CEDAR_POLICY")?;
-                let entities_path = self.cedar_entities.ok_or(
-                    "cedar access control requires --cedar-entities or KAVACH_CEDAR_ENTITIES",
-                )?;
-                AccessControlKind::Cedar {
-                    policy_path,
-                    entities_path,
-                }
-            }
+        let mode = match self.access_control {
+            AccessControlArg::None => AccessControlMode::None,
+            AccessControlArg::Cedar => AccessControlMode::Cedar,
         };
+        let access_control = resolve_access_control(
+            mode,
+            self.insecure_dev,
+            self.cedar_policy,
+            self.cedar_entities,
+        )?;
 
         let tls = match (self.tls_cert, self.tls_key) {
             (Some(cert_path), Some(key_path)) => Some(TlsConfig::from_paths(
@@ -115,6 +125,7 @@ impl Cli {
             evidence_store,
             access_control,
             tls,
+            pack_sha256: self.pack_sha256,
         })
     }
 }
@@ -128,6 +139,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .into_config()
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
     let state = Arc::new(AppState::from_config(&config).await?);
+    let pack_sha256 = state.runtime().pack_sha256.unwrap_or_else(|| "none".into());
     let http_app = router(state.clone());
     let grpc_service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
 
@@ -139,9 +151,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "plain"
     };
 
+    let insecure = matches!(config.access_control, AccessControlKind::None);
+    let caller_authenticated =
+        config.hmac_secret.is_some() || config.tls.as_ref().is_some_and(TlsConfig::is_mtls);
+    if !insecure && !caller_authenticated {
+        eprintln!(
+            "WARNING: kavach-api: Cedar authorizes the principal named in X-Kavach-Principal, \
+             but callers are not authenticated (no --hmac-secret, no mTLS client CA). Anyone \
+             who can reach this port can claim any principal. Configure HMAC or mTLS outside \
+             local development."
+        );
+    }
+    if insecure {
+        eprintln!(
+            "WARNING: kavach-api running with --insecure-dev: access control is DISABLED and \
+             every request is allowed. Never use this outside local development."
+        );
+    }
     eprintln!(
-        "kavach-api listening http={} grpc={} transport={} evidence={:?} access_control={:?}",
-        http_listen, grpc_listen, tls_mode, config.evidence_store, config.access_control
+        "kavach-api listening http={} grpc={} transport={} evidence={:?} access_control={:?} \
+         insecure_dev={} pack_sha256={}",
+        http_listen,
+        grpc_listen,
+        tls_mode,
+        config.evidence_store,
+        config.access_control,
+        insecure,
+        pack_sha256
     );
 
     let tls_ref = config.tls.as_ref();

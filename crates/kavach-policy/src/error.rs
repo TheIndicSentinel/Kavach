@@ -27,4 +27,7 @@ pub enum PolicyError {
 
     #[error("pack validation: {0}")]
     Validation(String),
+
+    #[error("pack digest mismatch: expected {expected}, got {actual}")]
+    DigestMismatch { expected: String, actual: String },
 }

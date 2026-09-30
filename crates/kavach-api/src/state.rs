@@ -6,7 +6,7 @@ use kavach_auth::KavachAuthorizer;
 use kavach_domain::{EvaluateRequest, EvaluateResponse, GovernanceMode, ModelRecord, ModelStatus};
 use kavach_evaluate::{EvaluateConfig, EvaluatePath, EvaluateService};
 use kavach_evidence::MemoryChain;
-use kavach_policy::PackLoader;
+use kavach_policy::{LoadedPolicyPack, PackLoader};
 use kavach_storage::{
     AdminBackend, AuditInsert, BatchJobBackend, EvidenceBackend, IncidentBackend,
     RetentionApplyReport, RetentionBackend, RetentionSettings, RetentionStoreError,
@@ -38,6 +38,8 @@ impl AppState {
     pub async fn from_config(config: &ApiConfig) -> Result<Self, ApiError> {
         let pack = PackLoader::load_from_path(config.pack_path())
             .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
+        pack.verify_pin(config.pack_sha256.as_deref())
+            .map_err(|e| ApiError::Internal(format!("pack pin: {e}")))?;
         let model = load_model_record(config.model_path())?;
 
         let (evidence, incidents, batch_jobs, admin, retention) = match &config.evidence_store {
@@ -72,6 +74,7 @@ impl AppState {
             governance_mode: model.governance_mode,
             pack_path: config.pack_path().display().to_string(),
             model_path: config.model_path().display().to_string(),
+            pack_sha256: pack.digest.clone(),
         };
 
         let service = EvaluateService::new(
@@ -121,6 +124,7 @@ impl AppState {
             evidence_store: EvidenceStoreKind::Memory,
             access_control: AccessControlKind::None,
             tls: None,
+            pack_sha256: None,
         };
         Self::from_config(&config).await
     }
@@ -346,6 +350,7 @@ impl AppState {
         let model = load_model_record(std::path::Path::new(&current.model_path))?;
 
         let previous_pack_path = Some(current.pack_path.clone());
+        let previous_pack_sha256 = current.pack_sha256.clone();
         let runtime = RuntimeResponse {
             pack_id: loaded_pack.pack.id.clone(),
             pack_version: loaded_pack.pack.version.clone(),
@@ -355,28 +360,21 @@ impl AppState {
             governance_mode: current.governance_mode,
             pack_path: new_pack_path.display().to_string(),
             model_path: current.model_path,
+            pack_sha256: loaded_pack.digest.clone(),
         };
 
-        {
-            let mut service = self
-                .service
-                .lock()
-                .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
-            service
-                .reload_pack_and_model(loaded_pack, model)
-                .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
-        }
-
-        *self
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
+        // Validate everything that can fail before persisting, then persist
+        // pointers and audit, and only then swap the live evaluator. If
+        // persistence fails, live traffic stays on the previous pack.
+        precheck_model(&model)?;
 
         self.admin
             .set_runtime_pointers(RuntimePointers {
                 pack_path: runtime.pack_path.clone(),
                 model_path: runtime.model_path.clone(),
                 previous_pack_path: previous_pack_path.clone(),
+                pack_sha256: runtime.pack_sha256.clone(),
+                previous_pack_sha256: previous_pack_sha256.clone(),
                 updated_at: Utc::now(),
                 updated_by: principals.actor.clone(),
                 approved_by: principals.approver.clone(),
@@ -393,12 +391,15 @@ impl AppState {
                 approver_principal: principals.approver.clone(),
                 payload: serde_json::json!({
                     "pack_path": runtime.pack_path,
+                    "pack_sha256": runtime.pack_sha256,
                     "previous_pack_path": previous_pack_path,
+                    "previous_pack_sha256": previous_pack_sha256,
                 }),
             })
             .await
             .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
 
+        self.swap_live(loaded_pack, model, &runtime)?;
         Ok(runtime)
     }
 
@@ -424,6 +425,13 @@ impl AppState {
 
         let loaded_pack = PackLoader::load_from_path(std::path::Path::new(&previous_pack_path))
             .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
+        self.check_pack_pin(
+            &loaded_pack,
+            pointers.previous_pack_sha256.as_deref(),
+            "rollback_pack",
+            principals,
+        )
+        .await?;
         let current = self.runtime();
         let model = load_model_record(std::path::Path::new(&current.model_path))?;
 
@@ -436,28 +444,21 @@ impl AppState {
             governance_mode: current.governance_mode,
             pack_path: previous_pack_path.clone(),
             model_path: current.model_path,
+            pack_sha256: loaded_pack.digest.clone(),
         };
 
-        {
-            let mut service = self
-                .service
-                .lock()
-                .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
-            service
-                .reload_pack_and_model(loaded_pack, model)
-                .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
-        }
-
-        *self
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
+        // Validate everything that can fail before persisting, then persist
+        // pointers and audit, and only then swap the live evaluator. If
+        // persistence fails, live traffic stays on the previous pack.
+        precheck_model(&model)?;
 
         self.admin
             .set_runtime_pointers(RuntimePointers {
                 pack_path: runtime.pack_path.clone(),
                 model_path: runtime.model_path.clone(),
                 previous_pack_path: None,
+                pack_sha256: runtime.pack_sha256.clone(),
+                previous_pack_sha256: None,
                 updated_at: Utc::now(),
                 updated_by: principals.actor.clone(),
                 approved_by: principals.approver.clone(),
@@ -474,11 +475,13 @@ impl AppState {
                 approver_principal: principals.approver.clone(),
                 payload: serde_json::json!({
                     "pack_path": runtime.pack_path,
+                    "pack_sha256": runtime.pack_sha256,
                 }),
             })
             .await
             .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
 
+        self.swap_live(loaded_pack, model, &runtime)?;
         Ok(runtime)
     }
 
@@ -510,6 +513,13 @@ impl AppState {
 
         let loaded_pack = PackLoader::load_from_path(std::path::Path::new(&current.pack_path))
             .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
+        self.check_pack_pin(
+            &loaded_pack,
+            current.pack_sha256.as_deref(),
+            "update_model",
+            principals,
+        )
+        .await?;
 
         let runtime = RuntimeResponse {
             pack_id: current.pack_id,
@@ -520,22 +530,13 @@ impl AppState {
             governance_mode: model.governance_mode,
             pack_path: current.pack_path,
             model_path: model_path.display().to_string(),
+            pack_sha256: current.pack_sha256,
         };
 
-        {
-            let mut service = self
-                .service
-                .lock()
-                .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
-            service
-                .reload_pack_and_model(loaded_pack, model)
-                .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
-        }
-
-        *self
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
+        // Validate everything that can fail before persisting, then persist
+        // pointers and audit, and only then swap the live evaluator. If
+        // persistence fails, live traffic stays on the previous pack.
+        precheck_model(&model)?;
 
         self.admin
             .append_audit(AuditInsert {
@@ -553,7 +554,79 @@ impl AppState {
             .await
             .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
 
+        self.swap_live(loaded_pack, model, &runtime)?;
         Ok(runtime)
+    }
+
+    /// Swaps the live evaluator and runtime view. Called only after the change
+    /// has been persisted and audited; `precheck_model` has already validated
+    /// the only fallible step of the reload.
+    fn swap_live(
+        &self,
+        loaded_pack: LoadedPolicyPack,
+        model: ModelRecord,
+        runtime: &RuntimeResponse,
+    ) -> Result<(), ApiError> {
+        self.service
+            .lock()
+            .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?
+            .reload_pack_and_model(loaded_pack, model)
+            .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
+        *self
+            .runtime
+            .lock()
+            .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
+        Ok(())
+    }
+
+    /// Refuses to reload a pack whose file changed since it was pinned; the
+    /// refusal is written to the admin audit log. A missing pin (pointers
+    /// recorded before digests existed) is accepted and audited.
+    async fn check_pack_pin(
+        &self,
+        loaded: &LoadedPolicyPack,
+        expected: Option<&str>,
+        operation: &str,
+        principals: &DualControlPrincipals,
+    ) -> Result<(), ApiError> {
+        let Some(expected) = expected else {
+            // Pointers recorded before digests existed: allowed, but audited
+            // so the fail-open reload is visible to governance reviewers.
+            self.admin
+                .append_audit(AuditInsert {
+                    action: format!("{operation}_unpinned"),
+                    resource_type: "policy_pack".into(),
+                    resource_id: loaded.pack.id.clone(),
+                    actor_principal: principals.actor.clone(),
+                    approver_principal: principals.approver.clone(),
+                    payload: serde_json::json!({
+                        "reason": "digest_unpinned",
+                        "actual_sha256": loaded.digest,
+                    }),
+                })
+                .await
+                .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
+            return Ok(());
+        };
+        let Err(err) = loaded.verify_pin(Some(expected)) else {
+            return Ok(());
+        };
+        self.admin
+            .append_audit(AuditInsert {
+                action: format!("{operation}_refused"),
+                resource_type: "policy_pack".into(),
+                resource_id: loaded.pack.id.clone(),
+                actor_principal: principals.actor.clone(),
+                approver_principal: principals.approver.clone(),
+                payload: serde_json::json!({
+                    "reason": "pack_digest_mismatch",
+                    "expected_sha256": expected,
+                    "actual_sha256": loaded.digest,
+                }),
+            })
+            .await
+            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
+        Err(ApiError::Conflict(format!("pack_digest_mismatch: {err}")))
     }
 
     fn evaluate_inner(&self, request: &EvaluateRequest) -> Result<EvaluateResponse, ApiError> {
@@ -583,4 +656,12 @@ fn map_retention_error(error: RetentionStoreError) -> ApiError {
         }
         RetentionStoreError::Io(message) => ApiError::Internal(message),
     }
+}
+
+/// Validates the parts of a pack/model reload that can fail, so the live swap
+/// after persistence cannot fail on them.
+fn precheck_model(model: &ModelRecord) -> Result<(), ApiError> {
+    kavach_evaluate::compile_input_validator(&model.input_schema)
+        .map(|_| ())
+        .map_err(|e| ApiError::BadRequest(format!("model input schema: {e}")))
 }

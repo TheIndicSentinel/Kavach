@@ -18,6 +18,8 @@ pub struct BatchConfig {
     pub pack_path: PathBuf,
     pub model_path: PathBuf,
     pub service_identity_id: String,
+    /// Expected SHA-256 of the pack file; the job fails before processing on mismatch.
+    pub pack_sha256: Option<String>,
 }
 
 impl Default for BatchConfig {
@@ -26,6 +28,7 @@ impl Default for BatchConfig {
             pack_path: PathBuf::new(),
             model_path: PathBuf::new(),
             service_identity_id: "kavach-batch-worker".into(),
+            pack_sha256: None,
         }
     }
 }
@@ -62,6 +65,7 @@ where
     J: BatchJobStore,
 {
     let pack = PackLoader::load_from_path(&config.pack_path)?;
+    pack.verify_pin(config.pack_sha256.as_deref())?;
     let model = load_model_record(&config.model_path)?;
 
     let job_id = job_store

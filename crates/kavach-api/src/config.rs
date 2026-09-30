@@ -8,6 +8,43 @@ pub struct ApiConfig {
     pub evidence_store: EvidenceStoreKind,
     pub access_control: AccessControlKind,
     pub tls: Option<TlsConfig>,
+    /// Expected `sha256:<hex>` (or bare hex) of the startup pack file.
+    pub pack_sha256: Option<String>,
+}
+
+/// Requested access-control mode, before validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessControlMode {
+    None,
+    Cedar,
+}
+
+/// Validates the access-control settings. Disabling access control is only
+/// allowed with an explicit development opt-in (`--insecure-dev`).
+pub fn resolve_access_control(
+    mode: AccessControlMode,
+    insecure_dev: bool,
+    cedar_policy: Option<PathBuf>,
+    cedar_entities: Option<PathBuf>,
+) -> Result<AccessControlKind, String> {
+    match mode {
+        AccessControlMode::None if !insecure_dev => Err(
+            "access control disabled (--access-control none) requires --insecure-dev; \
+             development use only"
+                .into(),
+        ),
+        AccessControlMode::None => Ok(AccessControlKind::None),
+        AccessControlMode::Cedar => {
+            let policy_path = cedar_policy
+                .ok_or("cedar access control requires --cedar-policy or KAVACH_CEDAR_POLICY")?;
+            let entities_path = cedar_entities
+                .ok_or("cedar access control requires --cedar-entities or KAVACH_CEDAR_ENTITIES")?;
+            Ok(AccessControlKind::Cedar {
+                policy_path,
+                entities_path,
+            })
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -66,5 +103,33 @@ impl ApiConfig {
 
     pub fn model_path(&self) -> &Path {
         &self.model_path
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn none_requires_insecure_dev() {
+        let err = resolve_access_control(AccessControlMode::None, false, None, None)
+            .expect_err("none without opt-in must fail");
+        assert!(err.contains("--insecure-dev"));
+        assert!(matches!(
+            resolve_access_control(AccessControlMode::None, true, None, None),
+            Ok(AccessControlKind::None)
+        ));
+    }
+
+    #[test]
+    fn cedar_requires_policy_and_entities() {
+        let p = Some(PathBuf::from("p.cedar"));
+        let e = Some(PathBuf::from("e.json"));
+        assert!(resolve_access_control(AccessControlMode::Cedar, false, None, e.clone()).is_err());
+        assert!(resolve_access_control(AccessControlMode::Cedar, false, p.clone(), None).is_err());
+        assert!(matches!(
+            resolve_access_control(AccessControlMode::Cedar, false, p, e),
+            Ok(AccessControlKind::Cedar { .. })
+        ));
     }
 }

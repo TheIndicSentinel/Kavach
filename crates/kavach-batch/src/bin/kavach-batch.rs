@@ -43,6 +43,10 @@ enum Command {
         #[arg(long, env = "KAVACH_PACK_PATH")]
         pack: PathBuf,
 
+        /// Expected SHA-256 of the pack file (`sha256:<hex>` or bare hex). Fails on mismatch.
+        #[arg(long, env = "KAVACH_PACK_SHA256")]
+        pack_sha256: Option<String>,
+
         #[arg(long, env = "KAVACH_MODEL_PATH")]
         model: PathBuf,
 
@@ -88,23 +92,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             input,
             output,
             pack,
+            pack_sha256,
             model,
             evidence_store,
             database_url,
         } => {
-            let input_path = input.display().to_string();
-            let output_path = output.display().to_string();
             let input_file = File::open(&input)?;
-            let output_file = File::create(&output)?;
-            let mut writer = BufWriter::new(output_file);
-
+            let mut writer = BufWriter::new(File::create(&output)?);
             let context = BatchRunContext {
-                input_path,
-                output_path,
+                input_path: input.display().to_string(),
+                output_path: output.display().to_string(),
             };
             let config = BatchConfig {
                 pack_path: pack,
                 model_path: model,
+                pack_sha256,
                 ..BatchConfig::default()
             };
 
