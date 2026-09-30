@@ -14,7 +14,18 @@ jobs:
   check:
     name: Format, Clippy, Test
     runs-on: ubuntu-latest
+    env:
+      # Keep target/ small enough for the hosted runner disk (polars is large).
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force || true
+          df -h /
+
       - uses: actions/checkout@v4
 
       - name: Install Rust stable
