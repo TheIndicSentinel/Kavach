@@ -10,6 +10,7 @@ authors.workspace = true
 kavach-domain = { workspace = true }
 kavach-policy = { workspace = true }
 kavach-evidence = { workspace = true }
+kavach-ports = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 chrono.workspace = true

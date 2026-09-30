@@ -74,6 +74,14 @@ Adapters are selected by startup configuration only — no dynamic plugin loadin
 - Linked dependencies of every crate must pass `deny.toml`. A comment is added to `deny.toml` stating that `BSL-1.0` is the Boost Software License, not the Business Source License.
 - External services used over the network (Keycloak — Apache-2.0; OpenBao — MPL-2.0; PostgreSQL; Ollama) are not linked and are covered by the PRD D6 free-source rule and the SBOM, not by `deny.toml`.
 
+### 7. Implementation timing (M1.1)
+
+- `kavach-ports` (traits, `PortError`/`ErrorClass`), `kavach-keys` (`LocalFileKeyProvider`, `InMemoryKeyProvider`) and `kavach-ports-testkit` (`FakeClock`, `InMemoryReplayGuard`, conformance suites) landed in M1.1.
+- `EvidenceStore` / `IncidentRecorder` moved to `kavach-ports` and stay **synchronous** until evidence v2 (ADR-005, M2) rewrites the storage adapter; `kavach-evaluate` re-exports them. New ports are async (`impl Future + Send`), except `TimeSource`, which is synchronous (reading a clock does not block).
+- Because `EvidenceStore`'s signature uses `kavach-evidence` types, `kavach-ports` depends on `kavach-evidence` and holds the `MemoryChain` implementation.
+- `TimeSource` ships with `SystemClock` (sync status `Unknown`) and `FakeClock`; the kernel clock-sync adapter (ADR-003 §7) needs a small FFI crate and arrives in M3, when agent resources first run in enforce mode.
+- `MandateStore` and `EventBus` are defined with the mandate service (M1.4) rather than ahead of their types.
+
 ## Consequences
 
 - Enterprise infrastructure is added by writing a new adapter that passes the conformance suite — no core changes.
