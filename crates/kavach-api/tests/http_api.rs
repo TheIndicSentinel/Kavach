@@ -177,6 +177,7 @@ async fn cedar_test_state() -> Arc<AppState> {
         },
         tls: None,
         pack_sha256: None,
+        bootstrap_pack: false,
     };
     Arc::new(AppState::from_config(&config).await.expect("cedar state"))
 }

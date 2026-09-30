@@ -55,6 +55,10 @@ pub struct PolicyPack {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CelRuntimeLimits {
     pub timeout_ms: u64,
+    /// Advisory only: the CEL interpreter has no allocation-limit API. Packs
+    /// are bounded instead by size, rule-count and expression-length limits
+    /// enforced at load time (`kavach-policy`).
+    #[serde(default)]
     pub max_alloc_bytes: u64,
 }
 

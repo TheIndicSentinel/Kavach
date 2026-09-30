@@ -14,8 +14,11 @@
     "cel_runtime_limits": {
       "type": "object",
       "properties": {
-        "timeout_ms": { "type": "integer" },
-        "max_alloc_bytes": { "type": "integer" }
+        "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "max_alloc_bytes": {
+          "type": "integer",
+          "description": "Advisory only (not enforced by the CEL interpreter). Packs are bounded by load-time limits: 256 KiB file, 200 rules, 2048-character expressions."
+        }
       }
     },
     "rules": {

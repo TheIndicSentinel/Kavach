@@ -137,6 +137,7 @@ async fn spawn_cedar_grpc_server() -> (SocketAddr, tokio::task::JoinHandle<()>) 
         },
         tls: None,
         pack_sha256: None,
+        bootstrap_pack: false,
     };
     let state = Arc::new(AppState::from_config(&config).await.expect("cedar state"));
     let service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));

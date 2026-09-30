@@ -38,10 +38,11 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 |---|---|---|
 | Spoofing (API caller) | mTLS or HMAC — **available, off by default**; without them Cedar authorizes a client-supplied principal name | Implemented (optional); startup warning when neither is configured — **This release** |
 | Spoofing (authorization disabled) | `--access-control` defaults to `cedar`; disabling requires `--insecure-dev` and prints a warning | **This release** |
+| Tampering / misconfiguration (API RBAC policies) | Policies strictly validated and entities/requests validated against the compiled-in Cedar schema at startup; principal header treated as a literal id | **This release** |
 | Spoofing (agent) | Keycloak client-credentials JWT via JWKS; `X-Kavach-Principal` not accepted on agent surfaces | Planned (M3) |
 | Tampering (pack file, reload) | Digest recorded on activation; rollback / model update refuse changed bytes (409, audited); unpinned reloads audited | **This release** |
 | Tampering (pack file, restart) | `--pack-sha256` startup pin (optional, API and batch) | **This release** (optional) |
-| Tampering (pack file, restart without pin) | Postgres pointer row becomes the startup source of truth; API/batch refuse a `--pack` that disagrees | Planned (next PR) |
+| Tampering (pack file, restart without pin) | Postgres mode: the governed pointer row is the startup source of truth; API and batch refuse a `--pack` path or bytes that disagree; first start records an audited baseline; `--bootstrap-pack` is an audited recovery override (API only) | **This release** (Postgres mode) |
 | Tampering (runtime pointer row) | Governance events (activate/rollback) recorded on the evidence chain | Planned (M2, ADR-005) |
 | Inconsistent governance state on failure | Validate → persist + audit → swap live evaluator | **This release** |
 | Tampering (pack content, insider) | Dual control on activate/rollback; admin audit log | Implemented |
@@ -55,10 +56,11 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Information disclosure (agents) | Capability references; values resolved only in gateway; purpose-minimal fields | Planned (M3) |
 | Information disclosure (evidence PII) | Crypto-shredding with per-subject keys | Planned (M2) |
 | Denial of service | Body size limits; CEL wall-clock timeout | Implemented |
-| Denial of service (CEL memory) | Enforce `max_alloc_bytes` (declared in pack schema, not yet enforced) | Planned (M1) |
+| Denial of service (CEL cost) | CEL interpreter has no allocation limit and the timeout is checked between rules, so load-time bounds apply: pack ≤ 256 KiB, ≤ 200 rules, expressions ≤ 2048 chars, `timeout_ms` 1–1000; `max_alloc_bytes` is advisory | **This release** |
 | Elevation of privilege | No caller-set enforce mode (ADR-001); Cedar RBAC | Implemented |
 | Elevation (agent) | Effective authority = mandate ∩ chain ∩ passport ∩ policy ∩ risk; credential broker; network isolation | Planned (M1–M3) |
-| Time manipulation | Client `decision_time` currently trusted within ±300 s for pack selection → move to trusted server time; kernel sync status gating | Planned (M1, ADR-003) |
+| Time manipulation (evaluate) | Pack-effective selection uses trusted server time; client `decision_time` only validated (±300 s) and recorded | **This release** |
+| Time manipulation (rules / agents) | Trusted `now` in the CEL context (M1.5); kernel clock-sync gating for critical agent actions (M3) | Planned |
 
 ## OWASP Top 10 for Agentic Applications — mapping
 
@@ -82,9 +84,10 @@ Item names follow the OWASP GenAI Security Project list (Dec 2025); verify IDs a
 ## CEL as untrusted code
 
 - Wall-clock timeout — Implemented  
-- Allocation cap — declared, **not yet enforced** (Planned M1)  
+- Allocation cap — **not available** in the CEL interpreter; `max_alloc_bytes` is advisory. Bounded instead by load-time limits (below)  
 - No I/O from expressions — Implemented (interpreter has no I/O functions)  
-- Max pack size — Planned (M1, with pack signing)  
+- Max pack size 256 KiB, ≤ 200 rules, expressions ≤ 2048 characters, `timeout_ms` 1–1000 — **This release**  
+- Rules must not base time decisions on `request.decision_time` (client-supplied); a trusted `now` variable arrives in M1.5  
 - Pinned CEL interpreter version — Implemented (`Cargo.lock`)  
 
 ## Shadow infra failure

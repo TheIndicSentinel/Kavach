@@ -130,7 +130,9 @@ gRPC: `EvaluateService` on `--grpc-listen` (default `50051`). Pass principal via
 
 - Integrity is **byte-level**: any change to a pack file, including comments, requires dual-control re-activation before rollback or model update will reload it.
 - Start `kavach-api` and `kavach-batch` with the **same** `--pack-sha256` so both evaluate identical bytes.
-- Without `--pack-sha256`, a restart loads whatever is at `--pack` and reports its digest; the pin is what makes restart fail on substituted bytes.
+- Without `--pack-sha256`, a restart in **memory mode** loads whatever is at `--pack` and reports its digest; the pin is what makes restart fail on substituted bytes.
+- **Postgres mode:** the governed runtime pointer decides the startup pack. The first start in a new database records `--pack` as the baseline (audited `startup_baseline_recorded`). Afterwards, `kavach-api` and `kavach-batch` refuse to start if `--pack` is a different path or its bytes differ from the digest recorded at activation — change packs through dual-controlled activate. For recovery only, `kavach-api --bootstrap-pack` (env `KAVACH_BOOTSTRAP_PACK`) starts anyway and records `startup_bootstrap_override` in the audit log.
+- **Pack limits:** ≤ 256 KiB, ≤ 200 rules, expressions ≤ 2048 characters, `cel_runtime_limits.timeout_ms` 1–1000. `max_alloc_bytes` is accepted but advisory.
 
 **Caller authentication.** Cedar authorizes the principal named in `X-Kavach-Principal`; it does not authenticate the caller. Configure `--hmac-secret` or mTLS (`--tls-client-ca`) outside local development — the API prints a warning at startup when neither is set.
 

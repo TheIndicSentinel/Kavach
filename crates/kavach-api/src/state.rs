@@ -8,9 +8,10 @@ use kavach_evaluate::{EvaluateConfig, EvaluatePath, EvaluateService};
 use kavach_evidence::MemoryChain;
 use kavach_policy::{LoadedPolicyPack, PackLoader};
 use kavach_storage::{
-    AdminBackend, AuditInsert, BatchJobBackend, EvidenceBackend, IncidentBackend,
-    RetentionApplyReport, RetentionBackend, RetentionSettings, RetentionStoreError,
-    RuntimePointers, StoragePool, TombstoneReason, TombstoneRecord,
+    check_startup_pack, AdminBackend, AuditInsert, BatchJobBackend, EvidenceBackend,
+    IncidentBackend, RetentionApplyReport, RetentionBackend, RetentionSettings,
+    RetentionStoreError, RuntimePointers, StartupPackCheck, StoragePool, TombstoneReason,
+    TombstoneRecord,
 };
 
 use crate::auth::DualControlPrincipals;
@@ -63,6 +64,10 @@ impl AppState {
                 )
             }
         };
+
+        if matches!(config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
+            enforce_startup_pointer(&admin, config, pack.digest.as_deref()).await?;
+        }
 
         let (packs_dir, models_dir) = registry_roots(config.pack_path(), config.model_path());
         let runtime = RuntimeResponse {
@@ -125,6 +130,7 @@ impl AppState {
             access_control: AccessControlKind::None,
             tls: None,
             pack_sha256: None,
+            bootstrap_pack: false,
         };
         Self::from_config(&config).await
     }
@@ -664,4 +670,90 @@ fn precheck_model(model: &ModelRecord) -> Result<(), ApiError> {
     kavach_evaluate::compile_input_validator(&model.input_schema)
         .map(|_| ())
         .map_err(|e| ApiError::BadRequest(format!("model input schema: {e}")))
+}
+
+const STARTUP_PRINCIPAL: &str = "system:startup";
+
+fn startup_audit(action: &str, resource_id: &str, payload: serde_json::Value) -> AuditInsert {
+    AuditInsert {
+        action: action.into(),
+        resource_type: "policy_pack".into(),
+        resource_id: resource_id.into(),
+        actor_principal: STARTUP_PRINCIPAL.into(),
+        approver_principal: STARTUP_PRINCIPAL.into(),
+        payload,
+    }
+}
+
+/// Postgres mode: the governed runtime pointer is the startup source of truth.
+/// First start records the startup pack as the baseline; later starts refuse a
+/// different path or different bytes unless `--bootstrap-pack` is set, which is
+/// audited.
+async fn enforce_startup_pointer(
+    admin: &AdminBackend,
+    config: &ApiConfig,
+    digest: Option<&str>,
+) -> Result<(), ApiError> {
+    let path = config.pack_path();
+    let path_str = path.display().to_string();
+    let pointers = admin
+        .get_runtime_pointers()
+        .await
+        .map_err(|e| ApiError::Internal(format!("load runtime pointers: {e}")))?;
+    let audit = |insert: AuditInsert| async move {
+        admin
+            .append_audit(insert)
+            .await
+            .map(|_| ())
+            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))
+    };
+
+    match check_startup_pack(pointers.as_ref(), path, digest) {
+        Ok(StartupPackCheck::Matches { pinned: true }) => Ok(()),
+        Ok(StartupPackCheck::Matches { pinned: false }) => {
+            audit(startup_audit(
+                "startup_unpinned",
+                &path_str,
+                serde_json::json!({ "pack_path": path_str, "actual_sha256": digest }),
+            ))
+            .await
+        }
+        Ok(StartupPackCheck::NoPointer) => {
+            admin
+                .set_runtime_pointers(RuntimePointers {
+                    pack_path: path_str.clone(),
+                    model_path: config.model_path().display().to_string(),
+                    previous_pack_path: None,
+                    pack_sha256: digest.map(ToString::to_string),
+                    previous_pack_sha256: None,
+                    updated_at: Utc::now(),
+                    updated_by: STARTUP_PRINCIPAL.into(),
+                    approved_by: STARTUP_PRINCIPAL.into(),
+                })
+                .await
+                .map_err(|e| ApiError::Internal(format!("persist runtime pointers: {e}")))?;
+            audit(startup_audit(
+                "startup_baseline_recorded",
+                &path_str,
+                serde_json::json!({ "pack_path": path_str, "pack_sha256": digest }),
+            ))
+            .await
+        }
+        Err(err) if config.bootstrap_pack => {
+            eprintln!("WARNING: kavach-api: --bootstrap-pack override: {err}");
+            audit(startup_audit(
+                "startup_bootstrap_override",
+                &path_str,
+                serde_json::json!({
+                    "reason": err.to_string(),
+                    "pack_path": path_str,
+                    "pack_sha256": digest,
+                    "active_pack_path": pointers.as_ref().map(|p| p.pack_path.clone()),
+                    "active_pack_sha256": pointers.as_ref().and_then(|p| p.pack_sha256.clone()),
+                }),
+            ))
+            .await
+        }
+        Err(err) => Err(ApiError::Internal(format!("startup pack refused: {err}"))),
+    }
 }

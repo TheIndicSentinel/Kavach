@@ -104,7 +104,10 @@ where
 
         validate_model_binding(&self.model, request)?;
         validate_supplier_controls(&self.model)?;
-        self.assert_pack_effective(request.decision_time)?;
+        // Pack selection uses trusted server time, never the client-supplied
+        // `decision_time` (ADR-003 §8); `decision_time` is still validated
+        // against skew below and recorded in evidence.
+        self.assert_pack_effective(server_now)?;
         validate_input(&self.input_validator, &request.input)?;
         request
             .check_clock_skew(server_now, self.config.clock_skew_max_seconds)
@@ -168,8 +171,8 @@ where
         }
     }
 
-    fn assert_pack_effective(&self, decision_time: DateTime<Utc>) -> Result<(), EvaluateError> {
-        if decision_time < self.pack.pack.effective_from {
+    fn assert_pack_effective(&self, server_now: DateTime<Utc>) -> Result<(), EvaluateError> {
+        if server_now < self.pack.pack.effective_from {
             return Err(EvaluateError::PackNotEffective);
         }
         Ok(())

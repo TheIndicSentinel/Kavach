@@ -17,6 +17,12 @@ pub enum AuthError {
     #[error("parse policy: {0}")]
     ParsePolicy(String),
 
+    #[error("cedar schema: {0}")]
+    Schema(String),
+
+    #[error("policy fails schema validation: {0}")]
+    InvalidPolicy(String),
+
     #[error("parse entities: {0}")]
     ParseEntities(String),
 
