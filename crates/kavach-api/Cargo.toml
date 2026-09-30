@@ -60,6 +60,7 @@ prost-types.workspace = true
 ed25519-dalek = { workspace = true }
 base64 = { workspace = true }
 rcgen.workspace = true
+kavach-storage = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true

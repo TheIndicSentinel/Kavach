@@ -14,6 +14,22 @@ jobs:
   check:
     name: Format, Clippy, Test
     runs-on: ubuntu-latest
+    services:
+      # Postgres integration tests (kavach-storage, kavach-api). Each test uses
+      # its own schema; tests fail rather than skip when CI lacks the database.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kavach
+          POSTGRES_PASSWORD: kavach-ci
+          POSTGRES_DB: kavach_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U kavach -d kavach_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
       # Keep target/ small enough for the hosted runner disk (polars is large).
       CARGO_INCREMENTAL: "0"
@@ -62,6 +78,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       - name: cargo test
+        env:
+          KAVACH_TEST_DATABASE_URL: postgres://kavach:kavach-ci@localhost:5432/kavach_test
         run: cargo test --workspace --verbose
 
       - name: Partner pilot batch smoke

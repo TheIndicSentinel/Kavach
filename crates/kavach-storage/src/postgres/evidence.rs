@@ -32,9 +32,9 @@ impl PostgresEvidenceStore {
         &self,
         input: AppendDecisionEvent,
     ) -> Result<DecisionEvent, EvidenceError> {
-        if let Some(existing) = self
-            .fetch_by_idempotency(&input.model_id, &input.correlation_id)
-            .await?
+        // Fast path without the chain lock.
+        if let Some(existing) =
+            fetch_by_idempotency(&self.pool, &input.model_id, &input.correlation_id).await?
         {
             kavach_evidence::check_idempotent_replay(&existing, &input)?;
             return Ok(existing);
@@ -46,6 +46,16 @@ impl PostgresEvidenceStore {
                 .fetch_one(&mut *tx)
                 .await
                 .map_err(|err| io_err(&err))?;
+
+        // The chain lock serializes appends: a concurrent request with the same
+        // key that committed while we waited is visible now, and is replayed
+        // (or refused as a conflict) instead of failing on the unique key.
+        if let Some(existing) =
+            fetch_by_idempotency(&mut *tx, &input.model_id, &input.correlation_id).await?
+        {
+            kavach_evidence::check_idempotent_replay(&existing, &input)?;
+            return Ok(existing);
+        }
 
         let event_id = Uuid::new_v4().to_string();
         let evidence_id = Uuid::new_v4().to_string();
@@ -79,55 +89,7 @@ impl PostgresEvidenceStore {
         event.hash = compute_event_hash(&event.prev_hash, &event).map_err(EvidenceError::Json)?;
         verify_event_hash(&event)?;
 
-        let reason_codes =
-            serde_json::to_value(&event.reason_codes).map_err(EvidenceError::Json)?;
-        let policy_hits = serde_json::to_value(&event.policy_hits).map_err(EvidenceError::Json)?;
-        let pii_tokens = serde_json::to_value(&event.pii_tokens).map_err(EvidenceError::Json)?;
-
-        sqlx::query(
-            r"
-            INSERT INTO decision_events (
-                evidence_id, event_id, schema_version, prev_hash, hash,
-                pack_id, pack_version, sector, model_id, model_version,
-                model_origin, governance_mode, policy_decision, returned_decision,
-                reason_codes, policy_hits, pii_tokens, input_digest, latency_ms,
-                decision_time, evaluated_at, service_identity_id, correlation_id, idempotency_key
-            ) VALUES (
-                $1, $2, $3, $4, $5,
-                $6, $7, $8, $9, $10,
-                $11, $12, $13, $14,
-                $15, $16, $17, $18, $19,
-                $20, $21, $22, $23, $24
-            )
-            ",
-        )
-        .bind(&event.evidence_id)
-        .bind(&event.event_id)
-        .bind(&event.schema_version)
-        .bind(&event.prev_hash)
-        .bind(&event.hash)
-        .bind(&event.pack_id)
-        .bind(&event.pack_version)
-        .bind(&event.sector)
-        .bind(&event.model_id)
-        .bind(&event.model_version)
-        .bind(model_origin_str(event.model_origin))
-        .bind(governance_mode_str(event.governance_mode))
-        .bind(decision_str(event.policy_decision))
-        .bind(decision_str(event.returned_decision))
-        .bind(reason_codes)
-        .bind(policy_hits)
-        .bind(pii_tokens)
-        .bind(&event.input_digest)
-        .bind(i64::try_from(event.latency_ms).unwrap_or(i64::MAX))
-        .bind(event.decision_time)
-        .bind(event.evaluated_at)
-        .bind(&event.service_identity_id)
-        .bind(&event.correlation_id)
-        .bind(&event.idempotency_key)
-        .execute(&mut *tx)
-        .await
-        .map_err(|err| io_err(&err))?;
+        insert_event(&mut tx, &event).await?;
 
         sqlx::query("UPDATE evidence_chain_meta SET head_hash = $1 WHERE id = 1")
             .bind(&event.hash)
@@ -138,23 +100,77 @@ impl PostgresEvidenceStore {
         tx.commit().await.map_err(|err| io_err(&err))?;
         Ok(event)
     }
+}
 
-    async fn fetch_by_idempotency(
-        &self,
-        model_id: &str,
-        correlation_id: &str,
-    ) -> Result<Option<DecisionEvent>, EvidenceError> {
-        let row = sqlx::query(
-            "SELECT * FROM decision_events WHERE model_id = $1 AND correlation_id = $2",
+async fn insert_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event: &DecisionEvent,
+) -> Result<(), EvidenceError> {
+    let reason_codes = serde_json::to_value(&event.reason_codes).map_err(EvidenceError::Json)?;
+    let policy_hits = serde_json::to_value(&event.policy_hits).map_err(EvidenceError::Json)?;
+    let pii_tokens = serde_json::to_value(&event.pii_tokens).map_err(EvidenceError::Json)?;
+
+    sqlx::query(
+        r"
+        INSERT INTO decision_events (
+            evidence_id, event_id, schema_version, prev_hash, hash,
+            pack_id, pack_version, sector, model_id, model_version,
+            model_origin, governance_mode, policy_decision, returned_decision,
+            reason_codes, policy_hits, pii_tokens, input_digest, latency_ms,
+            decision_time, evaluated_at, service_identity_id, correlation_id, idempotency_key
+        ) VALUES (
+            $1, $2, $3, $4, $5,
+            $6, $7, $8, $9, $10,
+            $11, $12, $13, $14,
+            $15, $16, $17, $18, $19,
+            $20, $21, $22, $23, $24
         )
-        .bind(model_id)
-        .bind(correlation_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|err| io_err(&err))?;
+        ",
+    )
+    .bind(&event.evidence_id)
+    .bind(&event.event_id)
+    .bind(&event.schema_version)
+    .bind(&event.prev_hash)
+    .bind(&event.hash)
+    .bind(&event.pack_id)
+    .bind(&event.pack_version)
+    .bind(&event.sector)
+    .bind(&event.model_id)
+    .bind(&event.model_version)
+    .bind(model_origin_str(event.model_origin))
+    .bind(governance_mode_str(event.governance_mode))
+    .bind(decision_str(event.policy_decision))
+    .bind(decision_str(event.returned_decision))
+    .bind(reason_codes)
+    .bind(policy_hits)
+    .bind(pii_tokens)
+    .bind(&event.input_digest)
+    .bind(i64::try_from(event.latency_ms).unwrap_or(i64::MAX))
+    .bind(event.decision_time)
+    .bind(event.evaluated_at)
+    .bind(&event.service_identity_id)
+    .bind(&event.correlation_id)
+    .bind(&event.idempotency_key)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| io_err(&err))?;
+    Ok(())
+}
 
-        row.as_ref().map(row_to_event).transpose()
-    }
+async fn fetch_by_idempotency<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    model_id: &str,
+    correlation_id: &str,
+) -> Result<Option<DecisionEvent>, EvidenceError> {
+    let row =
+        sqlx::query("SELECT * FROM decision_events WHERE model_id = $1 AND correlation_id = $2")
+            .bind(model_id)
+            .bind(correlation_id)
+            .fetch_optional(executor)
+            .await
+            .map_err(|err| io_err(&err))?;
+
+    row.as_ref().map(row_to_event).transpose()
 }
 
 fn io_err(err: &sqlx::Error) -> EvidenceError {
