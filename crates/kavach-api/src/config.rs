@@ -13,6 +13,9 @@ pub struct ApiConfig {
     /// Postgres mode: start even if `--pack` differs from the governed
     /// runtime pointer (audited recovery override).
     pub bootstrap_pack: bool,
+    /// Trusted pack signers (JSON). When set, every pack load requires a
+    /// valid detached signature (`<pack>.sig`) from one of them.
+    pub pack_signers: Option<PathBuf>,
 }
 
 /// Requested access-control mode, before validation.

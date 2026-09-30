@@ -6,6 +6,7 @@ use kavach_auth::KavachAuthorizer;
 use kavach_domain::{EvaluateRequest, EvaluateResponse, GovernanceMode, ModelRecord, ModelStatus};
 use kavach_evaluate::{EvaluateConfig, EvaluatePath, EvaluateService};
 use kavach_evidence::MemoryChain;
+use kavach_keys::{verify_pack_file, TrustedSigners};
 use kavach_policy::{LoadedPolicyPack, PackLoader};
 use kavach_storage::{
     check_startup_pack, AdminBackend, AuditInsert, BatchJobBackend, EvidenceBackend,
@@ -33,6 +34,8 @@ pub struct AppState {
     retention: RetentionBackend,
     incidents: IncidentBackend,
     batch_jobs: BatchJobBackend,
+    /// When set, every pack load requires a valid signature from these keys.
+    pack_signers: Option<TrustedSigners>,
 }
 
 impl AppState {
@@ -41,6 +44,17 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
         pack.verify_pin(config.pack_sha256.as_deref())
             .map_err(|e| ApiError::Internal(format!("pack pin: {e}")))?;
+        let pack_signers = match &config.pack_signers {
+            Some(path) => Some(
+                TrustedSigners::from_file(path)
+                    .map_err(|e| ApiError::Internal(format!("pack signers: {e}")))?,
+            ),
+            None => None,
+        };
+        if let Some(signers) = &pack_signers {
+            verify_signed(&pack, config.pack_path(), signers)
+                .map_err(|e| ApiError::Internal(format!("startup pack signature: {e}")))?;
+        }
         let model = load_model_record(config.model_path())?;
 
         let (evidence, incidents, batch_jobs, admin, retention) = match &config.evidence_store {
@@ -114,6 +128,7 @@ impl AppState {
             retention,
             incidents,
             batch_jobs,
+            pack_signers,
         })
     }
 
@@ -131,6 +146,7 @@ impl AppState {
             tls: None,
             pack_sha256: None,
             bootstrap_pack: false,
+            pack_signers: None,
         };
         Self::from_config(&config).await
     }
@@ -353,6 +369,8 @@ impl AppState {
 
         let loaded_pack = PackLoader::load_from_path(&new_pack_path)
             .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
+        self.check_pack_signature(&loaded_pack, &new_pack_path, "activate_pack", principals)
+            .await?;
         let model = load_model_record(std::path::Path::new(&current.model_path))?;
 
         let previous_pack_path = Some(current.pack_path.clone());
@@ -434,6 +452,13 @@ impl AppState {
         self.check_pack_pin(
             &loaded_pack,
             pointers.previous_pack_sha256.as_deref(),
+            "rollback_pack",
+            principals,
+        )
+        .await?;
+        self.check_pack_signature(
+            &loaded_pack,
+            std::path::Path::new(&previous_pack_path),
             "rollback_pack",
             principals,
         )
@@ -526,6 +551,13 @@ impl AppState {
             principals,
         )
         .await?;
+        self.check_pack_signature(
+            &loaded_pack,
+            std::path::Path::new(&current.pack_path),
+            "update_model",
+            principals,
+        )
+        .await?;
 
         let runtime = RuntimeResponse {
             pack_id: current.pack_id,
@@ -583,6 +615,39 @@ impl AppState {
             .lock()
             .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
         Ok(())
+    }
+
+    /// When trusted pack signers are configured, refuses a pack without a valid
+    /// signature; the refusal is written to the admin audit log.
+    async fn check_pack_signature(
+        &self,
+        loaded: &LoadedPolicyPack,
+        path: &std::path::Path,
+        operation: &str,
+        principals: &DualControlPrincipals,
+    ) -> Result<(), ApiError> {
+        let Some(signers) = &self.pack_signers else {
+            return Ok(());
+        };
+        let Err(err) = verify_signed(loaded, path, signers) else {
+            return Ok(());
+        };
+        self.admin
+            .append_audit(AuditInsert {
+                action: format!("{operation}_refused"),
+                resource_type: "policy_pack".into(),
+                resource_id: loaded.pack.id.clone(),
+                actor_principal: principals.actor.clone(),
+                approver_principal: principals.approver.clone(),
+                payload: serde_json::json!({
+                    "reason": "pack_signature_invalid",
+                    "detail": err.to_string(),
+                    "pack_sha256": loaded.digest,
+                }),
+            })
+            .await
+            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
+        Err(ApiError::Conflict(format!("pack_signature_invalid: {err}")))
     }
 
     /// Refuses to reload a pack whose file changed since it was pinned; the
@@ -756,4 +821,17 @@ async fn enforce_startup_pointer(
         }
         Err(err) => Err(ApiError::Internal(format!("startup pack refused: {err}"))),
     }
+}
+
+/// Verifies `<path>.sig` for a loaded pack against the trusted signers.
+fn verify_signed(
+    loaded: &LoadedPolicyPack,
+    path: &std::path::Path,
+    signers: &TrustedSigners,
+) -> Result<(), kavach_ports::PortError> {
+    let digest = loaded
+        .digest
+        .as_deref()
+        .ok_or_else(|| kavach_ports::PortError::invalid("pack has no file digest"))?;
+    verify_pack_file(path, digest, signers)
 }

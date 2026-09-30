@@ -17,6 +17,7 @@ This document states exactly what Kavach guarantees, what is planned, and what i
 | **Postgres mode:** API and batch refuse to start with a pack path or bytes that differ from the governed runtime pointer | Pointer row written only by dual-controlled activate/rollback (plus an audited first-start baseline); `--bootstrap-pack` override is audited (API only) | `crates/kavach-storage` startup tests |
 | API RBAC policies are validated against the Cedar schema; a typo'd action or unknown entity type fails startup | Compiled-in schema, strict validation; principal header used as a literal id | `crates/kavach-auth` tests |
 | Pack selection on `/v1/evaluate` uses trusted server time | Client `decision_time` validated (±300 s) and recorded only | `pack_effective_uses_server_time_not_client_time` |
+| **With trusted signers configured**, no pack is loaded without a valid signature from a trusted key | Detached Ed25519 signature `<pack>.sig` over the pack's SHA-256; checked at startup, activate, rollback and model update (API) and before batch runs; refusals audited (`*_refused`, `pack_signature_invalid`) | `crates/kavach-keys/tests/pack_signatures.rs`; `signed_packs_required_when_signers_configured` |
 | Packs are bounded in size and complexity | ≤ 256 KiB, ≤ 200 rules, expressions ≤ 2048 chars, `timeout_ms` 1–1000 | `load_limits_reject_oversized_packs` |
 | A failed pack/model change leaves live traffic on the previous pack | Validate, then persist pointers and audit, and only then swap the live evaluator | `crates/kavach-api` lifecycle code |
 | When evidence cannot be written in enforce mode, the decision is `BLOCK` | ADR-001 fail-closed matrix | `crates/kavach-evaluate` tests |
@@ -34,7 +35,6 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 | A minimal signed decision record is written before any credential for a critical action | ADR-005 §6 | 10 |
 | Critical actions are blocked when a required dependency or trusted time is unavailable | ADR-003 §7, ADR-006 §3 | 12 |
 | Subject references on the evidence chain can be erased by key destruction without breaking verification | ADR-005 §7 | 10 |
-| Packs are signed; unsigned packs cannot be activated | ADR-006 (`KeyProvider`) | — (M1) |
 
 ## Not guaranteed
 
@@ -44,7 +44,9 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 - **Pack integrity at startup in memory mode.** Without Postgres (memory evidence store, development) there is no pointer row; without `--pack-sha256` a restart loads whatever bytes are at `--pack`.
 - **First-start baseline.** In a new database, the first API start records its `--pack` as the governed baseline without dual control (audited as `startup_baseline_recorded`); verify it before enabling enforce mode.
 - **Pack integrity during evaluation.** Evaluation uses the compiled pack held in memory and does not re-read or re-hash the file.
-- **Pack authenticity.** A digest proves "same bytes as last measured", not "approved by a trusted signer". Signed packs are planned (M1).
+- **Pack authenticity without signers.** Signature checks apply only when `--pack-signers` is configured; without it, a digest proves "same bytes as last measured", not "approved by a trusted signer".
+- **Signing-key protection.** Signing keys are owner-only files (`kavach-keys`); they are not encrypted at rest and not in an HSM yet (Stage 2). Keep them off the API host.
+- **Signer revocation.** Removing a key from the signers file stops future loads; packs already running stay loaded until the next reload or restart.
 - **Pack bytes on the evidence chain.** Evidence identifies packs by `pack_id` and `pack_version`, not by digest; the new agent record type carries the digest (ADR-005).
 - **Integrity of the runtime pointer row.** Anyone with write access to Postgres can change pointer paths and digests; governance events on the evidence chain are planned (ADR-005).
 - **Legal or regulatory compliance.** Packs are controls *mapped to* regulations and are labelled guidance; they are not legal advice or a compliance certification.

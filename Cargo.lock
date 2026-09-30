@@ -1923,7 +1923,9 @@ dependencies = [
  "kavach-domain",
  "kavach-evaluate",
  "kavach-evidence",
+ "kavach-keys",
  "kavach-policy",
+ "kavach-ports",
  "kavach-storage",
  "prometheus",
  "prost",
@@ -1964,6 +1966,7 @@ dependencies = [
  "kavach-domain",
  "kavach-evaluate",
  "kavach-evidence",
+ "kavach-keys",
  "kavach-policy",
  "kavach-storage",
  "polars",
@@ -2028,11 +2031,15 @@ dependencies = [
 name = "kavach-keys"
 version = "0.1.0"
 dependencies = [
+ "clap",
  "ed25519-dalek",
  "getrandom 0.3.4",
  "hex",
+ "kavach-policy",
  "kavach-ports",
  "kavach-ports-testkit",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 

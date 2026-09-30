@@ -178,6 +178,7 @@ async fn cedar_test_state() -> Arc<AppState> {
         tls: None,
         pack_sha256: None,
         bootstrap_pack: false,
+        pack_signers: None,
     };
     Arc::new(AppState::from_config(&config).await.expect("cedar state"))
 }
@@ -782,6 +783,70 @@ async fn rollback_refuses_tampered_previous_pack() {
     let status = post_dual_control(router(state.clone()), "/v1/packs/rollback").await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(state.runtime().pack_id, "finance-v0");
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+async fn write_signature(provider: &kavach_keys::InMemoryKeyProvider, pack: &std::path::Path) {
+    let sig = kavach_keys::sign_pack(provider, "pack-signer-1", pack)
+        .await
+        .expect("sign pack");
+    std::fs::write(
+        kavach_keys::signature_path(pack),
+        serde_json::to_string(&sig).unwrap(),
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn signed_packs_required_when_signers_configured() {
+    let (root, v0_path, model_path) = temp_registry();
+    let v1_path = v0_path.with_file_name("v1.yaml");
+
+    let mut provider = kavach_keys::InMemoryKeyProvider::new();
+    let public = provider.insert_seed("pack-signer-1", [3u8; 32]).unwrap();
+    let signers_path = root.join("signers.json");
+    std::fs::write(
+        &signers_path,
+        serde_json::json!({
+            "signers": [{ "kid": public.kid, "public_key": hex::encode(public.bytes) }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let config = ApiConfig {
+        pack_path: v0_path.clone(),
+        model_path: model_path.clone(),
+        hmac_secret: None,
+        evidence_store: EvidenceStoreKind::Memory,
+        access_control: AccessControlKind::None,
+        tls: None,
+        pack_sha256: None,
+        bootstrap_pack: false,
+        pack_signers: Some(signers_path),
+    };
+
+    // Unsigned startup pack is refused.
+    assert!(AppState::from_config(&config).await.is_err());
+
+    write_signature(&provider, &v0_path).await;
+    let state = Arc::new(
+        AppState::from_config(&config)
+            .await
+            .expect("signed startup"),
+    );
+
+    // Unsigned v1: activation refused and audited.
+    let status = post_dual_control(router(state.clone()), "/v1/packs/finance-v1/activate").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(state.runtime().pack_id, "finance-v0");
+
+    // Signed v1: activation succeeds.
+    write_signature(&provider, &v1_path).await;
+    let status = post_dual_control(router(state.clone()), "/v1/packs/finance-v1/activate").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(state.runtime().pack_id, "finance-v1");
 
     let _ = std::fs::remove_dir_all(root);
 }

@@ -47,6 +47,11 @@ enum Command {
         #[arg(long, env = "KAVACH_PACK_SHA256")]
         pack_sha256: Option<String>,
 
+        /// Trusted pack signers file (JSON). When set, the pack must carry a
+        /// valid `<pack>.sig` from one of them.
+        #[arg(long, env = "KAVACH_PACK_SIGNERS")]
+        pack_signers: Option<PathBuf>,
+
         #[arg(long, env = "KAVACH_MODEL_PATH")]
         model: PathBuf,
 
@@ -93,10 +98,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             output,
             pack,
             pack_sha256,
+            pack_signers,
             model,
             evidence_store,
             database_url,
         } => {
+            verify_signature_if_configured(&pack, pack_signers.as_deref())?;
             let input_file = File::open(&input)?;
             let mut writer = BufWriter::new(File::create(&output)?);
             let context = BatchRunContext {
@@ -167,25 +174,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 min_sample_size,
                 disparity_threshold,
             };
-            let fairness_report = match report {
-                FairnessReportKind::Disparity => {
-                    let disparity = run_disparity_report(&requests, &results, &config)?;
-                    FairnessReport::Disparity(disparity)
-                }
-                FairnessReportKind::Inclusion => {
-                    let inclusion = run_inclusion_report(&requests, &results, &config)?;
-                    FairnessReport::Inclusion(inclusion)
-                }
-            };
-            let output_file = File::create(&output)?;
-            serde_json::to_writer_pretty(BufWriter::new(output_file), &fairness_report)?;
-            eprintln!(
-                "kavach-batch fairness report={:?} output={}",
-                report,
-                output.display()
-            );
+            write_fairness_report(&requests, &results, &output, report, &config)?;
         }
     }
+    Ok(())
+}
+
+fn write_fairness_report(
+    requests: &std::path::Path,
+    results: &std::path::Path,
+    output: &std::path::Path,
+    report: FairnessReportKind,
+    config: &FairnessConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fairness_report = match report {
+        FairnessReportKind::Disparity => {
+            FairnessReport::Disparity(run_disparity_report(requests, results, config)?)
+        }
+        FairnessReportKind::Inclusion => {
+            FairnessReport::Inclusion(run_inclusion_report(requests, results, config)?)
+        }
+    };
+    serde_json::to_writer_pretty(BufWriter::new(File::create(output)?), &fairness_report)?;
+    eprintln!(
+        "kavach-batch fairness report={:?} output={}",
+        report,
+        output.display()
+    );
     Ok(())
 }
 
@@ -198,5 +213,20 @@ async fn check_governed_pack(
     let digest = kavach_policy::pack_digest(&std::fs::read(pack_path)?);
     let pointers = pool.admin_store().get_runtime_pointers().await?;
     kavach_storage::check_startup_pack(pointers.as_ref(), pack_path, Some(&digest))?;
+    Ok(())
+}
+
+/// When trusted signers are configured, the pack must carry a valid
+/// `<pack>.sig` before any rows are evaluated.
+fn verify_signature_if_configured(
+    pack: &std::path::Path,
+    signers: Option<&std::path::Path>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(signers) = signers else {
+        return Ok(());
+    };
+    let trusted = kavach_keys::TrustedSigners::from_file(signers)?;
+    let digest = kavach_policy::pack_digest(&std::fs::read(pack)?);
+    kavach_keys::verify_pack_file(pack, &digest, &trusted)?;
     Ok(())
 }

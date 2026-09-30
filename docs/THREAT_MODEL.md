@@ -46,7 +46,8 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Tampering (runtime pointer row) | Governance events (activate/rollback) recorded on the evidence chain | Planned (M2, ADR-005) |
 | Inconsistent governance state on failure | Validate → persist + audit → swap live evaluator | **This release** |
 | Tampering (pack content, insider) | Dual control on activate/rollback; admin audit log | Implemented |
-| Tampering (pack authenticity) | Signed packs (Ed25519 via `KeyProvider`); Cedar analysis before activation | Planned (M1) |
+| Tampering (pack authenticity) | Detached Ed25519 pack signatures from trusted signers (`--pack-signers`), checked on every load in API and batch | **This release** (when configured) |
+| Tampering (pack semantics) | Cedar analysis of agent policies before activation | Planned (M1.5) |
 | Tampering (evidence chain) | Hash chain + offline verify CLI | Implemented |
 | Tampering (evidence, stronger) | Per-record signatures, signed checkpoints, JCS canonical hashing | Planned (M2, ADR-005) |
 | Tampering (mandate) | JWS signature + store status check; issuance only from signed SoR events | Planned (M1, ADR-004) |
@@ -99,9 +100,9 @@ Item names follow the OWASP GenAI Security Project list (Dec 2025); verify IDs a
 ## Insider: pack edit
 
 - Dual control on activate and rollback; admin audit log — Implemented  
-- Pack file edited on disk after activation → rollback / model update refuse it (409, audited) — **This release**. A restart without `--pack-sha256` re-measures the edited file — closed by pointer-row startup (next PR) and signed packs (M1)  
+- Pack file edited on disk after activation → rollback / model update refuse it (409, audited) — **This release**. A restart without `--pack-sha256` re-measures the edited file — closed by pointer-row startup (Postgres mode) and signed packs (when signers are configured)  
 - Any byte change, including comments, requires dual-control re-activation; integrity is byte-level by design  
-- Signed packs so an insider cannot introduce an unsigned pack — Planned (M1)  
+- Signed packs so an insider without a signing key cannot introduce a pack — **This release** (when `--pack-signers` is configured); keep signing keys off the API host  
 
 ## Restore
 

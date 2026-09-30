@@ -11,6 +11,13 @@ use std::fs;
 use std::future::{ready, Future};
 use std::path::{Path, PathBuf};
 
+mod pack_sig;
+
+pub use pack_sig::{
+    sign_pack, signature_path, verify_pack_file, verify_pack_signature, PackSignature,
+    TrustedSigners,
+};
+
 use ed25519_dalek::{Signer, SigningKey};
 use kavach_ports::{KeyAlgorithm, KeyProvider, PortError, PublicKey};
 

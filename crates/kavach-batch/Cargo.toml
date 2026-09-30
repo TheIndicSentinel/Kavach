@@ -16,6 +16,7 @@ kavach-evaluate = { workspace = true }
 kavach-evidence = { workspace = true }
 kavach-policy = { workspace = true }
 kavach-storage = { workspace = true }
+kavach-keys = { workspace = true }
 chrono.workspace = true
 clap.workspace = true
 serde.workspace = true
@@ -28,6 +29,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 kavach-storage = { workspace = true }
+kavach-keys = { workspace = true }
 walkdir.workspace = true
 
 [lints]
