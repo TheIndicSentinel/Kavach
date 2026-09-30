@@ -89,6 +89,17 @@ A mandate is rejected at issuance if any of the following hold:
 - Consumers invalidate caches and the Credential Broker revokes credentials bound to the mandate.
 - Expiry is automatic at `exp`; the record remains as evidence and its subject reference is subject to crypto-shredding (ADR-005 §7).
 
+### 9. Implementation notes (M1.4)
+
+- **Scope source.** A signed SoR event supplies facts only (`subject_ref`, `record_ref`, `consent_refs`, `principal`, `assigned_agent`). Purpose, actions, data fields, channels, window, ceilings, lifetime and delegation rules come from a governed `MandateTemplate` selected by `(tenant_id, event_type)`. This satisfies §4 (no field from free text or model output).
+- **Issuer binding.** Each SoR signing key is registered for exactly one source system; an event is rejected unless its `system` matches the key's registration. Freshness is ±300 s against trusted time; replay protection keys on `(tenant, system, event_id)`.
+- **Validation (§5) as implemented.** The holder's passport must allow the purpose and must cover the template's actions, data fields and ceilings (a ceiling absent from the passport is treated as not allowed). The purpose-to-fields mapping is currently the template; checking it against an agent policy pack arrives with M1.5.
+- **Actions** are a set of action names; per-parameter constraints are expressed as integer `ceilings` for now and as Cedar policies in M1.5.
+- **Ceilings** are integers (e.g. `waiver_bps`) so the canonical encoding never involves floating point.
+- **Encoding.** Header `{alg: EdDSA, kid, typ}` and payload are RFC 8785 canonical; verification rejects non-canonical header or payload bytes, unknown fields, padding and trailing base64 bits, and tokens over 16 KiB. The signature is verified before the payload is parsed.
+- **Revocation** cascades to every mandate delegated from the revoked one (`parent_revoked`) and publishes `MandateRevoked` events.
+- **Storage** is in-memory in M1 (`kavach-mandate::memory`); Postgres tables with `tenant_id` arrive with evidence v2 (M2).
+
 ## Consequences
 
 - Authority is traceable end to end: evidence records carry `mandate_id`, and every mandate carries its source event.

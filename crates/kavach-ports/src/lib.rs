@@ -7,6 +7,7 @@
 mod error;
 mod evidence;
 mod keys;
+mod mandate;
 mod policy;
 mod replay;
 mod time;
@@ -16,6 +17,7 @@ pub use evidence::{
     EvaluateIncident, EvidenceStore, IncidentRecorder, NoopIncidentRecorder, VecIncidentRecorder,
 };
 pub use keys::{verify_ed25519, KeyAlgorithm, KeyProvider, PublicKey};
+pub use mandate::{ConsentSource, DomainEvent, EventBus, MandateStore, StoredMandate};
 pub use policy::PolicyEngine;
 pub use replay::ReplayGuard;
 pub use time::{SyncStatus, SystemClock, TimeSource, TrustedNow};

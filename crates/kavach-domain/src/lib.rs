@@ -6,6 +6,7 @@
 pub mod decision;
 pub mod error;
 pub mod golden;
+pub mod mandate;
 pub mod path;
 pub mod request;
 pub mod response;
