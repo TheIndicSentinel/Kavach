@@ -1,8 +1,9 @@
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
 use kavach_domain::{Decision, EvaluateRequest};
 
-use crate::cel_context::build_context;
+use crate::cel_context::{build_context, build_named_context};
 use crate::error::PolicyError;
 use crate::loader::LoadedPolicyPack;
 
@@ -16,9 +17,38 @@ pub struct PolicyEvaluation {
 pub struct PolicyEngine;
 
 impl PolicyEngine {
+    /// Evaluates with the current server time as `now`. Prefer
+    /// [`PolicyEngine::evaluate_at`] with the caller's trusted time.
     pub fn evaluate(
         loaded: &LoadedPolicyPack,
         request: &EvaluateRequest,
+    ) -> Result<PolicyEvaluation, PolicyError> {
+        Self::evaluate_at(loaded, request, Utc::now())
+    }
+
+    /// Evaluates an evaluate request with trusted server time bound as `now`.
+    pub fn evaluate_at(
+        loaded: &LoadedPolicyPack,
+        request: &EvaluateRequest,
+        now: DateTime<Utc>,
+    ) -> Result<PolicyEvaluation, PolicyError> {
+        Self::run(loaded, &build_context(request, now)?)
+    }
+
+    /// Evaluates rules against an arbitrary JSON-serialisable value bound as
+    /// variable `name`, plus `now` (used for agent-authorization refinement).
+    pub fn evaluate_named<T: serde::Serialize>(
+        loaded: &LoadedPolicyPack,
+        name: &str,
+        value: &T,
+        now: DateTime<Utc>,
+    ) -> Result<PolicyEvaluation, PolicyError> {
+        Self::run(loaded, &build_named_context(name, value, now)?)
+    }
+
+    fn run(
+        loaded: &LoadedPolicyPack,
+        context: &cel_interpreter::Context<'_>,
     ) -> Result<PolicyEvaluation, PolicyError> {
         let timeout_ms = loaded
             .pack
@@ -27,7 +57,6 @@ impl PolicyEngine {
             .map_or(10, |l| l.timeout_ms);
 
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        let context = build_context(request)?;
 
         let mut policy_decision = Decision::Pass;
         let mut reason_codes = Vec::new();
@@ -40,7 +69,7 @@ impl PolicyEngine {
 
             let value = rule
                 .program
-                .execute(&context)
+                .execute(context)
                 .map_err(|e| PolicyError::CelExecute {
                     rule_id: rule.id.clone(),
                     message: e.to_string(),
@@ -147,5 +176,26 @@ mod tests {
         assert!(evaluation
             .reason_codes
             .contains(&"CONSENT_MISMATCH".to_string()));
+    }
+
+    /// Rules see trusted server time as `now`, for both the evaluate path and
+    /// named JSON contexts (agent refinement).
+    #[test]
+    fn rules_can_use_trusted_now() {
+        use chrono::TimeZone;
+        let mut pack = load_finance_pack().pack;
+        pack.rules.truncate(1);
+        pack.rules[0].expression =
+            r#"now >= timestamp("2026-10-01T00:00:00Z") && subject.kind == "borrower""#.into();
+        pack.rules[0].decision = Decision::Alert;
+        let loaded = crate::PackLoader::load_from_pack(pack).expect("pack");
+        let value = serde_json::json!({ "kind": "borrower" });
+
+        let after = Utc.with_ymd_and_hms(2026, 10, 2, 0, 0, 0).unwrap();
+        let before = Utc.with_ymd_and_hms(2026, 9, 30, 0, 0, 0).unwrap();
+        let hit = PolicyEngine::evaluate_named(&loaded, "subject", &value, after).expect("eval");
+        assert_eq!(hit.policy_decision, Decision::Alert);
+        let miss = PolicyEngine::evaluate_named(&loaded, "subject", &value, before).expect("eval");
+        assert_eq!(miss.policy_decision, Decision::Pass);
     }
 }

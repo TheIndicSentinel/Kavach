@@ -1958,6 +1958,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-authz"
+version = "0.1.0"
+dependencies = [
+ "cedar-policy",
+ "chrono",
+ "chrono-tz",
+ "kavach-domain",
+ "kavach-policy",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "kavach-batch"
 version = "0.1.0"
 dependencies = [

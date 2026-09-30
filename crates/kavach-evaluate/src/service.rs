@@ -116,7 +116,7 @@ where
             .validate_consent()
             .map_err(EvaluateError::from_domain)?;
 
-        let evaluation = PolicyEngine::evaluate(&self.pack, request)?;
+        let evaluation = PolicyEngine::evaluate_at(&self.pack, request, server_now)?;
         let returned_decision = map_returned_decision_for_path(
             evaluation.policy_decision,
             self.model.governance_mode,
