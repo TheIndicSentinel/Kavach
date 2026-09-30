@@ -1,0 +1,32 @@
+// Kavach agent authorization schema (ADR-003). Every context attribute is
+// computed server-side from the verified mandate, extracted tool parameters,
+// trusted time and risk state; nothing is copied from the agent's claims.
+namespace Kavach::Agent {
+  entity Agent;
+  entity Subject;
+
+  type AuthzContext = {
+    mandate_subject: Subject,
+    mandate_holder: Agent,
+    mandate_actions: Set<String>,
+    mandate_fields: Set<String>,
+    mandate_channels: Set<String>,
+    has_window: Bool,
+    window_from: Long,
+    window_to: Long,
+    max_per_day: Long,
+    has_waiver_ceiling: Bool,
+    waiver_ceiling_bps: Long,
+    ist_minute_of_day: Long,
+    contacts_today: Long,
+    requested_fields: Set<String>,
+    channel: String,
+    waiver_bps: Long,
+    task_tainted: Bool,
+    agent_restricted: Bool,
+    approval_valid: Bool,
+  };
+
+  action read_fields, send_reminder, place_call, propose_plan, update_status
+    appliesTo { principal: [Agent], resource: [Subject], context: AuthzContext };
+}

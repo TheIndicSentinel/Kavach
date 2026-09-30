@@ -29,9 +29,9 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 | Property | ADR | Acceptance scenario |
 |---|---|---|
 | For **brokered resources**, an agent without authority holds no credential to act | ADR-006, ADR-007 | 1, 11 |
-| Actions stay within the mandate's subject, purpose, window, fields and ceilings | ADR-003, ADR-004 | 3, 4, 5 |
+| Actions stay within the mandate's subject, purpose, window, fields and ceilings | ADR-003, ADR-004 | 3, 4, 5 — enforced by `kavach-authz` Cedar policies with library-level scenario tests; formal proofs in CI arrive with M1.5b; exposed via `/v1/authorize` in M1.6 |
 | Delegated authority only narrows | ADR-004 §6 | 7 — narrowing implemented and property-tested (2,000 cases) in `kavach-mandate`; enforced on agent requests from M1.6 |
-| Critical actions need a human approval bound to the exact action, yielding a single-use credential | ADR-003 §5, PRD D17 | 6 |
+| Critical actions need a human approval bound to the exact action, yielding a single-use credential | ADR-003 §5, PRD D17 | 6 — `@escalate` → `HUMAN_REVIEW` implemented and tested in `kavach-authz`; approval binding and single-use credentials arrive with M4 |
 | A minimal signed decision record is written before any credential for a critical action | ADR-005 §6 | 10 |
 | Critical actions are blocked when a required dependency or trusted time is unavailable | ADR-003 §7, ADR-006 §3 | 12 |
 | Subject references on the evidence chain can be erased by key destruction without breaking verification | ADR-005 §7 | 10 |
@@ -51,7 +51,7 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 - **Integrity of the runtime pointer row.** Anyone with write access to Postgres can change pointer paths and digests; governance events on the evidence chain are planned (ADR-005).
 - **Legal or regulatory compliance.** Packs are controls *mapped to* regulations and are labelled guidance; they are not legal advice or a compliance certification.
 - **v1 evidence signatures.** Existing `decision_event` records are hash-chained but not signed; checkpoint signing arrives with ADR-005.
-- **Client time inside CEL rules.** Rules can read `request.decision_time`; they must not base time decisions on it until the trusted `now` variable lands (M1.5).
+- **Client time inside CEL rules.** Rules can still read `request.decision_time`; pack authors must use the trusted `now` variable for time decisions (available since M1.5a).
 - **CEL memory limits.** The CEL interpreter has no allocation limit, and the timeout is checked between rules, so one expensive expression is not interrupted; packs are bounded by load-time limits instead, and `max_alloc_bytes` is advisory.
 - **High availability, HSM/KMS key protection, air-gapped deployment** — Stage 2.
 - **Correctness of data in the customer's systems of record.**

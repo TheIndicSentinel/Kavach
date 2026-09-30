@@ -128,6 +128,17 @@ TrustedNow { utc: DateTime<Utc>, sync: Synced { max_error_ms } | Unsynced | Unkn
 
 Reference hardware for PRD NFR-2: 4 CPU cores, 16 GB RAM, local PostgreSQL 16. `authorize` is benchmarked with `criterion` (in-process p99 < 5 ms); gateway overhead with `oha` (MIT) load tests (p99 < 15 ms including the minimal critical evidence write; 1,000 requests/s single-node baseline). Benchmarks run in CI on every release branch.
 
+### 11. Implementation notes (M1.5a)
+
+- **Crate.** Agent authorization lives in `kavach-authz`; `kavach-auth` keeps API RBAC only. Schema `policies/agent.cedarschema`, policies `policies/agent.cedar`.
+- **One shared context type** (`AuthzContext`) for all actions; absent limits are encoded with `has_*` flags (`has_window`, `has_waiver_ceiling`). A mandate without a waiver ceiling sends every waiver to review.
+- **Actions** must be declared in the schema (`read_fields`, `send_reminder`, `place_call`, `propose_plan`, `update_status` for the collections reference workflow). The base permit ties the Cedar action to the mandate's action list, so an unknown or unlisted action is default-denied.
+- **Fail closed on policy errors.** Cedar skips a policy that errors during evaluation, which could hide a forbid; any evaluation error therefore yields `BLOCK`.
+- **Agent state.** Any state other than `ACTIVE` blocks all actions in the MVP.
+- **Load-time checks.** Strict validation against the schema; every policy needs `@id`; `@escalate` must be `"human_review"` and only on `forbid`.
+- **CEL refinement** uses `Decision::max` over the Cedar outcome (property-tested: never a downgrade). CEL rules get trusted server time as `now` on both the evaluate path and agent contexts.
+- **Formal analysis (M1.5b).** A spike confirmed that `cedar-policy-symcc` 0.7.0 with cvc5 1.3.1 proves the three §6 properties for these policies (disjointness with a policy describing the forbidden requests) in under a second, and detects deliberately weakened policies. It requires Cedar 4.13.0 exactly.
+
 ## Consequences
 
 - Agent decisions are explainable (determining policy IDs + CEL rule hits) and the three core safety properties are machine-proven rather than only tested.

@@ -61,7 +61,8 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Elevation of privilege | No caller-set enforce mode (ADR-001); Cedar RBAC | Implemented |
 | Elevation (agent) | Effective authority = mandate ∩ chain ∩ passport ∩ policy ∩ risk; credential broker; network isolation | Planned (M1–M3) |
 | Time manipulation (evaluate) | Pack-effective selection uses trusted server time; client `decision_time` only validated (±300 s) and recorded | **This release** |
-| Time manipulation (rules / agents) | Trusted `now` in the CEL context (M1.5); kernel clock-sync gating for critical agent actions (M3) | Planned |
+| Time manipulation (rules) | CEL rules receive trusted server time as `now`; the evaluate path passes server time | **This release** |
+| Time manipulation (agents) | Agent windows computed in IST from trusted time (`kavach-authz`); kernel clock-sync gating for critical agent actions (M3) | Library: **this release**; sync gating planned (M3) |
 
 ## OWASP Top 10 for Agentic Applications — mapping
 
