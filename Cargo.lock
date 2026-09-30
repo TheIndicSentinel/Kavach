@@ -2266,6 +2266,8 @@ dependencies = [
  "kavach-evaluate",
  "kavach-evidence",
  "kavach-policy",
+ "kavach-ports",
+ "kavach-ports-testkit",
  "kavach-storage",
  "serde",
  "serde_json",

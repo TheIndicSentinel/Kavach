@@ -10,6 +10,7 @@ authors.workspace = true
 kavach-domain = { workspace = true }
 kavach-evaluate = { workspace = true }
 kavach-evidence = { workspace = true }
+kavach-ports = { workspace = true }
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -27,6 +28,7 @@ test-support = []
 kavach-storage = { path = ".", features = ["test-support"] }
 kavach-policy = { workspace = true }
 serde_yaml.workspace = true
+kavach-ports-testkit = { workspace = true }
 
 [lints]
 workspace = true
