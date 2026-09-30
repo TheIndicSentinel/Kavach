@@ -83,6 +83,7 @@ async fn state() -> Arc<AppState> {
         tls: None,
         pack_sha256: None,
         bootstrap_pack: false,
+        bootstrap_model: false,
         pack_signers: None,
         oidc: Some(OidcConfig {
             issuer: ISSUER.into(),
@@ -291,6 +292,7 @@ fn cedar_without_an_authenticated_source_is_refused() {
         tls: None,
         pack_sha256: None,
         bootstrap_pack: false,
+        bootstrap_model: false,
         pack_signers: None,
         oidc: None,
         insecure_dev: false,

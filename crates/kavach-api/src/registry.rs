@@ -30,6 +30,9 @@ pub struct ModelSummary {
     pub owner: String,
     pub source_path: String,
     pub active: bool,
+    /// False for a model file with no governed state: it cannot be changed
+    /// with `update_model` until an `activate_model` change activates it.
+    pub governed: bool,
 }
 
 pub fn registry_roots(pack_path: &Path, model_path: &Path) -> (PathBuf, PathBuf) {
@@ -122,10 +125,12 @@ pub fn get_pack_by_id(packs_dir: &Path, pack_id: &str) -> Result<PolicyPack, Api
     )))
 }
 
+/// Lists model files, showing governed `status`/`governance_mode` where a
+/// model has governed state (ADR-010).
 pub fn list_models(
     models_dir: &Path,
-    active_model_id: &str,
-    active_version: &str,
+    active_model_path: &str,
+    states: &[kavach_storage::ModelState],
 ) -> Result<Vec<ModelSummary>, ApiError> {
     let mut models = Vec::new();
     for entry in walkdir::WalkDir::new(models_dir)
@@ -134,8 +139,10 @@ pub fn list_models(
         .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "yaml"))
     {
         let path = entry.path();
-        let model = load_model_record(path)?;
+        let model = apply_state(load_model_record(path)?, states);
+        let governed = states.iter().any(|s| s.model_id == model.model_id);
         models.push(ModelSummary {
+            governed,
             model_id: model.model_id.clone(),
             version: model.version.clone(),
             sector: model.sector.clone(),
@@ -146,11 +153,59 @@ pub fn list_models(
             pack_id: model.pack_id.clone(),
             owner: model.owner.clone(),
             source_path: path.display().to_string(),
-            active: model.model_id == active_model_id && model.version == active_version,
+            active: same_file(path, active_model_path),
         });
     }
     models.sort_by(|a, b| a.model_id.cmp(&b.model_id));
     Ok(models)
+}
+
+fn same_file(path: &Path, other: &str) -> bool {
+    match (std::fs::canonicalize(path), std::fs::canonicalize(other)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => path == Path::new(other),
+    }
+}
+
+/// The YAML record with governed status and mode, when the model has them.
+#[must_use]
+pub fn apply_state(model: ModelRecord, states: &[kavach_storage::ModelState]) -> ModelRecord {
+    match states.iter().find(|s| s.model_id == model.model_id) {
+        Some(state) => ModelRecord {
+            status: state.status,
+            governance_mode: state.governance_mode,
+            ..model
+        },
+        None => model,
+    }
+}
+
+/// The model file with exactly this id and version; ambiguity is an error.
+pub fn model_path_by_version(
+    models_dir: &Path,
+    model_id: &str,
+    version: &str,
+) -> Result<PathBuf, ApiError> {
+    let mut matches = Vec::new();
+    for entry in walkdir::WalkDir::new(models_dir)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "yaml"))
+    {
+        let model = load_model_record(entry.path())?;
+        if model.model_id == model_id && model.version == version {
+            matches.push(entry.path().to_path_buf());
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => Err(ApiError::NotFound(format!(
+            "model record not found: {model_id} {version}"
+        ))),
+        _ => Err(ApiError::Conflict(format!(
+            "more than one model file declares {model_id} {version}"
+        ))),
+    }
 }
 
 pub fn get_model_by_id(models_dir: &Path, model_id: &str) -> Result<ModelRecord, ApiError> {
@@ -176,7 +231,7 @@ fn load_policy_pack(path: &Path) -> Result<PolicyPack, ApiError> {
         .map_err(|e| ApiError::Internal(format!("parse pack {}: {e}", path.display())))
 }
 
-fn load_model_record(path: &Path) -> Result<ModelRecord, ApiError> {
+pub fn load_model_record(path: &Path) -> Result<ModelRecord, ApiError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| ApiError::Internal(format!("read model {}: {e}", path.display())))?;
     serde_yaml::from_str(&content)

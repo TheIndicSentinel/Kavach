@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction};
 
-use super::admin::{insert_audit, upsert_pointers};
+use super::admin::{insert_audit, upsert_model_state, upsert_pointers};
 use crate::change_requests::{
     decision_audit, ApprovalCommit, ChangeKind, ChangeRequest, ChangeStatus, ChangeStoreError,
     CloseRequest, GovernanceEffect,
@@ -128,7 +128,16 @@ impl PostgresChangeStore {
             Some(expected) if expected != version => Some(format!(
                 "stale_baseline: runtime pointer version {version}, request bound to {expected}"
             )),
-            _ => check_effect(&mut tx, &commit.effect).await?,
+            _ => {
+                let mut reason = None;
+                for effect in &commit.effects {
+                    reason = check_effect(&mut tx, effect).await?;
+                    if reason.is_some() {
+                        break;
+                    }
+                }
+                reason
+            }
         };
         if let Some(reason) = stale {
             let failed = self
@@ -140,7 +149,9 @@ impl PostgresChangeStore {
             });
         }
 
-        apply_effect(&mut tx, &commit.effect, &request.proposer, &commit.approver).await?;
+        for effect in &commit.effects {
+            apply_effect(&mut tx, effect, &request.proposer, &commit.approver).await?;
+        }
         insert_audit(&mut *tx, &commit.audit).await.map_err(io)?;
         let applied = decide(
             &mut tx,
@@ -296,6 +307,9 @@ async fn apply_effect(
         GovernanceEffect::None => {}
         GovernanceEffect::SetPointers(pointers) => {
             upsert_pointers(&mut **tx, pointers).await.map_err(io)?;
+        }
+        GovernanceEffect::SetModelState(state) => {
+            upsert_model_state(&mut **tx, state).await.map_err(io)?;
         }
         GovernanceEffect::SetRetentionDays { days, .. } => {
             sqlx::query(

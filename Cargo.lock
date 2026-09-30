@@ -2198,6 +2198,7 @@ dependencies = [
  "kavach-ports-testkit",
  "serde",
  "serde_json",
+ "serde_yaml",
  "tokio",
 ]
 
@@ -2263,9 +2264,11 @@ dependencies = [
  "kavach-domain",
  "kavach-evaluate",
  "kavach-evidence",
+ "kavach-policy",
  "kavach-storage",
  "serde",
  "serde_json",
+ "serde_yaml",
  "sha2",
  "sqlx",
  "thiserror 2.0.20",

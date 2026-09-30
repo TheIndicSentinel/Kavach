@@ -32,7 +32,7 @@ pub enum StartupPackError {
     DigestMismatch { expected: String, actual: String },
 }
 
-fn same_path(a: &str, b: &Path) -> bool {
+pub(crate) fn same_path(a: &str, b: &Path) -> bool {
     match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
         (Ok(x), Ok(y)) => x == y,
         _ => Path::new(a) == b,
@@ -82,6 +82,7 @@ mod tests {
             updated_at: Utc::now(),
             updated_by: "admin-1".into(),
             approved_by: "admin-2".into(),
+            model_sha256: None,
             version: 0,
         }
     }

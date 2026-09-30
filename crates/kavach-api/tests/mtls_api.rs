@@ -137,6 +137,7 @@ fn config(pki: &Pki) -> ApiConfig {
         tls: Some(pki.tls_config()),
         pack_sha256: None,
         bootstrap_pack: false,
+        bootstrap_model: false,
         pack_signers: None,
         oidc: None,
         insecure_dev: false,

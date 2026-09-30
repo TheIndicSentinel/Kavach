@@ -66,14 +66,16 @@ impl AppState {
             verify_signed(&pack, config.pack_path(), signers)
                 .map_err(|e| ApiError::Internal(format!("startup pack signature: {e}")))?;
         }
-        let model = load_model_record(config.model_path())?;
+        let (yaml_model, model_sha256) =
+            read_model_file(config.model_path(), pack_signers.as_ref())?;
 
         let (evidence, incidents, batch_jobs, admin, retention, changes) =
             storage_backends(&config.evidence_store).await?;
 
         if matches!(config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
-            enforce_startup_pointer(&admin, config, pack.digest.as_deref()).await?;
+            enforce_startup_pointer(&admin, config, pack.digest.as_deref(), &model_sha256).await?;
         }
+        let model = startup_model(&admin, config, yaml_model, &model_sha256).await?;
         let pointer_version = admin
             .get_runtime_pointers()
             .await
@@ -92,8 +94,12 @@ impl AppState {
             model_path: config.model_path().display().to_string(),
             pack_sha256: pack.digest.clone(),
             pointer_version,
+            model_sha256: Some(model_sha256),
+            model_pack_mismatch: model.pack_id != pack.pack.id,
         };
 
+        let metrics = Metrics::new().map_err(|e| ApiError::Internal(format!("metrics: {e}")))?;
+        metrics.set_model_pack_mismatch(runtime.model_pack_mismatch);
         let service = EvaluateService::new(
             pack,
             model,
@@ -129,7 +135,7 @@ impl AppState {
             service: Mutex::new(service),
             hmac_secret: config.hmac_secret.clone(),
             access_control,
-            metrics: Metrics::new().map_err(|e| ApiError::Internal(format!("metrics: {e}")))?,
+            metrics,
             runtime: Mutex::new(runtime),
             packs_dir,
             models_dir,
@@ -164,6 +170,7 @@ impl AppState {
             tls: None,
             pack_sha256: None,
             bootstrap_pack: false,
+            bootstrap_model: false,
             pack_signers: None,
             oidc: None,
             insecure_dev: true,
@@ -233,6 +240,13 @@ impl AppState {
         &self.changes
     }
 
+    pub async fn model_states(&self) -> Result<Vec<kavach_storage::ModelState>, ApiError> {
+        self.admin
+            .list_model_states()
+            .await
+            .map_err(|e| ApiError::Internal(format!("model states: {e}")))
+    }
+
     fn memory_events_snapshot(
         &self,
     ) -> Result<Option<Vec<kavach_domain::DecisionEvent>>, ApiError> {
@@ -275,6 +289,12 @@ impl AppState {
         model: ModelRecord,
         runtime: &RuntimeResponse,
     ) -> Result<(), ApiError> {
+        let runtime = &RuntimeResponse {
+            model_pack_mismatch: model.pack_id != loaded_pack.pack.id,
+            ..runtime.clone()
+        };
+        self.metrics
+            .set_model_pack_mismatch(runtime.model_pack_mismatch);
         self.service
             .lock()
             .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?
@@ -431,11 +451,74 @@ async fn storage_backends(store: &EvidenceStoreKind) -> Result<Backends, ApiErro
     })
 }
 
-fn load_model_record(path: &std::path::Path) -> Result<ModelRecord, ApiError> {
-    let content = std::fs::read_to_string(path)
+/// Reads a model file: the record and the SHA-256 of its bytes. With trusted
+/// signers, the file must carry a model signature from a `model` signer.
+fn read_model_file(
+    path: &std::path::Path,
+    signers: Option<&TrustedSigners>,
+) -> Result<(ModelRecord, String), ApiError> {
+    let bytes = std::fs::read(path)
         .map_err(|e| ApiError::Internal(format!("read model {}: {e}", path.display())))?;
-    serde_yaml::from_str(&content)
-        .map_err(|e| ApiError::Internal(format!("parse model {}: {e}", path.display())))
+    let model: ModelRecord = serde_yaml::from_slice(&bytes)
+        .map_err(|e| ApiError::Internal(format!("parse model {}: {e}", path.display())))?;
+    let digest = kavach_policy::pack_digest(&bytes);
+    if let Some(signers) = signers {
+        kavach_keys::verify_model_file(
+            path,
+            kavach_keys::ModelIdentity {
+                model_id: &model.model_id,
+                model_version: &model.version,
+                model_sha256: &digest,
+            },
+            signers,
+        )
+        .map_err(|e| ApiError::Conflict(format!("model_signature_invalid: {e}")))?;
+    }
+    Ok((model, digest))
+}
+
+/// The effective model at startup: governed state in Postgres (ADR-010);
+/// in memory mode the YAML, registered as the governed state.
+async fn startup_model(
+    admin: &AdminBackend,
+    config: &ApiConfig,
+    yaml: ModelRecord,
+    digest: &str,
+) -> Result<ModelRecord, ApiError> {
+    if !matches!(config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
+        if config.bootstrap_model {
+            return Err(ApiError::Internal(
+                "--bootstrap-model applies to the Postgres evidence store only".into(),
+            ));
+        }
+        admin
+            .insert_model_state_if_absent(kavach_storage::ModelState {
+                model_id: yaml.model_id.clone(),
+                status: yaml.status,
+                governance_mode: yaml.governance_mode,
+                updated_at: Utc::now(),
+                updated_by: STARTUP_PRINCIPAL.into(),
+                approved_by: STARTUP_PRINCIPAL.into(),
+            })
+            .await
+            .map_err(|e| ApiError::Internal(format!("model state: {e}")))?;
+        return Ok(yaml);
+    }
+    let governed = kavach_storage::govern_model(
+        admin,
+        config.model_path(),
+        yaml,
+        digest,
+        kavach_storage::ModelStartupRole::Api {
+            bootstrap_model: config.bootstrap_model,
+        },
+    )
+    .await
+    .map_err(|e| ApiError::Internal(format!("startup model refused: {e}")))?;
+    if let Some(note) = &governed.yaml_divergence {
+        eprintln!("WARNING: kavach-api: {note}");
+    }
+    Ok(governed.model)
 }
 
 fn map_retention_error(error: RetentionStoreError) -> ApiError {
@@ -480,6 +563,7 @@ async fn enforce_startup_pointer(
     admin: &AdminBackend,
     config: &ApiConfig,
     digest: Option<&str>,
+    model_sha256: &str,
 ) -> Result<(), ApiError> {
     let path = config.pack_path();
     let path_str = path.display().to_string();
@@ -506,13 +590,14 @@ async fn enforce_startup_pointer(
             .await
         }
         Ok(StartupPackCheck::NoPointer) => {
-            admin
-                .set_runtime_pointers(RuntimePointers {
+            let inserted = admin
+                .insert_pointers_if_absent(RuntimePointers {
                     pack_path: path_str.clone(),
                     model_path: config.model_path().display().to_string(),
                     previous_pack_path: None,
                     pack_sha256: digest.map(ToString::to_string),
                     previous_pack_sha256: None,
+                    model_sha256: Some(model_sha256.to_string()),
                     updated_at: Utc::now(),
                     updated_by: STARTUP_PRINCIPAL.into(),
                     approved_by: STARTUP_PRINCIPAL.into(),
@@ -520,6 +605,16 @@ async fn enforce_startup_pointer(
                 })
                 .await
                 .map_err(|e| ApiError::Internal(format!("persist runtime pointers: {e}")))?;
+            if !inserted {
+                // Another process recorded the baseline first; check against it.
+                let pointers = admin
+                    .get_runtime_pointers()
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("load runtime pointers: {e}")))?;
+                check_startup_pack(pointers.as_ref(), path, digest)
+                    .map_err(|e| ApiError::Internal(format!("startup pack refused: {e}")))?;
+                return Ok(());
+            }
             audit(startup_audit(
                 "startup_baseline_recorded",
                 &path_str,

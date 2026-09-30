@@ -5,13 +5,17 @@ mod backends;
 mod change_requests;
 mod incidents_store;
 mod jobs_store;
+mod model_governance;
 mod postgres;
 mod retention;
 mod startup;
 #[cfg(feature = "test-support")]
 pub mod testing;
 
-pub use admin::{AdminStoreError, AuditEntry, AuditInsert, MemoryAdminStore, RuntimePointers};
+pub use admin::{
+    mode_str, parse_mode, parse_status, status_str, AdminStoreError, AuditEntry, AuditInsert,
+    MemoryAdminStore, ModelState, RuntimePointers,
+};
 pub use backends::{
     AdminBackend, BatchJobBackend, EvidenceBackend, IncidentBackend, RetentionBackend,
 };
@@ -22,6 +26,7 @@ pub use change_requests::{
 };
 pub use incidents_store::{IncidentRecord, IncidentStoreError, MemoryIncidentStore};
 pub use jobs_store::{BatchJobRecord, JobQueryError, MemoryBatchJobStore};
+pub use model_governance::{govern_model, GovernedModel, ModelStartupError, ModelStartupRole};
 pub use postgres::{
     connect_pool, BatchJobCreate, BatchJobStore, JobStoreError, NoopBatchJobStore,
     PostgresAdminStore, PostgresBatchJobStore, PostgresChangeStore, PostgresEvidenceStore,

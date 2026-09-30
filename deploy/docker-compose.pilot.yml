@@ -53,9 +53,13 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile
     profiles: ["batch"]
+    # Batch evaluates the pack and model that kavach-api governs (ADR-010) and
+    # never records a baseline itself: start kavach-api first.
     depends_on:
       postgres:
         condition: service_healthy
+      kavach-api:
+        condition: service_started
     entrypoint: ["kavach-batch"]
     command:
       - run

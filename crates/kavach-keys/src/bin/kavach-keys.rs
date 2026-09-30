@@ -5,13 +5,18 @@
 //! kavach-keys public-key --dir <keys> --kid <kid>        # prints a trusted-signers entry
 //! kavach-keys sign-pack  --dir <keys> --kid <kid> --pack <pack.yaml>   # writes <pack.yaml>.sig
 //! kavach-keys verify-pack --signers <signers.json> --pack <pack.yaml>
+//! kavach-keys sign-model  --dir <keys> --kid <kid> --model <model.yaml> # writes <model.yaml>.sig
+//! kavach-keys verify-model --signers <signers.json> --model <model.yaml>
 //! ```
+//!
+//! Model signers need `"roles": ["model"]` in the trusted-signers file.
 
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use kavach_keys::{
-    sign_pack, signature_path, verify_pack_file, LocalFileKeyProvider, TrustedSigners,
+    sign_model, sign_pack, signature_path, verify_model_file, verify_pack_file,
+    LocalFileKeyProvider, ModelIdentity, TrustedSigners,
 };
 use kavach_ports::KeyProvider;
 
@@ -54,6 +59,35 @@ enum Command {
         #[arg(long)]
         pack: PathBuf,
     },
+    /// Sign a model record file (id, version and digest); writes `<model>.sig`.
+    SignModel {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        kid: String,
+        #[arg(long)]
+        model: PathBuf,
+    },
+    /// Verify `<model>.sig` against a trusted-signers file (model role).
+    VerifyModel {
+        #[arg(long)]
+        signers: PathBuf,
+        #[arg(long)]
+        model: PathBuf,
+    },
+}
+
+/// The fields of a model record that its signature covers.
+#[derive(serde::Deserialize)]
+struct ModelHeader {
+    model_id: String,
+    version: String,
+}
+
+fn read_model(path: &std::path::Path) -> Result<(ModelHeader, String), Box<dyn std::error::Error>> {
+    let bytes = std::fs::read(path)?;
+    let header: ModelHeader = serde_yaml::from_slice(&bytes)?;
+    Ok((header, kavach_policy::pack_digest(&bytes)))
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -82,6 +116,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let digest = kavach_policy::pack_digest(&std::fs::read(&pack)?);
             verify_pack_file(&pack, &digest, &trusted)?;
             println!("ok: {} {digest}", pack.display());
+        }
+        Command::SignModel { dir, kid, model } => {
+            let (header, digest) = read_model(&model)?;
+            let provider = LocalFileKeyProvider::new(dir);
+            let identity = ModelIdentity {
+                model_id: &header.model_id,
+                model_version: &header.version,
+                model_sha256: &digest,
+            };
+            let signature = sign_model(&provider, &kid, identity).await?;
+            let out = signature_path(&model);
+            std::fs::write(&out, serde_json::to_string_pretty(&signature)? + "\n")?;
+            println!(
+                "wrote {} ({} {} {digest})",
+                out.display(),
+                header.model_id,
+                header.version
+            );
+        }
+        Command::VerifyModel { signers, model } => {
+            let (header, digest) = read_model(&model)?;
+            let trusted = TrustedSigners::from_file(&signers)?;
+            let identity = ModelIdentity {
+                model_id: &header.model_id,
+                model_version: &header.version,
+                model_sha256: &digest,
+            };
+            verify_model_file(&model, identity, &trusted)?;
+            println!("ok: {} {} {digest}", header.model_id, header.version);
         }
     }
     Ok(())

@@ -134,6 +134,20 @@ permit (
   resource == Kavach::System::"api"
 );
 
+@id("admins-may-propose-activate-model")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"propose_activate_model",
+  resource == Kavach::System::"api"
+);
+
+@id("change-approvers-may-approve-activate-model")
+permit (
+  principal in Kavach::Group::"change-approvers",
+  action == Kavach::Action::"approve_activate_model",
+  resource == Kavach::System::"api"
+);
+
 @id("change-approvers-may-approve-activate-pack")
 permit (
   principal in Kavach::Group::"change-approvers",

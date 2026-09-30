@@ -25,6 +25,8 @@ test-support = []
 
 [dev-dependencies]
 kavach-storage = { path = ".", features = ["test-support"] }
+kavach-policy = { workspace = true }
+serde_yaml.workspace = true
 
 [lints]
 workspace = true

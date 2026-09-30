@@ -98,6 +98,16 @@ namespace Kavach {
     resource: [System],
   };
 
+  action propose_activate_model appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action approve_activate_model appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
   action read_change_requests appliesTo {
     principal: [User],
     resource: [System],

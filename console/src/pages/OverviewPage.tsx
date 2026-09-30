@@ -48,6 +48,26 @@ export default function OverviewPage() {
         subtitle="System health, active model posture, and governance capabilities for your on-prem deployment."
       />
 
+      {runtime.kind === "ok" && runtime.data.model_pack_mismatch && (
+        <div
+          role="alert"
+          className="mb-6 rounded-lg border border-saffron-400/40 bg-saffron-100/40 px-4 py-3 text-sm text-ink"
+        >
+          The active model record names a different policy pack than the one running (
+          <span className="font-mono">{runtime.data.pack_id}</span>). Evidence records the pack
+          actually used; activate a matching pack or model version to resolve this.
+        </div>
+      )}
+      {runtime.kind === "ok" && runtime.data.pointer_drift && (
+        <div
+          role="alert"
+          className="mb-6 rounded-lg border border-saffron-400/40 bg-saffron-100/40 px-4 py-3 text-sm text-ink"
+        >
+          Another replica applied a governance change this instance has not loaded. Restart it
+          to converge.
+        </div>
+      )}
+
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Card>
           <CardHeader>
@@ -74,7 +94,7 @@ export default function OverviewPage() {
         <Card>
           <CardHeader>
             <CardTitle>Active model</CardTitle>
-            <CardDescription>Loaded at runtime from model record YAML</CardDescription>
+            <CardDescription>Pinned model record; status and mode are governed</CardDescription>
           </CardHeader>
           {runtime.kind === "loading" && <Skeleton className="h-20 w-full" />}
           {runtime.kind === "error" && (

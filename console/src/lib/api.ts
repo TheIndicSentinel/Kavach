@@ -96,6 +96,13 @@ export type RuntimeInfo = {
   governance_mode: string;
   pack_path: string;
   model_path: string;
+  pack_sha256?: string | null;
+  model_sha256?: string | null;
+  pointer_version?: number;
+  stored_pointer_version?: number;
+  pointer_drift?: boolean;
+  /** The active model names a different pack than the one running (ADR-010). */
+  model_pack_mismatch?: boolean;
 };
 
 export type PackSummary = {
@@ -107,6 +114,8 @@ export type PackSummary = {
   rule_count: number;
   source_path: string;
   active: boolean;
+  /** False: no governed state yet; activate it with an activate_model change. */
+  governed: boolean;
 };
 
 export type PolicyPack = {
@@ -154,6 +163,7 @@ export type ModelRecord = {
   status: string;
   pack_id: string;
   purpose: string;
+  governed?: boolean;
 };
 
 async function governanceFetch<T>(path: string): Promise<T> {
@@ -276,7 +286,8 @@ export type ChangeKind =
   | "update_model"
   | "update_retention"
   | "erase_evidence"
-  | "apply_retention";
+  | "apply_retention"
+  | "activate_model";
 
 export type ChangeStatus =
   | "pending"

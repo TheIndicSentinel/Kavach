@@ -24,6 +24,9 @@ pub struct BatchConfig {
     /// How each row's `decision_time` is validated. Historical exports use a
     /// declared window; the default is the sync skew check against now.
     pub time_check: DecisionTimeCheck,
+    /// The governed model (Postgres mode, ADR-010). When `None`, the model
+    /// YAML at `model_path` is used as is (development).
+    pub governed_model: Option<ModelRecord>,
 }
 
 impl Default for BatchConfig {
@@ -34,6 +37,7 @@ impl Default for BatchConfig {
             service_identity_id: "kavach-batch-worker".into(),
             pack_sha256: None,
             time_check: DecisionTimeCheck::Skew,
+            governed_model: None,
         }
     }
 }
@@ -71,7 +75,10 @@ where
 {
     let pack = PackLoader::load_from_path(&config.pack_path)?;
     pack.verify_pin(config.pack_sha256.as_deref())?;
-    let model = load_model_record(&config.model_path)?;
+    let model = match &config.governed_model {
+        Some(model) => model.clone(),
+        None => load_model_record(&config.model_path)?,
+    };
 
     let job_id = job_store
         .create_pending(&BatchJobCreate {

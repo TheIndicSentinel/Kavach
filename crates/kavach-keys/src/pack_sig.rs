@@ -26,11 +26,32 @@ pub struct PackSignature {
     pub signature: String,
 }
 
-/// Public keys allowed to sign packs, loaded from a JSON file:
-/// `{"signers":[{"kid":"pack-signer-1","public_key":"<64 hex chars>"}]}`.
+/// What a trusted key may sign.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SignerRole {
+    Pack,
+    Model,
+}
+
+impl SignerRole {
+    fn parse(value: &str) -> Result<Self, PortError> {
+        match value {
+            "pack" => Ok(Self::Pack),
+            "model" => Ok(Self::Model),
+            other => Err(PortError::invalid(format!(
+                "unknown signer role {other:?} (expected \"pack\" or \"model\")"
+            ))),
+        }
+    }
+}
+
+/// Public keys allowed to sign packs and models, loaded from a JSON file:
+/// `{"signers":[{"kid":"pack-signer-1","public_key":"<64 hex chars>","roles":["pack"]}]}`.
+/// An entry without `roles` may sign packs only (the pre-H3b format);
+/// `roles: []` is refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedSigners {
-    keys: Vec<PublicKey>,
+    keys: Vec<(PublicKey, Vec<SignerRole>)>,
 }
 
 #[derive(Deserialize)]
@@ -44,12 +65,28 @@ struct TrustedSignersFile {
 struct TrustedSignerEntry {
     kid: String,
     public_key: String,
+    roles: Option<Vec<String>>,
 }
 
 impl TrustedSigners {
+    /// Pack signers (the pre-H3b default role).
     pub fn new(keys: Vec<PublicKey>) -> Result<Self, PortError> {
+        Self::with_roles(
+            keys.into_iter()
+                .map(|k| (k, vec![SignerRole::Pack]))
+                .collect(),
+        )
+    }
+
+    pub fn with_roles(keys: Vec<(PublicKey, Vec<SignerRole>)>) -> Result<Self, PortError> {
         if keys.is_empty() {
             return Err(PortError::invalid("trusted signers list is empty"));
+        }
+        if let Some((key, _)) = keys.iter().find(|(_, roles)| roles.is_empty()) {
+            return Err(PortError::invalid(format!(
+                "signer {}: roles must not be empty",
+                key.kid
+            )));
         }
         Ok(Self { keys })
     }
@@ -71,14 +108,34 @@ impl TrustedSigners {
                             entry.kid
                         ))
                     })?;
-                Ok(PublicKey {
-                    kid: entry.kid,
-                    algorithm: KeyAlgorithm::Ed25519,
-                    bytes,
-                })
+                let roles = match entry.roles {
+                    None => vec![SignerRole::Pack],
+                    Some(roles) if roles.is_empty() => {
+                        return Err(PortError::invalid(format!(
+                            "signer {}: roles must not be empty (omit it for pack-only)",
+                            entry.kid
+                        )))
+                    }
+                    Some(roles) => {
+                        let mut parsed = roles
+                            .iter()
+                            .map(|r| SignerRole::parse(r))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        parsed.dedup();
+                        parsed
+                    }
+                };
+                Ok((
+                    PublicKey {
+                        kid: entry.kid,
+                        algorithm: KeyAlgorithm::Ed25519,
+                        bytes,
+                    },
+                    roles,
+                ))
             })
             .collect::<Result<Vec<_>, PortError>>()?;
-        Self::new(keys)
+        Self::with_roles(keys)
     }
 
     pub fn from_file(path: &Path) -> Result<Self, PortError> {
@@ -88,8 +145,24 @@ impl TrustedSigners {
         Self::from_json(&text)
     }
 
-    fn key(&self, kid: &str) -> Option<&PublicKey> {
-        self.keys.iter().find(|k| k.kid == kid)
+    /// The key `kid`, if trusted for `role`.
+    pub(crate) fn key(&self, kid: &str, role: SignerRole) -> Result<&PublicKey, PortError> {
+        let (key, roles) = self
+            .keys
+            .iter()
+            .find(|(k, _)| k.kid == kid)
+            .ok_or_else(|| PortError::rejected(format!("signer {kid} is not trusted")))?;
+        if roles.contains(&role) {
+            Ok(key)
+        } else {
+            Err(PortError::rejected(format!(
+                "signer {kid} is not trusted to sign {}s",
+                match role {
+                    SignerRole::Pack => "pack",
+                    SignerRole::Model => "model",
+                }
+            )))
+        }
     }
 }
 
@@ -143,9 +216,7 @@ pub fn verify_pack_signature(
             signature.pack_sha256
         )));
     }
-    let key = trusted
-        .key(&signature.kid)
-        .ok_or_else(|| PortError::rejected(format!("signer {} is not trusted", signature.kid)))?;
+    let key = trusted.key(&signature.kid, SignerRole::Pack)?;
     let sig_bytes = hex::decode(&signature.signature)
         .map_err(|_| PortError::invalid("pack signature is not hex"))?;
     verify_ed25519(key, &signing_message(pack_sha256), &sig_bytes)

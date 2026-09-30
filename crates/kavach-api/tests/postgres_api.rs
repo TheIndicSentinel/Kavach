@@ -56,6 +56,7 @@ fn config(root: &Path, database_url: &str, pack: &str, bootstrap_pack: bool) -> 
         tls: None,
         pack_sha256: None,
         bootstrap_pack,
+        bootstrap_model: false,
         pack_signers: None,
         oidc: None,
         insecure_dev: true,
@@ -333,4 +334,278 @@ fn old_event(correlation_id: &str) -> kavach_evidence::AppendDecisionEvent {
         correlation_id: correlation_id.into(),
         idempotency_key: None,
     }
+}
+
+// ---- H3b: governed model record (ADR-010) ----
+
+const MODEL: &str = "credit-underwriting-v1";
+
+async fn start_with(config: &ApiConfig) -> Result<Arc<AppState>, String> {
+    AppState::from_config(config)
+        .await
+        .map(Arc::new)
+        .map_err(|e| format!("{e:?}"))
+}
+
+fn model_path(root: &Path) -> PathBuf {
+    root.join("models/finance/credit-underwriting-v1.yaml")
+}
+
+async fn promote_to_enforce(state: &Arc<AppState>) {
+    let status = apply_as_admins(
+        &router(state.clone()),
+        "update_model",
+        json!({ "model_id": MODEL, "governance_mode": "enforce" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+async fn evaluate_once(state: &Arc<AppState>, correlation_id: &str) -> serde_json::Value {
+    let mut body: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(repo("partner/finance/credit_underwriting_v1_request.json"))
+            .unwrap(),
+    )
+    .unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
+    body["decision_time"] = now.clone().into();
+    body["consent"]["timestamp"] = now.into();
+    body["correlation_id"] = correlation_id.into();
+    body["idempotency_key"] = correlation_id.into();
+    let (status, json) = call(
+        &router(state.clone()),
+        "POST",
+        "/v1/evaluate",
+        &as_principal("operator-1"),
+        Some(body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+    json
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn governed_mode_survives_restart_and_reaches_evidence() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let state = start(&root, &url, "v0.yaml").await.expect("start");
+    assert_eq!(
+        state.runtime().governance_mode,
+        kavach_domain::GovernanceMode::Shadow
+    );
+    promote_to_enforce(&state).await;
+    drop(state);
+
+    // The YAML still says shadow; the governed state wins after restart.
+    let state = start(&root, &url, "v0.yaml").await.expect("restart");
+    assert_eq!(
+        state.runtime().governance_mode,
+        kavach_domain::GovernanceMode::Enforce
+    );
+    let response = evaluate_once(&state, "h3b-evidence-mode").await;
+    let evidence_id = response["evidence_id"].as_str().unwrap().to_string();
+
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    let mode: String =
+        sqlx::query_scalar("SELECT governance_mode FROM decision_events WHERE evidence_id = $1")
+            .bind(&evidence_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        mode, "enforce",
+        "evidence records the governed mode, not the YAML"
+    );
+    let (_, models) = call(
+        &router(state.clone()),
+        "GET",
+        "/v1/models",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    let active = models
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["active"] == true)
+        .unwrap();
+    assert_eq!(
+        (
+            active["governance_mode"].as_str(),
+            active["governed"].as_bool()
+        ),
+        (Some("enforce"), Some(true))
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn edited_model_file_is_refused_and_bootstrap_keeps_governed_state() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let state = start(&root, &url, "v0.yaml").await.expect("start");
+    promote_to_enforce(&state).await;
+    drop(state);
+
+    // Edit the YAML: try to flip it back to shadow by file edit.
+    let path = model_path(&root);
+    let edited = std::fs::read_to_string(&path).unwrap().replace(
+        "governance_mode: shadow",
+        "governance_mode: shadow # edited",
+    );
+    std::fs::write(&path, edited).unwrap();
+    let Err(refused) = start(&root, &url, "v0.yaml").await else {
+        panic!("an edited model file must be refused");
+    };
+    assert!(refused.contains("model file bytes differ"), "{refused}");
+
+    // The audited override re-pins the file but never touches status or mode.
+    let mut config = config(&root, &url, "v0.yaml", false);
+    config.bootstrap_model = true;
+    let state = start_with(&config).await.expect("bootstrap");
+    assert_eq!(
+        state.runtime().governance_mode,
+        kavach_domain::GovernanceMode::Enforce
+    );
+    assert!(audit_actions(&state)
+        .await
+        .contains(&"startup_model_bootstrap_override".into()));
+    drop(state);
+    start(&root, &url, "v0.yaml")
+        .await
+        .expect("re-pinned file starts normally");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn baseline_refused_when_approved_history_diverges_from_yaml() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let state = start(&root, &url, "v0.yaml").await.expect("start");
+    drop(state);
+    // Simulate an H3a database: an approved enforce promotion in the audit
+    // log, but no persisted model state or model pin.
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    sqlx::query("DELETE FROM model_state")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE runtime_pointers SET model_sha256 = NULL")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO admin_audit_log (action, resource_type, resource_id, actor_principal, \
+            approver_principal, payload) VALUES ('update_model', 'model_record', $1, 'admin-1', \
+            'admin-2', '{\"status\":\"production\",\"governance_mode\":\"enforce\"}')",
+    )
+    .bind(MODEL)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let Err(refused) = start(&root, &url, "v0.yaml").await else {
+        panic!("a silent revert to the YAML must be refused");
+    };
+    assert!(refused.contains("refusing to baseline"), "{refused}");
+
+    let mut config = config(&root, &url, "v0.yaml", false);
+    config.bootstrap_model = true;
+    let state = start_with(&config).await.expect("restore");
+    assert_eq!(
+        state.runtime().governance_mode,
+        kavach_domain::GovernanceMode::Enforce
+    );
+    assert!(audit_actions(&state)
+        .await
+        .contains(&"startup_model_state_restored".into()));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_first_starts_record_one_baseline() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let (a, b) = tokio::join!(start(&root, &url, "v0.yaml"), start(&root, &url, "v0.yaml"));
+    let (a, _b) = (a.expect("a"), b.expect("b"));
+    let pointers = a.admin().get_runtime_pointers().await.unwrap().unwrap();
+    assert_eq!(pointers.version, 1);
+    assert!(pointers.model_sha256.is_some());
+    let actions = audit_actions(&a).await;
+    let count = |name: &str| actions.iter().filter(|a| *a == name).count();
+    assert_eq!(count("startup_baseline_recorded"), 1, "{actions:?}");
+    assert_eq!(count("startup_model_state_baseline"), 1, "{actions:?}");
+    assert_eq!(a.model_states().await.unwrap().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn activate_model_switches_versions_and_guards_downgrades() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let v1_1 = root.join("models/finance/credit-underwriting-v1_1.yaml");
+    std::fs::write(
+        &v1_1,
+        std::fs::read_to_string(model_path(&root))
+            .unwrap()
+            .replacen("version: \"1.0.0\"", "version: \"1.1.0\"", 1),
+    )
+    .unwrap();
+    let state = start(&root, &url, "v0.yaml").await.expect("start");
+    promote_to_enforce(&state).await;
+    let app = router(state.clone());
+    let admin = as_principal("admin-1");
+
+    let (status, request) = propose(
+        &app,
+        &admin,
+        "activate_model",
+        json!({ "model_id": MODEL, "version": "1.1.0" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    assert_eq!(request["binding"]["state_source"], "governed");
+    assert_eq!(request["binding"]["governance_mode"], "enforce");
+    assert_eq!(
+        approve(&app, &as_principal("admin-2"), &request).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(state.runtime().model_version, "1.1.0");
+    assert_eq!(
+        state.runtime().governance_mode,
+        kavach_domain::GovernanceMode::Enforce
+    );
+
+    // Going back to 1.0.0 is a downgrade: refused unless explicit.
+    let (status, body) = propose(
+        &app,
+        &admin,
+        "activate_model",
+        json!({ "model_id": MODEL, "version": "1.0.0" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, request) = propose(
+        &app,
+        &admin,
+        "activate_model",
+        json!({ "model_id": MODEL, "version": "1.0.0", "allow_downgrade": true }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    assert_eq!(request["params"]["allow_downgrade"], true);
+    drop(state);
+
+    // The pointer now names 1.1.0: starting with the 1.0.0 file is refused.
+    let mut config = config(&root, &url, "v0.yaml", false);
+    config.model_path = v1_1;
+    start_with(&config).await.expect("restart on 1.1.0");
+    assert!(start(&root, &url, "v0.yaml").await.is_err());
 }

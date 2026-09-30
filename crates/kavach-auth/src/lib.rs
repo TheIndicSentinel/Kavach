@@ -49,6 +49,8 @@ pub enum KavachAction {
     ProposeApplyRetention,
     ApproveApplyRetention,
     ReadChangeRequests,
+    ProposeActivateModel,
+    ApproveActivateModel,
 }
 
 impl KavachAction {
@@ -76,6 +78,8 @@ impl KavachAction {
             Self::ProposeApplyRetention => "propose_apply_retention",
             Self::ApproveApplyRetention => "approve_apply_retention",
             Self::ReadChangeRequests => "read_change_requests",
+            Self::ProposeActivateModel => "propose_activate_model",
+            Self::ApproveActivateModel => "approve_activate_model",
         }
     }
 }
