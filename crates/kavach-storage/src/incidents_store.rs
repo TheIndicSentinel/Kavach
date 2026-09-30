@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use kavach_evaluate::{EvaluateIncident, IncidentRecorder};
+use kavach_evaluate::{EvaluateIncident, IncidentRecorder, IncidentWriteError};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 
@@ -56,7 +56,8 @@ impl MemoryIncidentStore {
 }
 
 impl IncidentRecorder for MemoryIncidentStore {
-    fn record(&mut self, incident: EvaluateIncident) {
-        let _ = self.record_incident(incident);
+    fn record(&mut self, incident: EvaluateIncident) -> Result<(), IncidentWriteError> {
+        self.record_incident(incident)
+            .map_err(|e| IncidentWriteError(e.to_string()))
     }
 }

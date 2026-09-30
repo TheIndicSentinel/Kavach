@@ -112,18 +112,18 @@ Per request, in order:
 
 - Pack `fail_mode` applies to **CEL/runtime limits only** (expression errors, timeout).
 - Must **not** override `ModelRecord.governance_mode` or the matrices in §5.
-- *Amendment (2026-10, H0):* `fail_mode` was never implemented; CEL errors currently return HTTP 5xx without an incident. H1 replaces this with a fixed rule: enforce → `BLOCK` + incident; shadow → `PASS` + incident (reason `policy_evaluation_error`).
+- *Amendment (2026-10, H0 → implemented in H1):* `fail_mode` was never implemented and is superseded by a fixed rule: a CEL/runtime failure yields policy decision `BLOCK` with reason `POLICY_EVALUATION_ERROR`, written to evidence, plus an incident; the §5 matrix then returns `BLOCK` in enforce and `PASS` in sync shadow.
 
 ### 11. Idempotency
 
 - Key: `correlation_id` + `model_id` (+ optional explicit `idempotency_key`).
 - Retry with same key → same `evidence_id` and decisions; no duplicate chain entries.
-- *Amendment (2026-10, H0):* known defect — the implementation keys only on `(model_id, correlation_id)` and returns the stored `evidence_id` with a freshly computed decision. H1 compares the input digest and returns the stored decisions, or 409 for a different input under the same key.
+- *Amendment (2026-10, H1 — fixed):* a retry matching `(model_id, correlation_id)` must carry the same input digest (and the same `idempotency_key` when both are present); it then receives the **stored** `evidence_id` and decisions. A different request under the same key is a conflict: HTTP 409, gRPC `ALREADY_EXISTS`, batch row failure.
 
 ### 12. Pack versioning time
 
 - ~~Active pack version = version **effective at `decision_time`**, not server clock at evaluate time.~~
-- **Superseded by ADR-003 §8 (M1.2):** pack-effective selection uses trusted server time; `decision_time` is validated (±300 s) and recorded only. Batch jobs over historical data will validate `decision_time` against the job's declared window (H1).
+- **Superseded by ADR-003 §8 (M1.2):** pack-effective selection uses trusted server time; `decision_time` is validated (±300 s) and recorded only. Batch jobs over historical data validate `decision_time` against the job's declared window (`--decision-from/--decision-to`, H1).
 
 ### 13. Latency SLO (design targets)
 

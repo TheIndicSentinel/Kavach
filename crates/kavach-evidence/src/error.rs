@@ -25,6 +25,15 @@ pub enum EvidenceError {
         correlation_id: String,
     },
 
+    /// Same idempotency key, different request (ADR-001 §11): the stored
+    /// decision must not be returned for different input.
+    #[error("idempotency conflict for model {model_id}, correlation {correlation_id}: {reason}")]
+    IdempotencyConflict {
+        model_id: String,
+        correlation_id: String,
+        reason: String,
+    },
+
     #[error("empty evidence chain")]
     EmptyChain,
 

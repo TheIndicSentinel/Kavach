@@ -52,6 +52,14 @@ enum Command {
         #[arg(long, env = "KAVACH_PACK_SIGNERS")]
         pack_signers: Option<PathBuf>,
 
+        /// Historical data: accept rows whose decision_time is within
+        /// [decision-from, decision-to] (RFC 3339) instead of ±300 s of now.
+        #[arg(long, requires = "decision_to")]
+        decision_from: Option<chrono::DateTime<chrono::Utc>>,
+
+        #[arg(long, requires = "decision_from")]
+        decision_to: Option<chrono::DateTime<chrono::Utc>>,
+
         #[arg(long, env = "KAVACH_MODEL_PATH")]
         model: PathBuf,
 
@@ -99,6 +107,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             pack,
             pack_sha256,
             pack_signers,
+            decision_from,
+            decision_to,
             model,
             evidence_store,
             database_url,
@@ -114,6 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 pack_path: pack,
                 model_path: model,
                 pack_sha256,
+                time_check: time_check(decision_from, decision_to)?,
                 ..BatchConfig::default()
             };
 
@@ -229,4 +240,19 @@ fn verify_signature_if_configured(
     let digest = kavach_policy::pack_digest(&std::fs::read(pack)?);
     kavach_keys::verify_pack_file(pack, &digest, &trusted)?;
     Ok(())
+}
+
+/// `--decision-from/--decision-to` → declared window for historical data;
+/// otherwise the sync skew check against now.
+fn time_check(
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<kavach_evaluate::DecisionTimeCheck, Box<dyn std::error::Error>> {
+    match (from, to) {
+        (Some(from), Some(to)) if from <= to => {
+            Ok(kavach_evaluate::DecisionTimeCheck::Window { from, to })
+        }
+        (Some(_), Some(_)) => Err("--decision-from must not be after --decision-to".into()),
+        _ => Ok(kavach_evaluate::DecisionTimeCheck::Skew),
+    }
 }

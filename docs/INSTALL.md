@@ -168,6 +168,10 @@ cargo run -p kavach-api -- \
   --evidence-store postgres
 ```
 
+**Historical exports:** add `--decision-from 2026-09-01T00:00:00Z --decision-to 2026-09-30T23:59:59Z` to accept rows whose `decision_time` falls inside the declared window (inclusive). Without these flags each row must be within ±300 s of the current time.
+
+**Idempotency:** a row whose `(model_id, correlation_id)` was already evaluated with *different* input fails with an idempotency conflict; an identical row returns the stored decision.
+
 Input: one `EvaluateRequest` JSON object per line (NDJSON).  
 Output: one result row per input line (`status`, `policy_decision`, `returned_decision`, `evidence_id`, …).
 

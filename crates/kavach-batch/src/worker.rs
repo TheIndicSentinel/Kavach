@@ -4,7 +4,8 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 use kavach_domain::{EvaluatePath, ModelRecord};
 use kavach_evaluate::{
-    EvaluateConfig, EvaluateError, EvaluateService, EvidenceStore, IncidentRecorder,
+    DecisionTimeCheck, EvaluateConfig, EvaluateError, EvaluateService, EvidenceStore,
+    IncidentRecorder,
 };
 use kavach_policy::PackLoader;
 use kavach_storage::{BatchJobCreate, BatchJobStore};
@@ -20,6 +21,9 @@ pub struct BatchConfig {
     pub service_identity_id: String,
     /// Expected SHA-256 of the pack file; the job fails before processing on mismatch.
     pub pack_sha256: Option<String>,
+    /// How each row's `decision_time` is validated. Historical exports use a
+    /// declared window; the default is the sync skew check against now.
+    pub time_check: DecisionTimeCheck,
 }
 
 impl Default for BatchConfig {
@@ -29,6 +33,7 @@ impl Default for BatchConfig {
             model_path: PathBuf::new(),
             service_identity_id: "kavach-batch-worker".into(),
             pack_sha256: None,
+            time_check: DecisionTimeCheck::Skew,
         }
     }
 }
@@ -119,6 +124,7 @@ where
                 line_number,
                 request: &request,
                 server_now,
+                time_check: config.time_check,
                 report: &mut report,
                 seen_evidence: &mut seen_evidence,
                 job_id: &job_id,
@@ -135,6 +141,7 @@ struct ProcessRowInput<'a> {
     line_number: usize,
     request: &'a kavach_domain::EvaluateRequest,
     server_now: chrono::DateTime<Utc>,
+    time_check: DecisionTimeCheck,
     report: &'a mut BatchJobReport,
     seen_evidence: &'a mut std::collections::HashSet<String>,
     job_id: &'a str,
@@ -151,8 +158,19 @@ where
     J: BatchJobStore,
 {
     let correlation_id = input.request.correlation_id.clone();
-    match service.evaluate(EvaluatePath::Batch, input.request, input.server_now) {
+    match service.evaluate_with_time_check(
+        EvaluatePath::Batch,
+        input.request,
+        input.server_now,
+        input.time_check,
+    ) {
         Ok(result) => {
+            if let Some(err) = &result.incident_write_error {
+                eprintln!(
+                    "ALERT kavach-batch: incident not persisted (line {}, correlation_id={correlation_id}): {err}",
+                    input.line_number
+                );
+            }
             let row = ok_result_row(
                 input.line_number,
                 correlation_id,
@@ -162,7 +180,11 @@ where
             );
             row.write_ndjson_line(output)?;
         }
-        Err(EvaluateError::Validation(message) | EvaluateError::ModelMismatch(message)) => {
+        Err(
+            EvaluateError::Validation(message)
+            | EvaluateError::ModelMismatch(message)
+            | EvaluateError::IdempotencyConflict(message),
+        ) => {
             validation_error_row(input.line_number, correlation_id, message, input.report)
                 .write_ndjson_line(output)?;
         }
@@ -170,7 +192,7 @@ where
             validation_error_row(
                 input.line_number,
                 correlation_id,
-                "pack not effective at decision_time".into(),
+                "pack not effective at server time".into(),
                 input.report,
             )
             .write_ndjson_line(output)?;

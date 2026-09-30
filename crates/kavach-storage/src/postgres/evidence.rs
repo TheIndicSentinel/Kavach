@@ -36,6 +36,7 @@ impl PostgresEvidenceStore {
             .fetch_by_idempotency(&input.model_id, &input.correlation_id)
             .await?
         {
+            kavach_evidence::check_idempotent_replay(&existing, &input)?;
             return Ok(existing);
         }
 

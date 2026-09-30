@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use kavach_evaluate::{EvaluateIncident, IncidentRecorder};
+use kavach_evaluate::{EvaluateIncident, IncidentRecorder, IncidentWriteError};
 use sqlx::PgPool;
 
 use crate::incidents_store::{IncidentRecord, IncidentStoreError};
@@ -26,26 +26,28 @@ impl PostgresIncidentStore {
         Ok(rows.into_iter().map(IncidentRow::into_record).collect())
     }
 
-    fn record_sync(&self, incident: EvaluateIncident) {
+    fn record_sync(&self, incident: EvaluateIncident) -> Result<(), IncidentWriteError> {
         let pool = self.pool.clone();
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
-                let _ = sqlx::query(
+                sqlx::query(
                     "INSERT INTO evaluate_incidents (correlation_id, model_id, reason) VALUES ($1, $2, $3)",
                 )
                 .bind(incident.correlation_id)
                 .bind(incident.model_id)
                 .bind(incident.reason)
                 .execute(&pool)
-                .await;
-            });
-        });
+                .await
+                .map(|_| ())
+                .map_err(|e| IncidentWriteError(e.to_string()))
+            })
+        })
     }
 }
 
 impl IncidentRecorder for PostgresIncidentStore {
-    fn record(&mut self, incident: EvaluateIncident) {
-        self.record_sync(incident);
+    fn record(&mut self, incident: EvaluateIncident) -> Result<(), IncidentWriteError> {
+        self.record_sync(incident)
     }
 }
 

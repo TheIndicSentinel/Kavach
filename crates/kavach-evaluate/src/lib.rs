@@ -8,9 +8,12 @@ mod validation;
 pub use error::EvaluateError;
 pub use kavach_domain::EvaluatePath;
 pub use ports::{
-    EvaluateIncident, EvidenceStore, IncidentRecorder, NoopIncidentRecorder, VecIncidentRecorder,
+    EvaluateIncident, EvidenceStore, IncidentRecorder, IncidentWriteError, NoopIncidentRecorder,
+    VecIncidentRecorder,
 };
-pub use service::{EvaluateConfig, EvaluateResult, EvaluateService};
+pub use service::{
+    DecisionTimeCheck, EvaluateConfig, EvaluateResult, EvaluateService, POLICY_EVALUATION_ERROR,
+};
 pub use validation::{
     compile_input_validator, validate_input, validate_model_binding, validate_supplier_controls,
 };

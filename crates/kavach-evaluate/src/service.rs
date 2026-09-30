@@ -6,8 +6,8 @@ use kavach_domain::{
     decision::map_returned_decision_for_path, golden::canonical_input_digest, Decision,
     EvaluatePath, EvaluateRequest, EvaluateResponse, ModelRecord,
 };
-use kavach_evidence::AppendDecisionEvent;
-use kavach_policy::{LoadedPolicyPack, PolicyEngine};
+use kavach_evidence::{AppendDecisionEvent, EvidenceError};
+use kavach_policy::{LoadedPolicyPack, PolicyEngine, PolicyEvaluation};
 
 use crate::error::EvaluateError;
 use crate::ports::{EvaluateIncident, EvidenceStore, IncidentRecorder};
@@ -30,10 +30,28 @@ impl Default for EvaluateConfig {
     }
 }
 
+/// Reason code for a CEL/runtime policy evaluation failure.
+pub const POLICY_EVALUATION_ERROR: &str = "POLICY_EVALUATION_ERROR";
+
+/// How the request's `decision_time` is validated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionTimeCheck {
+    /// Within `clock_skew_max_seconds` of trusted server time (sync path).
+    Skew,
+    /// Within the job's declared window, inclusive (batch over historical data).
+    Window {
+        from: DateTime<Utc>,
+        to: DateTime<Utc>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct EvaluateResult {
     pub response: EvaluateResponse,
     pub incident: Option<EvaluateIncident>,
+    /// Set when an incident could not be persisted; callers must surface it
+    /// (metric + log) so infra failures never become invisible.
+    pub incident_write_error: Option<String>,
 }
 
 pub struct EvaluateService<S, I> {
@@ -94,29 +112,53 @@ where
         Ok(())
     }
 
+    /// Sync evaluate: `decision_time` must be within the configured skew of
+    /// trusted server time.
     pub fn evaluate(
         &mut self,
         path: EvaluatePath,
         request: &EvaluateRequest,
         server_now: DateTime<Utc>,
     ) -> Result<EvaluateResult, EvaluateError> {
+        self.evaluate_with_time_check(path, request, server_now, DecisionTimeCheck::Skew)
+    }
+
+    /// Evaluates with an explicit `decision_time` check (batch over historical
+    /// data uses the job's declared window).
+    pub fn evaluate_with_time_check(
+        &mut self,
+        path: EvaluatePath,
+        request: &EvaluateRequest,
+        server_now: DateTime<Utc>,
+        time_check: DecisionTimeCheck,
+    ) -> Result<EvaluateResult, EvaluateError> {
         let started = Instant::now();
+        self.validate_request(request, server_now, time_check)?;
 
-        validate_model_binding(&self.model, request)?;
-        validate_supplier_controls(&self.model)?;
-        // Pack selection uses trusted server time, never the client-supplied
-        // `decision_time` (ADR-003 §8); `decision_time` is still validated
-        // against skew below and recorded in evidence.
-        self.assert_pack_effective(server_now)?;
-        validate_input(&self.input_validator, &request.input)?;
-        request
-            .check_clock_skew(server_now, self.config.clock_skew_max_seconds)
-            .map_err(EvaluateError::from_domain)?;
-        request
-            .validate_consent()
-            .map_err(EvaluateError::from_domain)?;
+        // A CEL/runtime failure is a policy outcome, not a transport error:
+        // BLOCK with a reason code, recorded as evidence, plus an incident.
+        // The ADR-001 §5 matrix then maps it (enforce BLOCK, sync shadow PASS).
+        let (evaluation, policy_error) =
+            match PolicyEngine::evaluate_at(&self.pack, request, server_now) {
+                Ok(evaluation) => (evaluation, None),
+                Err(err) => (
+                    PolicyEvaluation {
+                        policy_decision: Decision::Block,
+                        reason_codes: vec![POLICY_EVALUATION_ERROR.to_string()],
+                        policy_hits: vec![],
+                    },
+                    Some(err),
+                ),
+            };
+        let mut incidents = IncidentOutcome::default();
+        if let Some(err) = &policy_error {
+            self.record_incident(
+                &mut incidents,
+                request,
+                format!("policy evaluation failed: {err}"),
+            );
+        }
 
-        let evaluation = PolicyEngine::evaluate_at(&self.pack, request, server_now)?;
         let returned_decision = map_returned_decision_for_path(
             evaluation.policy_decision,
             self.model.governance_mode,
@@ -124,9 +166,93 @@ where
             true,
         );
         let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let append = self.append_input(
+            request,
+            &evaluation,
+            returned_decision,
+            latency_ms,
+            server_now,
+        );
 
-        let append = AppendDecisionEvent {
-            pack_id: self.model.pack_id.clone(),
+        let response = match self.evidence.append(append) {
+            // Idempotent replays return the *stored* decisions (ADR-001 §11).
+            Ok(event) => EvaluateResponse {
+                policy_decision: event.policy_decision,
+                returned_decision: event.returned_decision,
+                evidence_id: Some(event.evidence_id),
+                reason_codes: event.reason_codes,
+                policy_hits: event.policy_hits,
+                latency_ms,
+            },
+            Err(EvidenceError::IdempotencyConflict { reason, .. }) => {
+                return Err(EvaluateError::IdempotencyConflict(reason));
+            }
+            Err(err) => {
+                let returned = self.evidence_failure_decision(path, evaluation.policy_decision);
+                self.record_incident(
+                    &mut incidents,
+                    request,
+                    format!("evidence append failed: {err}"),
+                );
+                EvaluateResponse {
+                    policy_decision: evaluation.policy_decision,
+                    returned_decision: returned,
+                    evidence_id: None,
+                    reason_codes: evaluation.reason_codes,
+                    policy_hits: evaluation.policy_hits,
+                    latency_ms,
+                }
+            }
+        };
+        Ok(EvaluateResult {
+            response,
+            incident: incidents.incident,
+            incident_write_error: incidents.write_error,
+        })
+    }
+
+    fn validate_request(
+        &self,
+        request: &EvaluateRequest,
+        server_now: DateTime<Utc>,
+        time_check: DecisionTimeCheck,
+    ) -> Result<(), EvaluateError> {
+        validate_model_binding(&self.model, request)?;
+        validate_supplier_controls(&self.model)?;
+        // Pack selection uses trusted server time, never the client-supplied
+        // `decision_time` (ADR-003 §8).
+        self.assert_pack_effective(server_now)?;
+        validate_input(&self.input_validator, &request.input)?;
+        match time_check {
+            DecisionTimeCheck::Skew => request
+                .check_clock_skew(server_now, self.config.clock_skew_max_seconds)
+                .map_err(EvaluateError::from_domain)?,
+            DecisionTimeCheck::Window { from, to } => {
+                if request.decision_time < from || request.decision_time > to {
+                    return Err(EvaluateError::validation(format!(
+                        "decision_time {} outside the batch window {from}..={to}",
+                        request.decision_time
+                    )));
+                }
+            }
+        }
+        request
+            .validate_consent()
+            .map_err(EvaluateError::from_domain)
+    }
+
+    fn append_input(
+        &self,
+        request: &EvaluateRequest,
+        evaluation: &PolicyEvaluation,
+        returned_decision: Decision,
+        latency_ms: u64,
+        server_now: DateTime<Utc>,
+    ) -> AppendDecisionEvent {
+        AppendDecisionEvent {
+            // The pack that actually produced the decision, not the model's
+            // declared binding.
+            pack_id: self.pack.pack.id.clone(),
             pack_version: self.pack.pack.version.clone(),
             sector: self.model.sector.clone(),
             model_id: request.model_id.clone(),
@@ -145,29 +271,6 @@ where
             service_identity_id: self.config.service_identity_id.clone(),
             correlation_id: request.correlation_id.clone(),
             idempotency_key: request.idempotency_key.clone(),
-        };
-
-        match self.evidence.append(append) {
-            Ok(event) => Ok(EvaluateResult {
-                response: EvaluateResponse {
-                    policy_decision: evaluation.policy_decision,
-                    returned_decision,
-                    evidence_id: Some(event.evidence_id),
-                    reason_codes: evaluation.reason_codes,
-                    policy_hits: evaluation.policy_hits,
-                    latency_ms,
-                },
-                incident: None,
-            }),
-            Err(err) => Ok(self.record_evidence_failure(
-                path,
-                request,
-                evaluation.policy_decision,
-                evaluation.reason_codes,
-                evaluation.policy_hits,
-                latency_ms,
-                &err,
-            )),
         }
     }
 
@@ -178,42 +281,37 @@ where
         Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn record_evidence_failure(
-        &mut self,
-        path: EvaluatePath,
-        request: &EvaluateRequest,
-        policy_decision: Decision,
-        reason_codes: Vec<String>,
-        policy_hits: Vec<String>,
-        latency_ms: u64,
-        err: &kavach_evidence::EvidenceError,
-    ) -> EvaluateResult {
+    /// ADR-001 §5: returned decision when evidence cannot be written.
+    fn evidence_failure_decision(&self, path: EvaluatePath, policy_decision: Decision) -> Decision {
         use kavach_domain::GovernanceMode;
-
-        let returned_decision = match (self.model.governance_mode, path) {
+        match (self.model.governance_mode, path) {
             (GovernanceMode::Enforce, _) => Decision::Block,
             (GovernanceMode::Shadow, EvaluatePath::Sync) => Decision::Pass,
             (GovernanceMode::Shadow, EvaluatePath::Batch) => policy_decision,
-        };
+        }
+    }
 
+    /// Records an incident; a failed write is kept for the caller to surface.
+    fn record_incident(
+        &mut self,
+        out: &mut IncidentOutcome,
+        request: &EvaluateRequest,
+        reason: String,
+    ) {
         let incident = EvaluateIncident {
             correlation_id: request.correlation_id.clone(),
             model_id: request.model_id.clone(),
-            reason: format!("evidence append failed: {err}"),
+            reason,
         };
-        self.incidents.record(incident.clone());
-
-        EvaluateResult {
-            response: EvaluateResponse {
-                policy_decision,
-                returned_decision,
-                evidence_id: None,
-                reason_codes,
-                policy_hits,
-                latency_ms,
-            },
-            incident: Some(incident),
+        if let Err(err) = self.incidents.record(incident.clone()) {
+            out.write_error = Some(err.0);
         }
+        out.incident = Some(incident);
     }
+}
+
+#[derive(Default)]
+struct IncidentOutcome {
+    incident: Option<EvaluateIncident>,
+    write_error: Option<String>,
 }
