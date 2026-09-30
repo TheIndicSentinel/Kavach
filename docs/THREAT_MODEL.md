@@ -47,7 +47,7 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Inconsistent governance state on failure | Validate → persist + audit → swap live evaluator | **This release** |
 | Tampering (pack content, insider) | Dual control on activate/rollback; admin audit log | Implemented |
 | Tampering (pack authenticity) | Detached Ed25519 pack signatures from trusted signers (`--pack-signers`), checked on every load in API and batch | **This release** (when configured) |
-| Tampering (pack semantics) | Cedar analysis of agent policies before activation | Planned (M1.5) |
+| Tampering (policy semantics) | Formal Cedar analysis (cedar-policy-symcc + cvc5) of the shipped agent policies on every CI run: subject binding, waiver ceiling, contact window, no evaluation errors; weakened variants must be detected | **This release** (shipped policies); analysis at activation time for deployable policy packs: planned (M1.6+) |
 | Tampering (evidence chain) | Hash chain + offline verify CLI | Implemented |
 | Tampering (evidence, stronger) | Per-record signatures, signed checkpoints, JCS canonical hashing | Planned (M2, ADR-005) |
 | Tampering / forgery (mandate) | Strict JWS (EdDSA, JCS-canonical, verified before parsing); stored status + stored-token match + trusted-time validity; issuance only from SoR events signed by a key registered for that system; event replay, staleness and wildcard subjects rejected | **This release** (library; enforced on agent requests from M1.5/M1.6) |

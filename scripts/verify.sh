@@ -31,4 +31,11 @@ else
   echo "==> skip cargo deny (install: cargo install cargo-deny)"
 fi
 
+if [[ -n "${CVC5:-}" && -x "${CVC5}" ]]; then
+  echo "==> agent policy analysis (cvc5: ${CVC5})"
+  cargo run -q -p kavach-cedar-analysis
+else
+  echo "==> skip agent policy analysis (run ./scripts/fetch-cvc5.sh and export CVC5)"
+fi
+
 echo "==> Kavach local verification passed"

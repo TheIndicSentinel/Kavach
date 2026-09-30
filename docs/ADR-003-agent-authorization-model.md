@@ -137,7 +137,7 @@ Reference hardware for PRD NFR-2: 4 CPU cores, 16 GB RAM, local PostgreSQL 16. `
 - **Agent state.** Any state other than `ACTIVE` blocks all actions in the MVP.
 - **Load-time checks.** Strict validation against the schema; every policy needs `@id`; `@escalate` must be `"human_review"` and only on `forbid`.
 - **CEL refinement** uses `Decision::max` over the Cedar outcome (property-tested: never a downgrade). CEL rules get trusted server time as `now` on both the evaluate path and agent contexts.
-- **Formal analysis (M1.5b).** A spike confirmed that `cedar-policy-symcc` 0.7.0 with cvc5 1.3.1 proves the three §6 properties for these policies (disjointness with a policy describing the forbidden requests) in under a second, and detects deliberately weakened policies. It requires Cedar 4.13.0 exactly.
+- **Formal analysis (M1.5b, implemented).** `crates/kavach-cedar-analysis` (CI-only, never linked into shipped binaries) uses `cedar-policy-symcc` 0.7.0 with cvc5 1.3.1 to prove, for every request environment in the schema: the three §6 properties (as disjointness between the shipped policies and a policy permitting exactly the forbidden requests), and that no shipped policy can raise an evaluation error. It then weakens the policies on purpose (waiver ceiling +500 bps, subject binding removed, window end +60 min) and fails the job unless each weakening is detected, so a mis-stated property cannot pass vacuously. Cedar is pinned to `=4.13.0` because the analysis requires that exact version; the two are upgraded together. cvc5 is the non-GPL static build (BSD-3-Clause), fetched by `scripts/fetch-cvc5.sh` with a pinned SHA-256.
 
 ## Consequences
 
