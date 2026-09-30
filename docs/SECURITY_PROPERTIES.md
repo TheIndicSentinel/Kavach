@@ -8,9 +8,9 @@ This document states exactly what Kavach guarantees, what is planned, and what i
 
 | Property | Mechanism | Verified by |
 |---|---|---|
-| Evidence records form a tamper-evident chain that can be verified offline | SHA-256 hash chain; `kavach-evidence verify` | `crates/kavach-evidence` tests; golden chain tests |
-| A caller cannot switch a model into enforce mode | Governance mode is read only from the model record (ADR-001 §4) | `crates/kavach-evaluate` tests |
-| Pack activation, rollback and model changes need two distinct principals | Dual control (`X-Kavach-Principal` ≠ `X-Kavach-Approver`), both authorised by Cedar | `crates/kavach-api/tests/http_api.rs` |
+| Editing an individual evidence row without re-hashing the rest of the chain is detected by verification | SHA-256 hash chain; `kavach-evidence verify` over an exported file | `crates/kavach-evidence` tests; golden chain tests |
+| An evaluate caller cannot switch a model into enforce mode | Governance mode is read only from the model record (ADR-001 §4), never from the request | `crates/kavach-evaluate` tests |
+| Pack activation, rollback and model changes carry two **different principal names**, each authorised by Cedar | `X-Kavach-Principal` ≠ `X-Kavach-Approver` in the same request; both names are asserted by the caller (see *Not guaranteed*) | `crates/kavach-api/tests/http_api.rs` |
 | Access control is on by default | `--access-control` defaults to `cedar`; disabling requires `--insecure-dev` and prints a warning | `crates/kavach-api/src/config.rs` tests |
 | If a pack file's bytes change after a digest was recorded, **rollback and model update** refuse to load it | SHA-256 digest recorded on activation; mismatch → HTTP 409, audited (`*_refused`); reloads with no recorded digest are allowed but audited (`*_unpinned`) | `rollback_refuses_tampered_previous_pack` |
 | **Startup** refuses a pack whose bytes differ from an operator-supplied digest | `--pack-sha256` / `KAVACH_PACK_SHA256` on `kavach-api` and `kavach-batch run` (optional) | `crates/kavach-policy` loader tests |
@@ -40,6 +40,10 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 
 - **Resources not routed through Kavach.** The agent guarantees apply only to resources brokered by the Kavach gateway and credential broker, deployed with the network isolation in ADR-007.
 - **`--insecure-dev` mode.** Every request is allowed; for local development only.
+- **Independent dual control.** Actor and approver are two names sent by the **same** caller in one request; one person can activate packs, change governance mode, change retention or erase evidence alone. Real two-person approval (a change request approved by a different *authenticated* principal) is planned in H3.
+- **Evidence integrity against a database writer.** The chain is unkeyed, unsigned and not externally anchored, so someone with write access to Postgres can rewrite and re-hash the whole chain, or truncate its tail, undetected. There is no built-in export from Postgres yet. Signed chain heads, an INSERT-only database role and an export command are planned (P1, ADR-005).
+- **Durable governance mode.** `update_model` changes `governance_mode` in memory and audits it, but does not persist it; after a restart the `--model` YAML decides again. The model YAML is neither signed nor pinned. Planned in H3.
+- **Known evidence defects (fix planned in H1).** (1) Evidence `pack_id` is taken from the model record, not the loaded pack. (2) An idempotent retry returns the stored `evidence_id` with a freshly computed decision, which can differ from the recorded one. (3) Incident write failures in Postgres mode are discarded. (4) CEL evaluation errors return HTTP 5xx instead of following an enforce/shadow matrix. (5) Batch rows are checked against the current time (±300 s), so real historical exports fail.
 - **Caller authentication by default.** With Cedar on, the principal is the name the client sends in `X-Kavach-Principal`. Callers are authenticated only when HMAC (`--hmac-secret`) or mTLS (`--tls-client-ca`) is configured; the API warns at startup when neither is.
 - **Pack integrity at startup in memory mode.** Without Postgres (memory evidence store, development) there is no pointer row; without `--pack-sha256` a restart loads whatever bytes are at `--pack`.
 - **First-start baseline.** In a new database, the first API start records its `--pack` as the governed baseline without dual control (audited as `startup_baseline_recorded`); verify it before enabling enforce mode.

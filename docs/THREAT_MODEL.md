@@ -36,7 +36,7 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 
 | Threat | Mitigation | Status |
 |---|---|---|
-| Spoofing (API caller) | mTLS or HMAC — **available, off by default**; without them Cedar authorizes a client-supplied principal name | Implemented (optional); startup warning when neither is configured — **This release** |
+| Spoofing (API caller) | The principal is the client-supplied `X-Kavach-Principal` header on every route. mTLS proves only that *some* client certificate chains to the CA and is **not bound to the principal**; HMAC covers only HTTP `/v1/evaluate` (not admin routes, not gRPC) and has no timestamp or nonce. Startup warning when neither is configured. | **Weak** — authenticated principal (mTLS SAN / OIDC JWT) planned in H2 |
 | Spoofing (authorization disabled) | `--access-control` defaults to `cedar`; disabling requires `--insecure-dev` and prints a warning | **This release** |
 | Tampering / misconfiguration (API RBAC policies) | Policies strictly validated and entities/requests validated against the compiled-in Cedar schema at startup; principal header treated as a literal id | **This release** |
 | Spoofing (agent) | Keycloak client-credentials JWT via JWKS; `X-Kavach-Principal` not accepted on agent surfaces | Planned (M3) |
@@ -45,13 +45,13 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Tampering (pack file, restart without pin) | Postgres mode: the governed pointer row is the startup source of truth; API and batch refuse a `--pack` path or bytes that disagree; first start records an audited baseline; `--bootstrap-pack` is an audited recovery override (API only) | **This release** (Postgres mode) |
 | Tampering (runtime pointer row) | Governance events (activate/rollback) recorded on the evidence chain | Planned (M2, ADR-005) |
 | Inconsistent governance state on failure | Validate → persist + audit → swap live evaluator | **This release** |
-| Tampering (pack content, insider) | Dual control on activate/rollback; admin audit log | Implemented |
+| Tampering (pack content, insider) | Two principal names per lifecycle request (self-asserted by one caller) + admin audit log | **Weak** — independent approval planned in H3 |
 | Tampering (pack authenticity) | Detached Ed25519 pack signatures from trusted signers (`--pack-signers`), checked on every load in API and batch | **This release** (when configured) |
 | Tampering (policy semantics) | Formal Cedar analysis (cedar-policy-symcc + cvc5) of the shipped agent policies on every CI run: subject binding, waiver ceiling, contact window, no evaluation errors; weakened variants must be detected | **This release** (shipped policies); analysis at activation time for deployable policy packs: planned (M1.6+) |
-| Tampering (evidence chain) | Hash chain + offline verify CLI | Implemented |
+| Tampering (evidence chain) | Hash chain + verify CLI detect in-place edits of individual rows; a database writer can rewrite/re-hash or truncate the chain undetected | Partial — signed heads, INSERT-only role, export planned (P1) |
 | Tampering (evidence, stronger) | Per-record signatures, signed checkpoints, JCS canonical hashing | Planned (M2, ADR-005) |
 | Tampering / forgery (mandate) | Strict JWS (EdDSA, JCS-canonical, verified before parsing); stored status + stored-token match + trusted-time validity; issuance only from SoR events signed by a key registered for that system; event replay, staleness and wildcard subjects rejected | **This release** (library; enforced on agent requests from M1.5/M1.6) |
-| Repudiation | Append-only evidence; service identity per row; admin audit with actor + approver | Implemented |
+| Repudiation | Evidence rows carry service identity; admin audit records actor + approver names — but those names are caller-asserted and the audit table is mutable | Partial — H2/H3 and P1 |
 | Repudiation (approvals) | WebAuthn step-up bound to `action_hash`; single-use credential | Planned (M4) |
 | Information disclosure | No raw input in DB (digests); no telemetry by default | Implemented |
 | Information disclosure (agents) | Capability references; values resolved only in gateway; purpose-minimal fields | Planned (M3) |
