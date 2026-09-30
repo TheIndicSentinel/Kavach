@@ -82,6 +82,7 @@ mod tests {
             updated_at: Utc::now(),
             updated_by: "admin-1".into(),
             approved_by: "admin-2".into(),
+            version: 0,
         }
     }
 

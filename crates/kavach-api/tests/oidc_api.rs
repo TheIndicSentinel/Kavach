@@ -16,6 +16,8 @@ use kavach_api::{
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
+mod common;
+
 const ISSUER: &str = "https://idp.test/realms/kavach";
 const AUDIENCE: &str = "kavach-api";
 const KID: &str = "test-key-1";
@@ -92,6 +94,7 @@ async fn state() -> Arc<AppState> {
         }),
         insecure_dev: false,
         mtls_principal_san: None,
+        change_ttl_seconds: 3600,
     };
     Arc::new(AppState::from_config(&config).await.expect("state"))
 }
@@ -232,47 +235,45 @@ async fn invalid_tokens_are_rejected() {
 }
 
 #[tokio::test]
-async fn dual_control_actor_comes_from_the_token() {
+async fn change_requests_use_token_identities() {
     let s = state().await;
-    let post = |headers: Vec<(&'static str, String)>| {
-        let mut req = Request::builder()
-            .method("POST")
-            .uri("/v1/packs/no-such-pack/activate");
-        for (k, v) in &headers {
-            req = req.header(*k, v);
-        }
-        router(s.clone()).oneshot(req.body(Body::empty()).unwrap())
-    };
-    let admin = token("sso-admin-1", &["admins"]);
-    // Authenticated admin actor + approver passes auth; the pack does not exist.
-    let status = post(vec![
-        bearer(&admin),
-        ("x-kavach-approver", "admin-2".into()),
-    ])
-    .await
-    .unwrap()
-    .status();
-    assert_ne!(status, StatusCode::UNAUTHORIZED);
-    assert_ne!(status, StatusCode::FORBIDDEN);
-    // Header-only actor is refused.
-    let status = post(vec![
-        ("x-kavach-principal", "admin-1".into()),
-        ("x-kavach-approver", "admin-2".into()),
-    ])
-    .await
-    .unwrap()
-    .status();
+    let app = router(s.clone());
+    let admin = vec![bearer(&token("sso-admin-1", &["admins"]))];
+    let params = json!({ "evidence_retention_days": 30 });
+
+    let (status, request) = common::propose(&app, &admin, "update_retention", params.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    assert_eq!(request["proposer"], "sso-admin-1");
+    assert_eq!(
+        request["proposer_key"],
+        format!("oidc:{ISSUER}#sso-admin-1")
+    );
+
+    // Header principals are refused without --insecure-dev.
+    let (status, _) = common::propose(
+        &app,
+        &common::as_principal("admin-1"),
+        "update_retention",
+        params,
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    // Viewer token cannot activate.
-    let viewer = token("sso-viewer", &["viewers"]);
-    let status = post(vec![
-        bearer(&viewer),
-        ("x-kavach-approver", "admin-2".into()),
-    ])
-    .await
-    .unwrap()
-    .status();
-    assert_eq!(status, StatusCode::FORBIDDEN);
+    // The proposer cannot approve; an admin without the approver group
+    // cannot either (separation of duties).
+    assert_eq!(
+        common::approve(&app, &admin, &request).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let other_admin = vec![bearer(&token("sso-admin-2", &["admins"]))];
+    assert_eq!(
+        common::approve(&app, &other_admin, &request).await.0,
+        StatusCode::FORBIDDEN
+    );
+
+    let approver = vec![bearer(&token("sso-approver", &["change-approvers"]))];
+    let (status, applied) = common::approve(&app, &approver, &request).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    assert_eq!(applied["decided_by"], "sso-approver");
 }
 
 #[test]
@@ -294,6 +295,7 @@ fn cedar_without_an_authenticated_source_is_refused() {
         oidc: None,
         insecure_dev: false,
         mtls_principal_san: None,
+        change_ttl_seconds: 3600,
     };
     assert!(kavach_api::validate_principal_sources(&config).is_err());
     config.insecure_dev = true;

@@ -36,7 +36,7 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 
 | Threat | Mitigation | Status |
 |---|---|---|
-| Spoofing (API caller) | OIDC access token (JWT) on every HTTP route and gRPC call: issuer, audience, JWKS `kid`, `exp`/`nbf`, asymmetric algorithms only (ADR-008). `X-Kavach-Principal` accepted only with `--insecure-dev`; Cedar without an authenticated source refuses to start. HMAC v2 (timestamp + nonce + method + path) on `/v1/evaluate`. mTLS principals: the verified client certificate's single URI/DNS SAN (`--mtls-principal-san`), HTTP and gRPC. Residual: approver header still self-asserted (H3); tokens valid until expiry; no client-certificate revocation checks. | **Mitigated** (OIDC or mTLS principals) |
+| Spoofing (API caller) | OIDC access token (JWT) on every HTTP route and gRPC call: issuer, audience, JWKS `kid`, `exp`/`nbf`, asymmetric algorithms only (ADR-008). `X-Kavach-Principal` accepted only with `--insecure-dev`; Cedar without an authenticated source refuses to start. HMAC v2 (timestamp + nonce + method + path) on `/v1/evaluate`. mTLS principals: the verified client certificate's single URI/DNS SAN (`--mtls-principal-san`), HTTP and gRPC. Residual: tokens valid until expiry; no client-certificate revocation checks. | **Mitigated** (OIDC or mTLS principals) |
 | Spoofing (authorization disabled) | `--access-control` defaults to `cedar`; disabling requires `--insecure-dev` and prints a warning | **This release** |
 | Tampering / misconfiguration (API RBAC policies) | Policies strictly validated and entities/requests validated against the compiled-in Cedar schema at startup; principal header treated as a literal id | **This release** |
 | Spoofing (agent) | Keycloak client-credentials JWT via JWKS; `X-Kavach-Principal` not accepted on agent surfaces | Planned (M3) |
@@ -45,13 +45,13 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Tampering (pack file, restart without pin) | Postgres mode: the governed pointer row is the startup source of truth; API and batch refuse a `--pack` path or bytes that disagree; first start records an audited baseline; `--bootstrap-pack` is an audited recovery override (API only) | **This release** (Postgres mode) |
 | Tampering (runtime pointer row) | Governance events (activate/rollback) recorded on the evidence chain | Planned (M2, ADR-005) |
 | Inconsistent governance state on failure | Validate → persist + audit → swap live evaluator | **This release** |
-| Tampering (pack content, insider) | Two principal names per lifecycle request (self-asserted by one caller) + admin audit log | **Weak** — independent approval planned in H3 |
+| Tampering (pack content, model mode, retention, erasure — insider) | Maker-checker change requests (ADR-009): distinct authenticated approver with an OIDC token, `approve_*` separated from `propose_*` in Cedar, digest echo, binding re-checked, one transaction, immutable decided requests. Residual: two IdP identities for one person; model mode not persisted until H3b; DBA can disable the trigger. | **Mitigated** |
 | Tampering (pack authenticity) | Detached Ed25519 pack signatures from trusted signers (`--pack-signers`), checked on every load in API and batch | **This release** (when configured) |
 | Tampering (policy semantics) | Formal Cedar analysis (cedar-policy-symcc + cvc5) of the shipped agent policies on every CI run: subject binding, waiver ceiling, contact window, no evaluation errors; weakened variants must be detected | **This release** (shipped policies); analysis at activation time for deployable policy packs: planned (M1.6+) |
 | Tampering (evidence chain) | Hash chain + verify CLI detect in-place edits of individual rows; a database writer can rewrite/re-hash or truncate the chain undetected | Partial — signed heads, INSERT-only role, export planned (P1) |
 | Tampering (evidence, stronger) | Per-record signatures, signed checkpoints, JCS canonical hashing | Planned (M2, ADR-005) |
 | Tampering / forgery (mandate) | Strict JWS (EdDSA, JCS-canonical, verified before parsing); stored status + stored-token match + trusted-time validity; issuance only from SoR events signed by a key registered for that system; event replay, staleness and wildcard subjects rejected | **This release** (library; enforced on agent requests from M1.5/M1.6) |
-| Repudiation | Evidence rows carry service identity; admin audit records the authenticated actor and the approver name — the approver is still caller-asserted and the audit table is mutable | Partial — H3 and P1 |
+| Repudiation | Evidence rows carry service identity; admin audit and change requests record the authenticated proposer and approver with the change digest; decided requests are immutable. The audit table itself is still mutable by a DB writer | Partial — P1 (insert-only role, signed governance events) |
 | Repudiation (approvals) | WebAuthn step-up bound to `action_hash`; single-use credential | Planned (M4) |
 | Information disclosure | No raw input in DB (digests); no telemetry by default | Implemented |
 | Information disclosure (agents) | Capability references; values resolved only in gateway; purpose-minimal fields | Planned (M3) |
@@ -100,9 +100,9 @@ Item names follow the OWASP GenAI Security Project list (Dec 2025); verify IDs a
 
 ## Insider: pack edit
 
-- Dual control on activate and rollback; admin audit log — Implemented  
+- Maker-checker change requests (ADR-009) for activate, rollback, model, retention and erasure; admin audit log — Implemented  
 - Pack file edited on disk after activation → rollback / model update refuse it (409, audited) — **This release**. A restart without `--pack-sha256` re-measures the edited file — closed by pointer-row startup (Postgres mode) and signed packs (when signers are configured)  
-- Any byte change, including comments, requires dual-control re-activation; integrity is byte-level by design  
+- Any byte change, including comments, requires an approved re-activation; integrity is byte-level by design  
 - Signed packs so an insider without a signing key cannot introduce a pack — **This release** (when `--pack-signers` is configured); keep signing keys off the API host  
 
 ## Restore

@@ -8,7 +8,7 @@ import { DataTable } from "../components/ui/DataTable";
 import { DecisionBadge } from "../components/ui/DecisionBadge";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Skeleton } from "../components/ui/Skeleton";
-import { ApiError, activatePack, fetchPack, getApprover, getPrincipal, type PolicyPack } from "../lib/api";
+import { ApiError, fetchPack, proposeChange, type PolicyPack } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 
 export default function PolicyDetailPage() {
@@ -43,17 +43,11 @@ export default function PolicyDetailPage() {
 
   async function onActivate() {
     if (!packId) return;
-    const actor = getPrincipal();
-    const approver = getApprover();
-    if (!actor || !approver) {
-      setActionMessage("Set actor and approver principals in Settings.");
-      return;
-    }
     setActivating(true);
     setActionMessage(null);
     try {
-      await activatePack(packId, actor, approver);
-      setActionMessage("Pack activated. Runtime updated.");
+      await proposeChange("activate_pack", { pack_id: packId });
+      setActionMessage("Change request proposed. A change approver must approve it on the Change requests page.");
     } catch (err) {
       setActionMessage(err instanceof Error ? err.message : "Activate failed");
     } finally {
@@ -150,7 +144,7 @@ export default function PolicyDetailPage() {
             <CardHeader>
               <CardTitle>Lifecycle actions</CardTitle>
               <CardDescription>
-                Dual control: distinct actor and approver admins required. Recorded in admin audit log.
+                Maker-checker: you propose, a different change approver approves on the Change requests page. Both are recorded in the admin audit log.
               </CardDescription>
             </CardHeader>
             <Button
@@ -158,7 +152,7 @@ export default function PolicyDetailPage() {
               disabled={activating}
               onClick={onActivate}
             >
-              {activating ? "Activating…" : "Activate pack"}
+              {activating ? "Proposing…" : "Propose activation"}
             </Button>
             {actionMessage && (
               <p className="mt-3 text-sm text-muted">{actionMessage}</p>

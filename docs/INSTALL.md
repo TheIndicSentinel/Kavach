@@ -108,23 +108,50 @@ Paths default via env vars; CLI flags override.
 | `/v1/runtime` | GET | `read_governance` | Active pack/model |
 | `/v1/packs` | GET | `read_governance` | Policy pack inventory |
 | `/v1/packs/{id}` | GET | `read_governance` | Policy pack detail |
-| `/v1/packs/{id}/activate` | POST | `activate_pack` | Dual-control pack activate |
-| `/v1/packs/rollback` | POST | `rollback_pack` | Dual-control pack rollback |
 | `/v1/models` | GET | `read_governance` | Model inventory |
 | `/v1/models/{id}` | GET | `read_governance` | Model detail |
-| `/v1/models/{id}` | PATCH | `update_model` | Dual-control model promotion |
+| `/v1/change-requests` | POST | `propose_<kind>` | Propose a governance change |
+| `/v1/change-requests` | GET | `read_change_requests` | List (`?status=pending`) |
+| `/v1/change-requests/{id}` | GET | `read_change_requests` | Detail |
+| `/v1/change-requests/{id}/approve` | POST | `approve_<kind>` | Approve and apply (`{"change_digest": …}`) |
+| `/v1/change-requests/{id}/reject` | POST | `approve_<kind>` | Reject (`{"reason": …}`) |
+| `/v1/change-requests/{id}/cancel` | POST | `propose_<kind>` | Proposer withdraws |
 | `/v1/admin/audit` | GET | `read_audit` | Admin audit log |
 | `/v1/admin/retention` | GET | `read_retention` | Retention policy |
-| `/v1/admin/retention` | PATCH | `update_retention` | Dual-control retention update |
-| `/v1/admin/retention/apply` | POST | `apply_retention` | Apply retention tombstones |
-| `/v1/admin/evidence/{id}/erase` | POST | `erase_evidence` | DPDP erasure tombstone |
 | `/v1/admin/tombstones` | GET | `read_tombstones` | Tombstone list |
 | `/v1/admin/incidents` | GET | `read_incidents` | Evaluate incident log |
 | `/v1/admin/batch-jobs` | GET | `read_batch_jobs` | Batch job inventory |
 | `/v1/admin/batch-jobs/{job_id}` | GET | `read_batch_jobs` | Batch job detail |
 | `/` | GET | — | Governance console (when built) |
 
-Every route except `/` needs `Authorization: Bearer <access token>` when Cedar is on. Lifecycle mutations also need `X-Kavach-Approver` (a different admin; still self-asserted until H3). The actor is the token's principal.
+Every route except `/` needs `Authorization: Bearer <access token>` when Cedar is on.
+
+**Governance changes (maker-checker, ADR-009).** Pack activation and rollback, model status/mode, the retention period, DPDP erasure and retention runs are **change requests**: one principal proposes, a different principal approves, and approval applies the change.
+
+| `kind` | `params` |
+|---|---|
+| `activate_pack` | `{"pack_id": "finance-v1"}` |
+| `rollback_pack` | `{}` |
+| `update_model` | `{"model_id": "…", "status": "production", "governance_mode": "enforce"}` (either field) |
+| `update_retention` | `{"evidence_retention_days": 180}` |
+| `erase_evidence` | `{"evidence_id": "…"}` |
+| `apply_retention` | `{}` — freezes the cutoff and the set of evidence it will tombstone |
+
+```bash
+REQ=$(curl -s -X POST $API/v1/change-requests -H "Authorization: Bearer $MAKER" \
+  -H 'content-type: application/json' -d '{"kind":"activate_pack","params":{"pack_id":"finance-v1"}}')
+curl -s -X POST "$API/v1/change-requests/$(jq -r .id <<<"$REQ")/approve" -H "Authorization: Bearer $CHECKER" \
+  -H 'content-type: application/json' -d "{\"change_digest\":$(jq .change_digest <<<"$REQ")}"
+```
+
+- The approver needs `approve_<kind>` in Cedar (example policy: group `change-approvers`; proposers: `admins`), an **OIDC token** (certificate principals cannot approve), and a different identity from the proposer. Keep `admins` and `change-approvers` disjoint in production and assign the approver group only to people.
+- Approval fails (`409`, request `failed`) if the state it was proposed against changed: another change moved the runtime pointer, the pack bytes changed, the retention value changed, or the evidence set for a retention run differs.
+- Pending requests expire after `--change-request-ttl-hours` (env `KAVACH_CHANGE_REQUEST_TTL_HOURS`, default 24, 1–168).
+- **No break-glass:** every change needs two people. Plan approver cover (holidays, incidents), including for DPDP erasure deadlines.
+- `/v1/runtime` shows `pointer_version`, `stored_pointer_version` and `pointer_drift`; a replica with drift serves an older pack until restarted.
+- Postgres 14 or newer is required (`CREATE OR REPLACE TRIGGER`).
+
+**Upgrading from H2 (breaking).** `POST /v1/packs/{id}/activate`, `POST /v1/packs/rollback`, `PATCH /v1/models/{id}`, `PATCH /v1/admin/retention`, `POST /v1/admin/retention/apply`, `POST /v1/admin/evidence/{id}/erase` and the `X-Kavach-Approver` header are removed. Cedar actions `activate_pack` … `apply_retention` are replaced by `propose_*` / `approve_*` / `read_change_requests`; update custom policy files (see `crates/kavach-auth/policies/kavach.cedar`) and add approvers to a `change-approvers` group.
 
 gRPC: `EvaluateService` on `--grpc-listen` (default `50051`). Pass the token in metadata `authorization: Bearer <token>`.
 
@@ -132,10 +159,10 @@ gRPC: `EvaluateService` on `--grpc-listen` (default `50051`). Pass the token in 
 
 **Pack integrity pinning.** At startup the API logs the SHA-256 of the active pack (`pack_sha256=sha256:<hex>`) and `/v1/runtime` returns it. Pass `--pack-sha256 <digest>` (env `KAVACH_PACK_SHA256`; also supported by `kavach-batch run`) to refuse startup if the pack file differs. Activation records the digest; rollback and model updates refuse to reload a pack file whose digest changed since it was pinned (HTTP 409 `pack_digest_mismatch`, recorded in the admin audit log). Compute a digest with `shasum -a 256 packs/finance/v0.yaml`.
 
-- Integrity is **byte-level**: any change to a pack file, including comments, requires dual-control re-activation before rollback or model update will reload it.
+- Integrity is **byte-level**: any change to a pack file, including comments, requires an approved re-activation (change request) before rollback or model update will reload it.
 - Start `kavach-api` and `kavach-batch` with the **same** `--pack-sha256` so both evaluate identical bytes.
 - Without `--pack-sha256`, a restart in **memory mode** loads whatever is at `--pack` and reports its digest; the pin is what makes restart fail on substituted bytes.
-- **Postgres mode:** the governed runtime pointer decides the startup pack. The first start in a new database records `--pack` as the baseline (audited `startup_baseline_recorded`). Afterwards, `kavach-api` and `kavach-batch` refuse to start if `--pack` is a different path or its bytes differ from the digest recorded at activation — change packs through dual-controlled activate. For recovery only, `kavach-api --bootstrap-pack` (env `KAVACH_BOOTSTRAP_PACK`) starts anyway and records `startup_bootstrap_override` in the audit log.
+- **Postgres mode:** the governed runtime pointer decides the startup pack. The first start in a new database records `--pack` as the baseline (audited `startup_baseline_recorded`). Afterwards, `kavach-api` and `kavach-batch` refuse to start if `--pack` is a different path or its bytes differ from the digest recorded at activation — change packs through an approved `activate_pack` change request. For recovery only, `kavach-api --bootstrap-pack` (env `KAVACH_BOOTSTRAP_PACK`) starts anyway and records `startup_bootstrap_override` in the audit log.
 - **Pack limits:** ≤ 256 KiB, ≤ 200 rules, expressions ≤ 2048 characters, `cel_runtime_limits.timeout_ms` 1–1000. `max_alloc_bytes` is accepted but advisory.
 
 **Signed packs.** Configure trusted signers to require a valid detached signature for every pack load (startup, activate, rollback, model update, and `kavach-batch run`):

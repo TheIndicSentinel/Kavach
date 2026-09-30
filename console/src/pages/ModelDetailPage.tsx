@@ -6,7 +6,7 @@ import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Skeleton } from "../components/ui/Skeleton";
-import { ApiError, fetchModel, getApprover, getPrincipal, updateModel, type ModelRecord } from "../lib/api";
+import { ApiError, fetchModel, proposeChange, type ModelRecord } from "../lib/api";
 
 export default function ModelDetailPage() {
   const { modelId } = useParams<{ modelId: string }>();
@@ -40,17 +40,11 @@ export default function ModelDetailPage() {
 
   async function onPromote() {
     if (!modelId) return;
-    const actor = getPrincipal();
-    const approver = getApprover();
-    if (!actor || !approver) {
-      setActionMessage("Set actor and approver principals in Settings.");
-      return;
-    }
     setPromoting(true);
     setActionMessage(null);
     try {
-      await updateModel(modelId, { status: "production" }, actor, approver);
-      setActionMessage("Model promoted to production.");
+      await proposeChange("update_model", { model_id: modelId, status: "production" });
+      setActionMessage("Change request proposed. A change approver must approve it on the Change requests page.");
     } catch (err) {
       setActionMessage(err instanceof Error ? err.message : "Promotion failed");
     } finally {
@@ -162,7 +156,7 @@ export default function ModelDetailPage() {
               </CardDescription>
             </CardHeader>
             <Button variant="secondary" disabled={promoting} onClick={onPromote}>
-              {promoting ? "Promoting…" : "Promote to production"}
+              {promoting ? "Proposing…" : "Propose promotion to production"}
             </Button>
             {actionMessage && (
               <p className="mt-3 text-sm text-muted">{actionMessage}</p>

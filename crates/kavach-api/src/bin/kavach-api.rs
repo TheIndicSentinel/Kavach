@@ -7,6 +7,7 @@ use kavach_api::{
     grpc_server_tls_config, resolve_access_control, router, serve_http, validate_principal_sources,
     AccessControlKind, AccessControlMode, ApiConfig, AppState, EvaluateServiceServer,
     EvidenceStoreKind, GrpcEvaluateService, JwksSource, MtlsSanKind, OidcConfig, TlsConfig,
+    DEFAULT_CHANGE_TTL_HOURS,
 };
 use tonic::transport::Server;
 
@@ -157,6 +158,15 @@ struct Cli {
     /// SPIFFE id, or dns) as the principal. Requires --tls-client-ca.
     #[arg(long, env = "KAVACH_MTLS_PRINCIPAL_SAN", value_enum)]
     mtls_principal_san: Option<MtlsSanKind>,
+
+    /// Hours a change request stays approvable (1-168).
+    #[arg(
+        long,
+        env = "KAVACH_CHANGE_REQUEST_TTL_HOURS",
+        default_value_t = DEFAULT_CHANGE_TTL_HOURS,
+        value_parser = clap::value_parser!(u64).range(1..=168)
+    )]
+    change_request_ttl_hours: u64,
 }
 
 impl Cli {
@@ -208,6 +218,7 @@ impl Cli {
             oidc,
             insecure_dev: self.insecure_dev,
             mtls_principal_san: self.mtls_principal_san,
+            change_ttl_seconds: self.change_request_ttl_hours * 3600,
         };
         validate_principal_sources(&config)?;
         Ok(config)

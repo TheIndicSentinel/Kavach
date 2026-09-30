@@ -1,5 +1,8 @@
 //! Postgres mode end to end (`KAVACH_TEST_DATABASE_URL`): the governed
-//! runtime pointer decides what a restarted API may load.
+//! runtime pointer decides what a restarted API may load, and change
+//! requests apply exactly once across replicas.
+
+mod common;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,6 +12,9 @@ use axum::http::{Request, StatusCode};
 use kavach_api::{router, AccessControlKind, ApiConfig, AppState, EvidenceStoreKind};
 use kavach_storage::testing::isolated_database_url;
 use tower::ServiceExt;
+
+use common::{apply_as_admins, approve, as_principal, call, propose};
+use serde_json::json;
 
 fn repo(path: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -54,6 +60,7 @@ fn config(root: &Path, database_url: &str, pack: &str, bootstrap_pack: bool) -> 
         oidc: None,
         insecure_dev: true,
         mtls_principal_san: None,
+        change_ttl_seconds: 3600,
     }
 }
 
@@ -62,19 +69,6 @@ async fn start(root: &Path, url: &str, pack: &str) -> Result<Arc<AppState>, Stri
         .await
         .map(Arc::new)
         .map_err(|e| format!("{e:?}"))
-}
-
-async fn post(state: &Arc<AppState>, uri: &str) -> StatusCode {
-    let request = Request::post(uri)
-        .header("X-Kavach-Principal", "admin-1")
-        .header("X-Kavach-Approver", "admin-2")
-        .body(Body::empty())
-        .unwrap();
-    router(state.clone())
-        .oneshot(request)
-        .await
-        .unwrap()
-        .status()
 }
 
 async fn audit_actions(state: &AppState) -> Vec<String> {
@@ -103,7 +97,12 @@ async fn governed_pointer_survives_restarts_and_pins_bytes() {
 
     // Activation moves the pointer; a restart on the old pack is refused.
     assert_eq!(
-        post(&state, "/v1/packs/finance-v1/activate").await,
+        apply_as_admins(
+            &router(state.clone()),
+            "activate_pack",
+            json!({ "pack_id": "finance-v1" })
+        )
+        .await,
         StatusCode::OK
     );
     drop(state);
@@ -112,7 +111,10 @@ async fn governed_pointer_survives_restarts_and_pins_bytes() {
     assert_eq!(state.runtime().pack_id, "finance-v1");
 
     // Rollback returns the pointer to v0.
-    assert_eq!(post(&state, "/v1/packs/rollback").await, StatusCode::OK);
+    assert_eq!(
+        apply_as_admins(&router(state.clone()), "rollback_pack", json!({})).await,
+        StatusCode::OK
+    );
     drop(state);
     let state = start(&root, &url, "v0.yaml")
         .await
@@ -172,4 +174,163 @@ async fn evaluate_writes_postgres_evidence_and_replays() {
         ids.push(json["evidence_id"].as_str().unwrap().to_string());
     }
     assert_eq!(ids[0], ids[1], "retry replays the stored decision");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_approvals_on_two_replicas_apply_once() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let replica_a = start(&root, &url, "v0.yaml").await.expect("replica a");
+    let replica_b = start(&root, &url, "v0.yaml").await.expect("replica b");
+    let (app_a, app_b) = (router(replica_a.clone()), router(replica_b.clone()));
+
+    let (status, request) = propose(
+        &app_a,
+        &as_principal("admin-1"),
+        "activate_pack",
+        json!({ "pack_id": "finance-v1" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+
+    let approver_a = as_principal("admin-2");
+    let approver_b = as_principal("approver-1");
+    let (a, b) = tokio::join!(
+        approve(&app_a, &approver_a, &request),
+        approve(&app_b, &approver_b, &request),
+    );
+    let statuses = [a.0, b.0];
+    assert_eq!(
+        statuses.iter().filter(|s| **s == StatusCode::OK).count(),
+        1,
+        "exactly one approval applies: {statuses:?} {} {}",
+        a.1,
+        b.1
+    );
+    assert!(statuses.contains(&StatusCode::CONFLICT));
+
+    // One pointer write, one audit row for the change.
+    let pointers = replica_a
+        .admin()
+        .get_runtime_pointers()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(pointers.version, 2, "baseline + one activation");
+    let activations = audit_actions(&replica_a)
+        .await
+        .into_iter()
+        .filter(|a| a == "activate_pack")
+        .count();
+    assert_eq!(activations, 1);
+
+    // The replica that did not apply reports drift until restarted.
+    let lagging = if a.0 == StatusCode::OK {
+        &app_b
+    } else {
+        &app_a
+    };
+    let (_, runtime) = call(
+        lagging,
+        "GET",
+        "/v1/runtime",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(runtime["pointer_drift"], true, "{runtime}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn change_requests_are_immutable_once_decided() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let state = start(&root, &url, "v0.yaml").await.expect("start");
+    let app = router(state.clone());
+    let (_, request) = propose(
+        &app,
+        &as_principal("admin-1"),
+        "update_retention",
+        json!({ "evidence_retention_days": 90 }),
+    )
+    .await;
+    assert_eq!(
+        approve(&app, &as_principal("admin-2"), &request).await.0,
+        StatusCode::OK
+    );
+
+    let pool = sqlx::PgPool::connect(&url).await.unwrap();
+    let id = request["id"].as_str().unwrap();
+    let update = sqlx::query("UPDATE change_requests SET status = 'pending' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await;
+    assert!(update.is_err(), "decided rows cannot be reopened");
+    let delete = sqlx::query("DELETE FROM change_requests WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await;
+    assert!(delete.is_err(), "rows cannot be deleted");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn retention_applies_exactly_the_approved_set() {
+    use kavach_evaluate::EvidenceStore;
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let state = start(&root, &url, "v0.yaml").await.expect("start");
+    let app = router(state.clone());
+    let pool = kavach_storage::StoragePool::connect(&url).await.unwrap();
+    let mut evidence = pool.evidence_store();
+    let old = |id: &str| old_event(id);
+    evidence.append(old("old-1")).unwrap();
+
+    let admin = as_principal("admin-1");
+    let (status, request) = propose(&app, &admin, "apply_retention", json!({})).await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    assert_eq!(request["binding"]["candidate_count"], 1);
+
+    // Evidence that ages past the cutoff after proposal changes the set.
+    evidence.append(old("old-2")).unwrap();
+    let (status, body) = approve(&app, &as_principal("admin-2"), &request).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // A fresh proposal covers both and applies.
+    let (_, request) = propose(&app, &admin, "apply_retention", json!({})).await;
+    assert_eq!(request["binding"]["candidate_count"], 2);
+    let (status, applied) = approve(&app, &as_principal("admin-2"), &request).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    assert_eq!(applied["outcome"]["tombstoned_count"], 2);
+}
+
+fn old_event(correlation_id: &str) -> kavach_evidence::AppendDecisionEvent {
+    use kavach_domain::{Decision, GovernanceMode, ModelOrigin};
+    let at = chrono::Utc::now() - chrono::Duration::days(400);
+    kavach_evidence::AppendDecisionEvent {
+        pack_id: "finance-v0".into(),
+        pack_version: "0.1.0".into(),
+        sector: "finance".into(),
+        model_id: "credit-underwriting-v1".into(),
+        model_version: "1.0.0".into(),
+        model_origin: ModelOrigin::InHouse,
+        governance_mode: GovernanceMode::Shadow,
+        policy_decision: Decision::Pass,
+        returned_decision: Decision::Pass,
+        reason_codes: vec![],
+        policy_hits: vec![],
+        pii_tokens: vec![],
+        input_digest: "d".into(),
+        latency_ms: 1,
+        decision_time: at,
+        evaluated_at: at,
+        service_identity_id: "test".into(),
+        correlation_id: correlation_id.into(),
+        idempotency_key: None,
+    }
 }

@@ -7,7 +7,7 @@ On-prem pilot for Indian structured-credit integrations. This is the **first pro
 | Role | Responsibility |
 |---|---|
 | Partner integration engineer | LOS → `EvaluateRequest` mapping, NDJSON export, field validation |
-| Bank model risk / compliance | Shadow review, promotion to enforce, dual-control sign-off |
+| Bank model risk / compliance | Shadow review, promotion to enforce, change-request approval (maker-checker) |
 | Bank platform ops | Postgres, containers, IdP access tokens for Kavach (ADR-008), CronJob for batch |
 
 ## Pilot phases
@@ -27,7 +27,7 @@ On-prem pilot for Indian structured-credit integrations. This is the **first pro
 
 1. Operators use governance console (responsive on tablet for field review).
 2. Review active pack rules (`/policies`) and model posture (`/models`).
-3. Exercise dual-control: pack activate/rollback and model promotion in **Settings** with distinct actor/approver principals.
+3. Exercise maker-checker: propose pack activation and model promotion, then approve them as a different principal on **Change requests** (`/changes`).
 4. Review admin audit log (`/audit`).
 5. Configure retention policy (`/retention`) per bank DPDP posture.
 
@@ -35,11 +35,12 @@ On-prem pilot for Indian structured-credit integrations. This is the **first pro
 
 ```bash
 export PILOT_API_URL=http://localhost:8080
-export PILOT_TOKEN=...          # access token of a viewer (reads)
-export PILOT_ACTOR_TOKEN=...    # access token of an admin (actor)
-export PILOT_APPROVER=admin-2   # a different admin (still self-asserted until H3)
+export PILOT_TOKEN=...            # viewer access token (reads)
+export PILOT_ACTOR_TOKEN=...      # admin token (proposes)
+export PILOT_APPROVER_TOKEN=...   # change-approver token, a different person (approves)
+export PILOT_ACTOR=<proposer sub> PILOT_APPROVER=<approver sub>   # for the audit check
 ./scripts/pilot-phase2.sh
-# Local --insecure-dev only: PILOT_PRINCIPAL=viewer-1 PILOT_ACTOR=admin-1 instead of tokens
+# Local --insecure-dev only: PILOT_PRINCIPAL=viewer-1 PILOT_ACTOR=admin-1 PILOT_APPROVER=admin-2
 ```
 
 **Exit criteria:** Audit log captures all mutations; retention settings persisted; principals mapped from IdP.
@@ -47,7 +48,7 @@ export PILOT_APPROVER=admin-2   # a different admin (still self-asserted until H
 ### Phase 3 — Sync enforce (optional, week 3+)
 
 1. Promote model to `production` if vendor (`origin: vendor`) before enforce.
-2. Switch model `governance_mode` to `enforce` via dual-control PATCH.
+2. Switch model `governance_mode` to `enforce` with an `update_model` change request (proposed, then approved by a different person).
 3. Enable HMAC v2 on HTTP evaluate (`KAVACH_HMAC_SECRET`; timestamp + nonce) for the scoring API path.
 4. Keep Cedar RBAC on. Machine callers (LOS scoring) can use mTLS certificate principals (`--mtls-principal-san uri`) instead of tokens; see [INSTALL.md](INSTALL.md).
 
@@ -57,8 +58,8 @@ export PILOT_APPROVER=admin-2   # a different admin (still self-asserted until H
 
 ```bash
 export PILOT_API_URL=http://localhost:8080
-export PILOT_ACTOR_TOKEN=...      # admin access token (actor)
-export PILOT_APPROVER=admin-2     # a different admin
+export PILOT_ACTOR_TOKEN=...      # admin token (proposes)
+export PILOT_APPROVER_TOKEN=...   # change-approver token (approves)
 export PILOT_EVAL_TOKEN=...       # operator access token for /v1/evaluate
 # export PILOT_HMAC_SECRET=...    # when HMAC v2 is enabled
 ./scripts/pilot-phase3.sh
@@ -122,7 +123,7 @@ cargo run -p kavach-api -- \
 | [`deploy/Dockerfile`](../deploy/Dockerfile) | Pilot container image |
 | [`deploy/docker-compose.pilot.yml`](../deploy/docker-compose.pilot.yml) | Postgres + API + batch profile |
 | [`scripts/pilot-phase1.sh`](../scripts/pilot-phase1.sh) | Phase 1 exit-criteria validator (schema + batch + report) |
-| [`scripts/pilot-phase2.sh`](../scripts/pilot-phase2.sh) | Phase 2 governance API + dual-control smoke |
+| [`scripts/pilot-phase2.sh`](../scripts/pilot-phase2.sh) | Phase 2 governance API + maker-checker smoke |
 | [`scripts/pilot-phase3.sh`](../scripts/pilot-phase3.sh) | Phase 3 sync enforce evaluate + decision parity |
 | [`scripts/pilot-smoke.sh`](../scripts/pilot-smoke.sh) | CI/local batch smoke without Docker |
 | [INSTALL.md](INSTALL.md) | Full on-prem install reference |

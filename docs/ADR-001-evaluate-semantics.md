@@ -46,7 +46,7 @@ Rules:
 ### 4. Governance mode authority
 
 - `ModelRecord.governance_mode` (`shadow` | `enforce`) is **authoritative**.
-- *Amendment (2026-10, H0):* today the mode is authoritative only over the request; the model record itself is an unsigned file, and `update_model` changes are not persisted across restarts. Durable, governed mode changes are planned in H3 (see `SECURITY_PROPERTIES.md`).
+- *Amendment (2026-10, H0):* today the mode is authoritative only over the request; the model record itself is an unsigned file, and `update_model` changes are not persisted across restarts. Durable, governed mode changes are planned in H3b (see `SECURITY_PROPERTIES.md`); since H3a (ADR-009) mode changes require an approved change request.
 - Callers **cannot** set mode. Drop `mode` from public `EvaluateRequest` v1.
 - Optional future: privileged dry-run header may **downgrade** to shadow only, never upgrade to enforce.
 

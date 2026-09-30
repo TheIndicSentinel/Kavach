@@ -13,10 +13,10 @@ echo "==> refresh partner batch timestamps (clock-skew window)"
 python3 - "$INPUT" "$STAMPED_INPUT" <<'PY'
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 source, dest = sys.argv[1], sys.argv[2]
-now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 with open(source, encoding="utf-8") as handle, open(dest, "w", encoding="utf-8") as out:
     for line in handle:
         row = json.loads(line)

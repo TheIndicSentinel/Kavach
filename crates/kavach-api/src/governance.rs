@@ -26,14 +26,38 @@ pub struct RuntimeResponse {
     pub model_path: String,
     /// `sha256:<hex>` of the active pack file (additive field).
     pub pack_sha256: Option<String>,
+    /// Runtime pointer version this process is serving (0: none recorded).
+    pub pointer_version: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuntimeView {
+    #[serde(flatten)]
+    pub runtime: RuntimeResponse,
+    /// Version of the stored runtime pointer.
+    pub stored_pointer_version: i64,
+    /// True when another replica applied a change this process has not
+    /// loaded; restart it to converge.
+    pub pointer_drift: bool,
 }
 
 pub async fn runtime(
     State(state): State<Arc<AppState>>,
     credentials: Credentials,
-) -> Result<Json<RuntimeResponse>, ApiError> {
+) -> Result<Json<RuntimeView>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
-    Ok(Json(state.runtime()))
+    let runtime = state.runtime();
+    let stored_pointer_version = state
+        .admin()
+        .get_runtime_pointers()
+        .await
+        .map_err(|e| ApiError::Internal(format!("load runtime pointers: {e}")))?
+        .map_or(0, |p| p.version);
+    Ok(Json(RuntimeView {
+        pointer_drift: stored_pointer_version != runtime.pointer_version,
+        stored_pointer_version,
+        runtime,
+    }))
 }
 
 pub async fn list_policy_packs(

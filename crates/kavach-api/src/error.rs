@@ -8,6 +8,10 @@ pub enum ApiError {
     #[error("forbidden")]
     Forbidden,
 
+    /// 403 with an explanation (policy decisions that are not Cedar denials).
+    #[error("forbidden: {0}")]
+    ForbiddenBecause(String),
+
     #[error("unauthorized")]
     Unauthorized,
 
@@ -31,7 +35,7 @@ impl ApiError {
     pub fn status_code(&self) -> StatusCode {
         match self {
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
-            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::Forbidden | Self::ForbiddenBecause(_) => StatusCode::FORBIDDEN,
             Self::BadRequest(_)
             | Self::Evaluate(
                 EvaluateError::Validation(_)

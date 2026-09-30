@@ -10,24 +10,20 @@ import {
 import { PageHeader } from "../components/ui/PageHeader";
 import {
   getAccessToken,
-  getApprover,
   getPrincipal,
   setAccessToken,
-  setApprover,
   setPrincipal,
 } from "../lib/api";
 
 export default function SettingsPage() {
   const [principal, setPrincipalInput] = useState(getPrincipal());
   const [token, setTokenInput] = useState(getAccessToken());
-  const [approver, setApproverInput] = useState(getApprover());
   const [saved, setSaved] = useState(false);
 
   function onSave(event: React.FormEvent) {
     event.preventDefault();
     setPrincipal(principal);
     setAccessToken(token);
-    setApprover(approver);
     setSaved(true);
     window.setTimeout(() => {
       setSaved(false);
@@ -93,22 +89,6 @@ export default function SettingsPage() {
                 className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-stone-400 focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20"
               />
             </div>
-            <div>
-              <label
-                htmlFor="approver"
-                className="mb-1.5 block text-sm font-medium text-ink"
-              >
-                Approver ID (dual control)
-              </label>
-              <input
-                id="approver"
-                value={approver}
-                onChange={(event) => setApproverInput(event.target.value)}
-                placeholder="admin-1"
-                autoComplete="off"
-                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-stone-400 focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20"
-              />
-            </div>
             <p className="text-xs leading-relaxed text-muted">
               Example principals from{" "}
               <code className="rounded bg-stone-100 px-1">
@@ -116,7 +96,9 @@ export default function SettingsPage() {
               </code>
               : <span className="font-medium text-ink">operator-1</span>,{" "}
               <span className="font-medium text-ink">viewer-1</span>,{" "}
-              <span className="font-medium text-ink">admin-1</span>.
+              <span className="font-medium text-ink">admin-1</span> (proposes),{" "}
+              <span className="font-medium text-ink">admin-2</span> or{" "}
+              <span className="font-medium text-ink">approver-1</span> (approves).
             </p>
             <div className="flex items-center gap-3">
               <Button type="submit">Save principal</Button>
