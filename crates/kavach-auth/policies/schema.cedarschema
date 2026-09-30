@@ -28,27 +28,7 @@ namespace Kavach {
     resource: [System],
   };
 
-  action activate_pack appliesTo {
-    principal: [User],
-    resource: [System],
-  };
-
-  action rollback_pack appliesTo {
-    principal: [User],
-    resource: [System],
-  };
-
-  action update_model appliesTo {
-    principal: [User],
-    resource: [System],
-  };
-
   action read_retention appliesTo {
-    principal: [User],
-    resource: [System],
-  };
-
-  action update_retention appliesTo {
     principal: [User],
     resource: [System],
   };
@@ -58,12 +38,67 @@ namespace Kavach {
     resource: [System],
   };
 
-  action erase_evidence appliesTo {
+  action propose_activate_pack appliesTo {
     principal: [User],
     resource: [System],
   };
 
-  action apply_retention appliesTo {
+  action approve_activate_pack appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action propose_rollback_pack appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action approve_rollback_pack appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action propose_update_model appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action approve_update_model appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action propose_update_retention appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action approve_update_retention appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action propose_erase_evidence appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action approve_erase_evidence appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action propose_apply_retention appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action approve_apply_retention appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action read_change_requests appliesTo {
     principal: [User],
     resource: [System],
   };

@@ -137,6 +137,7 @@ async fn runtime_pointers_and_audit_round_trip() {
         updated_at: Utc::now(),
         updated_by: "admin-1".into(),
         approved_by: "admin-2".into(),
+        version: 0,
     };
     admin.set_runtime_pointers(pointers.clone()).await.unwrap();
     let stored = admin.get_runtime_pointers().await.unwrap().unwrap();

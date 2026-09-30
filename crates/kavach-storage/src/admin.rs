@@ -37,6 +37,10 @@ pub struct RuntimePointers {
     pub updated_at: DateTime<Utc>,
     pub updated_by: String,
     pub approved_by: String,
+    /// Monotonic version assigned by the store on every write (the value
+    /// passed in is ignored). Change requests bind to it.
+    #[serde(default)]
+    pub version: i64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,10 +98,15 @@ impl MemoryAdminStore {
     }
 
     pub fn set_runtime_pointers(&self, pointers: RuntimePointers) -> Result<(), AdminStoreError> {
-        *self
+        let mut current = self
             .pointers
             .lock()
-            .map_err(|_| AdminStoreError::Io("lock poisoned".into()))? = Some(pointers);
+            .map_err(|_| AdminStoreError::Io("lock poisoned".into()))?;
+        let version = current.as_ref().map_or(0, |p| p.version) + 1;
+        *current = Some(RuntimePointers {
+            version,
+            ..pointers
+        });
         Ok(())
     }
 }

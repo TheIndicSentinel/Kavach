@@ -10,28 +10,19 @@ EVAL_PRINCIPAL="${PILOT_EVAL_PRINCIPAL:-}"
 MODEL_ID="${PILOT_MODEL_ID:-credit-underwriting-v1}"
 REQUEST_TEMPLATE="${PILOT_EVAL_REQUEST:-partner/finance/credit_underwriting_v1_request.json}"
 
-# Actor credentials: an OIDC access token (ADR-008), or — only when the API
-# runs with --insecure-dev — the self-asserted X-Kavach-Principal header.
-if [[ -n "${PILOT_ACTOR_TOKEN:-}" ]]; then
-  actor_auth=(-H "Authorization: Bearer ${PILOT_ACTOR_TOKEN}")
-else
-  actor_auth=(-H "X-Kavach-Principal: ${ACTOR}")
-fi
+# shellcheck source=lib/change-request.sh
+source "scripts/lib/change-request.sh"
 
 EVAL_BODY_FILE="${PILOT_EVAL_BODY:-/tmp/kavach-pilot-phase3-eval.json}"
 
 echo "==> Phase 3.1 — capture runtime posture"
-runtime="$(curl -fsS "${API}/v1/runtime")"
+runtime="$(curl -fsS "${API}/v1/runtime" "${actor_auth[@]}")"
 original_mode="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["governance_mode"])' "$runtime")"
 echo "active model: ${MODEL_ID}, current mode: ${original_mode}"
 
-echo "==> Phase 3.2 — promote to enforce (dual control)"
+echo "==> Phase 3.2 — promote to enforce (propose, then approve)"
 if [[ "${original_mode}" != "enforce" ]]; then
-  curl -fsS -X PATCH "${API}/v1/models/${MODEL_ID}" \
-    -H "Content-Type: application/json" \
-    "${actor_auth[@]}" \
-    -H "X-Kavach-Approver: ${APPROVER}" \
-    -d '{"governance_mode":"enforce"}' >/dev/null
+  apply_change update_model "{\"model_id\":\"${MODEL_ID}\",\"governance_mode\":\"enforce\"}" >/dev/null
   echo "governance_mode set to enforce"
 else
   echo "already in enforce mode"
@@ -42,11 +33,11 @@ python3 - "$REQUEST_TEMPLATE" "$EVAL_BODY_FILE" <<'PY'
 import json
 import sys
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 template = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 suffix = uuid.uuid4().hex[:8]
 template["decision_time"] = now
 template["consent"]["timestamp"] = now
@@ -113,13 +104,9 @@ PY
 
 if [[ "${PILOT_SKIP_RESTORE:-}" != "1" && "${original_mode}" != "enforce" ]]; then
   echo "==> Phase 3.5 — restore governance mode (${original_mode})"
-  curl -fsS -X PATCH "${API}/v1/models/${MODEL_ID}" \
-    -H "Content-Type: application/json" \
-    "${actor_auth[@]}" \
-    -H "X-Kavach-Approver: ${APPROVER}" \
-    -d "{\"governance_mode\":\"${original_mode}\"}" >/dev/null
+  apply_change update_model "{\"model_id\":\"${MODEL_ID}\",\"governance_mode\":\"${original_mode}\"}" >/dev/null
   echo "restored governance_mode to ${original_mode}"
 fi
 
 echo "PASS: Phase 3 sync enforce exit criteria met (API path)"
-echo "Manual: use OIDC access tokens (PILOT_ACTOR_TOKEN / PILOT_EVAL_TOKEN) and HMAC v2 in production; run kavach-evidence verify on exported chain"
+echo "Manual: use OIDC access tokens (PILOT_ACTOR_TOKEN / PILOT_APPROVER_TOKEN / PILOT_EVAL_TOKEN) and HMAC v2 in production; run kavach-evidence verify on exported chain"

@@ -84,6 +84,16 @@ impl PostgresRetentionStore {
             .ok_or_else(|| RetentionStoreError::AlreadyTombstoned(evidence_id.into()))
     }
 
+    /// Untombstoned evidence evaluated before `cutoff`, sorted by id.
+    pub async fn candidates(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Vec<String>, RetentionStoreError> {
+        super::change_requests::retention_candidates(&self.pool, cutoff)
+            .await
+            .map_err(|err| RetentionStoreError::Io(err.to_string()))
+    }
+
     pub async fn is_tombstoned(&self, evidence_id: &str) -> Result<bool, RetentionStoreError> {
         let exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM evidence_tombstones WHERE evidence_id = $1)",

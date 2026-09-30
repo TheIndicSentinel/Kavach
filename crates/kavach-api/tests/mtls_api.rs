@@ -24,6 +24,7 @@ use serde_json::json;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Identity, Server};
 
 const LOS: &str = "spiffe://bank.test/los";
+const OPS: &str = "spiffe://bank.test/ops";
 
 fn repo(path: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -109,8 +110,14 @@ fn write_entities(dir: &Path) -> PathBuf {
         "attrs": {},
         "parents": [
             { "type": "Kavach::Group", "id": "operators" },
-            { "type": "Kavach::Group", "id": "viewers" }
+            { "type": "Kavach::Group", "id": "viewers" },
+            { "type": "Kavach::Group", "id": "change-approvers" }
         ]
+    }));
+    entities.push(json!({
+        "uid": { "type": "Kavach::User", "id": OPS },
+        "attrs": {},
+        "parents": [{ "type": "Kavach::Group", "id": "admins" }]
     }));
     let path = dir.join("entities.json");
     std::fs::write(&path, serde_json::to_string(&entities).unwrap()).unwrap();
@@ -134,6 +141,7 @@ fn config(pki: &Pki) -> ApiConfig {
         oidc: None,
         insecure_dev: false,
         mtls_principal_san: Some(MtlsSanKind::Uri),
+        change_ttl_seconds: 3600,
     }
 }
 
@@ -206,6 +214,43 @@ async fn http_client_certificate_san_is_the_principal() {
         .send()
         .await
         .is_err());
+}
+
+#[tokio::test]
+async fn certificate_principals_may_propose_but_never_approve() {
+    let pki = Pki::new();
+    let addr = spawn_https(&pki).await;
+    let base = format!("https://localhost:{}/v1/change-requests", addr.port());
+
+    let ops = https_client(&pki, Some(&pki.client(&[OPS])), addr);
+    let response = ops
+        .post(&base)
+        .json(&json!({ "kind": "update_retention", "params": { "evidence_retention_days": 30 } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 201);
+    let request: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(request["proposer_key"], format!("mtls:{OPS}"));
+
+    // The LOS workload holds the approver group, but a certificate is a
+    // workload identity, not a person.
+    let los = https_client(&pki, Some(&pki.client(&[LOS])), addr);
+    let response = los
+        .post(format!(
+            "{base}/{}/approve",
+            request["id"].as_str().unwrap()
+        ))
+        .json(&json!({ "change_digest": request["change_digest"] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 403);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(
+        body["error"].as_str().unwrap().contains("OIDC user token"),
+        "{body}"
+    );
 }
 
 #[tokio::test]

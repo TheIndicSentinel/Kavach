@@ -38,7 +38,7 @@ export default function AuditPage() {
         <CardHeader>
           <CardTitle>Audit log</CardTitle>
           <CardDescription>
-            Requires admin principal. Mutations need distinct actor and approver headers.
+            Requires admin principal. Governance changes record the proposer (actor) and the distinct approver.
           </CardDescription>
         </CardHeader>
 

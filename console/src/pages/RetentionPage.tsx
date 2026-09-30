@@ -5,12 +5,9 @@ import { DataTable } from "../components/ui/DataTable";
 import { PageHeader } from "../components/ui/PageHeader";
 import { Skeleton } from "../components/ui/Skeleton";
 import {
-  applyRetention,
   fetchRetentionSettings,
   fetchTombstones,
-  getApprover,
-  getPrincipal,
-  updateRetentionSettings,
+  proposeChange,
   type RetentionSettings,
   type TombstoneRecord,
 } from "../lib/api";
@@ -41,43 +38,19 @@ export default function RetentionPage() {
     reload();
   }, []);
 
-  const actor = getPrincipal();
-  const approver = getApprover();
-
-  async function saveSettings() {
-    const days = Number(retentionDays);
-    if (!actor || !approver || actor === approver) {
-      setError("Set distinct actor and approver principals in Settings.");
-      return;
-    }
+  async function propose(kind: "update_retention" | "apply_retention") {
     setBusy(true);
     setError(null);
     setMessage(null);
     try {
-      const updated = await updateRetentionSettings(days, actor, approver);
-      setSettings(updated);
-      setMessage("Retention settings updated.");
+      const params =
+        kind === "update_retention"
+          ? { evidence_retention_days: Number(retentionDays) }
+          : {};
+      await proposeChange(kind, params);
+      setMessage("Change request proposed. A change approver must approve it on the Change requests page.");
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Update failed");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function runRetentionApply() {
-    if (!actor || !approver || actor === approver) {
-      setError("Set distinct actor and approver principals in Settings.");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    setMessage(null);
-    try {
-      const report = await applyRetention(actor, approver);
-      setMessage(`Retention applied — ${report.tombstoned_count} evidence row(s) tombstoned.`);
-      reload();
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Retention apply failed");
+      setError(err instanceof Error ? err.message : "Proposal failed");
     } finally {
       setBusy(false);
     }
@@ -117,11 +90,15 @@ export default function RetentionPage() {
                 />
               </label>
               <div className="flex flex-wrap gap-2">
-                <Button disabled={busy} onClick={saveSettings}>
-                  Save policy
+                <Button disabled={busy} onClick={() => propose("update_retention")}>
+                  Propose policy change
                 </Button>
-                <Button variant="secondary" disabled={busy} onClick={runRetentionApply}>
-                  Apply retention
+                <Button
+                  variant="secondary"
+                  disabled={busy}
+                  onClick={() => propose("apply_retention")}
+                >
+                  Propose retention run
                 </Button>
               </div>
               {settings && (

@@ -22,13 +22,14 @@ async fn run_migrations(pool: &PgPool) -> Result<(), kavach_evidence::EvidenceEr
         include_str!("../../migrations/003_admin_governance.sql"),
         include_str!("../../migrations/004_retention_erasure.sql"),
         include_str!("../../migrations/005_pack_digest.sql"),
+        include_str!("../../migrations/006_change_requests.sql"),
     ] {
-        for statement in sql.split(';').map(str::trim).filter(|s| !s.is_empty()) {
-            sqlx::query(statement)
-                .execute(pool)
-                .await
-                .map_err(|err| io_err(&err))?;
-        }
+        // Whole files through the simple-query protocol: function bodies
+        // contain semicolons, so statements are not split client-side.
+        sqlx::raw_sql(sql)
+            .execute(pool)
+            .await
+            .map_err(|err| io_err(&err))?;
     }
     Ok(())
 }

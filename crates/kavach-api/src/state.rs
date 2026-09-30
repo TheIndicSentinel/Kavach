@@ -3,24 +3,22 @@ use std::sync::Mutex;
 
 use chrono::{Duration, Utc};
 use kavach_auth::KavachAuthorizer;
-use kavach_domain::{EvaluateRequest, EvaluateResponse, GovernanceMode, ModelRecord, ModelStatus};
+use kavach_domain::{EvaluateRequest, EvaluateResponse, ModelRecord};
 use kavach_evaluate::{EvaluateConfig, EvaluatePath, EvaluateService};
 use kavach_evidence::MemoryChain;
 use kavach_keys::{verify_pack_file, TrustedSigners};
 use kavach_policy::{LoadedPolicyPack, PackLoader};
 use kavach_storage::{
-    check_startup_pack, AdminBackend, AuditInsert, BatchJobBackend, EvidenceBackend,
-    IncidentBackend, RetentionApplyReport, RetentionBackend, RetentionSettings,
-    RetentionStoreError, RuntimePointers, StartupPackCheck, StoragePool, TombstoneReason,
-    TombstoneRecord,
+    check_startup_pack, AdminBackend, AuditInsert, BatchJobBackend, ChangeRequestBackend,
+    EvidenceBackend, IncidentBackend, MemoryAdminStore, MemoryChangeStore, MemoryRetentionStore,
+    RetentionBackend, RetentionStoreError, RuntimePointers, StartupPackCheck, StoragePool,
 };
 
-use crate::auth::DualControlPrincipals;
 use crate::config::{AccessControlKind, ApiConfig, EvidenceStoreKind};
 use crate::error::ApiError;
 use crate::governance::RuntimeResponse;
 use crate::metrics::Metrics;
-use crate::registry::{model_source_path, pack_source_path, registry_roots};
+use crate::registry::registry_roots;
 
 pub struct AppState {
     service: Mutex<EvaluateService<EvidenceBackend, IncidentBackend>>,
@@ -40,7 +38,16 @@ pub struct AppState {
     insecure_dev: bool,
     mtls_principal_san: Option<crate::mtls::MtlsSanKind>,
     nonces: crate::hmac_auth::NonceCache,
+    changes: ChangeRequestBackend,
+    change_ttl: Duration,
+    /// Serializes change decisions in this process, so commit order and
+    /// live-swap order agree.
+    governance_lock: tokio::sync::Mutex<()>,
 }
+
+#[path = "state_changes.rs"]
+mod changes;
+pub use changes::{ChangeProposal, DEFAULT_CHANGE_TTL_HOURS};
 
 impl AppState {
     pub async fn from_config(config: &ApiConfig) -> Result<Self, ApiError> {
@@ -61,31 +68,17 @@ impl AppState {
         }
         let model = load_model_record(config.model_path())?;
 
-        let (evidence, incidents, batch_jobs, admin, retention) = match &config.evidence_store {
-            EvidenceStoreKind::Memory => (
-                EvidenceBackend::Memory(MemoryChain::new()),
-                IncidentBackend::memory(),
-                BatchJobBackend::memory(),
-                AdminBackend::memory(),
-                RetentionBackend::memory(),
-            ),
-            EvidenceStoreKind::Postgres { database_url } => {
-                let pool = StoragePool::connect(database_url)
-                    .await
-                    .map_err(|e| ApiError::Internal(format!("postgres storage: {e}")))?;
-                (
-                    EvidenceBackend::Postgres(pool.evidence_store()),
-                    IncidentBackend::Postgres(pool.incident_store()),
-                    BatchJobBackend::Postgres(pool.batch_job_store()),
-                    AdminBackend::Postgres(pool.admin_store()),
-                    RetentionBackend::Postgres(pool.retention_store()),
-                )
-            }
-        };
+        let (evidence, incidents, batch_jobs, admin, retention, changes) =
+            storage_backends(&config.evidence_store).await?;
 
         if matches!(config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
             enforce_startup_pointer(&admin, config, pack.digest.as_deref()).await?;
         }
+        let pointer_version = admin
+            .get_runtime_pointers()
+            .await
+            .map_err(|e| ApiError::Internal(format!("load runtime pointers: {e}")))?
+            .map_or(0, |p| p.version);
 
         let (packs_dir, models_dir) = registry_roots(config.pack_path(), config.model_path());
         let runtime = RuntimeResponse {
@@ -98,6 +91,7 @@ impl AppState {
             pack_path: config.pack_path().display().to_string(),
             model_path: config.model_path().display().to_string(),
             pack_sha256: pack.digest.clone(),
+            pointer_version,
         };
 
         let service = EvaluateService::new(
@@ -148,6 +142,11 @@ impl AppState {
             insecure_dev: config.insecure_dev,
             mtls_principal_san: config.mtls_principal_san,
             nonces: crate::hmac_auth::NonceCache::default(),
+            changes,
+            change_ttl: Duration::seconds(
+                i64::try_from(config.change_ttl_seconds).unwrap_or(i64::MAX),
+            ),
+            governance_lock: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -169,6 +168,7 @@ impl AppState {
             oidc: None,
             insecure_dev: true,
             mtls_principal_san: None,
+            change_ttl_seconds: DEFAULT_CHANGE_TTL_HOURS * 3600,
         };
         Self::from_config(&config).await
     }
@@ -229,105 +229,8 @@ impl AppState {
         &self.batch_jobs
     }
 
-    pub async fn update_retention_settings(
-        &self,
-        evidence_retention_days: u32,
-        principals: &DualControlPrincipals,
-    ) -> Result<RetentionSettings, ApiError> {
-        let settings = self
-            .retention
-            .set_settings(
-                evidence_retention_days,
-                &principals.actor,
-                &principals.approver,
-            )
-            .await
-            .map_err(map_retention_error)?;
-
-        self.admin
-            .append_audit(AuditInsert {
-                action: "update_retention".into(),
-                resource_type: "tenant_settings".into(),
-                resource_id: "retention".into(),
-                actor_principal: principals.actor.clone(),
-                approver_principal: principals.approver.clone(),
-                payload: serde_json::json!({
-                    "evidence_retention_days": settings.evidence_retention_days,
-                }),
-            })
-            .await
-            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
-
-        Ok(settings)
-    }
-
-    pub async fn erase_evidence(
-        &self,
-        evidence_id: &str,
-        reason: TombstoneReason,
-        principals: &DualControlPrincipals,
-    ) -> Result<TombstoneRecord, ApiError> {
-        if let Some(events) = self.memory_events_snapshot()? {
-            if !events.iter().any(|event| event.evidence_id == evidence_id) {
-                return Err(ApiError::NotFound(format!(
-                    "evidence not found: {evidence_id}"
-                )));
-            }
-        }
-
-        let record = self
-            .retention
-            .tombstone(evidence_id, reason, &principals.actor, &principals.approver)
-            .await
-            .map_err(map_retention_error)?;
-
-        self.admin
-            .append_audit(AuditInsert {
-                action: "erase_evidence".into(),
-                resource_type: "evidence".into(),
-                resource_id: evidence_id.to_string(),
-                actor_principal: principals.actor.clone(),
-                approver_principal: principals.approver.clone(),
-                payload: serde_json::json!({
-                    "reason": record.reason,
-                }),
-            })
-            .await
-            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
-
-        Ok(record)
-    }
-
-    pub async fn apply_retention(
-        &self,
-        principals: &DualControlPrincipals,
-    ) -> Result<RetentionApplyReport, ApiError> {
-        let memory_candidates = self.memory_retention_candidates().await?;
-        let report = self
-            .retention
-            .apply_retention(
-                memory_candidates.as_deref(),
-                &principals.actor,
-                &principals.approver,
-            )
-            .await
-            .map_err(map_retention_error)?;
-
-        self.admin
-            .append_audit(AuditInsert {
-                action: "apply_retention".into(),
-                resource_type: "tenant_settings".into(),
-                resource_id: "retention".into(),
-                actor_principal: principals.actor.clone(),
-                approver_principal: principals.approver.clone(),
-                payload: serde_json::json!({
-                    "tombstoned_count": report.tombstoned_count,
-                }),
-            })
-            .await
-            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
-
-        Ok(report)
+    pub fn changes(&self) -> &ChangeRequestBackend {
+        &self.changes
     }
 
     fn memory_events_snapshot(
@@ -338,35 +241,6 @@ impl AppState {
             .lock()
             .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
         Ok(service.evidence_store().memory_events())
-    }
-
-    async fn memory_retention_candidates(&self) -> Result<Option<Vec<String>>, ApiError> {
-        let Some(events) = self.memory_events_snapshot()? else {
-            return Ok(None);
-        };
-
-        let settings = self
-            .retention
-            .get_settings()
-            .await
-            .map_err(map_retention_error)?;
-        let cutoff = Utc::now() - Duration::days(i64::from(settings.evidence_retention_days));
-        let tombstoned: std::collections::HashSet<String> = self
-            .retention
-            .list_tombstones(u32::MAX)
-            .await
-            .map_err(map_retention_error)?
-            .into_iter()
-            .map(|record| record.evidence_id)
-            .collect();
-
-        let candidates = events
-            .into_iter()
-            .filter(|event| event.evaluated_at < cutoff)
-            .filter(|event| !tombstoned.contains(&event.evidence_id))
-            .map(|event| event.evidence_id)
-            .collect();
-        Ok(Some(candidates))
     }
 
     pub fn evaluate(
@@ -390,248 +264,6 @@ impl AppState {
         }
 
         result
-    }
-
-    pub async fn activate_pack(
-        &self,
-        pack_id: &str,
-        principals: &DualControlPrincipals,
-    ) -> Result<RuntimeResponse, ApiError> {
-        let new_pack_path = pack_source_path(&self.packs_dir, pack_id)?;
-        let current = self.runtime();
-        if current.pack_path == new_pack_path.display().to_string() {
-            return Err(ApiError::BadRequest(format!(
-                "pack already active: {pack_id}"
-            )));
-        }
-
-        let loaded_pack = PackLoader::load_from_path(&new_pack_path)
-            .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
-        self.check_pack_signature(&loaded_pack, &new_pack_path, "activate_pack", principals)
-            .await?;
-        let model = load_model_record(std::path::Path::new(&current.model_path))?;
-
-        let previous_pack_path = Some(current.pack_path.clone());
-        let previous_pack_sha256 = current.pack_sha256.clone();
-        let runtime = RuntimeResponse {
-            pack_id: loaded_pack.pack.id.clone(),
-            pack_version: loaded_pack.pack.version.clone(),
-            model_id: current.model_id,
-            model_version: current.model_version,
-            sector: current.sector,
-            governance_mode: current.governance_mode,
-            pack_path: new_pack_path.display().to_string(),
-            model_path: current.model_path,
-            pack_sha256: loaded_pack.digest.clone(),
-        };
-
-        // Validate everything that can fail before persisting, then persist
-        // pointers and audit, and only then swap the live evaluator. If
-        // persistence fails, live traffic stays on the previous pack.
-        precheck_model(&model)?;
-
-        self.admin
-            .set_runtime_pointers(RuntimePointers {
-                pack_path: runtime.pack_path.clone(),
-                model_path: runtime.model_path.clone(),
-                previous_pack_path: previous_pack_path.clone(),
-                pack_sha256: runtime.pack_sha256.clone(),
-                previous_pack_sha256: previous_pack_sha256.clone(),
-                updated_at: Utc::now(),
-                updated_by: principals.actor.clone(),
-                approved_by: principals.approver.clone(),
-            })
-            .await
-            .map_err(|e| ApiError::Internal(format!("persist runtime pointers: {e}")))?;
-
-        self.admin
-            .append_audit(AuditInsert {
-                action: "activate_pack".into(),
-                resource_type: "policy_pack".into(),
-                resource_id: pack_id.to_string(),
-                actor_principal: principals.actor.clone(),
-                approver_principal: principals.approver.clone(),
-                payload: serde_json::json!({
-                    "pack_path": runtime.pack_path,
-                    "pack_sha256": runtime.pack_sha256,
-                    "previous_pack_path": previous_pack_path,
-                    "previous_pack_sha256": previous_pack_sha256,
-                }),
-            })
-            .await
-            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
-
-        self.swap_live(loaded_pack, model, &runtime)?;
-        Ok(runtime)
-    }
-
-    pub async fn rollback_pack(
-        &self,
-        principals: &DualControlPrincipals,
-    ) -> Result<RuntimeResponse, ApiError> {
-        let pointers = self
-            .admin
-            .get_runtime_pointers()
-            .await
-            .map_err(|e| ApiError::Internal(format!("load runtime pointers: {e}")))?;
-        let Some(pointers) = pointers else {
-            return Err(ApiError::BadRequest(
-                "no runtime pointer history to rollback".into(),
-            ));
-        };
-        let Some(previous_pack_path) = pointers.previous_pack_path.clone() else {
-            return Err(ApiError::BadRequest(
-                "no previous pack path recorded".into(),
-            ));
-        };
-
-        let loaded_pack = PackLoader::load_from_path(std::path::Path::new(&previous_pack_path))
-            .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
-        self.check_pack_pin(
-            &loaded_pack,
-            pointers.previous_pack_sha256.as_deref(),
-            "rollback_pack",
-            principals,
-        )
-        .await?;
-        self.check_pack_signature(
-            &loaded_pack,
-            std::path::Path::new(&previous_pack_path),
-            "rollback_pack",
-            principals,
-        )
-        .await?;
-        let current = self.runtime();
-        let model = load_model_record(std::path::Path::new(&current.model_path))?;
-
-        let runtime = RuntimeResponse {
-            pack_id: loaded_pack.pack.id.clone(),
-            pack_version: loaded_pack.pack.version.clone(),
-            model_id: current.model_id,
-            model_version: current.model_version,
-            sector: current.sector,
-            governance_mode: current.governance_mode,
-            pack_path: previous_pack_path.clone(),
-            model_path: current.model_path,
-            pack_sha256: loaded_pack.digest.clone(),
-        };
-
-        // Validate everything that can fail before persisting, then persist
-        // pointers and audit, and only then swap the live evaluator. If
-        // persistence fails, live traffic stays on the previous pack.
-        precheck_model(&model)?;
-
-        self.admin
-            .set_runtime_pointers(RuntimePointers {
-                pack_path: runtime.pack_path.clone(),
-                model_path: runtime.model_path.clone(),
-                previous_pack_path: None,
-                pack_sha256: runtime.pack_sha256.clone(),
-                previous_pack_sha256: None,
-                updated_at: Utc::now(),
-                updated_by: principals.actor.clone(),
-                approved_by: principals.approver.clone(),
-            })
-            .await
-            .map_err(|e| ApiError::Internal(format!("persist runtime pointers: {e}")))?;
-
-        self.admin
-            .append_audit(AuditInsert {
-                action: "rollback_pack".into(),
-                resource_type: "policy_pack".into(),
-                resource_id: runtime.pack_id.clone(),
-                actor_principal: principals.actor.clone(),
-                approver_principal: principals.approver.clone(),
-                payload: serde_json::json!({
-                    "pack_path": runtime.pack_path,
-                    "pack_sha256": runtime.pack_sha256,
-                }),
-            })
-            .await
-            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
-
-        self.swap_live(loaded_pack, model, &runtime)?;
-        Ok(runtime)
-    }
-
-    pub async fn update_model(
-        &self,
-        model_id: &str,
-        status: Option<ModelStatus>,
-        governance_mode: Option<GovernanceMode>,
-        principals: &DualControlPrincipals,
-    ) -> Result<RuntimeResponse, ApiError> {
-        let model_path = model_source_path(&self.models_dir, model_id)?;
-        let mut model = load_model_record(&model_path)?;
-        if let Some(next_status) = status {
-            model.status = next_status;
-        }
-        if let Some(next_mode) = governance_mode {
-            model.governance_mode = next_mode;
-        }
-
-        let audit_status = format!("{:?}", model.status).to_lowercase();
-        let audit_mode = format!("{:?}", model.governance_mode).to_lowercase();
-
-        let current = self.runtime();
-        if current.model_id != model_id {
-            return Err(ApiError::BadRequest(
-                "runtime model differs from requested model_id".into(),
-            ));
-        }
-
-        let loaded_pack = PackLoader::load_from_path(std::path::Path::new(&current.pack_path))
-            .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
-        self.check_pack_pin(
-            &loaded_pack,
-            current.pack_sha256.as_deref(),
-            "update_model",
-            principals,
-        )
-        .await?;
-        self.check_pack_signature(
-            &loaded_pack,
-            std::path::Path::new(&current.pack_path),
-            "update_model",
-            principals,
-        )
-        .await?;
-
-        let runtime = RuntimeResponse {
-            pack_id: current.pack_id,
-            pack_version: current.pack_version,
-            model_id: model.model_id.clone(),
-            model_version: model.version.clone(),
-            sector: model.sector.clone(),
-            governance_mode: model.governance_mode,
-            pack_path: current.pack_path,
-            model_path: model_path.display().to_string(),
-            pack_sha256: current.pack_sha256,
-        };
-
-        // Validate everything that can fail before persisting, then persist
-        // pointers and audit, and only then swap the live evaluator. If
-        // persistence fails, live traffic stays on the previous pack.
-        precheck_model(&model)?;
-
-        self.admin
-            .append_audit(AuditInsert {
-                action: "update_model".into(),
-                resource_type: "model_record".into(),
-                resource_id: model_id.to_string(),
-                actor_principal: principals.actor.clone(),
-                approver_principal: principals.approver.clone(),
-                payload: serde_json::json!({
-                    "status": audit_status,
-                    "governance_mode": audit_mode,
-                    "model_path": runtime.model_path,
-                }),
-            })
-            .await
-            .map_err(|e| ApiError::Internal(format!("audit append: {e}")))?;
-
-        self.swap_live(loaded_pack, model, &runtime)?;
-        Ok(runtime)
     }
 
     /// Swaps the live evaluator and runtime view. Called only after the change
@@ -662,7 +294,7 @@ impl AppState {
         loaded: &LoadedPolicyPack,
         path: &std::path::Path,
         operation: &str,
-        principals: &DualControlPrincipals,
+        principals: (&str, &str),
     ) -> Result<(), ApiError> {
         let Some(signers) = &self.pack_signers else {
             return Ok(());
@@ -675,8 +307,8 @@ impl AppState {
                 action: format!("{operation}_refused"),
                 resource_type: "policy_pack".into(),
                 resource_id: loaded.pack.id.clone(),
-                actor_principal: principals.actor.clone(),
-                approver_principal: principals.approver.clone(),
+                actor_principal: principals.0.into(),
+                approver_principal: principals.1.into(),
                 payload: serde_json::json!({
                     "reason": "pack_signature_invalid",
                     "detail": err.to_string(),
@@ -696,7 +328,7 @@ impl AppState {
         loaded: &LoadedPolicyPack,
         expected: Option<&str>,
         operation: &str,
-        principals: &DualControlPrincipals,
+        principals: (&str, &str),
     ) -> Result<(), ApiError> {
         let Some(expected) = expected else {
             // Pointers recorded before digests existed: allowed, but audited
@@ -706,8 +338,8 @@ impl AppState {
                     action: format!("{operation}_unpinned"),
                     resource_type: "policy_pack".into(),
                     resource_id: loaded.pack.id.clone(),
-                    actor_principal: principals.actor.clone(),
-                    approver_principal: principals.approver.clone(),
+                    actor_principal: principals.0.into(),
+                    approver_principal: principals.1.into(),
                     payload: serde_json::json!({
                         "reason": "digest_unpinned",
                         "actual_sha256": loaded.digest,
@@ -725,8 +357,8 @@ impl AppState {
                 action: format!("{operation}_refused"),
                 resource_type: "policy_pack".into(),
                 resource_id: loaded.pack.id.clone(),
-                actor_principal: principals.actor.clone(),
-                approver_principal: principals.approver.clone(),
+                actor_principal: principals.0.into(),
+                approver_principal: principals.1.into(),
                 payload: serde_json::json!({
                     "reason": "pack_digest_mismatch",
                     "expected_sha256": expected,
@@ -758,6 +390,47 @@ impl AppState {
     }
 }
 
+type Backends = (
+    EvidenceBackend,
+    IncidentBackend,
+    BatchJobBackend,
+    AdminBackend,
+    RetentionBackend,
+    ChangeRequestBackend,
+);
+
+async fn storage_backends(store: &EvidenceStoreKind) -> Result<Backends, ApiError> {
+    Ok(match store {
+        EvidenceStoreKind::Memory => {
+            let admin = std::sync::Arc::new(MemoryAdminStore::default());
+            let retention = std::sync::Arc::new(MemoryRetentionStore::default());
+            (
+                EvidenceBackend::Memory(MemoryChain::new()),
+                IncidentBackend::memory(),
+                BatchJobBackend::memory(),
+                AdminBackend::Memory(admin.clone()),
+                RetentionBackend::Memory(retention.clone()),
+                ChangeRequestBackend::Memory(std::sync::Arc::new(MemoryChangeStore::new(
+                    admin, retention,
+                ))),
+            )
+        }
+        EvidenceStoreKind::Postgres { database_url } => {
+            let pool = StoragePool::connect(database_url)
+                .await
+                .map_err(|e| ApiError::Internal(format!("postgres storage: {e}")))?;
+            (
+                EvidenceBackend::Postgres(pool.evidence_store()),
+                IncidentBackend::Postgres(pool.incident_store()),
+                BatchJobBackend::Postgres(pool.batch_job_store()),
+                AdminBackend::Postgres(pool.admin_store()),
+                RetentionBackend::Postgres(pool.retention_store()),
+                ChangeRequestBackend::Postgres(pool.change_request_store()),
+            )
+        }
+    })
+}
+
 fn load_model_record(path: &std::path::Path) -> Result<ModelRecord, ApiError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| ApiError::Internal(format!("read model {}: {e}", path.display())))?;
@@ -779,8 +452,11 @@ fn map_retention_error(error: RetentionStoreError) -> ApiError {
 /// after persistence cannot fail on them.
 fn precheck_model(model: &ModelRecord) -> Result<(), ApiError> {
     kavach_evaluate::compile_input_validator(&model.input_schema)
-        .map(|_| ())
-        .map_err(|e| ApiError::BadRequest(format!("model input schema: {e}")))
+        .map_err(|e| ApiError::BadRequest(format!("model input schema: {e}")))?;
+    // Supplier controls run at proposal and approval, not first at evaluate
+    // time (where a vendor draft in enforce mode would fail every request).
+    kavach_evaluate::validate_supplier_controls(model)
+        .map_err(|e| ApiError::BadRequest(format!("supplier controls: {e}")))
 }
 
 const STARTUP_PRINCIPAL: &str = "system:startup";
@@ -840,6 +516,7 @@ async fn enforce_startup_pointer(
                     updated_at: Utc::now(),
                     updated_by: STARTUP_PRINCIPAL.into(),
                     approved_by: STARTUP_PRINCIPAL.into(),
+                    version: 0,
                 })
                 .await
                 .map_err(|e| ApiError::Internal(format!("persist runtime pointers: {e}")))?;

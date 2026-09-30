@@ -26,7 +26,6 @@ use crate::oidc::OidcError;
 use crate::state::AppState;
 
 const PRINCIPAL_HEADER: &str = "x-kavach-principal";
-const APPROVER_HEADER: &str = "x-kavach-approver";
 
 /// How the principal was established.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +44,25 @@ pub struct AuthenticatedPrincipal {
     pub id: String,
     pub groups: Vec<String>,
     pub source: PrincipalSource,
+    /// Token issuer, for source-qualified identity (JWT principals only).
+    pub issuer: Option<String>,
+}
+
+impl AuthenticatedPrincipal {
+    /// Source-qualified identity used to tell principals apart (the display
+    /// id alone could collide across sources or issuers).
+    #[must_use]
+    pub fn identity_key(&self) -> String {
+        match self.source {
+            PrincipalSource::Jwt => format!(
+                "oidc:{}#{}",
+                self.issuer.as_deref().unwrap_or_default(),
+                self.id
+            ),
+            PrincipalSource::MtlsSan => format!("mtls:{}", self.id),
+            PrincipalSource::InsecureHeader => format!("header:{}", self.id),
+        }
+    }
 }
 
 /// Credential material of an HTTP request: its headers and, over TLS, the
@@ -69,15 +87,6 @@ impl<S: Send + Sync> FromRequestParts<S> for Credentials {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct DualControlPrincipals {
-    /// Authenticated principal making the change.
-    pub actor: String,
-    /// Approver named in `X-Kavach-Approver`. Still self-asserted until H3
-    /// (change requests approved by a different authenticated principal).
-    pub approver: String,
-}
-
 fn bearer_token(authorization: Option<&str>) -> Result<Option<&str>, ApiError> {
     let Some(value) = authorization else {
         return Ok(None);
@@ -96,6 +105,7 @@ fn verify_token(state: &AppState, token: &str) -> Result<AuthenticatedPrincipal,
             id: token_claims.principal,
             groups: token_claims.groups,
             source: PrincipalSource::Jwt,
+            issuer: Some(verifier.issuer().to_string()),
         }),
         Err(OidcError::UnknownKid(_)) => {
             verifier.request_refresh();
@@ -129,11 +139,13 @@ pub fn resolve_principal(
             id: id.to_string(),
             groups: vec![],
             source: PrincipalSource::MtlsSan,
+            issuer: None,
         }),
         (None, None, Some(principal)) if state.insecure_dev() => Ok(AuthenticatedPrincipal {
             id: principal.to_string(),
             groups: vec![],
             source: PrincipalSource::InsecureHeader,
+            issuer: None,
         }),
         _ => Err(ApiError::Unauthorized),
     }
@@ -191,36 +203,16 @@ pub fn authorize_metadata(
     authorize_principal(state, &principal, action)
 }
 
-pub fn authorize_dual_control(
+/// Resolves and authorizes the caller, returning the principal. Change
+/// requests need the identity even when access control is off (development).
+pub fn authorized_principal(
     state: &AppState,
     credentials: &Credentials,
     action: KavachAction,
-) -> Result<DualControlPrincipals, ApiError> {
-    let actor = resolve_credentials(state, credentials)?;
-    let approver = header(&credentials.headers, APPROVER_HEADER).ok_or(ApiError::BadRequest(
-        "dual control requires X-Kavach-Approver header".into(),
-    ))?;
-    if actor.id == approver {
-        return Err(ApiError::BadRequest(
-            "approver must differ from actor principal".into(),
-        ));
-    }
-    if state.access_control().is_some() {
-        authorize_principal(state, &actor, action)?;
-        authorize_principal(
-            state,
-            &AuthenticatedPrincipal {
-                id: approver.to_string(),
-                groups: vec![],
-                source: PrincipalSource::InsecureHeader,
-            },
-            action,
-        )?;
-    }
-    Ok(DualControlPrincipals {
-        actor: actor.id,
-        approver: approver.to_string(),
-    })
+) -> Result<AuthenticatedPrincipal, ApiError> {
+    let principal = resolve_credentials(state, credentials)?;
+    authorize_principal(state, &principal, action)?;
+    Ok(principal)
 }
 
 fn authorize_principal(

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Partner pilot Phase 2 — governance API review and dual-control smoke.
+# Partner pilot Phase 2 — governance API review and maker-checker smoke.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -17,13 +17,8 @@ elif [[ -n "${READ_PRINCIPAL}" ]]; then
   read_args=(-H "X-Kavach-Principal: ${READ_PRINCIPAL}")
 fi
 
-# Actor credentials: an OIDC access token (ADR-008), or — only when the API
-# runs with --insecure-dev — the self-asserted X-Kavach-Principal header.
-if [[ -n "${PILOT_ACTOR_TOKEN:-}" ]]; then
-  actor_auth=(-H "Authorization: Bearer ${PILOT_ACTOR_TOKEN}")
-else
-  actor_auth=(-H "X-Kavach-Principal: ${ACTOR}")
-fi
+# shellcheck source=lib/change-request.sh
+source "scripts/lib/change-request.sh"
 
 echo "==> Phase 2.1 — API health"
 curl -fsS "${API}/health" "${read_args[@]}" | python3 -c 'import json,sys; print(json.load(sys.stdin))'
@@ -37,24 +32,18 @@ model_count="$(curl -fsS "${API}/v1/models" "${read_args[@]}" | python3 -c 'impo
 echo "packs listed: ${pack_count}"
 echo "models listed: ${model_count}"
 
-echo "==> Phase 2.3 — dual-control rejection (actor equals approver)"
-if curl -fsS -X PATCH "${API}/v1/admin/retention" \
-  -H "Content-Type: application/json" \
-  "${actor_auth[@]}" \
-  -H "X-Kavach-Approver: ${ACTOR}" \
-  -d "{\"evidence_retention_days\":${TARGET_RETENTION_DAYS}}" >/dev/null 2>&1; then
-  echo "FAIL: expected dual-control rejection when actor equals approver" >&2
+echo "==> Phase 2.3 — maker-checker: the proposer cannot approve"
+pending="$(propose_change update_retention "{\"evidence_retention_days\":${TARGET_RETENTION_DAYS}}")"
+if approve_change "$pending" "${actor_auth[@]}" >/dev/null 2>&1; then
+  echo "FAIL: expected the proposer's own approval to be refused" >&2
   exit 1
 fi
-echo "dual-control guard OK"
+cancel_change "$pending"
+echo "self-approval refused; request cancelled"
 
-echo "==> Phase 2.4 — retention update (dual control)"
-updated="$(curl -fsS -X PATCH "${API}/v1/admin/retention" \
-  -H "Content-Type: application/json" \
-  "${actor_auth[@]}" \
-  -H "X-Kavach-Approver: ${APPROVER}" \
-  -d "{\"evidence_retention_days\":${TARGET_RETENTION_DAYS}}")"
-python3 -c 'import json,sys; print("retention set to", json.loads(sys.argv[1])["evidence_retention_days"], "days")' "$updated"
+echo "==> Phase 2.4 — retention update (propose, then approve)"
+applied="$(apply_change update_retention "{\"evidence_retention_days\":${TARGET_RETENTION_DAYS}}")"
+python3 -c 'import json,sys; r=json.loads(sys.argv[1]); assert r["status"]=="applied", r; print("retention set to", r["outcome"]["evidence_retention_days"], "days")' "$applied"
 
 echo "==> Phase 2.5 — audit log contains retention mutation"
 audit="$(curl -fsS "${API}/v1/admin/audit?limit=20" "${actor_auth[@]}")"
@@ -77,12 +66,8 @@ print(f"audit entries matched: {len(matches)}")
 PY
 
 echo "==> Phase 2.6 — restore retention default"
-curl -fsS -X PATCH "${API}/v1/admin/retention" \
-  -H "Content-Type: application/json" \
-  "${actor_auth[@]}" \
-  -H "X-Kavach-Approver: ${APPROVER}" \
-  -d "{\"evidence_retention_days\":${RESTORE_RETENTION_DAYS}}" >/dev/null
+apply_change update_retention "{\"evidence_retention_days\":${RESTORE_RETENTION_DAYS}}" >/dev/null
 echo "retention restored to ${RESTORE_RETENTION_DAYS} days"
 
 echo "PASS: Phase 2 governance review exit criteria met (API path)"
-echo "Manual: review console /policies, /models, /audit, /retention on tablet/desktop"
+echo "Manual: review console /policies, /models, /changes, /audit, /retention on tablet/desktop"

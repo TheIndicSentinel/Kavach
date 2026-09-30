@@ -57,7 +57,7 @@ impl EvaluateService for GrpcEvaluateService {
 pub fn status_from_api(err: &ApiError) -> Status {
     let code = match err {
         ApiError::Unauthorized => tonic::Code::Unauthenticated,
-        ApiError::Forbidden => tonic::Code::PermissionDenied,
+        ApiError::Forbidden | ApiError::ForbiddenBecause(_) => tonic::Code::PermissionDenied,
         ApiError::BadRequest(_)
         | ApiError::Evaluate(
             kavach_evaluate::EvaluateError::Validation(_)

@@ -20,6 +20,11 @@
     "parents": []
   },
   {
+    "uid": { "type": "Kavach::Group", "id": "change-approvers" },
+    "attrs": {},
+    "parents": []
+  },
+  {
     "uid": { "type": "Kavach::User", "id": "operator-1" },
     "attrs": {},
     "parents": [{ "type": "Kavach::Group", "id": "operators" }]
@@ -37,6 +42,14 @@
   {
     "uid": { "type": "Kavach::User", "id": "admin-2" },
     "attrs": {},
-    "parents": [{ "type": "Kavach::Group", "id": "admins" }]
+    "parents": [
+      { "type": "Kavach::Group", "id": "admins" },
+      { "type": "Kavach::Group", "id": "change-approvers" }
+    ]
+  },
+  {
+    "uid": { "type": "Kavach::User", "id": "approver-1" },
+    "attrs": {},
+    "parents": [{ "type": "Kavach::Group", "id": "change-approvers" }]
   }
 ]

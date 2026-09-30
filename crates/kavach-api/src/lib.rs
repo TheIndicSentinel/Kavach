@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod batch_jobs;
+pub mod change_requests;
 pub mod config;
 pub mod console;
 pub mod convert;
@@ -32,5 +33,5 @@ pub use metrics::Metrics;
 pub use mtls::{MtlsSanKind, PeerCertificate};
 pub use oidc::{JwksSource, OidcConfig, OidcVerifier};
 pub use proto::kavach::v1::evaluate_service_server::EvaluateServiceServer;
-pub use state::AppState;
+pub use state::{AppState, ChangeProposal, DEFAULT_CHANGE_TTL_HOURS};
 pub use tls::{grpc_server_tls_config, serve_http, serve_http_on};

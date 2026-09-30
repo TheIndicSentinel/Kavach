@@ -23,6 +23,8 @@ pub struct ApiConfig {
     /// mTLS principals: the client certificate SAN of this type names the
     /// principal (requires `--tls-client-ca`).
     pub mtls_principal_san: Option<crate::mtls::MtlsSanKind>,
+    /// How long a change request stays approvable.
+    pub change_ttl_seconds: u64,
 }
 
 /// Cedar access control needs an authenticated principal source (OIDC or

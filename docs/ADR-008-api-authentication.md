@@ -39,6 +39,8 @@ For `/v1/evaluate` when `--hmac-secret` is set: `X-Kavach-Timestamp` (±300 s), 
 
 The **actor** of lifecycle changes is the authenticated principal. The **approver** is still named in `X-Kavach-Approver` (self-asserted) until H3 introduces change requests approved by a different authenticated principal.
 
+*Superseded by ADR-009 (H3a):* `X-Kavach-Approver` is removed; changes are proposed and approved as change requests, and approvals require an OIDC token.
+
 ### 5. Deployment defaults
 
 TLS uses the ring crypto provider explicitly; `aws-lc-rs` is banned in `deny.toml`, because with two providers compiled in rustls cannot choose a process default.

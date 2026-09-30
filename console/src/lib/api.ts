@@ -1,5 +1,4 @@
 const PRINCIPAL_KEY = "kavach.principal";
-const APPROVER_KEY = "kavach.approver";
 const TOKEN_KEY = "kavach.accessToken";
 
 /** OIDC access token from the bank IdP (ADR-008). Kept in sessionStorage only. */
@@ -24,18 +23,6 @@ export function setPrincipal(value: string): void {
     sessionStorage.setItem(PRINCIPAL_KEY, value.trim());
   } else {
     sessionStorage.removeItem(PRINCIPAL_KEY);
-  }
-}
-
-export function getApprover(): string {
-  return sessionStorage.getItem(APPROVER_KEY) ?? "";
-}
-
-export function setApprover(value: string): void {
-  if (value.trim()) {
-    sessionStorage.setItem(APPROVER_KEY, value.trim());
-  } else {
-    sessionStorage.removeItem(APPROVER_KEY);
   }
 }
 
@@ -213,17 +200,6 @@ export type AuditEntry = {
   created_at: string;
 };
 
-/**
- * The actor is the authenticated principal (bearer token) when configured.
- * The approver header remains self-asserted until change requests land (H3).
- */
-function dualControlHeaders(actor: string, approver: string): HeadersInit {
-  const token = getAccessToken();
-  return token
-    ? { Authorization: `Bearer ${token}`, "X-Kavach-Approver": approver }
-    : { "X-Kavach-Principal": actor, "X-Kavach-Approver": approver };
-}
-
 export function fetchAuditLog(limit = 50): Promise<AuditEntry[]> {
   return governanceFetch(`/v1/admin/audit?limit=${limit}`);
 }
@@ -266,70 +242,6 @@ export function fetchBatchJob(jobId: string): Promise<BatchJob> {
   return governanceFetch(`/v1/admin/batch-jobs/${encodeURIComponent(jobId)}`);
 }
 
-export function activatePack(
-  packId: string,
-  actor: string,
-  approver: string,
-): Promise<RuntimeInfo> {
-  return fetch(`/v1/packs/${encodeURIComponent(packId)}/activate`, {
-    method: "POST",
-    headers: dualControlHeaders(actor, approver),
-  }).then(async (response) => {
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new ApiError(
-        typeof payload?.error === "string" ? payload.error : "Activate failed",
-        response.status,
-      );
-    }
-    return payload as RuntimeInfo;
-  });
-}
-
-export function rollbackPack(
-  actor: string,
-  approver: string,
-): Promise<RuntimeInfo> {
-  return fetch("/v1/packs/rollback", {
-    method: "POST",
-    headers: dualControlHeaders(actor, approver),
-  }).then(async (response) => {
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new ApiError(
-        typeof payload?.error === "string" ? payload.error : "Rollback failed",
-        response.status,
-      );
-    }
-    return payload as RuntimeInfo;
-  });
-}
-
-export function updateModel(
-  modelId: string,
-  body: { status?: string; governance_mode?: string },
-  actor: string,
-  approver: string,
-): Promise<RuntimeInfo> {
-  return fetch(`/v1/models/${encodeURIComponent(modelId)}`, {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      ...dualControlHeaders(actor, approver),
-    },
-    body: JSON.stringify(body),
-  }).then(async (response) => {
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new ApiError(
-        typeof payload?.error === "string" ? payload.error : "Update failed",
-        response.status,
-      );
-    }
-    return payload as RuntimeInfo;
-  });
-}
-
 export interface RetentionSettings {
   evidence_retention_days: number;
   updated_at: string;
@@ -358,45 +270,87 @@ export function fetchTombstones(limit = 50): Promise<TombstoneRecord[]> {
   return governanceFetch(`/v1/admin/tombstones?limit=${limit}`);
 }
 
-export function updateRetentionSettings(
-  evidenceRetentionDays: number,
-  actor: string,
-  approver: string,
-): Promise<RetentionSettings> {
-  return fetch("/v1/admin/retention", {
-    method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      ...dualControlHeaders(actor, approver),
-    },
-    body: JSON.stringify({ evidence_retention_days: evidenceRetentionDays }),
-  }).then(async (response) => {
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new ApiError(
-        typeof payload?.error === "string" ? payload.error : "Retention update failed",
-        response.status,
-      );
-    }
-    return payload as RetentionSettings;
+export type ChangeKind =
+  | "activate_pack"
+  | "rollback_pack"
+  | "update_model"
+  | "update_retention"
+  | "erase_evidence"
+  | "apply_retention";
+
+export type ChangeStatus =
+  | "pending"
+  | "applied"
+  | "failed"
+  | "rejected"
+  | "cancelled"
+  | "expired";
+
+/** A maker-checker change request (ADR-009). */
+export interface ChangeRequest {
+  id: string;
+  kind: ChangeKind;
+  params: Record<string, unknown>;
+  binding: Record<string, unknown>;
+  change_digest: string;
+  reason?: string | null;
+  proposer: string;
+  status: ChangeStatus;
+  decided_by?: string | null;
+  outcome?: Record<string, unknown> | null;
+  created_at: string;
+  expires_at: string;
+  decided_at?: string | null;
+}
+
+async function changeFetch<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const payload = await response.json();
+  if (!response.ok) {
+    const message =
+      typeof payload?.error === "string"
+        ? payload.error
+        : `Request failed (${response.status})`;
+    throw new ApiError(message, response.status);
+  }
+  return payload as T;
+}
+
+/** Proposes a governance change; a different principal must approve it. */
+export function proposeChange(
+  kind: ChangeKind,
+  params: Record<string, unknown> = {},
+  reason?: string,
+): Promise<ChangeRequest> {
+  return changeFetch("/v1/change-requests", { kind, params, reason });
+}
+
+export function fetchChangeRequests(
+  status?: ChangeStatus,
+  limit = 50,
+): Promise<ChangeRequest[]> {
+  const query = status ? `status=${status}&limit=${limit}` : `limit=${limit}`;
+  return governanceFetch(`/v1/change-requests?${query}`);
+}
+
+/** Approving applies the change. The digest must match what was reviewed. */
+export function approveChange(request: ChangeRequest): Promise<ChangeRequest> {
+  return changeFetch(
+    `/v1/change-requests/${encodeURIComponent(request.id)}/approve`,
+    { change_digest: request.change_digest },
+  );
+}
+
+export function rejectChange(id: string, reason?: string): Promise<ChangeRequest> {
+  return changeFetch(`/v1/change-requests/${encodeURIComponent(id)}/reject`, {
+    reason,
   });
 }
 
-export function applyRetention(
-  actor: string,
-  approver: string,
-): Promise<RetentionApplyReport> {
-  return fetch("/v1/admin/retention/apply", {
-    method: "POST",
-    headers: dualControlHeaders(actor, approver),
-  }).then(async (response) => {
-    const payload = await response.json();
-    if (!response.ok) {
-      throw new ApiError(
-        typeof payload?.error === "string" ? payload.error : "Retention apply failed",
-        response.status,
-      );
-    }
-    return payload as RetentionApplyReport;
-  });
+export function cancelChange(id: string): Promise<ChangeRequest> {
+  return changeFetch(`/v1/change-requests/${encodeURIComponent(id)}/cancel`);
 }

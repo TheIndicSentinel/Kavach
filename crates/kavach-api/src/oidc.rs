@@ -87,6 +87,12 @@ impl std::fmt::Debug for OidcVerifier {
 }
 
 impl OidcVerifier {
+    /// The configured (and verified) token issuer.
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.config.issuer
+    }
+
     /// Loads the JWKS (file, or HTTPS fetch) and returns a ready verifier.
     pub async fn load(config: OidcConfig) -> Result<Arc<Self>, String> {
         let client = match &config.jwks {

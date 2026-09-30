@@ -203,6 +203,25 @@ impl RetentionBackend {
         }
     }
 
+    /// Postgres: untombstoned evidence older than `cutoff`, sorted. Memory
+    /// returns `None`: the candidates come from the in-memory chain.
+    pub async fn candidates(
+        &self,
+        cutoff: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Option<Vec<String>>, RetentionStoreError> {
+        match self {
+            Self::Memory(_) => Ok(None),
+            Self::Postgres(store) => store.candidates(cutoff).await.map(Some),
+        }
+    }
+
+    pub async fn is_tombstoned(&self, evidence_id: &str) -> Result<bool, RetentionStoreError> {
+        match self {
+            Self::Memory(store) => store.is_tombstoned(evidence_id),
+            Self::Postgres(store) => store.is_tombstoned(evidence_id).await,
+        }
+    }
+
     pub async fn list_tombstones(
         &self,
         limit: u32,

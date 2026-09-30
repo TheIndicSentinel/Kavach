@@ -49,7 +49,7 @@ impl PostgresAdminStore {
     pub async fn get_runtime_pointers(&self) -> Result<Option<RuntimePointers>, AdminStoreError> {
         let row = sqlx::query_as::<_, PointerRow>(
             "SELECT pack_path, model_path, previous_pack_path, pack_sha256, previous_pack_sha256, \
-            updated_at, updated_by, approved_by \
+            updated_at, updated_by, approved_by, version \
             FROM runtime_pointers WHERE id = 1",
         )
         .fetch_optional(&self.pool)
@@ -63,10 +63,19 @@ impl PostgresAdminStore {
         &self,
         pointers: RuntimePointers,
     ) -> Result<(), AdminStoreError> {
-        sqlx::query(
-            "INSERT INTO runtime_pointers (id, pack_path, model_path, previous_pack_path, \
-                pack_sha256, previous_pack_sha256, updated_at, updated_by, approved_by) \
-            VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8) \
+        upsert_pointers(&self.pool, &pointers).await
+    }
+}
+
+/// Writes the singleton pointer row and increments its version.
+pub(crate) async fn upsert_pointers<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    pointers: &RuntimePointers,
+) -> Result<(), AdminStoreError> {
+    sqlx::query(
+        "INSERT INTO runtime_pointers (id, pack_path, model_path, previous_pack_path, \
+                pack_sha256, previous_pack_sha256, updated_at, updated_by, approved_by, version) \
+            VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, 1) \
             ON CONFLICT (id) DO UPDATE SET \
                 pack_path = EXCLUDED.pack_path, \
                 model_path = EXCLUDED.model_path, \
@@ -75,21 +84,43 @@ impl PostgresAdminStore {
                 previous_pack_sha256 = EXCLUDED.previous_pack_sha256, \
                 updated_at = EXCLUDED.updated_at, \
                 updated_by = EXCLUDED.updated_by, \
-                approved_by = EXCLUDED.approved_by",
-        )
-        .bind(&pointers.pack_path)
-        .bind(&pointers.model_path)
-        .bind(&pointers.previous_pack_path)
-        .bind(&pointers.pack_sha256)
-        .bind(&pointers.previous_pack_sha256)
-        .bind(pointers.updated_at)
-        .bind(&pointers.updated_by)
-        .bind(&pointers.approved_by)
-        .execute(&self.pool)
-        .await
-        .map_err(|err| AdminStoreError::Io(err.to_string()))?;
-        Ok(())
-    }
+                approved_by = EXCLUDED.approved_by, \
+                version = runtime_pointers.version + 1",
+    )
+    .bind(&pointers.pack_path)
+    .bind(&pointers.model_path)
+    .bind(&pointers.previous_pack_path)
+    .bind(&pointers.pack_sha256)
+    .bind(&pointers.previous_pack_sha256)
+    .bind(pointers.updated_at)
+    .bind(&pointers.updated_by)
+    .bind(&pointers.approved_by)
+    .execute(executor)
+    .await
+    .map_err(|err| AdminStoreError::Io(err.to_string()))?;
+    Ok(())
+}
+
+/// Appends one audit row (inside a caller's transaction when given one).
+pub(crate) async fn insert_audit<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    insert: &AuditInsert,
+) -> Result<(), AdminStoreError> {
+    sqlx::query(
+        "INSERT INTO admin_audit_log \
+            (action, resource_type, resource_id, actor_principal, approver_principal, payload) \
+        VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(&insert.action)
+    .bind(&insert.resource_type)
+    .bind(&insert.resource_id)
+    .bind(&insert.actor_principal)
+    .bind(&insert.approver_principal)
+    .bind(&insert.payload)
+    .execute(executor)
+    .await
+    .map_err(|err| AdminStoreError::Io(err.to_string()))?;
+    Ok(())
 }
 
 #[derive(sqlx::FromRow)]
@@ -129,6 +160,7 @@ struct PointerRow {
     updated_at: DateTime<Utc>,
     updated_by: String,
     approved_by: String,
+    version: i64,
 }
 
 impl PointerRow {
@@ -142,6 +174,7 @@ impl PointerRow {
             updated_at: self.updated_at,
             updated_by: self.updated_by,
             approved_by: self.approved_by,
+            version: self.version,
         }
     }
 }
