@@ -17,6 +17,7 @@ use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig};
 use kavach_api::{
     router, AccessControlKind, ApiConfig, AppState, EvidenceStoreKind, JwksSource, OidcConfig,
 };
+use kavach_credential::{open_credential, DecryptionKey};
 use kavach_domain::mandate::{
     AgentPassport, ConsentRecord, ContactWindow, DelegationRules, MandateTemplate, SorEvent,
     TimeZoneId,
@@ -121,6 +122,11 @@ fn template() -> MandateTemplate {
 
 /// Writes keys, mandate config, consents and JWKS; returns the dataplane
 /// and operator OIDC configuration.
+/// The mock messaging provider's encryption key (synthetic).
+fn messaging_key() -> DecryptionKey {
+    DecryptionKey::from_bytes("mock-messaging-enc-1", [11u8; 32])
+}
+
 /// A copy of the reference tool registry in `dir`, signed by a tool signer
 /// listed in `dir/tool-signers.json`; returns its path and digest.
 fn signed_registry(dir: &Path) -> (PathBuf, String) {
@@ -153,6 +159,25 @@ fn signed_registry(dir: &Path) -> (PathBuf, String) {
     (registry, digest)
 }
 
+/// The credential signing key and the providers' encryption keys.
+fn credential_files(dir: &Path, keys: &Path) {
+    owner_only(
+        &keys.join("kavach-credential-1.ed25519"),
+        &hex::encode([5u8; 32]),
+    );
+    std::fs::write(
+        dir.join("providers.json"),
+        json!({ "providers": [
+            { "audience": "mock-messaging", "kid": "mock-messaging-enc-1",
+              "x25519_public_key": hex::encode(messaging_key().recipient().public) },
+            { "audience": "mock-voice", "kid": "mock-voice-enc-1",
+              "x25519_public_key": hex::encode(DecryptionKey::from_bytes("mock-voice-enc-1", [13u8; 32]).recipient().public) },
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+}
+
 fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
     let dir = std::env::temp_dir().join(format!("kavach-dp-{}", uuid::Uuid::new_v4().simple()));
     let keys = dir.join("keys");
@@ -166,6 +191,7 @@ fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         &hex::encode([3u8; 32]),
     );
     owner_only(&dir.join("pseudonym.key"), &hex::encode([6u8; 32]));
+    credential_files(&dir, &keys);
 
     let lms = SigningKey::from_bytes(&[2u8; 32])
         .verifying_key()
@@ -232,7 +258,7 @@ fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         },
         mandate_config: dir.join("mandates.json"),
         mandate_keys_dir: keys.clone(),
-        evidence_keys_dir: keys,
+        evidence_keys_dir: keys.clone(),
         evidence_key_id: "kavach-evidence-1".into(),
         subject_pseudonym_key: dir.join("pseudonym.key"),
         consents: dir.join("consents.json"),
@@ -241,6 +267,9 @@ fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         tool_registry: registry,
         tool_registry_sha256: Some(digest),
         tool_signers: Some(dir.join("tool-signers.json")),
+        credential_keys_dir: keys,
+        credential_key_id: "kavach-credential-1".into(),
+        providers: dir.join("providers.json"),
     };
     (dataplane, operator)
 }
@@ -729,4 +758,111 @@ async fn agent_and_operator_listeners_are_separate() {
         StatusCode::NOT_FOUND,
         "the operator listener does not serve agent routes"
     );
+}
+
+/// The broker is wired at startup: credentials are signed by the credential
+/// key and readable only by the provider they are addressed to.
+#[tokio::test]
+async fn the_broker_issues_credentials_only_the_provider_can_open() {
+    use kavach_ports::{CredentialBroker, CredentialRequest, Destination};
+    let s = state(50).await;
+    let dp = s.dataplane().unwrap();
+    let destination = Destination::new("+910000000001");
+    let now = chrono::Utc::now();
+    let request = CredentialRequest {
+        tenant_id: "default",
+        agent_id: "collections-agent",
+        mandate_id: "m-1",
+        record_id: "rec-1",
+        credential_id: "cred-api-1",
+        audience: "mock-messaging",
+        action: "send_reminder",
+        destination: &destination,
+        channel: "whatsapp",
+        template_id: "emi_reminder_v1",
+        expires_at: now + chrono::Duration::seconds(15),
+        send_by: None,
+        now,
+    };
+    let issued = dp.broker().issue(&request).await.unwrap();
+    let credential_public = SigningKey::from_bytes(&[5u8; 32])
+        .verifying_key()
+        .to_bytes();
+    let keys = kavach_jws::KeySet::new([kavach_ports::PublicKey {
+        kid: "kavach-credential-1".into(),
+        algorithm: kavach_ports::KeyAlgorithm::Ed25519,
+        bytes: credential_public,
+    }]);
+    let claims = open_credential(
+        issued.token.expose(),
+        &keys,
+        &messaging_key(),
+        "mock-messaging",
+        now,
+    )
+    .unwrap();
+    assert_eq!(claims.req.destination.expose(), "+910000000001");
+    assert_eq!(claims.jti, "cred-api-1");
+    // The voice provider cannot read a messaging credential.
+    let voice = DecryptionKey::from_bytes("mock-voice-enc-1", [13u8; 32]);
+    assert!(open_credential(issued.token.expose(), &keys, &voice, "mock-messaging", now).is_err());
+}
+
+/// Key separation and provider keys are checked before anything is served.
+#[tokio::test]
+async fn startup_refuses_shared_credential_keys_and_missing_provider_keys() {
+    let refused = |config: ApiConfig| async move {
+        format!(
+            "{:?}",
+            AppState::from_config(&config).await.err().expect("refused")
+        )
+    };
+    // The credential key id is the evidence key id.
+    let mut shared_id = config(EvidenceStoreKind::Memory, true, 50);
+    shared_id.dataplane.as_mut().unwrap().credential_key_id = "kavach-evidence-1".into();
+    let message = refused(shared_id).await;
+    assert!(message.contains("separate key"), "{message}");
+
+    // A different id holding the mandate key's material.
+    let copied = config(EvidenceStoreKind::Memory, true, 50);
+    let dp = copied.dataplane.as_ref().unwrap();
+    owner_only(
+        &dp.credential_keys_dir.join("copied-1.ed25519"),
+        &hex::encode([1u8; 32]),
+    );
+    let mut copied = copied.clone();
+    copied.dataplane.as_mut().unwrap().credential_key_id = "copied-1".into();
+    let message = refused(copied).await;
+    assert!(
+        message.contains("reuses the mandate or evidence key"),
+        "{message}"
+    );
+
+    // The registry forwards to mock-voice, which has no encryption key.
+    let missing = config(EvidenceStoreKind::Memory, true, 50);
+    let path = missing.dataplane.as_ref().unwrap().providers.clone();
+    std::fs::write(
+        &path,
+        json!({ "providers": [{ "audience": "mock-messaging", "kid": "mock-messaging-enc-1",
+            "x25519_public_key": hex::encode(messaging_key().recipient().public) }] })
+        .to_string(),
+    )
+    .unwrap();
+    let message = refused(missing).await;
+    assert!(message.contains("mock-voice"), "{message}");
+
+    // A low-order (all-zero) encryption key.
+    let weak = config(EvidenceStoreKind::Memory, true, 50);
+    let path = weak.dataplane.as_ref().unwrap().providers.clone();
+    std::fs::write(
+        &path,
+        json!({ "providers": [
+            { "audience": "mock-messaging", "kid": "k1", "x25519_public_key": hex::encode([0u8; 32]) },
+            { "audience": "mock-voice", "kid": "k2", "x25519_public_key": hex::encode([0u8; 32]) },
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let message = refused(weak).await;
+    assert!(message.contains("low-order"), "{message}");
 }

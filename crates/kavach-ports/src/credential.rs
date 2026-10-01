@@ -4,13 +4,13 @@
 //! credential that lets exactly one forwarded request through to a resource
 //! provider. The agent never sees it. The credential is bound to the
 //! decision (tenant, agent, mandate, evidence record, `jti` = the record's
-//! `credential_id`), to its audience, and to the whole request (a salted
-//! digest of destination, channel and template), and it expires within
-//! [`MAX_CREDENTIAL_TTL_SECONDS`] and never after `send_by`.
+//! `credential_id`), to its audience and to the whole request (destination,
+//! channel, template), and it expires within [`MAX_CREDENTIAL_TTL_SECONDS`]
+//! and never after `send_by`.
 //!
-//! The salted digest binds the request; it does not hide the destination
-//! (about 10¹⁰ phone numbers can be searched with the salt in hand). A
-//! credential is therefore a bearer secret that may reveal personal data:
+//! The request, destination included, must be readable only by the
+//! audience (the JOSE adapter encrypts the signed credential to the
+//! provider's key). A credential is still a bearer secret until it expires:
 //! it is never logged, displayed or returned to the agent ([`TokenSecret`]).
 
 use std::fmt;

@@ -1,6 +1,6 @@
 [package]
 name = "kavach-credential"
-description = "Request-bound resource credentials (H5b, FR-4): JWS broker and the verifier resource providers use"
+description = "Request-bound resource credentials (H5b, FR-4): signed-then-encrypted JOSE broker and the checks resource providers run"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -12,16 +12,19 @@ kavach-ports = { workspace = true }
 base64 = { workspace = true }
 chrono.workspace = true
 getrandom = { workspace = true }
-hex = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
 sha2.workspace = true
+ring.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 kavach-keys = { workspace = true }
 kavach-ports-testkit = { workspace = true }
 tokio.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -11,6 +11,9 @@
 # (policy_versions.tools). There is no free-text parameter: messages are
 # chosen by template_id from an allowlist.
 #
+# external_effect tools name their provider: the credential audience, whose
+# encryption key must be configured (--providers) or startup is refused.
+#
 # Parameter kinds: capability_ref (reference-only, ref:<type>:<id>),
 # enum (values), field_set (values; requested_fields only), integer (min, max).
 version: 1
@@ -27,6 +30,7 @@ tools:
   - name: send_reminder
     action: send_reminder
     trust: external_effect
+    provider: mock-messaging
     params:
       subject_ref: { kind: capability_ref }
       channel: { kind: enum, values: [whatsapp, sms] }
@@ -35,6 +39,7 @@ tools:
   - name: place_call
     action: place_call
     trust: external_effect
+    provider: mock-voice
     params:
       subject_ref: { kind: capability_ref }
       channel: { kind: enum, values: [voice] }

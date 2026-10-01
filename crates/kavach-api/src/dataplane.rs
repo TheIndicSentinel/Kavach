@@ -21,6 +21,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
+use kavach_credential::{JoseCredentialBroker, RecipientKey};
 use kavach_dataplane::{
     AgentIdentity, AuthorizeConfig, AuthorizeCore, Mode, RegistryTrust, ToolRegistry, ToolRequest,
 };
@@ -34,6 +35,7 @@ use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
 };
+use kavach_ports::CredentialBroker;
 use kavach_ports::{
     ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey, ReplayGuard,
     StoredMandate, SyncStatus, TimeSource, TrustedNow,
@@ -76,7 +78,32 @@ pub struct DataplaneConfig {
     /// Trusted signers for the registry (`tool` role). Defaults to the pack
     /// signers file; one `signers.json` with roles can serve both.
     pub tool_signers: Option<PathBuf>,
+    /// Directory and id of the credential signing key (signs resource
+    /// credentials only; must differ from the mandate and evidence keys).
+    pub credential_keys_dir: PathBuf,
+    pub credential_key_id: String,
+    /// Resource providers (JSON): each audience's X25519 encryption key.
+    pub providers: PathBuf,
 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvidersFile {
+    providers: Vec<ProviderEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderEntry {
+    /// The credential audience (a tool registry `provider`).
+    audience: String,
+    /// The provider's encryption key id.
+    kid: String,
+    /// Hex X25519 public key.
+    x25519_public_key: String,
+}
+
+pub type Broker = JoseCredentialBroker<LocalFileKeyProvider>;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -327,6 +354,7 @@ pub struct Dataplane {
     passports: BTreeSet<(String, String)>,
     tenant: String,
     sor_limiter: Mutex<TokenBucket>,
+    broker: Broker,
 }
 
 impl Dataplane {
@@ -349,6 +377,7 @@ impl Dataplane {
         let keys = LocalFileKeyProvider::new(&config.mandate_keys_dir);
         let (mandate_config, passports) =
             load_mandate_config(&config.mandate_config, &keys).await?;
+        let mandate_kid = mandate_config.signing_kid.clone();
         let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
         let mandates = Arc::new(
             MandateService::new(
@@ -367,6 +396,7 @@ impl Dataplane {
         let signer =
             Ed25519EvidenceSigner::from_key_dir(&config.evidence_keys_dir, &config.evidence_key_id)
                 .map_err(|e| format!("evidence key: {e}"))?;
+        let broker = build_broker(config, &tools, &mandate_kid, insecure_dev).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
             .map_err(|e| format!("subject pseudonym key: {e}"))?;
         let core = AuthorizeCore::new(
@@ -398,7 +428,13 @@ impl Dataplane {
                 tokens: rate,
                 last: Instant::now(),
             }),
+            broker,
         })
+    }
+
+    /// The credential broker (the gateway's only source of credentials).
+    pub fn broker(&self) -> &Broker {
+        &self.broker
     }
 
     pub fn core(&self) -> &AuthorizeCore<Arc<Mandates>, EvidenceBackend> {
@@ -439,6 +475,90 @@ fn load_tools(
         },
     )
     .map_err(|e| format!("tool registry: {}", e.message))
+}
+
+/// The credential broker, with key separation (NIST SP 800-57 key usage):
+/// its signing key is neither the mandate nor the evidence key, by id or by
+/// key material; every provider the tool registry forwards to has a usable
+/// encryption key; and it is not a test double outside `--insecure-dev`.
+async fn build_broker(
+    config: &DataplaneConfig,
+    tools: &ToolRegistry,
+    mandate_kid: &str,
+    insecure_dev: bool,
+) -> Result<Broker, String> {
+    let kid = &config.credential_key_id;
+    if kid == mandate_kid || kid == &config.evidence_key_id {
+        return Err(format!(
+            "the credential key {kid} must be a separate key from the mandate and evidence keys"
+        ));
+    }
+    let keys = LocalFileKeyProvider::new(&config.credential_keys_dir);
+    let credential = keys
+        .public_key(kid)
+        .await
+        .map_err(|e| format!("credential signing key: {e}"))?;
+    let others = [
+        LocalFileKeyProvider::new(&config.mandate_keys_dir)
+            .public_key(mandate_kid)
+            .await,
+        LocalFileKeyProvider::new(&config.evidence_keys_dir)
+            .public_key(&config.evidence_key_id)
+            .await,
+    ];
+    if others
+        .iter()
+        .flatten()
+        .any(|other| other.bytes == credential.bytes)
+    {
+        return Err(format!(
+            "the credential key {kid} reuses the mandate or evidence key material"
+        ));
+    }
+
+    let file: ProvidersFile = read_json(&config.providers, "providers")?;
+    let mut recipients = std::collections::BTreeMap::new();
+    for entry in file.providers {
+        let public: [u8; 32] = hex::decode(entry.x25519_public_key.trim())
+            .ok()
+            .and_then(|b| b.try_into().ok())
+            .ok_or_else(|| {
+                format!(
+                    "provider {}: x25519_public_key must be 32 bytes hex",
+                    entry.audience
+                )
+            })?;
+        let recipient = RecipientKey {
+            kid: entry.kid,
+            public,
+        };
+        // A probe encryption refuses low-order (non-contributory) keys now.
+        kavach_credential::jwe::encrypt(b"probe", &recipient, "probe", "probe")
+            .map_err(|e| format!("provider {}: {}", entry.audience, e.message))?;
+        if recipients
+            .insert(entry.audience.clone(), recipient)
+            .is_some()
+        {
+            return Err(format!("provider {} is listed twice", entry.audience));
+        }
+    }
+    if let Some(missing) = tools
+        .providers()
+        .into_iter()
+        .find(|p| !recipients.contains_key(*p))
+    {
+        return Err(format!(
+            "the tool registry forwards to {missing}, which has no encryption key in --providers"
+        ));
+    }
+
+    let broker = JoseCredentialBroker::new(keys, kid.clone(), "kavach", recipients);
+    if broker.is_test_double() && !insecure_dev {
+        return Err(
+            "the credential broker is a test double; refused outside --insecure-dev".into(),
+        );
+    }
+    Ok(broker)
 }
 
 fn select_clock(insecure_dev: bool) -> Result<ClockBackend, String> {

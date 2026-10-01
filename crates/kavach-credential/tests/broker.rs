@@ -1,13 +1,15 @@
-//! The JWS credential broker against the `CredentialBroker` contract, and
-//! the verifier a resource provider runs.
+//! The JOSE credential broker against the `CredentialBroker` contract, and
+//! the checks a resource provider runs.
 
+use std::collections::BTreeMap;
 use std::future::{ready, Future};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-
 use chrono::{DateTime, Duration, Utc};
 use kavach_credential::{
-    verify_credential, CredentialClaims, Expected, JwsCredentialBroker, TYP_CREDENTIAL,
+    open_credential, verify_credential, CredentialClaims, DecryptionKey, Expected,
+    JoseCredentialBroker, TYP_CREDENTIAL, TYP_CREDENTIAL_JWE,
 };
 use kavach_jws::KeySet;
 use kavach_keys::InMemoryKeyProvider;
@@ -20,12 +22,26 @@ use kavach_ports_testkit::credential_broker::{
 };
 
 const KID: &str = "kavach-credential-1";
+const AUDIENCE: &str = "mock-messaging";
 
-fn broker() -> (JwsCredentialBroker<InMemoryKeyProvider>, KeySet) {
+fn provider_key() -> DecryptionKey {
+    DecryptionKey::from_bytes("mock-messaging-enc-1", [11u8; 32])
+}
+
+fn recipients() -> BTreeMap<String, kavach_credential::RecipientKey> {
+    let mut map = BTreeMap::from([(AUDIENCE.to_string(), provider_key().recipient())]);
+    map.insert(
+        "other-provider".into(),
+        DecryptionKey::from_bytes("other-enc-1", [12u8; 32]).recipient(),
+    );
+    map
+}
+
+fn broker() -> (JoseCredentialBroker<InMemoryKeyProvider>, KeySet) {
     let mut keys = InMemoryKeyProvider::new();
     let public = keys.generate(KID).unwrap();
     (
-        JwsCredentialBroker::new(keys, KID, "kavach-test"),
+        JoseCredentialBroker::new(keys, KID, "kavach-test", recipients()),
         KeySet::new([public]),
     )
 }
@@ -45,12 +61,21 @@ fn at(seconds: i64) -> DateTime<Utc> {
 }
 
 #[tokio::test]
-async fn jws_broker_meets_the_contract() {
+async fn jose_broker_meets_the_contract() {
     let (broker, keys) = broker();
+    let key = provider_key();
+    let other = DecryptionKey::from_bytes("other-enc-1", [12u8; 32]);
     conformance(
         &broker,
         |token: &TokenSecret, request: &CredentialRequest<'_>| {
-            let claims = verify_credential(token.expose(), &keys, &expected(request))?;
+            // The provider for the request's audience opens it (another
+            // audience's key cannot, which the suite also exercises).
+            let key = if request.audience == AUDIENCE {
+                &key
+            } else {
+                &other
+            };
+            let claims = verify_credential(token.expose(), &keys, key, &expected(request))?;
             Ok(ClaimsView {
                 tenant_id: claims.tenant,
                 agent_id: claims.agent,
@@ -85,10 +110,10 @@ impl KeyProvider for DownKeys {
 
 #[tokio::test]
 async fn a_down_key_store_is_unavailable_and_does_not_consume_the_id() {
-    let broker = JwsCredentialBroker::new(DownKeys, KID, "kavach-test");
+    let broker = JoseCredentialBroker::new(DownKeys, KID, "kavach-test", recipients());
     unavailable_conformance(&broker).await;
-    // The reservation was released: the failure did not burn the id (the
-    // gateway still never retries; this keeps the broker's state honest).
+    // The reservation was released: the same id fails the same way, not
+    // as "already issued".
     let destination = Destination::new(DESTINATION);
     let err = broker
         .issue(&credential_broker::request(&destination, "cred-down"))
@@ -97,55 +122,113 @@ async fn a_down_key_store_is_unavailable_and_does_not_consume_the_id() {
     assert_eq!(err.class, ErrorClass::Unavailable);
 }
 
+fn header(token: &TokenSecret) -> serde_json::Value {
+    let first = token.expose().split('.').next().unwrap();
+    serde_json::from_slice(&URL_SAFE_NO_PAD.decode(first).unwrap()).unwrap()
+}
+
+/// Nothing outside the provider can read the credential: no destination,
+/// no claims, a fresh ephemeral key per token.
 #[tokio::test]
-async fn providers_refuse_forged_expired_and_foreign_tokens() {
+async fn the_credential_is_opaque_outside_the_provider() {
+    let (broker, keys) = broker();
+    let destination = Destination::new(DESTINATION);
+    let a = credential_broker::request(&destination, "cred-a");
+    let b = credential_broker::request(&destination, "cred-b");
+    let ta = broker.issue(&a).await.unwrap().token;
+    let tb = broker.issue(&b).await.unwrap().token;
+
+    let parts: Vec<&str> = ta.expose().split('.').collect();
+    assert_eq!(parts.len(), 5, "compact JWE");
+    let h = header(&ta);
+    assert_eq!(h["alg"], "ECDH-ES");
+    assert_eq!(h["enc"], "A256GCM");
+    assert_eq!(h["typ"], TYP_CREDENTIAL_JWE);
+    assert_eq!(h["cty"], TYP_CREDENTIAL);
+    assert_eq!(h["epk"]["crv"], "X25519");
+    for part in &parts {
+        let bytes = URL_SAFE_NO_PAD.decode(part).unwrap_or_default();
+        let text = String::from_utf8_lossy(&bytes);
+        for secret in [
+            "0000000001",
+            "m-1",
+            "collections-agent",
+            "whatsapp",
+            "rec-1",
+        ] {
+            assert!(!text.contains(secret), "{secret} visible in {text}");
+        }
+    }
+    assert_ne!(
+        header(&ta)["epk"]["x"],
+        header(&tb)["epk"]["x"],
+        "fresh ephemeral key per token"
+    );
+
+    // The provider takes the request from the credential.
+    let claims: CredentialClaims =
+        open_credential(ta.expose(), &keys, &provider_key(), AUDIENCE, a.now).unwrap();
+    assert_eq!(claims.req.destination.expose(), DESTINATION);
+    assert_eq!(claims.req.channel, "whatsapp");
+    assert!(
+        !format!("{claims:?}").contains("0000000001"),
+        "claims never print the destination"
+    );
+}
+
+#[tokio::test]
+async fn providers_refuse_other_recipients_forgeries_and_late_use() {
     let (broker, keys) = broker();
     let destination = Destination::new(DESTINATION);
     let request = credential_broker::request(&destination, "cred-v");
     let issued = broker.issue(&request).await.unwrap();
     let token = issued.token.expose();
-    verify_credential(token, &keys, &expected(&request)).unwrap();
+    verify_credential(token, &keys, &provider_key(), &expected(&request)).unwrap();
 
-    // Tampered signature.
-    let mut parts: Vec<String> = token.split('.').map(String::from).collect();
-    let flipped = if parts[2].starts_with("AA") {
-        "BB"
-    } else {
-        "AA"
-    };
-    parts[2].replace_range(0..2, flipped);
-    assert!(verify_credential(&parts.join("."), &keys, &expected(&request)).is_err());
+    // Another provider's key cannot open it.
+    let other = DecryptionKey::from_bytes("other-enc-1", [12u8; 32]);
+    assert!(open_credential(token, &keys, &other, AUDIENCE, request.now).is_err());
 
-    // Signed by another key (e.g. the mandate or evidence key): unknown kid.
-    let mut other = InMemoryKeyProvider::new();
-    let _ = other.generate("kavach-mandate-1").unwrap();
-    let foreign = kavach_jws::sign(&other, "kavach-mandate-1", TYP_CREDENTIAL, &{
-        let (_, claims): (String, CredentialClaims) =
-            kavach_jws::verify(token, TYP_CREDENTIAL, &keys).unwrap();
-        claims
-    })
-    .await
-    .unwrap();
-    let err = verify_credential(&foreign, &keys, &expected(&request)).unwrap_err();
-    assert_eq!(err.class, ErrorClass::Rejected, "{}", err.message);
-
-    // Another token type with this key (a mandate-shaped JWS): wrong typ.
-    let mut own = InMemoryKeyProvider::new();
-    let public = own.generate(KID).unwrap();
-    let wrong_typ = kavach_jws::sign(&own, KID, "kavach-mandate+jws", &serde_json::json!({}))
+    // Encrypted for this provider but signed by an untrusted key (e.g. the
+    // mandate key, or anyone who knows the provider's public key).
+    let mut rogue = InMemoryKeyProvider::new();
+    let _ = rogue.generate(KID).unwrap();
+    let forged_broker = JoseCredentialBroker::new(rogue, KID, "kavach-test", recipients());
+    let forged = forged_broker
+        .issue(&credential_broker::request(&destination, "cred-forged"))
         .await
         .unwrap();
-    assert!(verify_credential(&wrong_typ, &KeySet::new([public]), &expected(&request)).is_err());
+    assert!(open_credential(
+        forged.token.expose(),
+        &keys,
+        &provider_key(),
+        AUDIENCE,
+        request.now
+    )
+    .is_err());
+
+    // A plain JWS (not encrypted) is refused.
+    let mut own = InMemoryKeyProvider::new();
+    let public = own.generate(KID).unwrap();
+    let plain = kavach_jws::sign(&own, KID, TYP_CREDENTIAL, &serde_json::json!({}))
+        .await
+        .unwrap();
+    assert!(open_credential(
+        &plain,
+        &KeySet::new([public]),
+        &provider_key(),
+        AUDIENCE,
+        request.now
+    )
+    .is_err());
 
     // Expired, and presented at send_by.
-    let late = Expected {
-        now: issued.expires_at,
-        ..expected(&request)
-    };
-    assert!(verify_credential(token, &keys, &late)
-        .unwrap_err()
-        .message
-        .contains("expired"));
+    assert!(
+        open_credential(token, &keys, &provider_key(), AUDIENCE, issued.expires_at)
+            .unwrap_err()
+            .message
+            .contains("expired")
+    );
     let send_by = request.now + Duration::seconds(3);
     let near = CredentialRequest {
         credential_id: "cred-near-v",
@@ -153,30 +236,23 @@ async fn providers_refuse_forged_expired_and_foreign_tokens() {
         ..request.clone()
     };
     let near_token = broker.issue(&near).await.unwrap().token;
-    let at_send_by = Expected {
-        now: send_by,
-        ..expected(&near)
-    };
-    assert!(verify_credential(near_token.expose(), &keys, &at_send_by).is_err());
-}
+    assert!(open_credential(
+        near_token.expose(),
+        &keys,
+        &provider_key(),
+        AUDIENCE,
+        send_by
+    )
+    .is_err());
 
-#[tokio::test]
-async fn two_credentials_for_one_request_carry_different_salts() {
-    let (broker, keys) = broker();
-    let destination = Destination::new(DESTINATION);
-    let a = credential_broker::request(&destination, "cred-a");
-    let b = credential_broker::request(&destination, "cred-b");
-    let ta = broker.issue(&a).await.unwrap().token;
-    let tb = broker.issue(&b).await.unwrap().token;
-    let ca = verify_credential(ta.expose(), &keys, &expected(&a)).unwrap();
-    let cb = verify_credential(tb.expose(), &keys, &expected(&b)).unwrap();
-    assert_ne!(ca.bind.salt, cb.bind.salt);
-    assert_ne!(ca.bind.digest, cb.bind.digest);
-    // The token carries no destination in clear text (it is digested; see
-    // the crate docs for why that is binding, not secrecy).
-    let payload = ta.expose().split('.').nth(1).unwrap();
-    let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .unwrap();
-    assert!(!String::from_utf8(json).unwrap().contains("0000000001"));
+    // No encryption key for an audience: nothing is issued.
+    let unknown = CredentialRequest {
+        credential_id: "cred-unknown-aud",
+        audience: "unregistered-provider",
+        ..request.clone()
+    };
+    assert_eq!(
+        broker.issue(&unknown).await.unwrap_err().class,
+        ErrorClass::Invalid
+    );
 }

@@ -35,8 +35,20 @@ fi
 echo "disk-guard: $reason; pruning build output" >&2
 # 1. Leftovers that are never reused once sources move on.
 rm -rf target/debug/incremental target/release/incremental target/*/incremental
-# Test and binary executables older than a day (rebuilt on demand).
-find target/debug/deps -maxdepth 1 -type f -perm -u+x -mtime +1 -delete 2>/dev/null || true
+# Superseded test and binary executables: each rebuild leaves the previous
+# `<name>-<hash>` behind. Keep the newest per name; cargo rebuilds on demand.
+for dir in target/debug/deps target/release/deps; do
+  [[ -d "$dir" ]] || continue
+  ls -t "$dir" | while read -r file; do
+    [[ -f "$dir/$file" && -x "$dir/$file" && "$file" != *.* ]] || continue
+    name=${file%-*}
+    if [[ " ${seen:-} " == *" $name "* ]]; then
+      rm -f "$dir/$file"
+    else
+      seen="${seen:-} $name"
+    fi
+  done
+done
 
 # 2. Still low: drop the whole build output.
 if (( $(free_gb) < min_free_gb )); then
