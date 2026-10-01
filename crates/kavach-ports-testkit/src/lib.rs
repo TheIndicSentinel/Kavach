@@ -262,6 +262,20 @@ pub mod mandate_store {
             .insert_child(record("child", Some("root"), 1))
             .await
             .expect("child under active parent");
+        let by_event = store
+            .root_for_event(TENANT, "lms", "evt-root")
+            .await
+            .expect("lookup")
+            .expect("root found by its source event");
+        assert_eq!(by_event.mandate.id, "root");
+        assert!(
+            store
+                .root_for_event(TENANT, "lms", "evt-child")
+                .await
+                .unwrap()
+                .is_none(),
+            "children are not roots"
+        );
     }
 
     async fn ancestors_and_revoke_tree<S: MandateStore>(store: &S) {

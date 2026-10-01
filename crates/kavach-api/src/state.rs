@@ -43,6 +43,7 @@ pub struct AppState {
     /// Serializes change decisions in this process, so commit order and
     /// live-swap order agree.
     governance_lock: tokio::sync::Mutex<()>,
+    dataplane: Option<crate::dataplane::Dataplane>,
 }
 
 #[path = "state_changes.rs"]
@@ -69,8 +70,9 @@ impl AppState {
         let (yaml_model, model_sha256) =
             read_model_file(config.model_path(), pack_signers.as_ref())?;
 
-        let (evidence, incidents, batch_jobs, admin, retention, changes) =
+        let (evidence, incidents, batch_jobs, admin, retention, changes, pool) =
             storage_backends(config).await?;
+        let dataplane = build_dataplane(config, pool.as_ref()).await?;
 
         if matches!(config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
             enforce_startup_pointer(&admin, config, pack.digest.as_deref(), &model_sha256).await?;
@@ -153,6 +155,7 @@ impl AppState {
                 i64::try_from(config.change_ttl_seconds).unwrap_or(i64::MAX),
             ),
             governance_lock: tokio::sync::Mutex::new(()),
+            dataplane,
         })
     }
 
@@ -177,6 +180,7 @@ impl AppState {
             mtls_principal_san: None,
             change_ttl_seconds: DEFAULT_CHANGE_TTL_HOURS * 3600,
             migration_database_url: None,
+            dataplane: None,
         };
         Self::from_config(&config).await
     }
@@ -235,6 +239,10 @@ impl AppState {
 
     pub fn batch_jobs(&self) -> &BatchJobBackend {
         &self.batch_jobs
+    }
+
+    pub fn dataplane(&self) -> Option<&crate::dataplane::Dataplane> {
+        self.dataplane.as_ref()
     }
 
     pub fn changes(&self) -> &ChangeRequestBackend {
@@ -411,6 +419,25 @@ impl AppState {
     }
 }
 
+/// The agent surfaces, when configured (ADR-007).
+async fn build_dataplane(
+    config: &ApiConfig,
+    pool: Option<&StoragePool>,
+) -> Result<Option<crate::dataplane::Dataplane>, ApiError> {
+    let Some(dp) = &config.dataplane else {
+        return Ok(None);
+    };
+    crate::dataplane::Dataplane::build(
+        dp,
+        pool,
+        config.insecure_dev,
+        config.oidc.as_ref().map(|o| o.audience.as_str()),
+    )
+    .await
+    .map(Some)
+    .map_err(|e| ApiError::Internal(format!("agent surfaces: {e}")))
+}
+
 type Backends = (
     EvidenceBackend,
     IncidentBackend,
@@ -418,6 +445,7 @@ type Backends = (
     AdminBackend,
     RetentionBackend,
     ChangeRequestBackend,
+    Option<StoragePool>,
 );
 
 async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
@@ -434,6 +462,7 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
                 ChangeRequestBackend::Memory(std::sync::Arc::new(MemoryChangeStore::new(
                     admin, retention,
                 ))),
+                None,
             )
         }
         EvidenceStoreKind::Postgres { database_url } => {
@@ -450,6 +479,7 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
                 AdminBackend::Postgres(pool.admin_store()),
                 RetentionBackend::Postgres(pool.retention_store()),
                 ChangeRequestBackend::Postgres(pool.change_request_store()),
+                Some(pool),
             )
         }
     })

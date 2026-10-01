@@ -63,6 +63,7 @@ fn config(root: &Path, database_url: &str, pack: &str, bootstrap_pack: bool) -> 
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
         migration_database_url: None,
+        dataplane: None,
     }
 }
 

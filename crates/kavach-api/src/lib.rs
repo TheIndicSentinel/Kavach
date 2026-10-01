@@ -6,6 +6,7 @@ pub mod change_requests;
 pub mod config;
 pub mod console;
 pub mod convert;
+pub mod dataplane;
 pub mod error;
 pub mod governance;
 pub mod grpc;
