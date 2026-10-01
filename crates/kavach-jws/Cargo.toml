@@ -1,0 +1,17 @@
+[package]
+name = "kavach-jws"
+description = "Strict canonical JWS (EdDSA, typ-checked, RFC 8785 payloads) shared by mandates, credentials and their verifiers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kavach-ports = { workspace = true }
+base64 = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+
+[lints]
+workspace = true

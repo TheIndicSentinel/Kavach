@@ -9,14 +9,15 @@ authors.workspace = true
 [dependencies]
 kavach-domain = { workspace = true }
 kavach-ports = { workspace = true }
+kavach-jws = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
-serde_json_canonicalizer = { workspace = true }
-base64 = { workspace = true }
 chrono.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+base64 = { workspace = true }
+serde_json_canonicalizer = { workspace = true }
 kavach-keys = { workspace = true }
 kavach-ports-testkit = { workspace = true }
 tokio.workspace = true

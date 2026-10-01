@@ -52,7 +52,6 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/change-requests/{id}/cancel",
             post(change_requests::cancel),
         )
-        .route("/v1/authorize", post(crate::dataplane::authorize))
         .route("/v1/admin/audit", get(list_audit_log))
         .route("/v1/admin/retention", get(get_retention_settings))
         .route("/v1/admin/tombstones", get(list_tombstones))

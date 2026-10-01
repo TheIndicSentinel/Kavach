@@ -221,7 +221,10 @@ A certificate with no SAN, or several SANs, of the configured type gets 401. A b
 
 **Upgrading from M1.5 (breaking).** Callers that sent only `X-Kavach-Principal` now get 401: issue access tokens, or run `--insecure-dev` locally. Body-only HMAC signatures are rejected; sign v2. The pilot compose file now requires `POSTGRES_PASSWORD`, `KAVACH_OIDC_ISSUER`/`KAVACH_OIDC_AUDIENCE`, and a `deploy/pilot-config/` directory with `entities.json` and `jwks.json`; Postgres is no longer published on the host.
 
-**Agent surfaces (ADR-007, H5a).** Enabled by `--agent-oidc-audience`. They add `POST /v1/authorize` (an agent-only **pre-check**: the decision the gateway would make, reserving and recording nothing) and `POST /v1/sor/events` on a separate listener (`--sor-listen`, default `127.0.0.1:8090`; bind it to the backend network only).
+**Agent surfaces (ADR-007, H5a).** Enabled by `--agent-oidc-audience`. They use **two extra listeners**:
+
+- **Agent listener** (`--agent-listen`, default `127.0.0.1:8091`). Serves `POST /v1/authorize` (an agent-only **pre-check**: the decision the gateway would make, reserving and recording nothing) and `/health`. It is the only listener to attach to the agent network; it never serves operator, admin, change-request, metrics or system-of-record routes, and the operator listener does not serve agent routes.
+- **System-of-record listener** (`--sor-listen`, default `127.0.0.1:8090`). Serves `POST /v1/sor/events`; bind it to the backend network only.
 
 | Flag / env | Meaning |
 |---|---|

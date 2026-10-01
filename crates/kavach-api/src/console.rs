@@ -11,7 +11,12 @@ mod embedded {
 
     static DIST: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/../../console/dist");
 
-    pub async fn fallback(uri: axum::http::Uri) -> Response {
+    /// Static files and the single-page fallback, for reads only: any other
+    /// method on an unknown path is 404, never the console page.
+    pub async fn fallback(method: axum::http::Method, uri: axum::http::Uri) -> Response {
+        if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
+            return StatusCode::NOT_FOUND.into_response();
+        }
         match lookup(uri.path()) {
             Some((content_type, bytes)) => (
                 StatusCode::OK,
