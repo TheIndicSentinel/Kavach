@@ -59,6 +59,10 @@ struct AgentArgs {
     /// System-of-record events accepted per second.
     #[arg(long, env = "KAVACH_SOR_RATE_PER_SECOND", default_value_t = 20)]
     sor_rate_per_second: u32,
+    /// Listener for agents (`/v1/authorize`, tools): the only listener to
+    /// attach to the agent network.
+    #[arg(long, env = "KAVACH_AGENT_LISTEN", default_value = "127.0.0.1:8091")]
+    agent_listen: SocketAddr,
     /// Listener for `POST /v1/sor/events` (bind to the backend network only).
     #[arg(long, env = "KAVACH_SOR_LISTEN", default_value = "127.0.0.1:8090")]
     sor_listen: SocketAddr,
@@ -321,6 +325,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let http_listen = cli.listen;
     let grpc_listen = cli.grpc_listen;
     let sor_listen = cli.agents.sor_listen;
+    let agent_listen = cli.agents.agent_listen;
     let config = cli
         .into_config()
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
@@ -331,8 +336,60 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .dataplane()
         .is_some()
         .then(|| kavach_api::dataplane::sor_router(state.clone()));
+    let agent_app = state
+        .dataplane()
+        .is_some()
+        .then(|| kavach_api::dataplane::agent_router(state.clone()));
     let grpc_service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
 
+    print_banner(&config, http_listen, grpc_listen, &pack_sha256);
+
+    match &sor_app {
+        Some(_) => eprintln!(
+            "kavach-api agent surfaces enabled: agents on {agent_listen} (the only listener for \
+             the agent network), /v1/sor/events on {sor_listen} (backend network only)"
+        ),
+        None => eprintln!("kavach-api agent surfaces disabled (no --agent-oidc-audience)"),
+    }
+
+    let tls_ref = config.tls.as_ref();
+    tokio::try_join!(
+        async move {
+            if let Some(app) = sor_app {
+                serve_http(app, sor_listen, tls_ref).await?;
+            }
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        },
+        async move {
+            if let Some(app) = agent_app {
+                serve_http(app, agent_listen, tls_ref).await?;
+            }
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        },
+        async move {
+            serve_http(http_app, http_listen, tls_ref).await?;
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        },
+        async move {
+            let mut builder = Server::builder();
+            if let Some(server_tls) = grpc_server_tls_config(tls_ref).await? {
+                builder = builder.tls_config(server_tls)?;
+            }
+            builder.add_service(grpc_service).serve(grpc_listen).await?;
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        }
+    )?;
+
+    Ok(())
+}
+
+/// Startup summary and warnings for unsafe development settings.
+fn print_banner(
+    config: &ApiConfig,
+    http_listen: SocketAddr,
+    grpc_listen: SocketAddr,
+    pack_sha256: &str,
+) {
     let tls_mode = if config.tls.as_ref().is_some_and(TlsConfig::is_mtls) {
         "mTLS"
     } else if config.tls.is_some() {
@@ -380,36 +437,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         insecure,
         pack_sha256
     );
-
-    match &sor_app {
-        Some(_) => eprintln!(
-            "kavach-api agent surfaces enabled: /v1/authorize (pre-check) on http, \
-             /v1/sor/events on {sor_listen} (bind to the backend network only)"
-        ),
-        None => eprintln!("kavach-api agent surfaces disabled (no --agent-oidc-audience)"),
-    }
-
-    let tls_ref = config.tls.as_ref();
-    tokio::try_join!(
-        async move {
-            if let Some(app) = sor_app {
-                serve_http(app, sor_listen, tls_ref).await?;
-            }
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        },
-        async move {
-            serve_http(http_app, http_listen, tls_ref).await?;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        },
-        async move {
-            let mut builder = Server::builder();
-            if let Some(server_tls) = grpc_server_tls_config(tls_ref).await? {
-                builder = builder.tls_config(server_tls)?;
-            }
-            builder.add_service(grpc_service).serve(grpc_listen).await?;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        }
-    )?;
-
-    Ok(())
 }

@@ -13,7 +13,7 @@ use base64::Engine;
 use ed25519_dalek::SigningKey;
 use http_body_util::BodyExt;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use kavach_api::dataplane::{sor_router, DataplaneConfig};
+use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig};
 use kavach_api::{
     router, AccessControlKind, ApiConfig, AppState, EvidenceStoreKind, JwksSource, OidcConfig,
 };
@@ -377,7 +377,7 @@ async fn authorize_is_an_agent_only_precheck() {
     let bearer = |t: String| ("authorization", format!("Bearer {t}"));
 
     let (status, body) = send(
-        router(s.clone()),
+        agent_router(s.clone()),
         "/v1/authorize",
         &[bearer(agent_token("collections-agent"))],
         read_fields(&mandate, "q-1"),
@@ -401,7 +401,7 @@ async fn authorize_is_an_agent_only_precheck() {
     // Another agent's token on the holder's mandate: a decision, BLOCK.
     // (No passport at all: refused before deciding.)
     let (status, _) = send(
-        router(s.clone()),
+        agent_router(s.clone()),
         "/v1/authorize",
         &[bearer(agent_token("rogue-agent"))],
         read_fields(&mandate, "q-2"),
@@ -411,7 +411,7 @@ async fn authorize_is_an_agent_only_precheck() {
 
     // Unknown mandate: BLOCK-shaped, not an error.
     let (status, body) = send(
-        router(s.clone()),
+        agent_router(s.clone()),
         "/v1/authorize",
         &[bearer(agent_token("collections-agent"))],
         read_fields("no-such-mandate", "q-3"),
@@ -431,7 +431,11 @@ async fn operator_and_agent_credentials_do_not_cross() {
     let authorize = |headers: Vec<(&'static str, String)>| {
         let s = s.clone();
         let body = read_fields(&mandate, "x-1");
-        async move { send(router(s), "/v1/authorize", &headers, body).await.0 }
+        async move {
+            send(agent_router(s), "/v1/authorize", &headers, body)
+                .await
+                .0
+        }
     };
     assert_eq!(authorize(vec![]).await, StatusCode::UNAUTHORIZED);
     assert_eq!(
@@ -507,7 +511,7 @@ async fn agent_surfaces_on_postgres() {
     );
     let mandate = issue(&s, "evt-pg").await;
     let (status, body) = send(
-        router(s.clone()),
+        agent_router(s.clone()),
         "/v1/authorize",
         &[(
             "authorization",
@@ -520,5 +524,48 @@ async fn agent_surfaces_on_postgres() {
         (status, body["decision"].clone()),
         (StatusCode::OK, json!("PASS")),
         "{body}"
+    );
+}
+
+/// The agent listener serves agent routes only; the operator listener does
+/// not serve agent routes (ADR-007).
+#[tokio::test]
+async fn agent_and_operator_listeners_are_separate() {
+    let s = state(50).await;
+    let status = |app: axum::Router, method: &'static str, uri: &'static str| async move {
+        app.oneshot(
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    };
+    for (method, uri) in [
+        ("GET", "/v1/runtime"),
+        ("GET", "/metrics"),
+        ("GET", "/v1/admin/audit"),
+        ("GET", "/v1/change-requests"),
+        ("POST", "/v1/change-requests"),
+        ("POST", "/v1/sor/events"),
+        ("POST", "/v1/evaluate"),
+    ] {
+        assert_eq!(
+            status(agent_router(s.clone()), method, uri).await,
+            StatusCode::NOT_FOUND,
+            "{method} {uri} must not be served to agents"
+        );
+    }
+    assert_eq!(
+        status(agent_router(s.clone()), "GET", "/health").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        status(router(s.clone()), "POST", "/v1/authorize").await,
+        StatusCode::NOT_FOUND,
+        "the operator listener does not serve agent routes"
     );
 }

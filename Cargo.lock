@@ -2220,6 +2220,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-jws"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "kavach-ports",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+]
+
+[[package]]
 name = "kavach-keys"
 version = "0.1.0"
 dependencies = [
@@ -2245,6 +2256,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "kavach-domain",
+ "kavach-jws",
  "kavach-keys",
  "kavach-ports",
  "kavach-ports-testkit",

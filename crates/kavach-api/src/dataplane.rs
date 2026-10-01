@@ -664,6 +664,19 @@ pub async fn sor_event(
     }
 }
 
+/// Router for the agent listener (`--agent-listen`, the only listener on the
+/// agent network): agent routes and liveness — never operator, admin,
+/// change-request, metrics or system-of-record routes (ADR-007).
+pub fn agent_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/v1/authorize", post(authorize))
+        .route(
+            "/health",
+            axum::routing::get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
+        )
+        .with_state(state)
+}
+
 /// Router for the system-of-record listener (backend network only).
 pub fn sor_router(state: Arc<AppState>) -> Router {
     Router::new()
