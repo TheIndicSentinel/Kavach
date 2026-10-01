@@ -255,6 +255,41 @@ mod tests {
         assert_eq!(URL_SAFE_NO_PAD.encode(key), "VqqN6vgjbSBcIijNcacQGg");
     }
 
+    fn hex32(text: &str) -> [u8; 32] {
+        hex::decode(text).unwrap().try_into().unwrap()
+    }
+
+    /// RFC 8037 Appendix A.6 (the RFC 7748 §6.1 keys): the recipient's
+    /// static key, the ephemeral key and the agreed secret.
+    #[test]
+    fn x25519_matches_rfc8037_appendix_a6() {
+        let bob = DecryptionKey::from_bytes(
+            "bob",
+            hex32("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb"),
+        );
+        let bob_public = bob.recipient().public;
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(bob_public),
+            "3p7bfXt9wbTTW2HC7OQ1Nz-DQ8hbeGdNrfx-FG-IK08"
+        );
+        let ephemeral = StaticSecret::from(hex32(
+            "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+        ));
+        let epk = X25519Public::from(&ephemeral);
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(epk.as_bytes()),
+            "hSDwCYkwp1R0i33ctD73Wg2_Og0mOBr066SpjqqbTmo"
+        );
+        let z = bob.secret.diffie_hellman(&epk);
+        assert_eq!(
+            hex::encode(z.as_bytes()),
+            "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
+        );
+        // And both sides agree.
+        let z2 = ephemeral.diffie_hellman(&X25519Public::from(bob_public));
+        assert_eq!(z.as_bytes(), z2.as_bytes());
+    }
+
     fn key(kid: &str, seed: u8) -> DecryptionKey {
         DecryptionKey::from_bytes(kid, [seed; 32])
     }

@@ -13,3 +13,4 @@ console/*.tsbuildinfo
 # Pilot deployment config (entities, JWKS) — site-specific, never committed
 /deploy/pilot-config/
 /deploy/.env
+scripts/jose-crosscheck/node_modules/

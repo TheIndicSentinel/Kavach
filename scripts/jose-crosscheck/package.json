@@ -1,0 +1,10 @@
+{
+  "name": "kavach-jose-crosscheck",
+  "private": true,
+  "description": "Independent check: the checked-in Kavach credential vector decrypts and verifies with the jose library (ADR-006 D12).",
+  "type": "module",
+  "license": "MIT",
+  "dependencies": {
+    "jose": "6.2.12"
+  }
+}

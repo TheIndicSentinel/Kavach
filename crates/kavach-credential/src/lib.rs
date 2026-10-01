@@ -98,9 +98,59 @@ pub struct CredentialClaims {
     pub send_by: Option<i64>,
 }
 
+/// Decrypts the JWE addressed to `key`, verifies the inner JWS against the
+/// trusted credential keys and checks the audience. No time checks: a
+/// provider runs its idempotency lookup between this and [`check_time`],
+/// so a stored result stays recoverable after expiry without ever allowing
+/// a new delivery.
+pub fn decrypt_and_verify(
+    token: &str,
+    signing_keys: &KeySet,
+    key: &DecryptionKey,
+    audience: &str,
+) -> Result<CredentialClaims, PortError> {
+    let jws = jwe::decrypt(token, key, TYP_CREDENTIAL_JWE, TYP_CREDENTIAL)?;
+    let jws =
+        std::str::from_utf8(&jws).map_err(|_| PortError::invalid("credential is not UTF-8"))?;
+    let (_, claims): (String, CredentialClaims) =
+        kavach_jws::verify(jws, TYP_CREDENTIAL, signing_keys)?;
+    if claims.aud != audience {
+        return Err(PortError::rejected("credential is for another audience"));
+    }
+    Ok(claims)
+}
+
+/// Lifetime and deadline checks at `now` on the verifier's clock.
+/// `leeway_seconds` tolerates clock skew on `iat` and `exp` only; it never
+/// extends `send_by` (a policy deadline), which it makes stricter instead.
+pub fn check_time(
+    claims: &CredentialClaims,
+    now: DateTime<Utc>,
+    leeway_seconds: i64,
+) -> Result<(), PortError> {
+    let now = now.timestamp();
+    let leeway = leeway_seconds.max(0);
+    if claims.exp - claims.iat > MAX_CREDENTIAL_TTL_SECONDS || claims.exp <= claims.iat {
+        return Err(PortError::rejected("credential lifetime out of bounds"));
+    }
+    if claims.iat > now + IAT_SKEW_SECONDS + leeway {
+        return Err(PortError::rejected("credential issued in the future"));
+    }
+    if now >= claims.exp + leeway {
+        return Err(PortError::rejected("credential expired"));
+    }
+    if claims
+        .send_by
+        .is_some_and(|send_by| now + leeway >= send_by || claims.exp > send_by)
+    {
+        return Err(PortError::rejected("credential past send_by"));
+    }
+    Ok(())
+}
+
 /// Decrypts and verifies a credential presented to the provider `audience`
 /// at `now`: JWE to the provider's key, JWS from a trusted credential key,
-/// `aud`, lifetime and `send_by`. The provider then delivers to
+/// `aud`, lifetime and `send_by` (no leeway). The provider then delivers to
 /// `claims.req` (destination, channel, template). Replay (`jti`) is the
 /// provider's idempotency check, not this function's.
 pub fn open_credential(
@@ -110,31 +160,19 @@ pub fn open_credential(
     audience: &str,
     now: DateTime<Utc>,
 ) -> Result<CredentialClaims, PortError> {
-    let jws = jwe::decrypt(token, key, TYP_CREDENTIAL_JWE, TYP_CREDENTIAL)?;
-    let jws =
-        std::str::from_utf8(&jws).map_err(|_| PortError::invalid("credential is not UTF-8"))?;
-    let (_, claims): (String, CredentialClaims) =
-        kavach_jws::verify(jws, TYP_CREDENTIAL, signing_keys)?;
-    let now = now.timestamp();
-    if claims.aud != audience {
-        return Err(PortError::rejected("credential is for another audience"));
-    }
-    if claims.iat > now + IAT_SKEW_SECONDS {
-        return Err(PortError::rejected("credential issued in the future"));
-    }
-    if claims.exp - claims.iat > MAX_CREDENTIAL_TTL_SECONDS || claims.exp <= claims.iat {
-        return Err(PortError::rejected("credential lifetime out of bounds"));
-    }
-    if now >= claims.exp {
-        return Err(PortError::rejected("credential expired"));
-    }
-    if claims
-        .send_by
-        .is_some_and(|send_by| now >= send_by || claims.exp > send_by)
-    {
-        return Err(PortError::rejected("credential past send_by"));
-    }
+    let claims = decrypt_and_verify(token, signing_keys, key, audience)?;
+    check_time(&claims, now, 0)?;
     Ok(claims)
+}
+
+/// Hex SHA-256 of the canonical (RFC 8785) claims: "the same credential"
+/// for idempotency. Token bytes cannot serve, since every encryption of the
+/// same claims differs.
+pub fn claims_digest(claims: &CredentialClaims) -> Result<String, PortError> {
+    use sha2::{Digest, Sha256};
+    let canonical = serde_json_canonicalizer::to_vec(claims)
+        .map_err(|e| PortError::invalid(format!("canonical claims: {e}")))?;
+    Ok(hex::encode(Sha256::digest(canonical)))
 }
 
 /// What a provider that also receives the request fields expects.

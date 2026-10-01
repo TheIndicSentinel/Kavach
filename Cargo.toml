@@ -6,6 +6,7 @@ members = [
     "crates/kavach-dataplane",
     "crates/kavach-jws",
     "crates/kavach-credential",
+    "crates/kavach-mock-provider",
     "crates/kavach-authz",
     "crates/kavach-mandate",
     "crates/kavach-ports",
