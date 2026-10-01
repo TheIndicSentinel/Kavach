@@ -4,12 +4,16 @@
 
 pub mod authorize;
 pub mod detect;
+pub mod gateway;
 pub mod resolve;
 pub mod tools;
 
 pub use authorize::{
     policy_versions, validate_request_id, AgentIdentity, AuthorizeConfig, AuthorizeCore,
     CommitStatus, CredentialGrant, Decided, MandateVerifier, Mode, ToolCall,
+};
+pub use gateway::{
+    execute, ForwardResult, Forwarder, GatewayDeps, GatewayError, GatewayObserver, GatewayReply,
 };
 pub use resolve::FixtureResolver;
 pub use tools::{RegistryTrust, ToolRegistry, ToolRequest, Trust};

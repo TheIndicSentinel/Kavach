@@ -14,6 +14,10 @@ pub struct Metrics {
     evaluate_latency_ms: HistogramVec,
     incident_write_failures: prometheus::IntCounter,
     model_pack_mismatch: prometheus::IntGauge,
+    gateway_calls: IntCounterVec,
+    gateway_malformed: prometheus::IntCounter,
+    gateway_jti_conflicts: prometheus::IntCounter,
+    gateway_outcome_write_failures: prometheus::IntCounter,
 }
 
 impl Metrics {
@@ -48,12 +52,41 @@ impl Metrics {
         )?;
         registry.register(Box::new(incident_write_failures.clone()))?;
         registry.register(Box::new(model_pack_mismatch.clone()))?;
+        // Gateway: labels are fixed vocabularies only (registry tool names,
+        // decisions, outcomes), never agent-supplied strings.
+        let gateway_calls = IntCounterVec::new(
+            Opts::new(
+                "kavach_gateway_calls_total",
+                "Gateway tool calls by tool, decision and outcome",
+            ),
+            &["tool", "decision", "outcome"],
+        )?;
+        let gateway_malformed = prometheus::IntCounter::new(
+            "kavach_gateway_malformed_total",
+            "Gateway requests refused as malformed (400; nothing recorded)",
+        )?;
+        let gateway_jti_conflicts = prometheus::IntCounter::new(
+            "kavach_gateway_jti_conflicts_total",
+            "ALERT: a provider reported a credential id used for other claims (outcome unknown)",
+        )?;
+        let gateway_outcome_write_failures = prometheus::IntCounter::new(
+            "kavach_gateway_outcome_write_failures_total",
+            "ALERT: an outcome happened but could not be recorded",
+        )?;
+        registry.register(Box::new(gateway_calls.clone()))?;
+        registry.register(Box::new(gateway_malformed.clone()))?;
+        registry.register(Box::new(gateway_jti_conflicts.clone()))?;
+        registry.register(Box::new(gateway_outcome_write_failures.clone()))?;
         Ok(Self {
             registry: Arc::new(registry),
             evaluate_total,
             evaluate_latency_ms,
             incident_write_failures,
             model_pack_mismatch,
+            gateway_calls,
+            gateway_malformed,
+            gateway_jti_conflicts,
+            gateway_outcome_write_failures,
         })
     }
 
@@ -86,6 +119,10 @@ impl Metrics {
             .inc();
     }
 
+    pub fn observe_gateway_malformed(&self) {
+        self.gateway_malformed.inc();
+    }
+
     pub fn gather_text(&self) -> Result<String, prometheus::Error> {
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
@@ -106,6 +143,31 @@ fn decision_label(decision: Decision) -> &'static str {
 impl Default for Metrics {
     fn default() -> Self {
         Self::new().expect("metrics init")
+    }
+}
+
+impl kavach_dataplane::GatewayObserver for Metrics {
+    fn call(
+        &self,
+        tool: &str,
+        decision: Decision,
+        outcome: Option<kavach_ports::agent_evidence::Outcome>,
+    ) {
+        self.gateway_calls
+            .with_label_values(&[
+                tool,
+                decision_label(decision),
+                outcome.map_or("none", kavach_ports::agent_evidence::Outcome::as_str),
+            ])
+            .inc();
+    }
+
+    fn jti_conflict(&self) {
+        self.gateway_jti_conflicts.inc();
+    }
+
+    fn outcome_write_failed(&self) {
+        self.gateway_outcome_write_failures.inc();
     }
 }
 

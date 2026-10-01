@@ -8,6 +8,7 @@ pub mod console;
 pub mod convert;
 pub mod dataplane;
 pub mod error;
+pub mod forward;
 pub mod governance;
 pub mod grpc;
 pub mod hmac_auth;

@@ -32,15 +32,25 @@ elif [[ "${1:-}" == "--check-size" ]] && (( $(target_gb) > max_target_gb )); the
 fi
 [[ -n "$reason" ]] || exit 0
 
+# Never touch target/ while a build or test run is using it: deleting an
+# executable cargo is about to run fails that run (two targets can share a
+# `<name>-<hash>` prefix, e.g. a binary and its unit-test runner).
+if pgrep -x cargo >/dev/null 2>&1 || pgrep -x rustc >/dev/null 2>&1; then
+  echo "disk-guard: $reason, but cargo is running; not pruning now" >&2
+  exit 0
+fi
+
 echo "disk-guard: $reason; pruning build output" >&2
 # 1. Leftovers that are never reused once sources move on.
 rm -rf target/debug/incremental target/release/incremental target/*/incremental
 # Superseded test and binary executables: each rebuild leaves the previous
-# `<name>-<hash>` behind. Keep the newest per name; cargo rebuilds on demand.
+# `<name>-<hash>` behind. Keep the newest per name and anything touched in
+# the last 30 minutes; cargo rebuilds a missing output on demand.
 for dir in target/debug/deps target/release/deps; do
   [[ -d "$dir" ]] || continue
   ls -t "$dir" | while read -r file; do
     [[ -f "$dir/$file" && -x "$dir/$file" && "$file" != *.* ]] || continue
+    [[ -n "$(find "$dir/$file" -mmin +30 2>/dev/null)" ]] || continue
     name=${file%-*}
     if [[ " ${seen:-} " == *" $name "* ]]; then
       rm -f "$dir/$file"

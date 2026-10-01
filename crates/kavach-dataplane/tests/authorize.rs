@@ -575,3 +575,163 @@ async fn only_the_creator_may_forward_and_outcomes_are_recorded_once() {
         .unwrap_err();
     assert_eq!(err.class, kavach_ports::ErrorClass::Invalid);
 }
+
+/// A resolver that takes so long the deadline passes while it runs.
+struct SlowResolver {
+    clock: Arc<FakeClock>,
+    by: Duration,
+}
+
+impl kavach_ports::ReferenceResolver for SlowResolver {
+    fn resolve(
+        &self,
+        _tenant_id: &str,
+        _subject_ref: &str,
+        _channel: &str,
+    ) -> impl std::future::Future<Output = Result<kavach_ports::Destination, kavach_ports::PortError>>
+           + Send {
+        self.clock.advance(self.by);
+        std::future::ready(Ok(kavach_ports::Destination::new("+910000000001")))
+    }
+
+    fn describe(&self) -> String {
+        "slow".into()
+    }
+}
+
+/// Counts forwards; a forward must never happen in these tests.
+#[derive(Default)]
+struct CountingForwarder(std::sync::atomic::AtomicUsize);
+
+impl kavach_dataplane::Forwarder for CountingForwarder {
+    fn forward(
+        &self,
+        _provider: &str,
+        _credential: &kavach_ports::TokenSecret,
+    ) -> impl std::future::Future<Output = kavach_dataplane::ForwardResult> + Send {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::future::ready(kavach_dataplane::ForwardResult::Responded {
+            status: 202,
+            message_id: None,
+        })
+    }
+}
+
+struct NoMetrics;
+
+impl kavach_dataplane::GatewayObserver for NoMetrics {
+    fn call(&self, _: &str, _: Decision, _: Option<kavach_ports::agent_evidence::Outcome>) {}
+    fn jti_conflict(&self) {}
+    fn outcome_write_failed(&self) {}
+}
+
+/// Addition 2: a slow resolver or broker must not push a send past
+/// `send_by`. Trusted time is re-checked just before forwarding; a passed
+/// deadline is `not_executed` / `send_by_passed`, and nothing is sent.
+#[tokio::test]
+async fn a_send_that_would_land_after_send_by_is_not_executed() {
+    use kavach_ports::agent_evidence::Outcome;
+    let w = world();
+    w.at(ist(18, 59, 50));
+    let mandate = w.mandate_for("B-9382").await;
+    let mut keys = InMemoryKeyProvider::new();
+    keys.insert_seed("kavach-credential-1", [5u8; 32]).unwrap();
+    let broker = kavach_credential::JoseCredentialBroker::new(
+        keys,
+        "kavach-credential-1",
+        "kavach",
+        BTreeMap::from([(
+            "mock-messaging".to_string(),
+            kavach_credential::DecryptionKey::from_bytes("enc", [11u8; 32]).recipient(),
+        )]),
+    );
+    let forwarder = CountingForwarder::default();
+    let resolver = SlowResolver {
+        clock: Arc::clone(&w.clock),
+        by: Duration::seconds(20),
+    };
+    let deps = kavach_dataplane::GatewayDeps {
+        core: &w.core,
+        resolver: &resolver,
+        broker: &broker,
+        forwarder: &forwarder,
+        observer: &NoMetrics,
+    };
+    let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
+        "mandate_id": mandate,
+        "request_id": "slow-1",
+        "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" }
+    }))
+    .unwrap();
+    let reply =
+        kavach_dataplane::execute(&deps, &agent("collections-agent"), "send_reminder", request)
+            .await
+            .unwrap();
+    assert_eq!(reply.decision, Decision::Pass, "allowed at 18:59:50");
+    // The broker itself refuses a credential past send_by.
+    assert_eq!(reply.outcome, Some(Outcome::NotExecuted));
+    assert_eq!(reply.outcome_reason.as_deref(), Some("credential_refused"));
+
+    // A slow broker: the credential is issued in time, the deadline passes
+    // before the forward; the gateway's own re-check catches it.
+    w.at(ist(18, 59, 50));
+    let slow_broker = SlowBroker {
+        inner: broker,
+        clock: Arc::clone(&w.clock),
+        by: Duration::seconds(15),
+    };
+    let fast = SlowResolver {
+        clock: Arc::clone(&w.clock),
+        by: Duration::zero(),
+    };
+    let deps = kavach_dataplane::GatewayDeps {
+        core: &w.core,
+        resolver: &fast,
+        broker: &slow_broker,
+        forwarder: &forwarder,
+        observer: &NoMetrics,
+    };
+    let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
+        "mandate_id": mandate,
+        "request_id": "slow-2",
+        "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" }
+    }))
+    .unwrap();
+    let reply =
+        kavach_dataplane::execute(&deps, &agent("collections-agent"), "send_reminder", request)
+            .await
+            .unwrap();
+    assert_eq!(reply.outcome, Some(Outcome::NotExecuted));
+    assert_eq!(reply.outcome_reason.as_deref(), Some("send_by_passed"));
+    assert_eq!(
+        forwarder.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "never forwarded"
+    );
+}
+
+/// A broker whose issuance takes `by` (the clock moves while it runs).
+struct SlowBroker<B> {
+    inner: B,
+    clock: Arc<FakeClock>,
+    by: Duration,
+}
+
+impl<B: kavach_ports::CredentialBroker> kavach_ports::CredentialBroker for SlowBroker<B> {
+    async fn issue(
+        &self,
+        request: &kavach_ports::CredentialRequest<'_>,
+    ) -> Result<kavach_ports::IssuedCredential, kavach_ports::PortError> {
+        let issued = self.inner.issue(request).await;
+        self.clock.advance(self.by);
+        issued
+    }
+
+    fn revoke_by_mandate(
+        &self,
+        tenant_id: &str,
+        mandate_id: &str,
+    ) -> impl std::future::Future<Output = Result<u64, kavach_ports::PortError>> + Send {
+        self.inner.revoke_by_mandate(tenant_id, mandate_id)
+    }
+}
