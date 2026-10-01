@@ -11,6 +11,7 @@ kavach-ports = { workspace = true }
 kavach-domain = { workspace = true }
 chrono.workspace = true
 tokio.workspace = true
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 tokio.workspace = true

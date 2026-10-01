@@ -2203,12 +2203,14 @@ dependencies = [
  "ed25519-dalek",
  "getrandom 0.3.4",
  "hex",
+ "hmac",
  "kavach-policy",
  "kavach-ports",
  "kavach-ports-testkit",
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tokio",
 ]
 
@@ -2251,9 +2253,13 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "ed25519-dalek",
+ "hex",
  "kavach-domain",
  "kavach-evidence",
  "kavach-policy",
+ "serde",
+ "serde_json_canonicalizer",
+ "sha2",
  "thiserror 2.0.20",
 ]
 
@@ -2262,6 +2268,7 @@ name = "kavach-ports-testkit"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "ed25519-dalek",
  "kavach-domain",
  "kavach-ports",
  "tokio",
@@ -2275,6 +2282,7 @@ dependencies = [
  "kavach-domain",
  "kavach-evaluate",
  "kavach-evidence",
+ "kavach-keys",
  "kavach-policy",
  "kavach-ports",
  "kavach-ports-testkit",
