@@ -2152,6 +2152,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-credential"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "getrandom 0.3.4",
+ "hex",
+ "kavach-jws",
+ "kavach-keys",
+ "kavach-ports",
+ "kavach-ports-testkit",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "kavach-dataplane"
 version = "0.1.0"
 dependencies = [
@@ -2300,6 +2319,7 @@ dependencies = [
  "serde_json_canonicalizer",
  "sha2",
  "thiserror 2.0.20",
+ "zeroize",
 ]
 
 [[package]]

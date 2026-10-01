@@ -5,6 +5,7 @@
 //! exercise the same contract as production.
 
 pub mod agent_evidence;
+pub mod credential_broker;
 
 use std::collections::HashMap;
 use std::future::{ready, Future};

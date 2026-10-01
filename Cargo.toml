@@ -5,6 +5,7 @@ members = [
     "crates/kavach-clocksync",
     "crates/kavach-dataplane",
     "crates/kavach-jws",
+    "crates/kavach-credential",
     "crates/kavach-authz",
     "crates/kavach-mandate",
     "crates/kavach-ports",
@@ -24,6 +25,7 @@ default-members = [
     "crates/kavach-clocksync",
     "crates/kavach-dataplane",
     "crates/kavach-jws",
+    "crates/kavach-credential",
     "crates/kavach-mandate",
     "crates/kavach-ports",
     "crates/kavach-ports-testkit",
@@ -62,6 +64,7 @@ kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0" }
 kavach-storage = { path = "crates/kavach-storage", version = "0.1.0" }
 kavach-dataplane = { path = "crates/kavach-dataplane", version = "0.1.0" }
 kavach-jws = { path = "crates/kavach-jws", version = "0.1.0" }
+kavach-credential = { path = "crates/kavach-credential", version = "0.1.0" }
 kavach-clocksync = { path = "crates/kavach-clocksync", version = "0.1.0" }
 kavach-auth = { path = "crates/kavach-auth", version = "0.1.0" }
 kavach-batch = { path = "crates/kavach-batch", version = "0.1.0" }
@@ -71,6 +74,7 @@ kavach-keys = { path = "crates/kavach-keys", version = "0.1.0" }
 ed25519-dalek = "2.2.0"
 getrandom = "0.3.3"
 hex = "0.4.3"
+zeroize = "1.8"
 proptest = "1.11.0"
 kavach-mandate = { path = "crates/kavach-mandate", version = "0.1.0" }
 serde_json_canonicalizer = "0.3.2"

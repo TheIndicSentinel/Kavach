@@ -61,6 +61,7 @@ ops_net
 ### 6. Backend credential acceptance
 
 - Reference backends (mock LMS, mock messaging, mock voice) accept **only** broker-issued credentials: short-lived, audience-bound, bound to `mandate_id`, with a `jti` replay cache — or secrets injected by the gateway that the agent never sees and that rotate automatically.
+- **Credential format (H5b).** A JWS (`typ: kavach-credential+jws`) signed with a dedicated credential key, binding tenant, agent, `mandate_id`, the evidence `record_id`, `jti` (= the record's `credential_id`), `aud`, `action`, `iat`, `exp` (≤ 15 s, ≤ `send_by`) and a salted SHA-256 of the canonical `{channel, destination, template_id}`. Providers verify with `kavach_credential::verify_credential` and use the `jti` as their idempotency key. The salt binds the request but does not hide the destination; a credential is a bearer secret that may reveal personal data. Encrypting the destination to the provider's key (JWE, ECDH-ES), with the provider taking the destination from the credential, is P1.
 - No backend secret appears in agent containers, their environment, mounted files or images. CI scans images and environments for secrets.
 - Credentials issued after human approval are single-use and bound to the approved `action_hash` (PRD D17).
 

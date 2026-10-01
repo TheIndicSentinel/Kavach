@@ -5,6 +5,7 @@
 //! conformance suites live in `kavach-ports-testkit`.
 
 pub mod agent_evidence;
+pub mod credential;
 mod error;
 mod evidence;
 mod keys;
@@ -13,6 +14,10 @@ mod policy;
 mod replay;
 mod time;
 
+pub use credential::{
+    CredentialBroker, CredentialRequest, Destination, IssuedCredential, TokenSecret,
+    MAX_CREDENTIAL_TTL_SECONDS,
+};
 pub use error::{ErrorClass, PortError};
 pub use evidence::{
     EvaluateIncident, EvidenceStore, IncidentRecorder, IncidentWriteError, NoopIncidentRecorder,
