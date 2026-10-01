@@ -31,7 +31,7 @@ The MVP is a **fully local, reproducible, free/open-source reference implementat
 | D2 | Mandate encoding: JWS v1 behind a `MandateCodec`; server-side delegation. |
 | D3 | Native Rust MCP/HTTP gateway → `/v1/authorize`; core independent of MCP. |
 | D4 | Postgres outbox + LISTEN/NOTIFY behind an `EventBus` port. |
-| D5 | **Licence: target Apache-2.0 for the future open-core release. Before relicensing, confirm a single copyright holder or obtain consent from every contributor whose code is relicensed. Until that audit completes, the existing MIT licence remains authoritative.** Dependency allowlist unchanged; `deny.toml` will document that `BSL-1.0` is the Boost Software License, not BUSL. |
+| D5 | **Licence: Apache-2.0 (relicensed from MIT on 2026-10-01, #52, after the contributor audit below confirmed a single copyright holder). Contributions under the DCO (no CLA): outside contributions are Apache-2.0 only and cannot be relicensed, so the enterprise plane stays in a separate repository (OPEN_CORE.md).** Dependency allowlist unchanged; `deny.toml` will document that `BSL-1.0` is the Boost Software License, not BUSL. |
 | D6 | 100% reproducible with free/open-source/local resources; no external free service is part of any security guarantee. |
 | D7 | Consent: domain model + fixture shaped as a ReBIT consent-artefact subset + contact-preference store; live integrations in Stage 2. |
 | D8 | Security boundary = gateway + broker + network isolation; SDKs are not security-critical. |
@@ -161,7 +161,7 @@ The MVP is a **fully local, reproducible, free/open-source reference implementat
 
 1. **Public name:** shortlist held privately. Needs formal IP India / WIPO / USPTO searches (Classes 9, 42, 45; also 35 and 36) on the final pick. When do crates get renamed from `kavach-*` — on clearance or at launch?
 2. ~~**Repository visibility**~~ — resolved: `TheIndicSentinel/Kavach` is private until launch.
-3. ~~**Contributor audit for D5**~~ — resolved: the copyright holder is the GitHub account owner `TheIndicSentinel`, including commits made by AI coding agents (e.g. Cursor Agent) under that account; `LICENSE` updated accordingly. Relicensing to Apache-2.0 remains a separate, explicit decision.
+3. ~~**Contributor audit for D5**~~ — resolved: the copyright holder is the GitHub account owner `TheIndicSentinel`, including the owner's own local commits (author `Arjun`, confirmed by the owner on 2026-10-01) and commits made by AI coding agents (e.g. Cursor Agent, Claude) under that account; `LICENSE` updated accordingly. Relicensed to Apache-2.0 on 2026-10-01 (#52).
 4. **Model pins:** which two Apache-2.0 models, pinned by version, after a licence check.
 5. ~~**Tenant migration**~~ — resolved in ADR-005 §1–3 (tracked migrations, `tenant_id` default, existing chain becomes partition 0, hashes never recomputed).
 6. ~~**Time-sync thresholds**~~ — resolved in ADR-003 §7 (kernel sync status; critical actions require `max_error ≤ 1000 ms`; explicit `allow_unverified` developer profile refused in enforce mode).
