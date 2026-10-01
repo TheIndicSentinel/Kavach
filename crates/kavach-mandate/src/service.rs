@@ -142,6 +142,17 @@ where
     /// `[nbf, exp)`; and each link is a valid narrowing of its parent. A
     /// valid signature alone is not sufficient.
     pub async fn verify_active(&self, token: &str) -> Result<Mandate, PortError> {
+        self.verify_active_chain(token)
+            .await
+            .map(|(mandate, _)| mandate)
+    }
+
+    /// As [`Self::verify_active`], also returning the verified chain of
+    /// mandate ids from the root to this mandate (for evidence).
+    pub async fn verify_active_chain(
+        &self,
+        token: &str,
+    ) -> Result<(Mandate, Vec<String>), PortError> {
         let (_, claimed): (String, Mandate) =
             jws::verify(token, TYP_MANDATE, &self.config.mandate_keys)?;
         let stored = self
@@ -157,7 +168,8 @@ where
         let mandate = self.check_record(&stored, now)?;
         if mandate.depth == 0 {
             return if mandate.parent_id.is_none() {
-                Ok(mandate)
+                let id = mandate.id.clone();
+                Ok((mandate, vec![id]))
             } else {
                 Err(PortError::rejected("a root mandate cannot have a parent"))
             };
@@ -196,7 +208,9 @@ where
                 "delegation chain does not end at a root",
             ));
         }
-        Ok(mandate)
+        let mut ids: Vec<String> = chain.iter().rev().map(|s| s.mandate.id.clone()).collect();
+        ids.push(mandate.id.clone());
+        Ok((mandate, ids))
     }
 
     /// One stored mandate: its token verifies and decodes to the stored

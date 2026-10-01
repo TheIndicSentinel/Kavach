@@ -2148,6 +2148,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-dataplane"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "kavach-authz",
+ "kavach-domain",
+ "kavach-keys",
+ "kavach-mandate",
+ "kavach-ports",
+ "kavach-ports-testkit",
+ "kavach-storage",
+ "serde",
+ "serde_json",
+ "serde_json_canonicalizer",
+ "sha2",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "kavach-domain"
 version = "0.1.0"
 dependencies = [

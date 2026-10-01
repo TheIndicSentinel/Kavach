@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/kavach-cedar-analysis",
     "crates/kavach-clocksync",
+    "crates/kavach-dataplane",
     "crates/kavach-authz",
     "crates/kavach-mandate",
     "crates/kavach-ports",
@@ -20,6 +21,7 @@ members = [
 default-members = [
     "crates/kavach-authz",
     "crates/kavach-clocksync",
+    "crates/kavach-dataplane",
     "crates/kavach-mandate",
     "crates/kavach-ports",
     "crates/kavach-ports-testkit",
@@ -56,6 +58,7 @@ kavach-policy = { path = "crates/kavach-policy", version = "0.1.0" }
 kavach-evidence = { path = "crates/kavach-evidence", version = "0.1.0" }
 kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0" }
 kavach-storage = { path = "crates/kavach-storage", version = "0.1.0" }
+kavach-dataplane = { path = "crates/kavach-dataplane", version = "0.1.0" }
 kavach-auth = { path = "crates/kavach-auth", version = "0.1.0" }
 kavach-batch = { path = "crates/kavach-batch", version = "0.1.0" }
 kavach-ports = { path = "crates/kavach-ports", version = "0.1.0" }
