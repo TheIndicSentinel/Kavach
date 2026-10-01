@@ -220,7 +220,12 @@ async fn revocation_reaches_the_whole_chain_and_blocks_new_children() {
         .unwrap();
     // root, the non-re-delegating child, middle and leaf.
     assert_eq!(outcome.revoked.len(), 4);
-    assert!(outcome.publish_errors.is_empty());
+    assert_eq!(
+        outcome.publish_errors.len(),
+        0,
+        "{:?}",
+        outcome.publish_errors
+    );
     assert!(f.service.verify_active(&leaf).await.is_err());
     let again = DelegationRequest {
         actions: set(&["read_fields"]),

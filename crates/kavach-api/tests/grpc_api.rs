@@ -110,7 +110,7 @@ async fn grpc_evaluate_returns_pass() {
         response.policy_decision,
         i32::from(kavach_api::proto::kavach::v1::Decision::Pass)
     );
-    assert!(!response.evidence_id.is_empty());
+    assert_ne!(response.evidence_id, "");
 
     handle.abort();
 }

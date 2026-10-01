@@ -286,7 +286,7 @@ async fn refuses_credentials_that_do_not_authorise_this_request_now() {
         (status, body["reason"].as_str()),
         (400, Some("malformed_credential"))
     );
-    assert!(w.inbox().await.is_empty());
+    assert_eq!(w.inbox().await.len(), 0);
     w.assert_no_destination();
 }
 

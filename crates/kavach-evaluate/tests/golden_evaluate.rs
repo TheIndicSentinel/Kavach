@@ -191,7 +191,11 @@ fn consent_mismatch_is_validation_error_not_rpc_decision() {
         .expect_err("consent mismatch");
 
     assert!(matches!(err, EvaluateError::Validation(_)));
-    assert!(service.evidence_store().events().is_empty());
+    assert_eq!(
+        service.evidence_store().events().len(),
+        0,
+        "no evidence written"
+    );
 }
 
 #[test]
