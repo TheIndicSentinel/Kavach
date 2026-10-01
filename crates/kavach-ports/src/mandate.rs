@@ -41,6 +41,15 @@ pub trait MandateStore: Send + Sync {
         id: &str,
     ) -> impl Future<Output = Result<Option<StoredMandate>, PortError>> + Send;
 
+    /// The root mandate issued from system-of-record event `event_id` of
+    /// `system`, if any (idempotent event retries).
+    fn root_for_event(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        event_id: &str,
+    ) -> impl Future<Output = Result<Option<StoredMandate>, PortError>> + Send;
+
     /// The mandates above `id`, nearest parent first, in one call. Stops at a
     /// root, a missing parent, or after `limit` entries (bounding a corrupted
     /// cycle); callers compare the result with the mandate's depth.

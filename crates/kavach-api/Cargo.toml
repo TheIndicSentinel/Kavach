@@ -19,6 +19,10 @@ kavach-policy = { workspace = true }
 kavach-auth = { workspace = true }
 kavach-storage = { workspace = true }
 kavach-keys = { workspace = true }
+kavach-dataplane = { workspace = true }
+kavach-mandate = { workspace = true }
+kavach-authz = { workspace = true }
+kavach-clocksync = { workspace = true }
 jsonwebtoken = { workspace = true }
 reqwest = { workspace = true }
 kavach-ports = { workspace = true }
@@ -63,6 +67,8 @@ base64 = { workspace = true }
 rcgen.workspace = true
 kavach-storage = { workspace = true, features = ["test-support"] }
 sqlx.workspace = true
+jsonwebtoken.workspace = true
+kavach-keys = { workspace = true }
 
 [lints]
 workspace = true

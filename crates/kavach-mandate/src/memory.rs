@@ -149,6 +149,24 @@ impl MandateStore for InMemoryMandateStore {
         )
     }
 
+    fn root_for_event(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        event_id: &str,
+    ) -> impl Future<Output = Result<Option<StoredMandate>, PortError>> + Send {
+        ready(self.records.lock().map_err(|_| poisoned()).map(|r| {
+            r.values()
+                .find(|s| {
+                    s.mandate.tenant_id == tenant_id
+                        && s.mandate.parent_id.is_none()
+                        && s.mandate.source.system == system
+                        && s.mandate.source.event_id == event_id
+                })
+                .cloned()
+        }))
+    }
+
     fn ancestors(
         &self,
         tenant_id: &str,

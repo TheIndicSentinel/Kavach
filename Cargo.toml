@@ -59,6 +59,7 @@ kavach-evidence = { path = "crates/kavach-evidence", version = "0.1.0" }
 kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0" }
 kavach-storage = { path = "crates/kavach-storage", version = "0.1.0" }
 kavach-dataplane = { path = "crates/kavach-dataplane", version = "0.1.0" }
+kavach-clocksync = { path = "crates/kavach-clocksync", version = "0.1.0" }
 kavach-auth = { path = "crates/kavach-auth", version = "0.1.0" }
 kavach-batch = { path = "crates/kavach-batch", version = "0.1.0" }
 kavach-ports = { path = "crates/kavach-ports", version = "0.1.0" }

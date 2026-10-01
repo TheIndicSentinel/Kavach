@@ -136,6 +136,49 @@ where
         self.sign_store_publish(mandate, false).await
     }
 
+    /// For a retried system-of-record event: the root mandate it already
+    /// issued, when the event (signature and issuer binding checked, not
+    /// freshness or replay) carries the same content. `Ok(None)` when no
+    /// mandate exists for it; `Rejected` when the event id was reused with
+    /// different content.
+    pub async fn existing_for_event(
+        &self,
+        event_token: &str,
+    ) -> Result<Option<IssuedMandate>, PortError> {
+        let (kid, event): (String, SorEvent) =
+            jws::verify(event_token, TYP_SOR_EVENT, &self.config.sor_keys())?;
+        if self.config.sor_system_for_kid(&kid) != Some(event.system.as_str()) {
+            return Err(PortError::rejected(format!(
+                "key {kid} is not registered for system {}",
+                event.system
+            )));
+        }
+        let Some(stored) = self
+            .deps
+            .store
+            .root_for_event(&event.tenant_id, &event.system, &event.event_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let m = &stored.mandate;
+        let same = m.subject_ref == event.subject_ref
+            && m.holder == event.assigned_agent
+            && m.principal == event.principal
+            && m.source.record_ref == event.record_ref
+            && m.consent_refs == event.consent_refs;
+        if !same {
+            return Err(PortError::rejected(format!(
+                "event {} was already used with different content",
+                event.event_id
+            )));
+        }
+        Ok(Some(IssuedMandate {
+            mandate: stored.mandate,
+            token: stored.token,
+        }))
+    }
+
     /// Verifies a mandate token and its whole delegation chain (ADR-004 §3,
     /// ADR-011). For the mandate and every ancestor: signature, the stored
     /// token matches, stored status `Active`, trusted time within

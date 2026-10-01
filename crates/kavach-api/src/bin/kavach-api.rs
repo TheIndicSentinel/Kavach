@@ -23,6 +23,79 @@ enum AccessControlArg {
     Cedar,
 }
 
+/// Agent surfaces (ADR-007, H5a-5): enabled by `--agent-oidc-audience`.
+/// Agents use the operator IdP (issuer and JWKS) with their own audience.
+#[derive(clap::Args)]
+struct AgentArgs {
+    /// Audience of agent access tokens (must differ from `--oidc-audience`).
+    #[arg(long, env = "KAVACH_AGENT_OIDC_AUDIENCE")]
+    agent_oidc_audience: Option<String>,
+    /// Claim naming the agent (Keycloak client id: `azp`).
+    #[arg(long, env = "KAVACH_AGENT_ID_CLAIM", default_value = "azp")]
+    agent_id_claim: String,
+    /// Mandate configuration JSON (issuer, SoR issuers, templates, passports).
+    #[arg(long, env = "KAVACH_MANDATE_CONFIG")]
+    mandate_config: Option<PathBuf>,
+    /// Directory with the mandate signing key.
+    #[arg(long, env = "KAVACH_MANDATE_KEYS_DIR")]
+    mandate_keys_dir: Option<PathBuf>,
+    /// Directory with the evidence signing key (signs agent evidence only).
+    #[arg(long, env = "KAVACH_EVIDENCE_KEYS_DIR")]
+    evidence_keys_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "KAVACH_EVIDENCE_KEY_ID",
+        default_value = "kavach-evidence-1"
+    )]
+    evidence_key_id: String,
+    /// Owner-only file with a 32-byte hex secret for subject pseudonyms.
+    #[arg(long, env = "KAVACH_SUBJECT_PSEUDONYM_KEY")]
+    subject_pseudonym_key: Option<PathBuf>,
+    /// Consent fixture JSON (PRD D7).
+    #[arg(long, env = "KAVACH_CONSENTS")]
+    consents: Option<PathBuf>,
+    #[arg(long, env = "KAVACH_TENANT_ID", default_value = "default")]
+    tenant_id: String,
+    /// System-of-record events accepted per second.
+    #[arg(long, env = "KAVACH_SOR_RATE_PER_SECOND", default_value_t = 20)]
+    sor_rate_per_second: u32,
+    /// Listener for `POST /v1/sor/events` (bind to the backend network only).
+    #[arg(long, env = "KAVACH_SOR_LISTEN", default_value = "127.0.0.1:8090")]
+    sor_listen: SocketAddr,
+}
+
+impl AgentArgs {
+    fn into_config(
+        self,
+        operator: Option<&OidcConfig>,
+    ) -> Result<Option<kavach_api::dataplane::DataplaneConfig>, String> {
+        let Some(audience) = self.agent_oidc_audience else {
+            return Ok(None);
+        };
+        let operator = operator.ok_or(
+            "agent surfaces use the operator IdP: configure --oidc-issuer and a JWKS source",
+        )?;
+        let need = |value: Option<PathBuf>, flag: &str| {
+            value.ok_or_else(|| format!("agent surfaces need {flag}"))
+        };
+        Ok(Some(kavach_api::dataplane::DataplaneConfig {
+            agent_oidc: OidcConfig {
+                audience,
+                principal_claim: self.agent_id_claim,
+                ..operator.clone()
+            },
+            mandate_config: need(self.mandate_config, "--mandate-config")?,
+            mandate_keys_dir: need(self.mandate_keys_dir, "--mandate-keys-dir")?,
+            evidence_keys_dir: need(self.evidence_keys_dir, "--evidence-keys-dir")?,
+            evidence_key_id: self.evidence_key_id,
+            subject_pseudonym_key: need(self.subject_pseudonym_key, "--subject-pseudonym-key")?,
+            consents: need(self.consents, "--consents")?,
+            tenant_id: self.tenant_id,
+            sor_rate_per_second: self.sor_rate_per_second,
+        }))
+    }
+}
+
 /// OIDC / OAuth 2.0 JWT access tokens for API principals (ADR-008).
 #[derive(clap::Args)]
 #[allow(clippy::struct_field_names)] // field names become the `--oidc-*` flags
@@ -106,6 +179,9 @@ struct Cli {
 
     #[command(flatten)]
     oidc: OidcArgs,
+
+    #[command(flatten)]
+    agents: AgentArgs,
 
     #[arg(long, value_enum, default_value = "memory")]
     evidence_store: EvidenceStoreArg,
@@ -202,6 +278,7 @@ impl Cli {
             self.cedar_entities,
         )?;
         let oidc = self.oidc.into_config()?;
+        let dataplane = self.agents.into_config(oidc.as_ref())?;
 
         let tls = match (self.tls_cert, self.tls_key) {
             (Some(cert_path), Some(key_path)) => Some(TlsConfig::from_paths(
@@ -231,6 +308,7 @@ impl Cli {
             mtls_principal_san: self.mtls_principal_san,
             change_ttl_seconds: self.change_request_ttl_hours * 3600,
             migration_database_url: self.migration_database_url,
+            dataplane,
         };
         validate_principal_sources(&config)?;
         Ok(config)
@@ -242,12 +320,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
     let http_listen = cli.listen;
     let grpc_listen = cli.grpc_listen;
+    let sor_listen = cli.agents.sor_listen;
     let config = cli
         .into_config()
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
     let state = Arc::new(AppState::from_config(&config).await?);
     let pack_sha256 = state.runtime().pack_sha256.unwrap_or_else(|| "none".into());
     let http_app = router(state.clone());
+    let sor_app = state
+        .dataplane()
+        .is_some()
+        .then(|| kavach_api::dataplane::sor_router(state.clone()));
     let grpc_service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
 
     let tls_mode = if config.tls.as_ref().is_some_and(TlsConfig::is_mtls) {
@@ -298,8 +381,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         pack_sha256
     );
 
+    match &sor_app {
+        Some(_) => eprintln!(
+            "kavach-api agent surfaces enabled: /v1/authorize (pre-check) on http, \
+             /v1/sor/events on {sor_listen} (bind to the backend network only)"
+        ),
+        None => eprintln!("kavach-api agent surfaces disabled (no --agent-oidc-audience)"),
+    }
+
     let tls_ref = config.tls.as_ref();
     tokio::try_join!(
+        async move {
+            if let Some(app) = sor_app {
+                serve_http(app, sor_listen, tls_ref).await?;
+            }
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        },
         async move {
             serve_http(http_app, http_listen, tls_ref).await?;
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())

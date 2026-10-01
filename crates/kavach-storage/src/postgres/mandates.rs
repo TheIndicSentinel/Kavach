@@ -163,6 +163,26 @@ impl MandateStore for PostgresMandateStore {
         row.as_ref().map(row_to_stored).transpose()
     }
 
+    async fn root_for_event(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        event_id: &str,
+    ) -> Result<Option<StoredMandate>, PortError> {
+        let row = sqlx::query(
+            "SELECT mandate, token, status, revoked_reason FROM mandates \
+            WHERE tenant_id = $1 AND source_system = $2 AND source_event_id = $3 \
+            AND parent_id IS NULL",
+        )
+        .bind(tenant_id)
+        .bind(system)
+        .bind(event_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        row.as_ref().map(row_to_stored).transpose()
+    }
+
     async fn ancestors(
         &self,
         tenant_id: &str,

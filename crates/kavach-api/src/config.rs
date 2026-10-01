@@ -32,6 +32,8 @@ pub struct ApiConfig {
     /// connection (`database_url`) never migrates and should be the
     /// least-privilege `kavach_runtime` role (ADR-005 §1).
     pub migration_database_url: Option<String>,
+    /// Agent surfaces (`/v1/authorize`, `/v1/sor/events`; ADR-007, H5a-5).
+    pub dataplane: Option<crate::dataplane::DataplaneConfig>,
 }
 
 /// Cedar access control needs an authenticated principal source (OIDC or

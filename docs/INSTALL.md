@@ -221,6 +221,25 @@ A certificate with no SAN, or several SANs, of the configured type gets 401. A b
 
 **Upgrading from M1.5 (breaking).** Callers that sent only `X-Kavach-Principal` now get 401: issue access tokens, or run `--insecure-dev` locally. Body-only HMAC signatures are rejected; sign v2. The pilot compose file now requires `POSTGRES_PASSWORD`, `KAVACH_OIDC_ISSUER`/`KAVACH_OIDC_AUDIENCE`, and a `deploy/pilot-config/` directory with `entities.json` and `jwks.json`; Postgres is no longer published on the host.
 
+**Agent surfaces (ADR-007, H5a).** Enabled by `--agent-oidc-audience`. They add `POST /v1/authorize` (an agent-only **pre-check**: the decision the gateway would make, reserving and recording nothing) and `POST /v1/sor/events` on a separate listener (`--sor-listen`, default `127.0.0.1:8090`; bind it to the backend network only).
+
+| Flag / env | Meaning |
+|---|---|
+| `--agent-oidc-audience` / `KAVACH_AGENT_OIDC_AUDIENCE` | Audience of agent access tokens. Same IdP (issuer, JWKS) as operators, **different audience**; startup refuses the same audience |
+| `--agent-id-claim` / `KAVACH_AGENT_ID_CLAIM` | Claim naming the agent (default `azp`, the Keycloak client id). An agent without a passport is refused (403) |
+| `--mandate-config` / `KAVACH_MANDATE_CONFIG` | JSON: `issuer_id`, `signing_kid`, `sor_issuers` (`system`, `kid`, hex `public_key`), `templates`, `passports`, `event_freshness_seconds`, `replay_window_seconds`. Invalid templates refuse startup (ADR-011) |
+| `--mandate-keys-dir` / `KAVACH_MANDATE_KEYS_DIR` | Holds `<signing_kid>.ed25519` (create with `kavach-keys generate`) |
+| `--evidence-keys-dir`, `--evidence-key-id` | The evidence signing key (default id `kavach-evidence-1`). It signs agent evidence only; keep it separate from the mandate key |
+| `--subject-pseudonym-key` / `KAVACH_SUBJECT_PSEUDONYM_KEY` | Owner-only file with a 32-byte hex secret (`openssl rand -hex 32`). Pseudonymises borrowers in evidence and counters. Treat it like a signing key. Rotating it resets the day's contact counters, so rotate only at IST midnight |
+| `--consents` / `KAVACH_CONSENTS` | Consent fixture JSON (list of consent records; PRD D7) |
+| `--sor-rate-per-second` | System-of-record events accepted per second (default 20); excess gets 429. Bodies over 16 KiB get 413 |
+
+- **Agent credentials.** Agents send `Authorization: Bearer <agent token>`. `X-Kavach-Principal` is never accepted on agent routes, not even with `--insecure-dev`. Operator tokens are refused on agent routes, and agent tokens on operator routes.
+- **System-of-record events.**
+  - The body is `{"event": "<signed JWS>"}`; a new event returns 201 with the mandate id.
+  - A retry of the same event returns 200 with the same mandate id. The same event id with other content returns 409.
+- **Production shape.** Without `--insecure-dev`, startup requires the Postgres evidence store and a readable kernel clock. Contacts are blocked while the clock is unsynced. `--insecure-dev` instead uses in-memory stores and treats the system clock as synced, for development only.
+
 **PoC / dev (memory evidence, no Cedar — insecure, local only):**
 
 ```bash

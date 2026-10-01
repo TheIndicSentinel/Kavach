@@ -97,6 +97,7 @@ async fn state() -> Arc<AppState> {
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
         migration_database_url: None,
+        dataplane: None,
     };
     Arc::new(AppState::from_config(&config).await.expect("state"))
 }
@@ -300,6 +301,7 @@ fn cedar_without_an_authenticated_source_is_refused() {
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
         migration_database_url: None,
+        dataplane: None,
     };
     assert!(kavach_api::validate_principal_sources(&config).is_err());
     config.insecure_dev = true;
