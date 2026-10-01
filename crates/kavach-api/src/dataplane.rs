@@ -23,7 +23,8 @@ use axum::{Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
 use kavach_credential::{JoseCredentialBroker, RecipientKey};
 use kavach_dataplane::{
-    AgentIdentity, AuthorizeConfig, AuthorizeCore, Mode, RegistryTrust, ToolRegistry, ToolRequest,
+    AgentIdentity, AuthorizeConfig, AuthorizeCore, FixtureResolver, Mode, RegistryTrust,
+    ToolRegistry, ToolRequest,
 };
 use kavach_domain::mandate::{AgentPassport, ConsentRecord, MandateTemplate, RevocationReason};
 use kavach_domain::Decision;
@@ -84,6 +85,9 @@ pub struct DataplaneConfig {
     pub credential_key_id: String,
     /// Resource providers (JSON): each audience's X25519 encryption key.
     pub providers: PathBuf,
+    /// Reference fixture (JSON): capability references to destinations,
+    /// synthetic numbers only (a reference vault replaces it in M2).
+    pub references: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -355,6 +359,7 @@ pub struct Dataplane {
     tenant: String,
     sor_limiter: Mutex<TokenBucket>,
     broker: Broker,
+    resolver: FixtureResolver,
 }
 
 impl Dataplane {
@@ -396,6 +401,8 @@ impl Dataplane {
         let signer =
             Ed25519EvidenceSigner::from_key_dir(&config.evidence_keys_dir, &config.evidence_key_id)
                 .map_err(|e| format!("evidence key: {e}"))?;
+        let resolver = FixtureResolver::from_file(&config.references)
+            .map_err(|e| format!("references: {}", e.message))?;
         let broker = build_broker(config, &tools, &mandate_kid, insecure_dev).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
             .map_err(|e| format!("subject pseudonym key: {e}"))?;
@@ -429,7 +436,13 @@ impl Dataplane {
                 last: Instant::now(),
             }),
             broker,
+            resolver,
         })
+    }
+
+    /// Resolves capability references, after an allow, inside the gateway.
+    pub fn resolver(&self) -> &FixtureResolver {
+        &self.resolver
     }
 
     /// The credential broker (the gateway's only source of credentials).

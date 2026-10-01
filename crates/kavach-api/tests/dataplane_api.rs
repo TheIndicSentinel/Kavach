@@ -159,8 +159,16 @@ fn signed_registry(dir: &Path) -> (PathBuf, String) {
     (registry, digest)
 }
 
-/// The credential signing key and the providers' encryption keys.
+/// The credential signing key, the providers' encryption keys and the
+/// (synthetic) reference fixture.
 fn credential_files(dir: &Path, keys: &Path) {
+    std::fs::write(
+        dir.join("references.json"),
+        json!({ "references": [{ "tenant_id": "default", "subject_ref": SUBJECT,
+            "destinations": { "whatsapp": "+910000000001", "sms": "+910000000001", "voice": "+910000000002" } }] })
+        .to_string(),
+    )
+    .unwrap();
     owner_only(
         &keys.join("kavach-credential-1.ed25519"),
         &hex::encode([5u8; 32]),
@@ -270,6 +278,7 @@ fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         credential_keys_dir: keys,
         credential_key_id: "kavach-credential-1".into(),
         providers: dir.join("providers.json"),
+        references: dir.join("references.json"),
     };
     (dataplane, operator)
 }
@@ -865,4 +874,39 @@ async fn startup_refuses_shared_credential_keys_and_missing_provider_keys() {
     .unwrap();
     let message = refused(weak).await;
     assert!(message.contains("low-order"), "{message}");
+}
+
+/// The resolver is wired at startup, resolves only within the tenant, and
+/// refuses a fixture holding a real-shaped number.
+#[tokio::test]
+async fn references_resolve_in_the_gateway_and_fixtures_hold_only_synthetic_numbers() {
+    use kavach_ports::ReferenceResolver;
+    let s = state(50).await;
+    let resolver = s.dataplane().unwrap().resolver();
+    let d = resolver
+        .resolve("default", SUBJECT, "whatsapp")
+        .await
+        .unwrap();
+    assert_eq!(d.expose(), "+910000000001");
+    assert!(resolver
+        .resolve("other", SUBJECT, "whatsapp")
+        .await
+        .is_err());
+    assert!(!resolver.describe().contains("+910"));
+
+    let real = config(EvidenceStoreKind::Memory, true, 50);
+    let path = real.dataplane.as_ref().unwrap().references.clone();
+    std::fs::write(
+        &path,
+        json!({ "references": [{ "tenant_id": "default", "subject_ref": SUBJECT,
+            "destinations": { "whatsapp": "+919876543210" } }] })
+        .to_string(),
+    )
+    .unwrap();
+    let message = format!(
+        "{:?}",
+        AppState::from_config(&real).await.err().expect("refused")
+    );
+    assert!(message.contains("synthetic"), "{message}");
+    assert!(!message.contains("9876543210"), "{message}");
 }

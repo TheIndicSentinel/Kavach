@@ -6,6 +6,7 @@
 
 pub mod agent_evidence;
 pub mod credential_broker;
+pub mod reference_resolver;
 
 use std::collections::HashMap;
 use std::future::{ready, Future};
