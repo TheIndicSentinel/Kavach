@@ -41,14 +41,27 @@ cargo test --workspace
 
 The tests create a `kavach_runtime` role to check least-privilege access. Use a throwaway database, never a shared one.
 
-## 4. Running the API
+## 4. A development bundle (`kavach-dev`)
+
+`kavach-dev generate` writes everything a local stack needs: `dev-` keys, the signed tool registry, a dev CA and provider certificate, mandate config, consents, synthetic references, providers, JWKS and agent and operator tokens, plus a `kavach.env` with every `kavach-api` setting. Each directory is meant for one consumer (agents get only their token).
+
+```bash
+cargo run -q -p kavach-devkit --bin kavach-dev -- generate --out /tmp/kavach-dev \
+  --provider-endpoint https://localhost:8443 --provider-host localhost
+cargo run -q -p kavach-devkit --bin kavach-dev -- sor-event --bundle /tmp/kavach-dev \
+  --url http://127.0.0.1:8090/v1/sor/events --event-id evt-1   # issues a mandate
+```
+
+`dev-` keys run only with `--insecure-dev`; production startup and the offline verifier refuse them. This is the core of the future `kavach init`.
+
+## 5. Running the API
 
 `docs/INSTALL.md` lists every flag. Two things matter for local runs:
 
 - **macOS has no Linux kernel clock status**, so the agent surfaces cannot prove synced time. Use `--insecure-dev` locally; it declares the system clock synced, allows in-memory stores and an unsigned tool registry, and prints a warning. Never use it in production.
 - The agent surfaces need keys and fixtures (mandate, evidence and credential keys; a signed tool registry; providers; references). `kavach init` will generate them; until then, follow the agent-surfaces section of `docs/INSTALL.md` and use `kavach-keys` and `kavach-mock-provider keygen`.
 
-## 5. Policy proofs (optional)
+## 6. Policy proofs (optional)
 
 CI proves properties of the agent Cedar policies with cvc5 on every PR. To run them locally, install cvc5 (a release binary from <https://github.com/cvc5/cvc5/releases>) and run:
 
@@ -56,7 +69,7 @@ CI proves properties of the agent Cedar policies with cvc5 on every PR. To run t
 CVC5=/path/to/cvc5 ./scripts/verify.sh
 ```
 
-## 6. Credential interop check (optional)
+## 7. Credential interop check (optional)
 
 CI decrypts the checked-in credential vector with an independent JOSE library:
 
@@ -65,18 +78,18 @@ cd scripts/jose-crosscheck && npm ci --ignore-scripts && \
   node check.mjs ../../crates/kavach-credential/tests/vectors/credential-v1.json
 ```
 
-## 7. Disk use
+## 8. Disk use
 
 - Local builds skip debug info for dependencies (`[profile.dev]` in `Cargo.toml`), so `target/` stays around 4–6 GB.
 - `scripts/disk-guard.sh` removes superseded test binaries when `target/` grows past 6 GB (`--check-size`), and runs `cargo clean` if free space drops below 8 GB. `verify.sh` runs it first. Limits: `KAVACH_MIN_FREE_GB`, `KAVACH_MAX_TARGET_GB`.
 - It only ever touches `target/`, which cargo rebuilds.
 
-## 8. Supply chain
+## 9. Supply chain
 
 - CI actions are pinned by commit SHA, CI tools by version, image bases by digest; `Cargo.lock` is committed and the image builds with `--locked`.
 - The *Supply chain* workflow (weekly, on demand and on every push to `main`) re-runs `cargo audit` and `cargo deny` and uploads one CycloneDX 1.5 SBOM per shipped binary. Locally: `cargo install cargo-cyclonedx --locked --version 0.5.9`, then `cargo cyclonedx --format json --spec-version 1.5 --describe binaries`.
 - `main` is protected: changes land through PRs with the six CI checks green on an up-to-date branch.
 
-## 9. Before opening a PR
+## 10. Before opening a PR
 
 Run `./scripts/verify.sh`, sign off your commits (`git commit -s`), and update `docs/SECURITY_PROPERTIES.md` in the same PR if you change a guarantee. See [CONTRIBUTING.md](../CONTRIBUTING.md).

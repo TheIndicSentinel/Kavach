@@ -18,6 +18,8 @@ kavach-credential = { workspace = true }
 kavach-jws = { workspace = true }
 kavach-ports = { workspace = true }
 axum.workspace = true
+axum-server = { workspace = true }
+rustls = { workspace = true }
 chrono.workspace = true
 clap.workspace = true
 getrandom = { workspace = true }

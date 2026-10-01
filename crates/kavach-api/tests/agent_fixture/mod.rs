@@ -305,6 +305,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         references: dir.join("references.json"),
         provider_connect_timeout_ms: 500,
         provider_timeout_ms: 1500,
+        provider_ca: None,
         test_clock: None,
     };
     (dataplane, operator)

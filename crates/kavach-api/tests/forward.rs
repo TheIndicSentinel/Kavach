@@ -45,6 +45,7 @@ fn forwarder(base: &str, timeout_ms: u64) -> HttpForwarder {
         BTreeMap::from([("mock-messaging".to_string(), url)]),
         Duration::from_millis(200),
         Duration::from_millis(timeout_ms),
+        &[],
     )
     .unwrap()
 }
@@ -219,4 +220,68 @@ async fn nothing_sent_and_lost_responses_are_told_apart() {
             .await,
         ForwardResult::NotSent
     );
+}
+
+/// Provider TLS is verified against the configured CA (`--provider-ca`): a
+/// private-CA provider is reachable only when its CA is trusted, and a
+/// failed handshake sends nothing (`NotSent`, i.e. outcome `failed`).
+#[tokio::test]
+async fn provider_tls_is_verified_against_the_configured_ca() {
+    use rcgen::{BasicConstraints, CertificateParams, IsCa, Issuer, KeyPair, KeyUsagePurpose};
+    let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let ca_key = KeyPair::generate().unwrap();
+    let ca_pem = ca.self_signed(&ca_key).unwrap().pem();
+    let issuer = Issuer::new(ca, ca_key);
+    let leaf = CertificateParams::new(vec!["127.0.0.1".to_string()]).unwrap();
+    let leaf_key = KeyPair::generate().unwrap();
+    let cert = leaf.signed_by(&leaf_key, &issuer).unwrap();
+
+    let dir = std::env::temp_dir().join(format!("kavach-provider-tls-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("cert.pem"), cert.pem()).unwrap();
+    std::fs::write(dir.join("key.pem"), leaf_key.serialize_pem()).unwrap();
+    let tls = kavach_api::TlsConfig::from_paths(dir.join("cert.pem"), dir.join("key.pem"), None);
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let app = Router::new().route("/v1/messages", post(|| async { StatusCode::ACCEPTED }));
+    tokio::spawn(async move {
+        kavach_api::serve_http_on(app, listener, Some(&tls))
+            .await
+            .unwrap();
+    });
+    let base = format!("https://127.0.0.1:{port}");
+    let (url, plain) = messages_url(&base).unwrap();
+    assert!(!plain);
+    let with_ca = |roots: &[u8]| {
+        HttpForwarder::new(
+            BTreeMap::from([("mock-messaging".to_string(), url.clone())]),
+            Duration::from_millis(1000),
+            Duration::from_millis(2000),
+            roots,
+        )
+        .unwrap()
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(matches!(
+        with_ca(ca_pem.as_bytes())
+            .forward("mock-messaging", &credential())
+            .await,
+        ForwardResult::Responded { status: 202, .. }
+    ));
+    assert_eq!(
+        with_ca(&[]).forward("mock-messaging", &credential()).await,
+        ForwardResult::NotSent,
+        "an untrusted certificate fails the handshake; nothing is sent"
+    );
+    // A file without certificates is refused at startup.
+    assert!(HttpForwarder::new(
+        BTreeMap::new(),
+        Duration::from_millis(1),
+        Duration::from_millis(2),
+        b"not a pem"
+    )
+    .is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
 }

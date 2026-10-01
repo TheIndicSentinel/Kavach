@@ -50,12 +50,26 @@ pub fn messages_url(endpoint: &str) -> Result<(Url, bool), String> {
 }
 
 impl HttpForwarder {
+    /// `extra_roots`: CA certificates (PEM) trusted for providers in
+    /// addition to the system roots (`--provider-ca`).
     pub fn new(
         endpoints: BTreeMap<String, Url>,
         connect_timeout: Duration,
         timeout: Duration,
+        extra_roots: &[u8],
     ) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder();
+        if !extra_roots.is_empty() {
+            let roots = reqwest::Certificate::from_pem_bundle(extra_roots)
+                .map_err(|e| format!("provider CA: {e}"))?;
+            if roots.is_empty() {
+                return Err("provider CA: no certificates in the file".into());
+            }
+            for root in roots {
+                builder = builder.add_root_certificate(root);
+            }
+        }
+        let client = builder
             .redirect(reqwest::redirect::Policy::none())
             .no_proxy()
             .connect_timeout(connect_timeout)
