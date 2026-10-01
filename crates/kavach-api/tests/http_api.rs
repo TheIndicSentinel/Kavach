@@ -189,6 +189,7 @@ async fn cedar_test_state() -> Arc<AppState> {
         insecure_dev: true,
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
+        migration_database_url: None,
     };
     Arc::new(AppState::from_config(&config).await.expect("cedar state"))
 }
@@ -524,6 +525,7 @@ async fn change_requests_can_be_cancelled_rejected_and_expire() {
         insecure_dev: true,
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
+        migration_database_url: None,
     };
     let app = router(Arc::new(
         AppState::from_config(&config).await.expect("state"),
@@ -1088,6 +1090,7 @@ async fn signed_packs_required_when_signers_configured() {
         insecure_dev: true,
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
+        migration_database_url: None,
     };
 
     // Unsigned startup pack is refused.

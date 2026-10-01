@@ -68,6 +68,11 @@ enum Command {
 
         #[arg(long, env = "KAVACH_DATABASE_URL")]
         database_url: Option<String>,
+
+        /// Owner role that runs migrations first. Without it, batch never
+        /// migrates (kavach-api owns the schema).
+        #[arg(long, env = "KAVACH_MIGRATION_DATABASE_URL")]
+        migration_database_url: Option<String>,
     },
     /// Generate a fairness batch report from paired NDJSON request/result files.
     Fairness {
@@ -112,6 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             model,
             evidence_store,
             database_url,
+            migration_database_url,
         } => {
             verify_signature_if_configured(&pack, &model, pack_signers.as_deref())?;
             let input_file = File::open(&input)?;
@@ -145,7 +151,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let database_url = database_url.ok_or(
                         "postgres evidence store requires --database-url or KAVACH_DATABASE_URL",
                     )?;
-                    let pool = StoragePool::connect(&database_url).await?;
+                    // Batch never migrates on its own: kavach-api owns the
+                    // schema (and batch refuses an ungoverned database).
+                    let pool = match migration_database_url.as_deref() {
+                        Some(owner) => {
+                            StoragePool::connect_with_roles(&database_url, Some(owner)).await?
+                        }
+                        None => kavach_storage::connect_runtime(&database_url).await?,
+                    };
                     check_governed_pack(&pool, &config.pack_path).await?;
                     let config = BatchConfig {
                         governed_model: Some(governed_model(&pool, &config.model_path).await?),

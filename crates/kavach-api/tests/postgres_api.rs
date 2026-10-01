@@ -62,6 +62,7 @@ fn config(root: &Path, database_url: &str, pack: &str, bootstrap_pack: bool) -> 
         insecure_dev: true,
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
+        migration_database_url: None,
     }
 }
 
@@ -608,4 +609,45 @@ async fn activate_model_switches_versions_and_guards_downgrades() {
     config.model_path = v1_1;
     start_with(&config).await.expect("restart on 1.1.0");
     assert!(start(&root, &url, "v0.yaml").await.is_err());
+}
+
+/// H5a-3a: with separate roles, the whole governed flow works as the
+/// least-privilege runtime role (grants cover what the application does).
+#[tokio::test(flavor = "multi_thread")]
+async fn api_runs_as_the_least_privilege_runtime_role() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let root = registry();
+    let mut config = config(&root, &runtime, "v0.yaml", false);
+    config.migration_database_url = Some(owner);
+    let state = start_with(&config)
+        .await
+        .expect("migrate as owner, run as runtime");
+
+    evaluate_once(&state, "runtime-role-eval").await;
+    promote_to_enforce(&state).await;
+    assert_eq!(
+        apply_as_admins(
+            &router(state.clone()),
+            "activate_pack",
+            json!({ "pack_id": "finance-v1" })
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        apply_as_admins(
+            &router(state.clone()),
+            "update_retention",
+            json!({ "evidence_retention_days": 30 })
+        )
+        .await,
+        StatusCode::OK
+    );
+    drop(state);
+    // Restarting (owner migrates nothing new; runtime role serves) works.
+    let mut restart = config.clone();
+    restart.pack_path = root.join("packs/finance/v1.yaml");
+    start_with(&restart).await.expect("restart as runtime");
 }

@@ -18,9 +18,12 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-kavach}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env (e.g. openssl rand -hex 24)}
       POSTGRES_DB: ${POSTGRES_DB:-kavach}
+      KAVACH_RUNTIME_DB_PASSWORD: ${KAVACH_RUNTIME_DB_PASSWORD:?set KAVACH_RUNTIME_DB_PASSWORD in deploy/.env (e.g. openssl rand -hex 24)}
     # No `ports:` — the database is reachable only from this compose network.
     volumes:
       - kavach-pilot-pg:/var/lib/postgresql/data
+      # Creates the least-privilege kavach_runtime role on first init.
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kavach} -d ${POSTGRES_DB:-kavach}"]
       interval: 5s
@@ -35,7 +38,9 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      KAVACH_DATABASE_URL: postgres://${POSTGRES_USER:-kavach}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
+      # Owner role migrates; the API serves as the least-privilege runtime role.
+      KAVACH_MIGRATION_DATABASE_URL: postgres://${POSTGRES_USER:-kavach}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
+      KAVACH_DATABASE_URL: postgres://kavach_runtime:${KAVACH_RUNTIME_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
       KAVACH_CEDAR_POLICY: crates/kavach-auth/policies/kavach.cedar
       KAVACH_CEDAR_ENTITIES: /etc/kavach/entities.json
       KAVACH_OIDC_ISSUER: ${KAVACH_OIDC_ISSUER:?set KAVACH_OIDC_ISSUER in deploy/.env}
@@ -74,7 +79,7 @@ services:
       - --evidence-store
       - postgres
     environment:
-      KAVACH_DATABASE_URL: postgres://${POSTGRES_USER:-kavach}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
+      KAVACH_DATABASE_URL: postgres://kavach_runtime:${KAVACH_RUNTIME_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
     volumes:
       - pilot-batch-out:/tmp
 
