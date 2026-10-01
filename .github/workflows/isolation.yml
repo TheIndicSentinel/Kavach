@@ -64,10 +64,10 @@ jobs:
         working-directory: deploy/agent-stack
         run: |
           mkdir -m 777 bundle
-          docker compose run --rm --no-build setup
+          docker compose run --rm setup
           docker compose up -d --no-build --wait --wait-timeout 180 postgres kavach mock-provider
-          docker compose run --rm --no-build issue-mandate
-          docker compose run --rm --no-build test-agent
+          docker compose run --rm issue-mandate
+          docker compose run --rm test-agent
 
       - name: Stack logs
         if: always()
