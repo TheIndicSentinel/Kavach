@@ -62,6 +62,18 @@ ops_net
 
 - Reference backends (mock LMS, mock messaging, mock voice) accept **only** broker-issued credentials: short-lived, audience-bound, bound to `mandate_id`, with a `jti` replay cache — or secrets injected by the gateway that the agent never sees and that rotate automatically.
 - **Credential format (H5b).** A nested JWT, signed then encrypted (RFC 7519 §11.2). The inner JWS (`typ: kavach-credential+jws`) is signed with a dedicated credential key and binds tenant, agent, `mandate_id`, the evidence `record_id`, `jti` (= the record's `credential_id`), `aud`, `action`, `iat`, `exp` (≤ 15 s, ≤ `send_by`) and `req` (destination, channel, template). The outer JWE (`typ: kavach-credential+jwe`, `cty: kavach-credential+jws`) uses ECDH-ES on X25519 with A256GCM (RFC 7516, 7518, 8037), addressed to the provider's encryption key, so only the provider can read the destination; it takes the request from the credential and uses the `jti` as its idempotency key. Standard JOSE libraries can decrypt it; `kavach_credential::open_credential` does both steps. The registry names each `external_effect` tool's provider, and startup refuses a provider without an encryption key.
+- **Scope of credential-bound delivery (read this before relying on it).** Only backends that adopt the Kavach credential format verify it: the reference mock provider (`kavach-mock-provider`, a protocol fixture) and any cooperating internal backend. Real WhatsApp or SMS providers accept their own API tokens; for them the boundary is the gateway holding the provider token (FR-4 proxy injection) plus network isolation, and destination binding is enforced by the gateway, not by the provider.
+- **Provider contract (H5b, used by the gateway).** `POST /v1/messages`, `Authorization: Kavach-Credential <JWE>`, no body (the request is the credential). Order at the provider: decrypt and verify, then idempotency on `jti` by a digest of the decrypted claims (an exact repeat returns the stored result, even after expiry), then lifetime and `send_by` on the provider's clock with a leeway that never extends `send_by`. Status → gateway outcome:
+
+  | Status | Gateway outcome |
+  |---|---|
+  | 202 accepted | `delivered` |
+  | 200 `replayed` | the stored outcome |
+  | 400, 401, 403, 422, 429 and other 4xx | `failed` (provably not delivered) |
+  | 409 `jti_conflict` | `unknown` and an alert (the `jti` was used for other claims; the first use may have delivered) |
+  | 408, 5xx, timeout or connection loss after sending | `unknown` (never retried) |
+
+  Reserved synthetic numbers drive fixture behaviour: `+910000000998` refused (422), `+910000000997` provider error (500), `+910000000999` delivered but the response is lost. Scenario 2 uses a real-*shaped* number that the raw-identifier detector must catch; it is only ever blocked, never stored, resolved or sent.
 - No backend secret appears in agent containers, their environment, mounted files or images. CI scans images and environments for secrets.
 - Credentials issued after human approval are single-use and bound to the approved `action_hash` (PRD D17).
 

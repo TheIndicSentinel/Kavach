@@ -1,0 +1,34 @@
+[package]
+name = "kavach-mock-provider"
+description = "PROTOCOL FIXTURE (D16): a mock messaging provider that accepts only Kavach credentials. Not a real provider; not shipped in the production image."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "kavach-mock-provider"
+path = "src/bin/kavach-mock-provider.rs"
+
+[dependencies]
+kavach-credential = { workspace = true }
+kavach-jws = { workspace = true }
+kavach-ports = { workspace = true }
+axum.workspace = true
+chrono.workspace = true
+clap.workspace = true
+getrandom = { workspace = true }
+hex = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["time"] }
+uuid.workspace = true
+
+[dev-dependencies]
+kavach-keys = { workspace = true }
+kavach-ports-testkit = { workspace = true }
+reqwest = { workspace = true }
+
+[lints]
+workspace = true

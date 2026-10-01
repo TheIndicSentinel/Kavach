@@ -2159,7 +2159,9 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "ed25519-dalek",
  "getrandom 0.3.4",
+ "hex",
  "kavach-jws",
  "kavach-keys",
  "kavach-ports",
@@ -2289,6 +2291,27 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "kavach-mock-provider"
+version = "0.1.0"
+dependencies = [
+ "axum 0.8.9",
+ "chrono",
+ "clap",
+ "getrandom 0.3.4",
+ "hex",
+ "kavach-credential",
+ "kavach-jws",
+ "kavach-keys",
+ "kavach-ports",
+ "kavach-ports-testkit",
+ "reqwest",
+ "serde",
+ "serde_json",
  "tokio",
  "uuid",
 ]
