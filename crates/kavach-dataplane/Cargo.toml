@@ -1,0 +1,28 @@
+[package]
+name = "kavach-dataplane"
+description = "Agent data plane: authorization core (H5a), gateway and broker (H5b) — ADR-007"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+kavach-authz = { workspace = true }
+kavach-domain = { workspace = true }
+kavach-keys = { workspace = true }
+kavach-mandate = { workspace = true }
+kavach-ports = { workspace = true }
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+kavach-ports-testkit = { workspace = true }
+kavach-storage = { workspace = true, features = ["test-support"] }
+tokio.workspace = true
+
+[lints]
+workspace = true
