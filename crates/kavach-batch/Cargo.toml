@@ -11,6 +11,8 @@ name = "kavach-batch"
 path = "src/bin/kavach-batch.rs"
 
 [dependencies]
+kavach-telemetry = { workspace = true }
+tracing = { workspace = true }
 kavach-domain = { workspace = true }
 kavach-evaluate = { workspace = true }
 kavach-evidence = { workspace = true }

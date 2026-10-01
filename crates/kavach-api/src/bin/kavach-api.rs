@@ -208,6 +208,12 @@ impl OidcArgs {
 #[derive(Parser)]
 #[command(name = "kavach-api", about = "Kavach sync evaluate HTTP + gRPC API")]
 struct Cli {
+    /// Log format: `text` or `json` (one object per line). Every line is
+    /// redacted before it is written; the filter is `KAVACH_LOG` (default
+    /// `info`).
+    #[arg(long, env = "KAVACH_LOG_FORMAT", default_value = "text")]
+    log_format: kavach_telemetry::LogFormat,
+
     #[arg(long, default_value = "0.0.0.0:8080")]
     listen: SocketAddr,
 
@@ -370,6 +376,7 @@ impl Cli {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
+    kavach_telemetry::init(cli.log_format)?;
     let http_listen = cli.listen;
     let grpc_listen = cli.grpc_listen;
     let sor_listen = cli.agents.sor_listen;
@@ -401,13 +408,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     print_banner(&config, http_listen, grpc_listen, &pack_sha256);
 
-    match &tools_sha256 {
-        Some(tools) => eprintln!(
-            "kavach-api agent surfaces enabled: agents on {agent_listen} (the only listener for \
-             the agent network), /v1/sor/events on {sor_listen} (backend network only); \
-             tool registry {tools}"
-        ),
-        None => eprintln!("kavach-api agent surfaces disabled (no --agent-oidc-audience)"),
+    if let Some(tools) = &tools_sha256 {
+        tracing::info!(
+            "agent surfaces enabled: agents on {agent_listen} (the only listener for the agent \
+             network), /v1/sor/events on {sor_listen} (backend network only); tool registry \
+             {tools}"
+        );
+    } else {
+        tracing::info!("agent surfaces disabled (no --agent-oidc-audience)");
     }
 
     let tls_ref = config.tls.as_ref();
@@ -473,19 +481,19 @@ fn print_banner(
         principal_sources
     };
     if config.insecure_dev && !insecure {
-        eprintln!(
-            "WARNING: kavach-api: --insecure-dev accepts the self-asserted X-Kavach-Principal \
+        tracing::warn!(
+            "--insecure-dev accepts the self-asserted X-Kavach-Principal \
              header. Anyone who can reach this port can claim any principal. Development only."
         );
     }
     if insecure {
-        eprintln!(
-            "WARNING: kavach-api running with --insecure-dev: access control is DISABLED and \
+        tracing::warn!(
+            "running with --insecure-dev: access control is DISABLED and \
              every request is allowed. Never use this outside local development."
         );
     }
-    eprintln!(
-        "kavach-api listening http={} grpc={} transport={} evidence={:?} access_control={:?} \
+    tracing::info!(
+        "listening http={} grpc={} transport={} evidence={:?} access_control={:?} \
          principal_sources={principal_sources} insecure_dev={} pack_sha256={}",
         http_listen,
         grpc_listen,

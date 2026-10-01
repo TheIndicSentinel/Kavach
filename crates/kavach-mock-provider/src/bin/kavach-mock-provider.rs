@@ -98,6 +98,7 @@ fn write_owner_only(path: &Path, contents: &str) -> std::io::Result<()> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    kavach_telemetry::init(kavach_telemetry::LogFormat::Text)?;
     match Cli::parse().command {
         Command::Keygen { out, kid, audience } => {
             let mut secret = [0u8; 32];
@@ -145,9 +146,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             config.leeway_seconds = leeway_seconds;
             config.hang = Duration::from_secs(hang_seconds);
             let provider = MockProvider::with_system_clock(config);
-            eprintln!(
-                "kavach-mock-provider: PROTOCOL FIXTURE (not a real provider). audience {audience}; \
-                 API on {listen}; inbox on {inspect_listen}"
+            tracing::warn!(
+                "PROTOCOL FIXTURE (not a real provider). audience {audience}; API on {listen}; \
+                 inbox on {inspect_listen}"
             );
             let api = tokio::net::TcpListener::bind(listen).await?;
             let inspect = tokio::net::TcpListener::bind(inspect_listen).await?;

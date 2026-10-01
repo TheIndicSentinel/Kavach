@@ -158,6 +158,11 @@ curl -s -X POST "$API/v1/change-requests/$(jq -r .id <<<"$REQ")/approve" -H "Aut
 - `/v1/runtime` shows `pointer_version`, `stored_pointer_version` and `pointer_drift`; a replica with drift serves an older pack until restarted.
 - Postgres 14 or newer is required (`CREATE OR REPLACE TRIGGER`).
 
+**Logging and correlation.** `kavach-api` writes one line per request (method, route template, status, latency) and one per gateway call (tool, agent, decision, outcome and reason, record id), to stderr only (no telemetry export).
+- `--log-format text|json` (env `KAVACH_LOG_FORMAT`, default `text`; `json` is one object per line for log shippers). Filter with `KAVACH_LOG` (`tracing` directives, default `info`, e.g. `KAVACH_LOG=info,kavach_api=debug`).
+- **Every line is redacted before it is written**: phone-like numbers in any script, JWS/JWE/JWT tokens, `Bearer`/`Kavach-Credential` values, PAN-shaped identifiers and email addresses. This backs up, and does not replace, the rule that personal data and secrets never reach a log call.
+- **Correlation ids:** send `x-request-id` (`[A-Za-z0-9._-]{1,64}`) to have it used on every log line of the request and echoed in the response; anything else is replaced by a fresh UUID.
+
 **Governed model record (ADR-010, Postgres).** The runtime pointer pins the active model file (path and SHA-256); `status` and `governance_mode` are governed state changed only by `update_model`, and are used by both `kavach-api` and `kavach-batch`. After the first start the YAML's own status and mode are ignored (a startup warning shows any difference).
 
 - To use a new model version or an edited model file, propose `activate_model`. Starting with a different or edited file is refused.

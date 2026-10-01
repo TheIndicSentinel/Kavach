@@ -410,9 +410,10 @@ impl AppState {
         if let Some(err) = &result.incident_write_error {
             // Never let an infra failure become invisible (ADR-001 §5).
             self.metrics.observe_incident_write_failure();
-            eprintln!(
+            tracing::warn!(
                 "ALERT kavach-api: incident not persisted (correlation_id={}, model_id={}): {err}",
-                request.correlation_id, request.model_id
+                request.correlation_id,
+                request.model_id
             );
         }
         Ok(result.response)
@@ -551,7 +552,7 @@ async fn startup_model(
     .await
     .map_err(|e| ApiError::Internal(format!("startup model refused: {e}")))?;
     if let Some(note) = &governed.yaml_divergence {
-        eprintln!("WARNING: kavach-api: {note}");
+        tracing::warn!("{note}");
     }
     Ok(governed.model)
 }
@@ -658,7 +659,7 @@ async fn enforce_startup_pointer(
             .await
         }
         Err(err) if config.bootstrap_pack => {
-            eprintln!("WARNING: kavach-api: --bootstrap-pack override: {err}");
+            tracing::warn!("--bootstrap-pack override: {err}");
             audit(startup_audit(
                 "startup_bootstrap_override",
                 &path_str,

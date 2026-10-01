@@ -12,6 +12,8 @@ name = "kavach-mock-provider"
 path = "src/bin/kavach-mock-provider.rs"
 
 [dependencies]
+kavach-telemetry = { workspace = true }
+tracing = { workspace = true }
 kavach-credential = { workspace = true }
 kavach-jws = { workspace = true }
 kavach-ports = { workspace = true }

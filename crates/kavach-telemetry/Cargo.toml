@@ -1,0 +1,15 @@
+[package]
+name = "kavach-telemetry"
+description = "Redaction-first logging for Kavach: one subscriber, every line scrubbed of numbers, tokens and identifiers before it is written"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+regex = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[lints]
+workspace = true

@@ -105,6 +105,9 @@ enum Command {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    // Library warnings (governance, pack and model state) go through the
+    // redacting subscriber; the command's own summary stays on stderr.
+    kavach_telemetry::init(kavach_telemetry::LogFormat::Text)?;
     match cli.command {
         Command::Run {
             input,

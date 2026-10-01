@@ -204,7 +204,7 @@ async fn pin_model_file(
         ))
         .await
         .map_err(store)?;
-    eprintln!("WARNING: --bootstrap-model override: {mismatch}");
+    tracing::warn!("--bootstrap-model override: {mismatch}");
     Ok(())
 }
 

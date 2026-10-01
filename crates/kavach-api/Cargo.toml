@@ -21,6 +21,8 @@ kavach-storage = { workspace = true }
 kavach-keys = { workspace = true }
 kavach-dataplane = { workspace = true }
 kavach-credential = { workspace = true }
+kavach-telemetry = { workspace = true }
+tracing = { workspace = true }
 kavach-mandate = { workspace = true }
 kavach-authz = { workspace = true }
 kavach-clocksync = { workspace = true }

@@ -57,7 +57,8 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Repudiation | Evidence rows carry service identity; admin audit and change requests record the authenticated proposer and approver with the change digest; decided requests are immutable. The audit table itself is still mutable by a DB writer | Partial — P1 (insert-only role, signed governance events) |
 | Repudiation (approvals) | WebAuthn step-up bound to `action_hash`; single-use credential | Planned (M4) |
 | Information disclosure | No raw input in DB (digests); no telemetry by default | Implemented |
-| Information disclosure (agents) | Capability references; values resolved only in gateway; purpose-minimal fields | Planned (M3) |
+| Information disclosure (agents) | Capability references; destinations resolved only inside the gateway after an allow and sent only encrypted to the provider; allowlisted gateway replies | **Implemented** (H5b) for the gateway; purpose-minimal field reads planned (M3) |
+| Information disclosure (logs) | Redacting types never print; every log line passes a redacting writer (numbers in any script, JOSE tokens, credential headers, PAN, email); logs built from allowlisted fields and registry tool names; caller correlation ids validated; logs stay local (no export) | **Implemented** |
 | Information disclosure (evidence PII) | Crypto-shredding with per-subject keys | Planned (M2) |
 | Denial of service | Body size limits; CEL wall-clock timeout | Implemented |
 | Denial of service (CEL cost) | CEL interpreter has no allocation limit and the timeout is checked between rules, so load-time bounds apply: pack ≤ 256 KiB, ≤ 200 rules, expressions ≤ 2048 chars, `timeout_ms` 1–1000; `max_alloc_bytes` is advisory | **This release** |

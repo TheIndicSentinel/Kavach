@@ -511,8 +511,8 @@ fn load_tools(
         .transpose()
         .map_err(|e| format!("tool signers: {e}"))?;
     if signers.is_none() && insecure_dev {
-        eprintln!(
-            "WARNING: kavach-api: the agent tool registry is not signature-checked \
+        tracing::warn!(
+            "the agent tool registry is not signature-checked \
              (--insecure-dev). Development only."
         );
     }
@@ -550,8 +550,8 @@ fn build_forwarder(
         let (url, plain) = crate::forward::messages_url(&entry.endpoint)
             .map_err(|e| format!("provider {}: {e}", entry.audience))?;
         if plain {
-            eprintln!(
-                "WARNING: kavach-api: provider {} uses plain HTTP; credentials travel unencrypted \
+            tracing::warn!(
+                "provider {} uses plain HTTP; credentials travel unencrypted \
                  at the transport layer. Use HTTPS (or mTLS) outside an isolated backend network.",
                 entry.audience
             );
@@ -660,8 +660,8 @@ async fn build_broker(
 
 fn select_clock(insecure_dev: bool) -> Result<ClockBackend, String> {
     if insecure_dev {
-        eprintln!(
-            "WARNING: kavach-api: --insecure-dev declares the system clock synced for agent \
+        tracing::warn!(
+            "--insecure-dev declares the system clock synced for agent \
              decisions. Development only."
         );
         Ok(ClockBackend::InsecureDev)
@@ -964,7 +964,39 @@ pub async fn tool_call(
         forwarder: &dp.forwarder,
         observer: metrics,
     };
-    match execute(&deps, &agent, &tool, request).await {
+    // Log the registry's tool name, never the caller's path text.
+    let tool_label = dp
+        .core
+        .tools()
+        .tool(&tool)
+        .map_or("unknown", |t| t.name.as_str())
+        .to_string();
+    let result = execute(&deps, &agent, &tool, request).await;
+    match &result {
+        Ok(reply) => {
+            tracing::info!(
+            tool = %tool_label,
+            agent = %agent.agent_id,
+            request_id = %reply.request_id,
+            record_id = reply.record_id.as_deref().unwrap_or("-"),
+            decision = ?reply.decision,
+            outcome = reply.outcome.map_or("none", kavach_ports::agent_evidence::Outcome::as_str),
+            outcome_reason = reply.outcome_reason.as_deref().unwrap_or("-"),
+            replayed = reply.replayed,
+            outcome_recorded = reply.outcome_recorded,
+            "gateway call"
+            );
+        }
+        Err(error) => {
+            tracing::info!(
+                tool = %tool_label,
+                agent = %agent.agent_id,
+                refused = error_kind(error),
+                "gateway call refused"
+            );
+        }
+    }
+    match result {
         Ok(reply) => Ok(Json(reply)),
         Err(GatewayError::Invalid(message)) => Err(malformed(message)),
         Err(GatewayError::NotForwardable(message)) => {
@@ -982,6 +1014,16 @@ pub async fn tool_call(
     }
 }
 
+/// A fixed label for a refusal (never its message, which may quote input).
+fn error_kind(error: &GatewayError) -> &'static str {
+    match error {
+        GatewayError::Invalid(_) => "malformed",
+        GatewayError::NotForwardable(_) => "not_forwardable",
+        GatewayError::Conflict => "conflict",
+        GatewayError::InFlight => "in_flight",
+    }
+}
+
 /// Agent request bodies are small: the envelope plus a few parameters.
 pub const AGENT_BODY_LIMIT: usize = 16 * 1024;
 
@@ -994,6 +1036,7 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
             "/health",
             axum::routing::get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
         )
+        .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
         .with_state(state)
 }
 
@@ -1001,6 +1044,7 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
 pub fn sor_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/sor/events", post(sor_event))
+        .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
         .layer(DefaultBodyLimit::max(SOR_BODY_LIMIT))
         .with_state(state)
 }
