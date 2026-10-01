@@ -15,8 +15,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use kavach_keys::{
-    sign_model, sign_pack, signature_path, verify_model_file, verify_pack_file,
-    LocalFileKeyProvider, ModelIdentity, TrustedSigners,
+    sign_model, sign_pack, sign_tool_registry, signature_path, verify_model_file, verify_pack_file,
+    verify_tool_registry_file, LocalFileKeyProvider, ModelIdentity, TrustedSigners,
 };
 use kavach_ports::KeyProvider;
 
@@ -74,6 +74,22 @@ enum Command {
         signers: PathBuf,
         #[arg(long)]
         model: PathBuf,
+    },
+    /// Sign an agent tool registry file; writes `<registry>.sig`.
+    SignTools {
+        #[arg(long)]
+        dir: PathBuf,
+        #[arg(long)]
+        kid: String,
+        #[arg(long)]
+        registry: PathBuf,
+    },
+    /// Verify `<registry>.sig` against a trusted-signers file (tool role).
+    VerifyTools {
+        #[arg(long)]
+        signers: PathBuf,
+        #[arg(long)]
+        registry: PathBuf,
     },
 }
 
@@ -145,6 +161,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             verify_model_file(&model, identity, &trusted)?;
             println!("ok: {} {} {digest}", header.model_id, header.version);
+        }
+        Command::SignTools { dir, kid, registry } => {
+            let digest = kavach_policy::pack_digest(&std::fs::read(&registry)?);
+            let provider = LocalFileKeyProvider::new(dir);
+            let signature = sign_tool_registry(&provider, &kid, &digest).await?;
+            let out = signature_path(&registry);
+            std::fs::write(&out, serde_json::to_string_pretty(&signature)? + "\n")?;
+            println!("wrote {} ({digest})", out.display());
+        }
+        Command::VerifyTools { signers, registry } => {
+            let trusted = TrustedSigners::from_file(&signers)?;
+            let digest = kavach_policy::pack_digest(&std::fs::read(&registry)?);
+            verify_tool_registry_file(&registry, &digest, &trusted)?;
+            println!("ok: {} {digest}", registry.display());
         }
     }
     Ok(())

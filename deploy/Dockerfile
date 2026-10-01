@@ -25,6 +25,7 @@ COPY --from=builder /build/target/release/kavach-batch /usr/local/bin/
 COPY --from=builder /build/target/release/kavach-evidence /usr/local/bin/
 COPY packs/ packs/
 COPY models/ models/
+COPY tools/ tools/
 COPY partner/ partner/
 COPY schemas/ schemas/
 COPY crates/kavach-auth/policies/ crates/kavach-auth/policies/

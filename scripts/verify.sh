@@ -3,6 +3,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+./scripts/disk-guard.sh --check-size
+
 if [[ -f console/package.json ]]; then
   echo "==> build console"
   ./scripts/build-console.sh

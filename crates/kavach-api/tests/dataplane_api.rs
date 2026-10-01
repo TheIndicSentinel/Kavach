@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use ed25519_dalek::SigningKey;
+use ed25519_dalek::{Signer, SigningKey};
 use http_body_util::BodyExt;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig};
@@ -24,11 +24,13 @@ use kavach_domain::mandate::{
 use kavach_keys::InMemoryKeyProvider;
 use kavach_ports::agent_evidence::AgentEvidenceStore;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use tower::ServiceExt;
 
 const ISSUER: &str = "https://idp.test/realms/kavach";
 const KID: &str = "test-key-1";
 const IDP_SEED: [u8; 32] = [42u8; 32];
+const TOOL_SEED: [u8; 32] = [7u8; 32];
 const SUBJECT: &str = "ref:borrower:B-9382";
 
 fn repo(path: &str) -> PathBuf {
@@ -119,6 +121,38 @@ fn template() -> MandateTemplate {
 
 /// Writes keys, mandate config, consents and JWKS; returns the dataplane
 /// and operator OIDC configuration.
+/// A copy of the reference tool registry in `dir`, signed by a tool signer
+/// listed in `dir/tool-signers.json`; returns its path and digest.
+fn signed_registry(dir: &Path) -> (PathBuf, String) {
+    let registry = dir.join("agent-tools.yaml");
+    let registry_bytes = std::fs::read(repo("tools/agent-tools.yaml")).unwrap();
+    std::fs::write(&registry, &registry_bytes).unwrap();
+    let tool_signer = SigningKey::from_bytes(&TOOL_SEED);
+    let digest = format!("sha256:{:x}", Sha256::digest(&registry_bytes));
+    let signature = tool_signer.sign(
+        &[
+            b"kavach-tool-registry-signature-v1:".as_slice(),
+            digest.as_bytes(),
+        ]
+        .concat(),
+    );
+    std::fs::write(
+        dir.join("agent-tools.yaml.sig"),
+        json!({ "version": 1, "alg": "EdDSA", "kid": "tool-signer-1",
+                "registry_sha256": digest, "signature": hex::encode(signature.to_bytes()) })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("tool-signers.json"),
+        json!({ "signers": [{ "kid": "tool-signer-1", "roles": ["tool"],
+                              "public_key": hex::encode(tool_signer.verifying_key().to_bytes()) }] })
+        .to_string(),
+    )
+    .unwrap();
+    (registry, digest)
+}
+
 fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
     let dir = std::env::temp_dir().join(format!("kavach-dp-{}", uuid::Uuid::new_v4().simple()));
     let keys = dir.join("keys");
@@ -188,6 +222,8 @@ fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         groups_claim: "groups".into(),
         leeway_seconds: 30,
     };
+    let (registry, digest) = signed_registry(&dir);
+
     let dataplane = DataplaneConfig {
         agent_oidc: OidcConfig {
             audience: "kavach-agents".into(),
@@ -202,6 +238,9 @@ fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         consents: dir.join("consents.json"),
         tenant_id: "default".into(),
         sor_rate_per_second: rate,
+        tool_registry: registry,
+        tool_registry_sha256: Some(digest),
+        tool_signers: Some(dir.join("tool-signers.json")),
     };
     (dataplane, operator)
 }
@@ -301,11 +340,13 @@ async fn issue(state: &Arc<AppState>, event_id: &str) -> String {
 
 fn read_fields(mandate_id: &str, request_id: &str) -> Value {
     json!({
+        "tool": "read_fields",
         "mandate_id": mandate_id,
-        "action": "read_fields",
         "request_id": request_id,
-        "subject_ref": SUBJECT,
-        "requested_fields": ["name", "overdue_amount"]
+        "params": {
+            "subject_ref": SUBJECT,
+            "requested_fields": ["name", "overdue_amount"]
+        }
     })
 }
 
@@ -488,6 +529,126 @@ async fn startup_refuses_unsafe_agent_configurations() {
     same.dataplane.as_mut().unwrap().agent_oidc.audience = "kavach-api".into();
     let err = AppState::from_config(&same).await.err().expect("refused");
     assert!(format!("{err:?}").contains("audience"), "{err:?}");
+}
+
+/// The tool registry is security-critical configuration: refused when
+/// unsigned (outside --insecure-dev), tampered after signing, or off-pin.
+#[tokio::test]
+async fn startup_refuses_unsigned_tampered_or_unpinned_tool_registries() {
+    let refused = |config: ApiConfig| async move {
+        format!(
+            "{:?}",
+            AppState::from_config(&config).await.err().expect("refused")
+        )
+    };
+    // Without --insecure-dev the registry is checked before the clock and
+    // stores, so memory stores do not mask the refusal.
+    let mut unsigned = config(EvidenceStoreKind::Memory, true, 50);
+    unsigned.insecure_dev = false;
+    let dp = unsigned.dataplane.as_mut().unwrap();
+    dp.tool_signers = None;
+    let message = refused(unsigned).await;
+    assert!(message.contains("must be signed"), "{message}");
+
+    let tampered = config(EvidenceStoreKind::Memory, true, 50);
+    let path = tampered.dataplane.as_ref().unwrap().tool_registry.clone();
+    let widened = std::fs::read_to_string(&path)
+        .unwrap()
+        .replace("values: [whatsapp, sms]", "values: [whatsapp, sms, email]");
+    std::fs::write(&path, widened).unwrap();
+    let mut unpinned = tampered.clone();
+    unpinned.dataplane.as_mut().unwrap().tool_registry_sha256 = None;
+    let message = refused(tampered).await;
+    assert!(message.contains("pinned"), "{message}");
+    let message = refused(unpinned).await;
+    assert!(message.contains("signature covers"), "{message}");
+
+    // A signer trusted for packs only cannot vouch for tools.
+    let pack_only = config(EvidenceStoreKind::Memory, true, 50);
+    let signers = pack_only
+        .dataplane
+        .as_ref()
+        .unwrap()
+        .tool_signers
+        .clone()
+        .unwrap();
+    let text = std::fs::read_to_string(&signers)
+        .unwrap()
+        .replace("[\"tool\"]", "[\"pack\"]");
+    std::fs::write(&signers, text).unwrap();
+    let message = refused(pack_only).await;
+    assert!(
+        message.contains("not trusted to sign tool registries"),
+        "{message}"
+    );
+}
+
+/// The pre-check runs the same registry extraction as the gateway: malformed
+/// requests are 400 (nothing recorded), policy violations are a BLOCK.
+#[tokio::test]
+async fn precheck_uses_the_tool_registry() {
+    let s = state(50).await;
+    let mandate = issue(&s, "evt-reg").await;
+    let auth = [(
+        "authorization",
+        format!("Bearer {}", agent_token("collections-agent")),
+    )];
+    let post = |body: Value| send(agent_router(s.clone()), "/v1/authorize", &auth, body);
+    let reminder = |channel: &str| {
+        json!({
+            "tool": "send_reminder",
+            "mandate_id": mandate,
+            "request_id": "reg-1",
+            "params": {
+                "subject_ref": SUBJECT,
+                "channel": channel,
+                "template_id": "emi_reminder_v1"
+            }
+        })
+    };
+    let (status, body) = post(reminder("whatsapp")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    // Off-allowlist channel: a decision (BLOCK), not an error.
+    let (status, body) = post(reminder("+919876543210")).await;
+    assert_eq!(
+        (status, body["decision"].clone()),
+        (StatusCode::OK, json!("BLOCK")),
+        "{body}"
+    );
+    assert!(!body.to_string().contains("9876543210"), "{body}");
+
+    // Malformed: 400, and the error never quotes the offending value.
+    let mut timestamp = reminder("whatsapp");
+    timestamp["params"]["timestamp"] = json!("2026-10-01T05:00:00Z");
+    let mut free_text = reminder("whatsapp");
+    free_text["params"]["message"] = json!("call +91 98765 43210 now");
+    let mut wrong_type = reminder("whatsapp");
+    wrong_type["params"]["channel"] = json!(9_876_543_210_u64);
+    let mut old_shape = reminder("whatsapp");
+    old_shape["action"] = json!("send_reminder");
+    for bad in [
+        timestamp,
+        free_text,
+        wrong_type,
+        old_shape,
+        json!({ "tool": "update_status", "mandate_id": mandate, "request_id": "r", "params": {} }),
+    ] {
+        let (status, body) = post(bad.clone()).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad} -> {body}");
+        assert!(!body.to_string().contains("98765"), "{body}");
+    }
+    assert!(
+        s.dataplane()
+            .unwrap()
+            .core()
+            .store()
+            .records("default", 0)
+            .await
+            .unwrap()
+            .is_empty(),
+        "pre-checks record nothing"
+    );
 }
 
 /// Postgres, no development stand-ins (kernel clock), as in production.

@@ -15,15 +15,18 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use axum::extract::rejection::JsonRejection;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::{Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
-use kavach_dataplane::{AgentIdentity, AuthorizeConfig, AuthorizeCore, Mode, ToolCall};
+use kavach_dataplane::{
+    AgentIdentity, AuthorizeConfig, AuthorizeCore, Mode, RegistryTrust, ToolRegistry, ToolRequest,
+};
 use kavach_domain::mandate::{AgentPassport, ConsentRecord, MandateTemplate, RevocationReason};
 use kavach_domain::Decision;
-use kavach_keys::{Ed25519EvidenceSigner, LocalFileKeyProvider, SubjectKeys};
+use kavach_keys::{Ed25519EvidenceSigner, LocalFileKeyProvider, SubjectKeys, TrustedSigners};
 use kavach_mandate::jws::KeySet;
 use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus, InMemoryMandateStore};
 use kavach_mandate::{MandateConfig, MandateDeps, MandateService, SorIssuer};
@@ -66,6 +69,13 @@ pub struct DataplaneConfig {
     pub tenant_id: String,
     /// System-of-record events accepted per second (token bucket).
     pub sor_rate_per_second: u32,
+    /// Agent tool registry (YAML, signed: `<path>.sig`).
+    pub tool_registry: PathBuf,
+    /// Expected registry digest (`sha256:<hex>`), checked before the signature.
+    pub tool_registry_sha256: Option<String>,
+    /// Trusted signers for the registry (`tool` role). Defaults to the pack
+    /// signers file; one `signers.json` with roles can serve both.
+    pub tool_signers: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -327,10 +337,12 @@ impl Dataplane {
         pool: Option<&StoragePool>,
         insecure_dev: bool,
         operator_audience: Option<&str>,
+        pack_signers: Option<&Path>,
     ) -> Result<Self, String> {
         if operator_audience == Some(config.agent_oidc.audience.as_str()) {
             return Err("the agent token audience must differ from the operator audience".into());
         }
+        let tools = Arc::new(load_tools(config, pack_signers, insecure_dev)?);
         let clock = select_clock(insecure_dev)?;
         let (store, replay, evidence) = select_stores(pool, insecure_dev)?;
 
@@ -360,6 +372,7 @@ impl Dataplane {
         let core = AuthorizeCore::new(
             Arc::clone(&mandates),
             Arc::new(evidence),
+            tools,
             subject_keys,
             Box::new(signer),
             Box::new(clock),
@@ -395,6 +408,37 @@ impl Dataplane {
     pub fn mandates(&self) -> &Arc<Mandates> {
         &self.mandates
     }
+}
+
+/// The tool registry, vouched for: signed by a `tool` signer (required
+/// unless `--insecure-dev`) and matching the pin, if one is set.
+fn load_tools(
+    config: &DataplaneConfig,
+    pack_signers: Option<&Path>,
+    insecure_dev: bool,
+) -> Result<ToolRegistry, String> {
+    let signers = config
+        .tool_signers
+        .as_deref()
+        .or(pack_signers)
+        .map(TrustedSigners::from_file)
+        .transpose()
+        .map_err(|e| format!("tool signers: {e}"))?;
+    if signers.is_none() && insecure_dev {
+        eprintln!(
+            "WARNING: kavach-api: the agent tool registry is not signature-checked \
+             (--insecure-dev). Development only."
+        );
+    }
+    ToolRegistry::load(
+        &config.tool_registry,
+        RegistryTrust {
+            signers: signers.as_ref(),
+            pin: config.tool_registry_sha256.as_deref(),
+            require_signature: !insecure_dev,
+        },
+    )
+    .map_err(|e| format!("tool registry: {}", e.message))
 }
 
 fn select_clock(insecure_dev: bool) -> Result<ClockBackend, String> {
@@ -547,19 +591,16 @@ fn authenticate_agent(dp: &Dataplane, headers: &HeaderMap) -> Result<AgentIdenti
     })
 }
 
+/// A pre-check: the tool and the request the agent would send to
+/// `POST /v1/tools/{tool}`, extracted through the same registry.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorizeBody {
+    pub tool: String,
     pub mandate_id: String,
-    pub action: String,
     pub request_id: String,
-    pub subject_ref: String,
-    pub channel: Option<String>,
-    pub waiver_bps: Option<i64>,
     #[serde(default)]
-    pub requested_fields: BTreeSet<String>,
-    #[serde(default)]
-    pub params: std::collections::BTreeMap<String, String>,
+    pub params: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -576,20 +617,30 @@ pub struct AuthorizeResponse {
 pub async fn authorize(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Json(body): Json<AuthorizeBody>,
+    body: Result<Json<AuthorizeBody>, JsonRejection>,
 ) -> Result<Json<AuthorizeResponse>, Refusal> {
     let dp = dataplane(&state)?;
     let agent = authenticate_agent(dp, &headers)?;
-    let call = ToolCall {
-        mandate_id: body.mandate_id,
-        action: body.action,
-        request_id: body.request_id,
-        subject_ref: body.subject_ref,
-        channel: body.channel,
-        waiver_bps: body.waiver_bps,
-        requested_fields: body.requested_fields,
-        extra: body.params,
-    };
+    // Malformed or unknown fields: 400, nothing recorded (H5b item 5).
+    // The parser's message can quote values, so it is not echoed.
+    let Json(body) = body.map_err(|_| {
+        refuse(
+            StatusCode::BAD_REQUEST,
+            "malformed body: expected JSON with exactly tool, mandate_id, request_id, params",
+        )
+    })?;
+    let call = dp
+        .core
+        .tools()
+        .extract(
+            &body.tool,
+            ToolRequest {
+                mandate_id: body.mandate_id,
+                request_id: body.request_id,
+                params: body.params,
+            },
+        )
+        .map_err(|e| refuse(StatusCode::BAD_REQUEST, e.message))?;
     let decided = dp
         .core
         .authorize(&agent, &call, Mode::Precheck)

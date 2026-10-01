@@ -28,6 +28,12 @@ impl TimeSource for Clock {
     }
 }
 
+/// The reference tool registry shipped in `tools/`.
+pub fn tools() -> Arc<kavach_dataplane::ToolRegistry> {
+    let bytes = include_bytes!("../../../../tools/agent-tools.yaml");
+    Arc::new(kavach_dataplane::ToolRegistry::from_bytes(bytes).expect("reference registry"))
+}
+
 pub fn set(items: &[&str]) -> BTreeSet<String> {
     items.iter().map(ToString::to_string).collect()
 }
