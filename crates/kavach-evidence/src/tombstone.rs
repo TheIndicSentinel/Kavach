@@ -82,8 +82,8 @@ mod tests {
         assert_eq!(redacted.prev_hash, event.prev_hash);
         assert_eq!(redacted.correlation_id, TOMBSTONE_CORRELATION_ID);
         assert_eq!(redacted.input_digest, TOMBSTONE_INPUT_DIGEST);
-        assert!(redacted.reason_codes.is_empty());
-        assert!(redacted.pii_tokens.is_empty());
+        assert_eq!(redacted.reason_codes, Vec::<String>::new());
+        assert_eq!(redacted.pii_tokens, Vec::<String>::new());
         assert!(redacted.idempotency_key.is_none());
     }
 }

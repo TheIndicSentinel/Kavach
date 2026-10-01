@@ -302,7 +302,10 @@ pub mod mandate_store {
             1,
             "limit"
         );
-        assert!(store.ancestors(TENANT, "root", 8).await.unwrap().is_empty());
+        assert_eq!(
+            store.ancestors(TENANT, "root", 8).await.unwrap(),
+            Vec::<StoredMandate>::new()
+        );
 
         let mut changed = store
             .revoke_tree(TENANT, "child", RevocationReason::Dispute)

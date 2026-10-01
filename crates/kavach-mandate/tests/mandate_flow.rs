@@ -198,7 +198,12 @@ async fn revocation_cascades_and_expiry_is_enforced() {
         .await
         .unwrap();
     assert_eq!(revoked.revoked.len(), 2);
-    assert!(revoked.publish_errors.is_empty());
+    assert_eq!(
+        revoked.publish_errors.len(),
+        0,
+        "{:?}",
+        revoked.publish_errors
+    );
     for token in [&parent.token, &child.token] {
         let err = f.service.verify_active(token).await.unwrap_err();
         assert_eq!(err.class, ErrorClass::Rejected);

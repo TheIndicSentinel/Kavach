@@ -238,7 +238,7 @@ async fn allow_replay_conflict_and_outcome<S: AgentEvidenceStore>(
         t0() + Duration::minutes(5),
     )
     .expect("chain verifies");
-    assert!(report.outcome_unknown.is_empty());
+    assert_eq!(report.outcome_unknown, Vec::<String>::new());
     assert!(
         verify_chain(
             &records[..1],
