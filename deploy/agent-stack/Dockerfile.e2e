@@ -1,0 +1,18 @@
+# TEST-ONLY image for the H5b-2 isolation stack: kavach-dev (bundle
+# generator, SoR event poster, isolation probe) and kavach-mock-provider
+# (a protocol fixture). Never deploy it; it is not the production image.
+# Build: docker build -f deploy/agent-stack/Dockerfile.e2e -t kavach-e2e .
+
+FROM rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922 AS builder
+WORKDIR /build
+COPY . .
+RUN cargo build --release --locked -p kavach-devkit -p kavach-mock-provider
+
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home kavach
+COPY --from=builder /build/target/release/kavach-dev /usr/local/bin/
+COPY --from=builder /build/target/release/kavach-mock-provider /usr/local/bin/
+USER kavach

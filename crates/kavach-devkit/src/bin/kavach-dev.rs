@@ -48,6 +48,32 @@ enum Command {
         #[arg(long, default_value = "collections-agent")]
         agent: String,
     },
+    /// The test agent's checks, run from inside the agent network: only the
+    /// agent listener is reachable, the agent holds no key material, and
+    /// the gateway is the only way to act. Exit status = result.
+    ProbeIsolation {
+        #[arg(long)]
+        agent_url: String,
+        /// The agent listener's host:port (must be reachable).
+        #[arg(long)]
+        agent_listener: String,
+        /// host:port that must be unreachable (repeat).
+        #[arg(long = "must-fail")]
+        must_fail: Vec<String>,
+        /// Names that must not be reachable (repeat).
+        #[arg(long = "must-not-resolve")]
+        must_not_resolve: Vec<String>,
+        #[arg(long)]
+        token_file: PathBuf,
+        #[arg(long)]
+        mandate_file: PathBuf,
+        /// Directories readable by the agent, scanned for key material.
+        #[arg(long = "scan-dir")]
+        scan_dirs: Vec<PathBuf>,
+        /// Fail unless a reminder is delivered (the scheduled midday run).
+        #[arg(long, env = "REQUIRE_DELIVERY")]
+        require_delivery: bool,
+    },
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -100,6 +126,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{body}");
             if !status.is_success() {
                 return Err(format!("SoR listener answered {status}").into());
+            }
+        }
+        Command::ProbeIsolation {
+            agent_url,
+            agent_listener,
+            must_fail,
+            must_not_resolve,
+            token_file,
+            mandate_file,
+            scan_dirs,
+            require_delivery,
+        } => {
+            let ok = kavach_devkit::probe::run(&kavach_devkit::probe::ProbeOptions {
+                agent_url,
+                agent_listener,
+                must_fail,
+                must_not_resolve,
+                token_file,
+                mandate_file,
+                scan_dirs,
+                require_delivery,
+            })
+            .await?;
+            if !ok {
+                std::process::exit(1);
             }
         }
     }

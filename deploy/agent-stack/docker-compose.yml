@@ -1,0 +1,239 @@
+# H5b-2 network isolation stack — a DEVELOPMENT stack (dev- keys, so
+# kavach-api runs with --insecure-dev) that proves the boundary on a real
+# deployment: an agent container can reach only the gateway's agent
+# listener. Not a production template.
+#
+#   agent_net   (internal, no egress)  kavach 172.30.10.10 · test-agent 172.30.10.50
+#   backend_net (internal, no egress)  kavach 172.30.20.10 · postgres .20 · mock-provider .30
+#
+# Each Kavach listener binds ONE interface IP: the agent listener only the
+# agent-network IP; operator, gRPC and system-of-record listeners only the
+# backend IP. A blanket 0.0.0.0 bind would let agents reach the operator API
+# through the shared container — the probe checks for exactly that.
+#
+# Run (what CI does; see .github/workflows/isolation.yml):
+#   cd deploy/agent-stack && mkdir -m 777 bundle
+#   docker compose run --rm setup                       # dev bundle into ./bundle
+#   docker compose up -d --wait postgres kavach mock-provider
+#   docker compose run --rm issue-mandate               # SoR event -> mandate
+#   docker compose run --rm test-agent                  # the probe; exit status = result
+#   docker compose down -v
+
+name: kavach-isolation
+
+x-e2e: &e2e
+  image: kavach-e2e:local
+  build:
+    context: ../..
+    dockerfile: deploy/agent-stack/Dockerfile.e2e
+  user: "10001:10001"
+
+networks:
+  agent_net:
+    internal: true
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.10.0/24
+  backend_net:
+    internal: true
+    enable_ipv6: false
+    ipam:
+      config:
+        - subnet: 172.30.20.0/24
+
+services:
+  # One-shot: writes the dev bundle (no network at all).
+  setup:
+    <<: *e2e
+    profiles: ["setup"]
+    network_mode: none
+    volumes:
+      - ./bundle:/bundle
+    command:
+      - kavach-dev
+      - generate
+      - --out
+      - /bundle
+      - --kavach-mount
+      - /etc/kavach
+      - --provider-endpoint
+      - https://172.30.20.30:8443
+      - --provider-host
+      - 172.30.20.30
+      - --provider-host
+      - mock-provider
+
+  postgres:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_USER: kavach
+      POSTGRES_PASSWORD: kavach-isolation-owner
+      POSTGRES_DB: kavach
+      KAVACH_RUNTIME_DB_PASSWORD: kavach-isolation-runtime
+    volumes:
+      - ../postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      backend_net:
+        ipv4_address: 172.30.20.20
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kavach -d kavach"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  kavach:
+    image: kavach:local
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    user: "10001:10001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - ./bundle/kavach/kavach.env
+    environment:
+      KAVACH_MIGRATION_DATABASE_URL: postgres://kavach:kavach-isolation-owner@172.30.20.20:5432/kavach
+      KAVACH_DATABASE_URL: postgres://kavach_runtime:kavach-isolation-runtime@172.30.20.20:5432/kavach
+      KAVACH_CEDAR_POLICY: crates/kavach-auth/policies/kavach.cedar
+      KAVACH_CEDAR_ENTITIES: crates/kavach-auth/policies/entities.example.json
+      KAVACH_LOG_FORMAT: json
+    volumes:
+      - ./bundle/kavach:/etc/kavach:ro
+    command:
+      - --insecure-dev
+      - --listen
+      - 172.30.20.10:8080
+      - --grpc-listen
+      - 172.30.20.10:50051
+      - --sor-listen
+      - 172.30.20.10:8090
+      - --agent-listen
+      - 172.30.10.10:8091
+      - --pack
+      - packs/finance/v0.yaml
+      - --model
+      - models/finance/credit-underwriting-v1.yaml
+      - --evidence-store
+      - postgres
+    networks:
+      agent_net:
+        ipv4_address: 172.30.10.10
+      backend_net:
+        ipv4_address: 172.30.20.10
+    healthcheck:
+      # The image probes 127.0.0.1, which this stack deliberately does not
+      # bind; probe the operator listener on the backend IP instead.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/172.30.20.10/8080 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] [0-9][0-9][0-9]'"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+
+  mock-provider:
+    <<: *e2e
+    volumes:
+      - ./bundle/provider:/etc/provider:ro
+    command:
+      - kavach-mock-provider
+      - serve
+      - --listen
+      - 172.30.20.30:8443
+      - --inspect-listen
+      - 172.30.20.30:8099
+      - --encryption-key
+      - /etc/provider/encryption.key
+      - --encryption-kid
+      - dev-provider-enc-1
+      - --credential-keys
+      - /etc/provider/credential-keys.json
+      - --tls-cert
+      - /etc/provider/tls.pem
+      - --tls-key
+      - /etc/provider/tls-key.pem
+    networks:
+      backend_net:
+        ipv4_address: 172.30.20.30
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/172.30.20.30/8099"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # One-shot, as the system of record: issues the agent's mandate.
+  issue-mandate:
+    <<: *e2e
+    profiles: ["run"]
+    volumes:
+      - ./bundle:/bundle
+    entrypoint:
+      - sh
+      - -c
+      - >-
+        kavach-dev sor-event --bundle /bundle
+        --url http://172.30.20.10:8090/v1/sor/events
+        --event-id "evt-isolation-$$(date +%s)"
+        > /bundle/agents/mandate.json && cat /bundle/agents/mandate.json
+    networks:
+      backend_net:
+        ipv4_address: 172.30.20.41
+
+  # The agent: agent network only; holds its token and mandate id, nothing
+  # else. Its exit status is the test result.
+  test-agent:
+    <<: *e2e
+    profiles: ["run"]
+    environment:
+      REQUIRE_DELIVERY: ${REQUIRE_DELIVERY:-false}
+    volumes:
+      - ./bundle/agents/collections-agent.jwt:/run/agent/token:ro
+      - ./bundle/agents/mandate.json:/run/agent/mandate.json:ro
+    networks:
+      agent_net:
+        ipv4_address: 172.30.10.50
+    command:
+      - kavach-dev
+      - probe-isolation
+      - --agent-url
+      - http://172.30.10.10:8091
+      - --agent-listener
+      - 172.30.10.10:8091
+      # Kavach's other listeners on the AGENT-network IP: a wrong bind shows here.
+      - --must-fail
+      - 172.30.10.10:8080
+      - --must-fail
+      - 172.30.10.10:8090
+      - --must-fail
+      - 172.30.10.10:50051
+      # Kavach's backend IP, Postgres, the provider (API and inbox).
+      - --must-fail
+      - 172.30.20.10:8080
+      - --must-fail
+      - 172.30.20.10:8090
+      - --must-fail
+      - 172.30.20.20:5432
+      - --must-fail
+      - 172.30.20.30:8443
+      - --must-fail
+      - 172.30.20.30:8099
+      # The internet.
+      - --must-fail
+      - 1.1.1.1:443
+      - --must-fail
+      - 8.8.8.8:53
+      - --must-not-resolve
+      - mock-provider
+      - --must-not-resolve
+      - postgres
+      - --must-not-resolve
+      - example.com
+      - --token-file
+      - /run/agent/token
+      - --mandate-file
+      - /run/agent/mandate.json
+      - --scan-dir
+      - /run/agent
+      - --scan-dir
+      - /home
+      - --scan-dir
+      - /tmp

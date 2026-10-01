@@ -9,3 +9,6 @@ console/dist/
 !schemas/**
 !partner/**
 !crates/kavach-auth/policies/**
+
+# Generated dev bundles (keys): never in a build context.
+deploy/agent-stack/bundle/
