@@ -70,7 +70,7 @@ impl AppState {
             read_model_file(config.model_path(), pack_signers.as_ref())?;
 
         let (evidence, incidents, batch_jobs, admin, retention, changes) =
-            storage_backends(&config.evidence_store).await?;
+            storage_backends(config).await?;
 
         if matches!(config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
             enforce_startup_pointer(&admin, config, pack.digest.as_deref(), &model_sha256).await?;
@@ -176,6 +176,7 @@ impl AppState {
             insecure_dev: true,
             mtls_principal_san: None,
             change_ttl_seconds: DEFAULT_CHANGE_TTL_HOURS * 3600,
+            migration_database_url: None,
         };
         Self::from_config(&config).await
     }
@@ -419,8 +420,8 @@ type Backends = (
     ChangeRequestBackend,
 );
 
-async fn storage_backends(store: &EvidenceStoreKind) -> Result<Backends, ApiError> {
-    Ok(match store {
+async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
+    Ok(match &config.evidence_store {
         EvidenceStoreKind::Memory => {
             let admin = std::sync::Arc::new(MemoryAdminStore::default());
             let retention = std::sync::Arc::new(MemoryRetentionStore::default());
@@ -436,9 +437,12 @@ async fn storage_backends(store: &EvidenceStoreKind) -> Result<Backends, ApiErro
             )
         }
         EvidenceStoreKind::Postgres { database_url } => {
-            let pool = StoragePool::connect(database_url)
-                .await
-                .map_err(|e| ApiError::Internal(format!("postgres storage: {e}")))?;
+            let pool = StoragePool::connect_with_roles(
+                database_url,
+                config.migration_database_url.as_deref(),
+            )
+            .await
+            .map_err(|e| ApiError::Internal(format!("postgres storage: {e}")))?;
             (
                 EvidenceBackend::Postgres(pool.evidence_store()),
                 IncidentBackend::Postgres(pool.incident_store()),

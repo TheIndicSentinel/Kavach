@@ -50,20 +50,25 @@ Binaries: `target/release/kavach-api`, `target/release/kavach-batch`, `target/re
 
 ## PostgreSQL
 
-Create database and user:
+Use **two roles** (ADR-005 §1): an owner that runs migrations, and a least-privilege runtime role the API and batch serve as.
 
 ```sql
-CREATE USER kavach WITH PASSWORD 'change-me';
+CREATE USER kavach WITH PASSWORD 'owner-secret';             -- owner: migrations only
 CREATE DATABASE kavach OWNER kavach;
+CREATE ROLE kavach_runtime LOGIN PASSWORD 'runtime-secret';   -- the API and batch
 ```
-
-Set connection URL:
 
 ```bash
-export KAVACH_DATABASE_URL="postgres://kavach:change-me@db.internal:5432/kavach"
+export KAVACH_MIGRATION_DATABASE_URL="postgres://kavach:owner-secret@db.internal:5432/kavach"
+export KAVACH_DATABASE_URL="postgres://kavach_runtime:runtime-secret@db.internal:5432/kavach"
 ```
 
-Migrations (`evidence_chain_meta`, `decision_events`, `evaluate_incidents`, `batch_jobs`) run automatically on first API or batch Postgres connection.
+- On start, `kavach-api` applies pending migrations as the owner, then serves as `kavach_runtime` and never migrates with it. Applied migrations are tracked with checksums (`_sqlx_migrations`), so each runs once and an edited migration is refused. A database created by an earlier release adopts tracking on its first start.
+- Migrations grant `kavach_runtime` only what the application uses. Evidence and audit tables (`decision_events`, `admin_audit_log`, `evaluate_incidents`, `evidence_tombstones`) are insert-only. Nothing gets `TRUNCATE`, and the runtime role cannot alter tables or drop the immutability triggers.
+- If you create `kavach_runtime` **after** migrations already ran, grant it: `psql -U kavach -d kavach -c 'SELECT kavach_grant_runtime();'`.
+- `kavach-batch` never migrates unless given `--migration-database-url`; start `kavach-api` first.
+- **Development only:** with just `KAVACH_DATABASE_URL` (no migration URL), one role both migrates and serves, and it owns its tables.
+- The pilot compose stack creates `kavach_runtime` on first init (`deploy/postgres/init`); set `KAVACH_RUNTIME_DB_PASSWORD` in `deploy/.env`.
 
 ## Configuration reference
 
@@ -73,7 +78,8 @@ Paths default via env vars; CLI flags override.
 |---|---|---|
 | `KAVACH_PACK_PATH` / `--pack` | yes | Policy pack YAML (e.g. `packs/finance/v0.yaml`) |
 | `KAVACH_MODEL_PATH` / `--model` | yes | Model record YAML (governance mode is authoritative) |
-| `KAVACH_DATABASE_URL` / `--database-url` | prod | Postgres URL when `--evidence-store postgres` |
+| `KAVACH_DATABASE_URL` / `--database-url` | prod | Postgres URL when `--evidence-store postgres` — the least-privilege `kavach_runtime` role in production |
+| `KAVACH_MIGRATION_DATABASE_URL` / `--migration-database-url` | prod | Owner role that runs migrations; when set, the runtime URL never migrates |
 | `KAVACH_HMAC_SECRET` | optional | When set, HTTP evaluate requires `X-Kavach-Signature: sha256=<hex>` over raw body |
 | `KAVACH_TLS_CERT`, `KAVACH_TLS_KEY` | prod | Server TLS for HTTP and gRPC |
 | `KAVACH_TLS_CLIENT_CA` | optional | When set with cert/key, enables mTLS (client cert required) |

@@ -18,7 +18,7 @@ pub use jobs::{
     BatchJobCreate, BatchJobStore, JobStoreError, NoopBatchJobStore, PostgresBatchJobStore,
 };
 pub use mandates::{PostgresMandateStore, PostgresReplayGuard};
-pub use migrate::connect_pool;
+pub use migrate::{connect_pool, connect_runtime, migrate};
 pub use retention::PostgresRetentionStore;
 
 use sqlx::PgPool;
@@ -30,8 +30,25 @@ pub struct StoragePool {
 }
 
 impl StoragePool {
+    /// Migrates and connects with one role (development).
     pub async fn connect(database_url: &str) -> Result<Self, kavach_evidence::EvidenceError> {
         connect_pool(database_url).await
+    }
+
+    /// Migrates as `migration_url` (owner role) when given, then connects as
+    /// `database_url` (runtime role) without migrating. Without a migration
+    /// URL, one role does both.
+    pub async fn connect_with_roles(
+        database_url: &str,
+        migration_url: Option<&str>,
+    ) -> Result<Self, kavach_evidence::EvidenceError> {
+        match migration_url {
+            Some(owner) => {
+                migrate(owner).await?;
+                connect_runtime(database_url).await
+            }
+            None => connect_pool(database_url).await,
+        }
     }
 
     pub fn evidence_store(&self) -> PostgresEvidenceStore {

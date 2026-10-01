@@ -143,6 +143,7 @@ fn config(pki: &Pki) -> ApiConfig {
         insecure_dev: false,
         mtls_principal_san: Some(MtlsSanKind::Uri),
         change_ttl_seconds: 3600,
+        migration_database_url: None,
     }
 }
 

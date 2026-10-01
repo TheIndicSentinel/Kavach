@@ -40,3 +40,41 @@ pub async fn isolated_database_url() -> Option<String> {
         "{base}{separator}options=-c%20search_path%3D{schema}"
     ))
 }
+
+/// Password of the `kavach_runtime` role created for tests.
+pub const RUNTIME_TEST_PASSWORD: &str = "kavach-runtime-test";
+
+/// Like [`isolated_database_url`], and also creates (once per cluster) the
+/// `kavach_runtime` role. Returns `(owner_url, runtime_url)`, both with the
+/// fresh schema on their `search_path`; migrate with the owner URL.
+///
+/// # Panics
+/// As [`isolated_database_url`], or when the role cannot be created.
+pub async fn isolated_database_urls() -> Option<(String, String)> {
+    let owner = isolated_database_url().await?;
+    let base = std::env::var(DATABASE_URL_ENV).expect("checked above");
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&base)
+        .await
+        .expect("connect");
+    // Concurrent tests may race to create the cluster-wide role.
+    sqlx::query(&format!(
+        "DO $$ BEGIN \
+            CREATE ROLE kavach_runtime LOGIN PASSWORD '{RUNTIME_TEST_PASSWORD}'; \
+         EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$"
+    ))
+    .execute(&pool)
+    .await
+    .expect("create kavach_runtime role");
+    pool.close().await;
+    let runtime = with_credentials(&owner, "kavach_runtime", RUNTIME_TEST_PASSWORD);
+    Some((owner, runtime))
+}
+
+/// `postgres://user:pass@host/...` with other credentials.
+fn with_credentials(url: &str, user: &str, password: &str) -> String {
+    let (scheme, rest) = url.split_once("://").expect("url scheme");
+    let host = rest.split_once('@').map_or(rest, |(_, host)| host);
+    format!("{scheme}://{user}:{password}@{host}")
+}

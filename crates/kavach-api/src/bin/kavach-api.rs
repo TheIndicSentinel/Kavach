@@ -113,6 +113,11 @@ struct Cli {
     #[arg(long, env = "KAVACH_DATABASE_URL")]
     database_url: Option<String>,
 
+    /// Owner role that runs migrations. When set, `--database-url` should be
+    /// the least-privilege `kavach_runtime` role and never migrates.
+    #[arg(long, env = "KAVACH_MIGRATION_DATABASE_URL")]
+    migration_database_url: Option<String>,
+
     /// Access control for API principals. Defaults to Cedar (secure by default).
     #[arg(
         long,
@@ -225,6 +230,7 @@ impl Cli {
             insecure_dev: self.insecure_dev,
             mtls_principal_san: self.mtls_principal_san,
             change_ttl_seconds: self.change_request_ttl_hours * 3600,
+            migration_database_url: self.migration_database_url,
         };
         validate_principal_sources(&config)?;
         Ok(config)

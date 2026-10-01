@@ -28,6 +28,10 @@ pub struct ApiConfig {
     pub mtls_principal_san: Option<crate::mtls::MtlsSanKind>,
     /// How long a change request stays approvable.
     pub change_ttl_seconds: u64,
+    /// Postgres: the owner role that runs migrations. When set, the runtime
+    /// connection (`database_url`) never migrates and should be the
+    /// least-privilege `kavach_runtime` role (ADR-005 §1).
+    pub migration_database_url: Option<String>,
 }
 
 /// Cedar access control needs an authenticated principal source (OIDC or

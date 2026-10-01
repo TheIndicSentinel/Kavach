@@ -28,10 +28,10 @@ pub use incidents_store::{IncidentRecord, IncidentStoreError, MemoryIncidentStor
 pub use jobs_store::{BatchJobRecord, JobQueryError, MemoryBatchJobStore};
 pub use model_governance::{govern_model, GovernedModel, ModelStartupError, ModelStartupRole};
 pub use postgres::{
-    connect_pool, BatchJobCreate, BatchJobStore, JobStoreError, NoopBatchJobStore,
-    PostgresAdminStore, PostgresBatchJobStore, PostgresChangeStore, PostgresEvidenceStore,
-    PostgresIncidentStore, PostgresMandateStore, PostgresReplayGuard, PostgresRetentionStore,
-    StoragePool,
+    connect_pool, connect_runtime, migrate, BatchJobCreate, BatchJobStore, JobStoreError,
+    NoopBatchJobStore, PostgresAdminStore, PostgresBatchJobStore, PostgresChangeStore,
+    PostgresEvidenceStore, PostgresIncidentStore, PostgresMandateStore, PostgresReplayGuard,
+    PostgresRetentionStore, StoragePool,
 };
 pub use retention::{
     MemoryRetentionStore, RetentionApplyReport, RetentionSettings, RetentionStoreError,
