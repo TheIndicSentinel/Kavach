@@ -87,6 +87,16 @@ struct AgentArgs {
     /// channel; synthetic +910 numbers only).
     #[arg(long, env = "KAVACH_REFERENCES")]
     references: Option<PathBuf>,
+    /// Gateway → provider connect timeout (ms; no retries).
+    #[arg(
+        long,
+        env = "KAVACH_PROVIDER_CONNECT_TIMEOUT_MS",
+        default_value_t = 2000
+    )]
+    provider_connect_timeout_ms: u64,
+    /// Gateway → provider total timeout (ms; below the 15 s credential lifetime).
+    #[arg(long, env = "KAVACH_PROVIDER_TIMEOUT_MS", default_value_t = 5000)]
+    provider_timeout_ms: u64,
     /// Listener for agents (`/v1/authorize`, tools): the only listener to
     /// attach to the agent network.
     #[arg(long, env = "KAVACH_AGENT_LISTEN", default_value = "127.0.0.1:8091")]
@@ -131,6 +141,9 @@ impl AgentArgs {
             credential_key_id: self.credential_key_id,
             providers: need(self.providers, "--providers")?,
             references: need(self.references, "--references")?,
+            provider_connect_timeout_ms: self.provider_connect_timeout_ms,
+            provider_timeout_ms: self.provider_timeout_ms,
+            test_clock: None,
         }))
     }
 }

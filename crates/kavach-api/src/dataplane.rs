@@ -23,8 +23,8 @@ use axum::{Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
 use kavach_credential::{JoseCredentialBroker, RecipientKey};
 use kavach_dataplane::{
-    AgentIdentity, AuthorizeConfig, AuthorizeCore, FixtureResolver, Mode, RegistryTrust,
-    ToolRegistry, ToolRequest,
+    execute, AgentIdentity, AuthorizeConfig, AuthorizeCore, FixtureResolver, GatewayDeps,
+    GatewayError, GatewayReply, Mode, RegistryTrust, ToolRegistry, ToolRequest,
 };
 use kavach_domain::mandate::{AgentPassport, ConsentRecord, MandateTemplate, RevocationReason};
 use kavach_domain::Decision;
@@ -88,6 +88,13 @@ pub struct DataplaneConfig {
     /// Reference fixture (JSON): capability references to destinations,
     /// synthetic numbers only (a reference vault replaces it in M2).
     pub references: PathBuf,
+    /// Gateway → provider timeouts (no retries). Both stay below the
+    /// credential lifetime.
+    pub provider_connect_timeout_ms: u64,
+    pub provider_timeout_ms: u64,
+    /// Tests only (no CLI flag): a controllable trusted clock. Refused
+    /// outside `--insecure-dev`.
+    pub test_clock: Option<TestClock>,
 }
 
 #[derive(Deserialize)]
@@ -105,6 +112,9 @@ struct ProviderEntry {
     kid: String,
     /// Hex X25519 public key.
     x25519_public_key: String,
+    /// Base URL the gateway forwards to (`<endpoint>/v1/messages`). HTTPS
+    /// preferred; plain HTTP only on an isolated backend network.
+    endpoint: String,
 }
 
 pub type Broker = JoseCredentialBroker<LocalFileKeyProvider>;
@@ -303,16 +313,30 @@ impl AgentEvidenceStore for EvidenceBackend {
 
 /// Trusted time: the kernel clock, or — only with `--insecure-dev` — the
 /// system clock declared synced (development machines without NTP status).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub enum ClockBackend {
     Kernel(kavach_clocksync::KernelClock),
     InsecureDev,
+    /// A clock a test controls (only with `--insecure-dev`; no CLI flag).
+    Test(TestClock),
+}
+
+/// A clock injected by an embedding test (`DataplaneConfig::test_clock`).
+/// Startup refuses it outside `--insecure-dev`.
+#[derive(Clone)]
+pub struct TestClock(pub Arc<dyn TimeSource + Send + Sync>);
+
+impl std::fmt::Debug for TestClock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("TestClock")
+    }
 }
 
 impl TimeSource for ClockBackend {
     fn now(&self) -> TrustedNow {
         match self {
             Self::Kernel(clock) => clock.now(),
+            Self::Test(clock) => clock.0.now(),
             Self::InsecureDev => TrustedNow {
                 utc: Utc::now(),
                 sync: SyncStatus::Synced { max_error_ms: 0 },
@@ -360,6 +384,7 @@ pub struct Dataplane {
     sor_limiter: Mutex<TokenBucket>,
     broker: Broker,
     resolver: FixtureResolver,
+    forwarder: crate::forward::HttpForwarder,
 }
 
 impl Dataplane {
@@ -376,7 +401,13 @@ impl Dataplane {
             return Err("the agent token audience must differ from the operator audience".into());
         }
         let tools = Arc::new(load_tools(config, pack_signers, insecure_dev)?);
-        let clock = select_clock(insecure_dev)?;
+        let clock = match &config.test_clock {
+            Some(_) if !insecure_dev => {
+                return Err("a test clock is refused outside --insecure-dev".into())
+            }
+            Some(test) => ClockBackend::Test(test.clone()),
+            None => select_clock(insecure_dev)?,
+        };
         let (store, replay, evidence) = select_stores(pool, insecure_dev)?;
 
         let keys = LocalFileKeyProvider::new(&config.mandate_keys_dir);
@@ -392,7 +423,7 @@ impl Dataplane {
                     consents: InMemoryConsentSource::new(consents),
                     store,
                     events: InMemoryEventBus::new(),
-                    clock,
+                    clock: clock.clone(),
                 },
                 mandate_config,
             )
@@ -403,6 +434,7 @@ impl Dataplane {
                 .map_err(|e| format!("evidence key: {e}"))?;
         let resolver = FixtureResolver::from_file(&config.references)
             .map_err(|e| format!("references: {}", e.message))?;
+        let forwarder = build_forwarder(config, &tools)?;
         let broker = build_broker(config, &tools, &mandate_kid, insecure_dev).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
             .map_err(|e| format!("subject pseudonym key: {e}"))?;
@@ -437,7 +469,12 @@ impl Dataplane {
             }),
             broker,
             resolver,
+            forwarder,
         })
+    }
+
+    pub fn forwarder(&self) -> &crate::forward::HttpForwarder {
+        &self.forwarder
     }
 
     /// Resolves capability references, after an allow, inside the gateway.
@@ -488,6 +525,53 @@ fn load_tools(
         },
     )
     .map_err(|e| format!("tool registry: {}", e.message))
+}
+
+/// The gateway's forwarder: every provider the registry forwards to needs
+/// an endpoint; timeouts stay below the credential lifetime.
+fn build_forwarder(
+    config: &DataplaneConfig,
+    tools: &ToolRegistry,
+) -> Result<crate::forward::HttpForwarder, String> {
+    let ttl_ms = u64::try_from(kavach_ports::MAX_CREDENTIAL_TTL_SECONDS).unwrap_or(15) * 1000;
+    let (connect, total) = (
+        config.provider_connect_timeout_ms,
+        config.provider_timeout_ms,
+    );
+    if connect == 0 || total == 0 || connect > total || total >= ttl_ms {
+        return Err(format!(
+            "provider timeouts must satisfy 0 < connect <= total < {ttl_ms} ms (the credential \
+             lifetime); got connect {connect} ms, total {total} ms"
+        ));
+    }
+    let file: ProvidersFile = read_json(&config.providers, "providers")?;
+    let mut endpoints = std::collections::BTreeMap::new();
+    for entry in &file.providers {
+        let (url, plain) = crate::forward::messages_url(&entry.endpoint)
+            .map_err(|e| format!("provider {}: {e}", entry.audience))?;
+        if plain {
+            eprintln!(
+                "WARNING: kavach-api: provider {} uses plain HTTP; credentials travel unencrypted \
+                 at the transport layer. Use HTTPS (or mTLS) outside an isolated backend network.",
+                entry.audience
+            );
+        }
+        endpoints.insert(entry.audience.clone(), url);
+    }
+    if let Some(missing) = tools
+        .providers()
+        .into_iter()
+        .find(|p| !endpoints.contains_key(*p))
+    {
+        return Err(format!(
+            "the tool registry forwards to {missing}, which has no endpoint in --providers"
+        ));
+    }
+    crate::forward::HttpForwarder::new(
+        endpoints,
+        std::time::Duration::from_millis(connect),
+        std::time::Duration::from_millis(total),
+    )
 }
 
 /// The credential broker, with key separation (NIST SP 800-57 key usage):
@@ -851,9 +935,61 @@ pub async fn sor_event(
 /// Router for the agent listener (`--agent-listen`, the only listener on the
 /// agent network): agent routes and liveness — never operator, admin,
 /// change-request, metrics or system-of-record routes (ADR-007).
+/// `POST /v1/tools/{tool}`: the gateway (H5b step 8). Decides and records,
+/// then (allow, first call only) resolves, obtains a credential, forwards
+/// once and records the outcome. The reply is an allowlist of fields.
+pub async fn tool_call(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(tool): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: Result<Json<ToolRequest>, JsonRejection>,
+) -> Result<Json<GatewayReply>, Refusal> {
+    let dp = dataplane(&state)?;
+    let agent = authenticate_agent(dp, &headers)?;
+    let metrics = state.metrics();
+    let malformed = |message: String| {
+        metrics.observe_gateway_malformed();
+        refuse(StatusCode::BAD_REQUEST, message)
+    };
+    // The parser's message can quote values, so it is not echoed.
+    let Json(request) = body.map_err(|_| {
+        malformed(
+            "malformed body: expected JSON with exactly mandate_id, request_id, params".into(),
+        )
+    })?;
+    let deps = GatewayDeps {
+        core: &dp.core,
+        resolver: &dp.resolver,
+        broker: &dp.broker,
+        forwarder: &dp.forwarder,
+        observer: metrics,
+    };
+    match execute(&deps, &agent, &tool, request).await {
+        Ok(reply) => Ok(Json(reply)),
+        Err(GatewayError::Invalid(message)) => Err(malformed(message)),
+        Err(GatewayError::NotForwardable(message)) => {
+            Err(refuse(StatusCode::NOT_IMPLEMENTED, message))
+        }
+        Err(GatewayError::Conflict) => Err(refuse(
+            StatusCode::CONFLICT,
+            "request_id was already used for different content",
+        )),
+        Err(GatewayError::InFlight) => Err(refuse(
+            StatusCode::CONFLICT,
+            "in_flight_or_unknown: an earlier identical call has no final outcome; it is never \
+             run again",
+        )),
+    }
+}
+
+/// Agent request bodies are small: the envelope plus a few parameters.
+pub const AGENT_BODY_LIMIT: usize = 16 * 1024;
+
 pub fn agent_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/authorize", post(authorize))
+        .route("/v1/tools/{tool}", post(tool_call))
+        .layer(DefaultBodyLimit::max(AGENT_BODY_LIMIT))
         .route(
             "/health",
             axum::routing::get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
