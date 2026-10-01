@@ -4,10 +4,12 @@
 
 pub mod authorize;
 pub mod detect;
+pub mod resolve;
 pub mod tools;
 
 pub use authorize::{
     policy_versions, validate_request_id, AgentIdentity, AuthorizeConfig, AuthorizeCore,
     CommitStatus, CredentialGrant, Decided, MandateVerifier, Mode, ToolCall,
 };
+pub use resolve::FixtureResolver;
 pub use tools::{RegistryTrust, ToolRegistry, ToolRequest, Trust};

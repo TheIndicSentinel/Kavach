@@ -11,6 +11,7 @@ mod evidence;
 mod keys;
 mod mandate;
 mod policy;
+mod reference;
 mod replay;
 mod time;
 
@@ -26,5 +27,6 @@ pub use evidence::{
 pub use keys::{verify_ed25519, KeyAlgorithm, KeyProvider, PublicKey};
 pub use mandate::{ConsentSource, DomainEvent, EventBus, MandateStore, StoredMandate};
 pub use policy::PolicyEngine;
+pub use reference::ReferenceResolver;
 pub use replay::ReplayGuard;
 pub use time::{SyncStatus, SystemClock, TimeSource, TrustedNow};

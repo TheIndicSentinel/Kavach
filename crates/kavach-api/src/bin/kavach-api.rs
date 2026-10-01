@@ -9,6 +9,7 @@ use kavach_api::{
     EvidenceStoreKind, GrpcEvaluateService, JwksSource, MtlsSanKind, OidcConfig, TlsConfig,
     DEFAULT_CHANGE_TTL_HOURS,
 };
+use kavach_ports::ReferenceResolver;
 use tonic::transport::Server;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -82,6 +83,10 @@ struct AgentArgs {
     /// Resource providers JSON: each audience's X25519 encryption key.
     #[arg(long, env = "KAVACH_PROVIDERS")]
     providers: Option<PathBuf>,
+    /// Reference fixture JSON (capability reference -> destination per
+    /// channel; synthetic +910 numbers only).
+    #[arg(long, env = "KAVACH_REFERENCES")]
+    references: Option<PathBuf>,
     /// Listener for agents (`/v1/authorize`, tools): the only listener to
     /// attach to the agent network.
     #[arg(long, env = "KAVACH_AGENT_LISTEN", default_value = "127.0.0.1:8091")]
@@ -125,6 +130,7 @@ impl AgentArgs {
             credential_keys_dir: need(self.credential_keys_dir, "--credential-keys-dir")?,
             credential_key_id: self.credential_key_id,
             providers: need(self.providers, "--providers")?,
+            references: need(self.references, "--references")?,
         }))
     }
 }
@@ -371,10 +377,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .then(|| kavach_api::dataplane::agent_router(state.clone()));
     let tools_sha256 = state.dataplane().map(|dp| {
         format!(
-            "{}; credentials signed by {} for {}",
+            "{}; credentials signed by {} for {}; references: {}",
             dp.core().tools().digest(),
             dp.broker().kid(),
-            dp.broker().audiences().collect::<Vec<_>>().join(", ")
+            dp.broker().audiences().collect::<Vec<_>>().join(", "),
+            dp.resolver().describe()
         )
     });
     let grpc_service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
