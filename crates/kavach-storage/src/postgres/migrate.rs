@@ -45,6 +45,7 @@ async fn apply_migrations(
         include_str!("../../migrations/005_pack_digest.sql"),
         include_str!("../../migrations/006_change_requests.sql"),
         include_str!("../../migrations/007_model_state.sql"),
+        include_str!("../../migrations/008_mandates.sql"),
     ] {
         // Whole files through the simple-query protocol: function bodies
         // contain semicolons, so statements are not split client-side.

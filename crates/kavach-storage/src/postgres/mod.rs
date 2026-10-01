@@ -5,6 +5,7 @@ mod change_requests;
 mod evidence;
 mod incidents;
 mod jobs;
+mod mandates;
 mod migrate;
 mod retention;
 
@@ -16,6 +17,7 @@ pub use incidents::PostgresIncidentStore;
 pub use jobs::{
     BatchJobCreate, BatchJobStore, JobStoreError, NoopBatchJobStore, PostgresBatchJobStore,
 };
+pub use mandates::{PostgresMandateStore, PostgresReplayGuard};
 pub use migrate::connect_pool;
 pub use retention::PostgresRetentionStore;
 
@@ -50,6 +52,14 @@ impl StoragePool {
 
     pub fn retention_store(&self) -> PostgresRetentionStore {
         PostgresRetentionStore::new(self.pool.clone())
+    }
+
+    pub fn mandate_store(&self) -> PostgresMandateStore {
+        PostgresMandateStore::new(self.pool.clone())
+    }
+
+    pub fn replay_guard(&self) -> PostgresReplayGuard {
+        PostgresReplayGuard::new(self.pool.clone())
     }
 
     pub fn change_request_store(&self) -> PostgresChangeStore {

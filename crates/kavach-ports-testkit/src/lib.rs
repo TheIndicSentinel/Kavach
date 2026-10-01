@@ -162,6 +162,12 @@ pub mod mandate_store {
 
     const TENANT: &str = "conformance";
 
+    /// A minimal stored mandate for store tests (tenant `conformance`).
+    #[must_use]
+    pub fn sample(id: &str, parent: Option<&str>, depth: u8) -> StoredMandate {
+        record(id, parent, depth)
+    }
+
     fn record(id: &str, parent: Option<&str>, depth: u8) -> StoredMandate {
         let t = Utc.with_ymd_and_hms(2026, 10, 1, 5, 30, 0).unwrap();
         StoredMandate {
@@ -170,10 +176,11 @@ pub mod mandate_store {
                 id: id.into(),
                 tenant_id: TENANT.into(),
                 issuer: "kavach".into(),
+                // One source event per root (stores may enforce uniqueness).
                 source: MandateSource {
                     system: "lms".into(),
                     record_ref: "r".into(),
-                    event_id: "e".into(),
+                    event_id: format!("evt-{id}"),
                 },
                 principal: "p".into(),
                 holder: format!("agent-{depth}"),
