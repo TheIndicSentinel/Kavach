@@ -73,7 +73,7 @@ kavach-ports = { path = "crates/kavach-ports", version = "0.1.0" }
 kavach-ports-testkit = { path = "crates/kavach-ports-testkit", version = "0.1.0" }
 kavach-keys = { path = "crates/kavach-keys", version = "0.1.0" }
 ed25519-dalek = "2.2.0"
-getrandom = "0.3.3"
+getrandom = "0.4.3"
 hex = "0.4.3"
 zeroize = "1.8"
 ring = "0.17.14"
