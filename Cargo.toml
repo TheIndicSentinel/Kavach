@@ -111,3 +111,14 @@ must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
 doc_markdown = "allow"
+
+# Keep local build output small (it reached 9 GB with full debug info, mostly
+# dependencies such as polars linked into every test binary). CI already
+# builds with debug info off; local builds keep file:line in backtraces for
+# our own crates only, and skip incremental caches.
+[profile.dev]
+debug = "line-tables-only"
+incremental = false
+
+[profile.dev.package."*"]
+debug = false
