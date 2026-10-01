@@ -1,5 +1,8 @@
 # Dependency updates arrive as PRs and must pass the same required checks
 # (tests, cargo-deny licence/advisory policy, policy proofs) as any change.
+# Major versions are excluded: they need deliberate migration and review
+# (especially crypto, database and protocol crates), done by hand in their
+# own PRs. Security advisories still reach us through the weekly audit.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -8,6 +11,9 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       cargo-minor-and-patch:
         update-types: [minor, patch]
@@ -27,6 +33,9 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
     groups:
       console-minor-and-patch:
         update-types: [minor, patch]
@@ -35,3 +44,6 @@ updates:
     directory: /scripts/jose-crosscheck
     schedule:
       interval: monthly
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]

@@ -1,7 +1,8 @@
 name: DCO
 
 # Developer Certificate of Origin sign-off for outside contributors
-# (CONTRIBUTING.md). Maintainers (owner, members, collaborators) are exempt.
+# (CONTRIBUTING.md). Maintainers (owner, members, collaborators) and
+# Dependabot (its commits are GitHub's, verified by GitHub) are exempt.
 # Runs on `pull_request` (no secrets, read-only token) and executes the check
 # script from the base branch, so a PR cannot change the check it is
 # judged by.
@@ -14,7 +15,9 @@ permissions:
 jobs:
   dco:
     name: DCO sign-off (outside contributors)
-    if: ${{ !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) }}
+    if: >-
+      ${{ !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association)
+          && github.event.pull_request.user.login != 'dependabot[bot]' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
