@@ -1,0 +1,49 @@
+# Agent tool registry (H5b, ADR-007).
+#
+# Security-critical configuration: it decides which tools agents may call,
+# which parameters are reference-only and which values are allowed. The API
+# refuses to start unless it is signed by a trusted signer with the "tool"
+# role (except under --insecure-dev):
+#
+#   kavach-keys sign-tools --dir ./signing-keys --kid <kid> --registry tools/agent-tools.yaml
+#
+# Its SHA-256 is recorded in every agent decision record
+# (policy_versions.tools). There is no free-text parameter: messages are
+# chosen by template_id from an allowlist.
+#
+# Parameter kinds: capability_ref (reference-only, ref:<type>:<id>),
+# enum (values), field_set (values; requested_fields only), integer (min, max).
+version: 1
+tools:
+  - name: read_fields
+    action: read_fields
+    trust: read_only
+    params:
+      subject_ref: { kind: capability_ref }
+      requested_fields:
+        kind: field_set
+        values: [name, overdue_amount, emi_due_date, loan_ref]
+
+  - name: send_reminder
+    action: send_reminder
+    trust: external_effect
+    params:
+      subject_ref: { kind: capability_ref }
+      channel: { kind: enum, values: [whatsapp, sms] }
+      template_id: { kind: enum, values: [emi_reminder_v1] }
+
+  - name: place_call
+    action: place_call
+    trust: external_effect
+    params:
+      subject_ref: { kind: capability_ref }
+      channel: { kind: enum, values: [voice] }
+      script_id: { kind: enum, values: [emi_call_v1] }
+
+  - name: propose_plan
+    action: propose_plan
+    trust: proposal
+    params:
+      subject_ref: { kind: capability_ref }
+      # Required: 0 means no waiver (H4 carry-over).
+      waiver_bps: { kind: integer, min: 0, max: 10000 }

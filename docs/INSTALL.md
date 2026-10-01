@@ -236,7 +236,12 @@ A certificate with no SAN, or several SANs, of the configured type gets 401. A b
 | `--subject-pseudonym-key` / `KAVACH_SUBJECT_PSEUDONYM_KEY` | Owner-only file with a 32-byte hex secret (`openssl rand -hex 32`). Pseudonymises borrowers in evidence and counters. Treat it like a signing key. Rotating it resets the day's contact counters, so rotate only at IST midnight |
 | `--consents` / `KAVACH_CONSENTS` | Consent fixture JSON (list of consent records; PRD D7) |
 | `--sor-rate-per-second` | System-of-record events accepted per second (default 20); excess gets 429. Bodies over 16 KiB get 413 |
+| `--tool-registry` / `KAVACH_TOOL_REGISTRY` | The agent tool registry (`tools/agent-tools.yaml`): which tools exist, which parameters are reference-only, which values are allowed. **Must be signed** unless `--insecure-dev` |
+| `--tool-signers` / `KAVACH_TOOL_SIGNERS` | Trusted signers for the registry (signer role `tool`). Defaults to `--pack-signers` |
+| `--tool-registry-sha256` / `KAVACH_TOOL_REGISTRY_SHA256` | Optional pin of the registry file digest |
 
+- **Tool registry.** The registry is security-critical configuration: editing it could turn the reference-only protection off. Sign it with a key that has the `tool` role (`"roles": ["tool"]` in the signers file) and run `kavach-keys sign-tools --dir ./signing-keys --kid <kid> --registry tools/agent-tools.yaml`, which writes `<registry>.sig`. Startup refuses an unsigned registry, one changed after signing, one signed by a key without the `tool` role, and one that differs from the pin. Its digest is printed at startup and recorded in every agent decision record (`policy_versions.tools`).
+- **Pre-check body (breaking from H5a).** `POST /v1/authorize` takes `{"tool", "mandate_id", "request_id", "params": {...}}`, the same request the gateway will take, and runs the same registry extraction. A malformed body, an unknown tool or parameter (including an agent-supplied `timestamp` or free text), a missing parameter or a wrong type returns 400, and nothing is recorded. A raw value in a reference-only parameter, or a value outside its allowlist or range, is a BLOCK decision.
 - **Agent credentials.** Agents send `Authorization: Bearer <agent token>`. `X-Kavach-Principal` is never accepted on agent routes, not even with `--insecure-dev`. Operator tokens are refused on agent routes, and agent tokens on operator routes.
 - **System-of-record events.**
   - The body is `{"event": "<signed JWS>"}`; a new event returns 201 with the mandate id.

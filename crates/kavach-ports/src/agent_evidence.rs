@@ -41,6 +41,11 @@ pub struct PolicyVersions {
     pub cedar: String,
     pub cel: Option<String>,
     pub packs: Vec<String>,
+    /// Digest of the agent tool registry (which parameters are
+    /// reference-only, which values are allowed). Absent in records written
+    /// before H5b, so their canonical bytes are unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<String>,
     /// Build identity of the deciding binary.
     pub build: String,
 }
@@ -550,6 +555,7 @@ mod tests {
                 cedar: "c".into(),
                 cel: None,
                 packs: vec![],
+                tools: None,
                 build: "b".into(),
             },
             signals: vec![],
@@ -585,6 +591,21 @@ mod tests {
                 bytes: key.0.verifying_key().to_bytes(),
             },
         )])
+    }
+
+    #[test]
+    fn records_without_a_tool_registry_keep_their_canonical_bytes() {
+        let old = payload(1, GENESIS);
+        let json = serde_json::to_value(&old.policy_versions).unwrap();
+        assert!(json.get("tools").is_none(), "{json}");
+        let hash = payload_hash(&old).unwrap();
+
+        let mut pinned = old.clone();
+        pinned.policy_versions.tools = Some("sha256:tools".into());
+        assert_ne!(payload_hash(&pinned).unwrap(), hash);
+        let back: PolicyVersions =
+            serde_json::from_value(serde_json::to_value(&pinned.policy_versions).unwrap()).unwrap();
+        assert_eq!(back, pinned.policy_versions);
     }
 
     #[test]

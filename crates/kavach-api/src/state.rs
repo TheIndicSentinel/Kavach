@@ -432,6 +432,7 @@ async fn build_dataplane(
         pool,
         config.insecure_dev,
         config.oidc.as_ref().map(|o| o.audience.as_str()),
+        config.pack_signers.as_deref(),
     )
     .await
     .map(Some)

@@ -34,6 +34,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::detect::raw_identifier;
+use crate::tools::ToolRegistry;
 
 /// Loads and verifies a mandate (and its whole chain) by id.
 pub trait MandateVerifier: Send + Sync {
@@ -100,6 +101,11 @@ pub struct ToolCall {
     /// Other declared parameters (e.g. `template_id`); scanned like all
     /// string parameters.
     pub extra: BTreeMap<String, String>,
+    /// Policy violations found by tool-registry extraction (reference-only,
+    /// allowlist, range). Decided BLOCK and recorded by reason only; not part
+    /// of the parameters.
+    #[serde(skip)]
+    pub violations: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,9 +168,10 @@ impl Default for AuthorizeConfig {
     }
 }
 
-/// Digest of the compiled-in agent policies and schema, and the build.
+/// Digest of the compiled-in agent policies and schema, the tool registry
+/// and the build.
 #[must_use]
-pub fn policy_versions() -> PolicyVersions {
+pub fn policy_versions(tools: &ToolRegistry) -> PolicyVersions {
     let mut hasher = Sha256::new();
     hasher.update(kavach_authz::AGENT_SCHEMA.as_bytes());
     hasher.update(b"\n--\n");
@@ -173,6 +180,7 @@ pub fn policy_versions() -> PolicyVersions {
         cedar: format!("sha256:{:x}", hasher.finalize()),
         cel: None,
         packs: Vec::new(),
+        tools: Some(tools.digest().to_string()),
         build: concat!("kavach-dataplane/", env!("CARGO_PKG_VERSION")).into(),
     }
 }
@@ -207,6 +215,7 @@ fn ist_minute_to_utc(date: NaiveDate, minute: u16) -> DateTime<Utc> {
 pub struct AuthorizeCore<V, S> {
     verifier: V,
     store: Arc<S>,
+    tools: Arc<ToolRegistry>,
     authorizer: AgentAuthorizer,
     subject_keys: SubjectKeys,
     signer: Box<dyn EvidenceSigner>,
@@ -225,9 +234,11 @@ struct Assessment {
 }
 
 impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         verifier: V,
         store: Arc<S>,
+        tools: Arc<ToolRegistry>,
         subject_keys: SubjectKeys,
         signer: Box<dyn EvidenceSigner>,
         clock: Box<dyn TimeSource>,
@@ -236,14 +247,15 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
         let authorizer = AgentAuthorizer::bundled()
             .map_err(|e| PortError::invalid(format!("agent policies: {e}")))?;
         Ok(Self {
+            versions: policy_versions(&tools),
             verifier,
             store,
+            tools,
             authorizer,
             subject_keys,
             signer,
             clock,
             config,
-            versions: policy_versions(),
             prechecks: AtomicU64::new(0),
         })
     }
@@ -257,6 +269,11 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
         &self.store
     }
 
+    /// The tool registry this core decides under.
+    pub fn tools(&self) -> &ToolRegistry {
+        &self.tools
+    }
+
     /// Decides a tool call. `Err` only for a malformed request (`Invalid`,
     /// HTTP 400); every other failure is a BLOCK-shaped `Decided`.
     pub async fn authorize(
@@ -267,7 +284,10 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
     ) -> Result<Decided, PortError> {
         validate_request_id(&call.request_id)?;
         let action = AgentAction::from_name(&call.action)
-            .ok_or_else(|| PortError::invalid(format!("unknown action {}", call.action)))?;
+            .filter(|a| self.tools.for_action(a.name()).is_some())
+            .ok_or_else(|| {
+                PortError::invalid(format!("action {} has no registered tool", call.action))
+            })?;
         let assessment = self.assess(call)?;
         let tenant = &self.config.tenant_id;
 
@@ -316,9 +336,10 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
     /// gets no params MAC: only the reason and field are recorded.
     fn assess(&self, call: &ToolCall) -> Result<Assessment, PortError> {
         let tenant = &self.config.tenant_id;
-        let mut violations = Vec::new();
-        if !is_capability_ref(&call.subject_ref) {
-            violations.push("reference_only_violation:subject_ref".to_string());
+        let mut violations = call.violations.clone();
+        let subject_violation = "reference_only_violation:subject_ref".to_string();
+        if !is_capability_ref(&call.subject_ref) && !violations.contains(&subject_violation) {
+            violations.push(subject_violation);
         }
         let mut strings: Vec<(&str, &str)> = vec![("subject_ref", call.subject_ref.as_str())];
         if let Some(channel) = &call.channel {

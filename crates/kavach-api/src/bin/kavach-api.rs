@@ -59,6 +59,16 @@ struct AgentArgs {
     /// System-of-record events accepted per second.
     #[arg(long, env = "KAVACH_SOR_RATE_PER_SECOND", default_value_t = 20)]
     sor_rate_per_second: u32,
+    /// Agent tool registry (YAML). Must be signed (`<path>.sig`, signer role
+    /// `tool`) unless `--insecure-dev`.
+    #[arg(long, env = "KAVACH_TOOL_REGISTRY")]
+    tool_registry: Option<PathBuf>,
+    /// Expected tool registry digest (`sha256:<hex>`).
+    #[arg(long, env = "KAVACH_TOOL_REGISTRY_SHA256")]
+    tool_registry_sha256: Option<String>,
+    /// Trusted signers for the tool registry (default: `--pack-signers`).
+    #[arg(long, env = "KAVACH_TOOL_SIGNERS")]
+    tool_signers: Option<PathBuf>,
     /// Listener for agents (`/v1/authorize`, tools): the only listener to
     /// attach to the agent network.
     #[arg(long, env = "KAVACH_AGENT_LISTEN", default_value = "127.0.0.1:8091")]
@@ -96,6 +106,9 @@ impl AgentArgs {
             consents: need(self.consents, "--consents")?,
             tenant_id: self.tenant_id,
             sor_rate_per_second: self.sor_rate_per_second,
+            tool_registry: need(self.tool_registry, "--tool-registry")?,
+            tool_registry_sha256: self.tool_registry_sha256,
+            tool_signers: self.tool_signers,
         }))
     }
 }
@@ -340,14 +353,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .dataplane()
         .is_some()
         .then(|| kavach_api::dataplane::agent_router(state.clone()));
+    let tools_sha256 = state
+        .dataplane()
+        .map(|dp| dp.core().tools().digest().to_string());
     let grpc_service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
 
     print_banner(&config, http_listen, grpc_listen, &pack_sha256);
 
-    match &sor_app {
-        Some(_) => eprintln!(
+    match &tools_sha256 {
+        Some(tools) => eprintln!(
             "kavach-api agent surfaces enabled: agents on {agent_listen} (the only listener for \
-             the agent network), /v1/sor/events on {sor_listen} (backend network only)"
+             the agent network), /v1/sor/events on {sor_listen} (backend network only); \
+             tool registry {tools}"
         ),
         None => eprintln!("kavach-api agent surfaces disabled (no --agent-oidc-audience)"),
     }

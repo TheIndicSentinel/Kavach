@@ -108,6 +108,7 @@ pub fn request(tenant: &str, request_id: &str, max: u32) -> CommitRequest {
             cedar: "sha256:cedar".into(),
             cel: None,
             packs: vec![],
+            tools: Some("sha256:tools".into()),
             build: "test".into(),
         },
         signals: vec!["authorized".into()],

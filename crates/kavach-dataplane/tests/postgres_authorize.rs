@@ -55,6 +55,7 @@ async fn reminders_on_postgres_as_the_runtime_role() {
     let core = AuthorizeCore::new(
         Arc::clone(&mandates),
         Arc::new(pool.agent_evidence_store()),
+        common::tools(),
         SubjectKeys::from_secret([6u8; 32]),
         Box::new(signer),
         Box::new(Clock(Arc::clone(&clock))),
@@ -81,6 +82,7 @@ async fn reminders_on_postgres_as_the_runtime_role() {
         waiver_bps: None,
         requested_fields: BTreeSet::new(),
         extra: BTreeMap::from([("template_id".to_string(), "emi_reminder_v1".to_string())]),
+        violations: Vec::new(),
     };
     let first = core
         .authorize(&agent, &call("r-1"), Mode::Commit)

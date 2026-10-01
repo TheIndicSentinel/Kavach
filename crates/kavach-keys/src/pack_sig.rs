@@ -31,6 +31,8 @@ pub struct PackSignature {
 pub enum SignerRole {
     Pack,
     Model,
+    /// The agent tool registry (H5b).
+    Tool,
 }
 
 impl SignerRole {
@@ -38,9 +40,18 @@ impl SignerRole {
         match value {
             "pack" => Ok(Self::Pack),
             "model" => Ok(Self::Model),
+            "tool" => Ok(Self::Tool),
             other => Err(PortError::invalid(format!(
-                "unknown signer role {other:?} (expected \"pack\" or \"model\")"
+                "unknown signer role {other:?} (expected \"pack\", \"model\" or \"tool\")"
             ))),
+        }
+    }
+
+    fn plural(self) -> &'static str {
+        match self {
+            Self::Pack => "packs",
+            Self::Model => "models",
+            Self::Tool => "tool registries",
         }
     }
 }
@@ -156,11 +167,8 @@ impl TrustedSigners {
             Ok(key)
         } else {
             Err(PortError::rejected(format!(
-                "signer {kid} is not trusted to sign {}s",
-                match role {
-                    SignerRole::Pack => "pack",
-                    SignerRole::Model => "model",
-                }
+                "signer {kid} is not trusted to sign {}",
+                role.plural()
             )))
         }
     }

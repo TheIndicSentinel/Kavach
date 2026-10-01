@@ -65,6 +65,7 @@ fn world_with(signer: TestSigner) -> World {
     let core = AuthorizeCore::new(
         Arc::clone(&mandates),
         Arc::new(MemoryAgentEvidenceStore::default()),
+        common::tools(),
         SubjectKeys::from_secret([6u8; 32]),
         Box::new(signer),
         Box::new(Clock(Arc::clone(&clock))),
@@ -117,6 +118,7 @@ fn reminder(mandate_id: &str, request_id: &str) -> ToolCall {
         waiver_bps: None,
         requested_fields: BTreeSet::new(),
         extra: BTreeMap::from([("template_id".to_string(), "emi_reminder_v1".to_string())]),
+        violations: Vec::new(),
     }
 }
 
@@ -145,6 +147,11 @@ async fn scenario1_reminder_at_11_ist_is_allowed_and_recorded() {
     assert!(grant.expires_at <= ist(11, 0, 15));
     assert_eq!(record.payload.chain, vec![mandate.clone()]);
     assert!(record.payload.policy_versions.cedar.starts_with("sha256:"));
+    assert_eq!(
+        record.payload.policy_versions.tools.as_deref(),
+        Some(w.core.tools().digest()),
+        "the registry digest is recorded"
+    );
     let text = serde_json::to_string(&record).unwrap();
     assert!(!text.contains("B-9382"), "no raw subject reference");
 
@@ -288,6 +295,70 @@ async fn scenario5_other_subject_wrong_holder_and_revoked_mandates_are_blocked()
     assert_eq!(d.decision, Decision::Block);
     assert_eq!(d.reasons, vec!["mandate_invalid"]);
     assert!(d.record.is_some(), "the refused attempt is recorded");
+}
+
+/// Item 5 taxonomy: an allowlist or reference-only violation found by the
+/// registry is a recorded BLOCK (reason and parameter only); an action with
+/// no registered tool is a malformed request.
+#[tokio::test]
+async fn registry_violations_are_recorded_blocks_and_unregistered_actions_are_invalid() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let request = |request_id: &str, channel: &str| {
+        serde_json::from_value::<kavach_dataplane::ToolRequest>(serde_json::json!({
+            "mandate_id": mandate,
+            "request_id": request_id,
+            "params": {
+                "subject_ref": SUBJECT,
+                "channel": channel,
+                "template_id": "emi_reminder_v1",
+            },
+        }))
+        .unwrap()
+    };
+    let a = agent("collections-agent");
+
+    let ok = w
+        .core
+        .tools()
+        .extract("send_reminder", request("x-1", "whatsapp"))
+        .unwrap();
+    assert_eq!(
+        ok,
+        reminder(&mandate, "x-1"),
+        "extraction builds the same call"
+    );
+
+    let call = w
+        .core
+        .tools()
+        .extract("send_reminder", request("x-2", "+919876543210"))
+        .unwrap();
+    let d = w.core.authorize(&a, &call, Mode::Commit).await.unwrap();
+    assert_eq!(d.decision, Decision::Block);
+    assert_eq!(d.status, CommitStatus::Committed);
+    assert!(d.grant.is_none());
+    assert_eq!(d.reasons[0], "value_not_allowed:channel", "{:?}", d.reasons);
+    let record = d.record.expect("the violation is recorded");
+    assert!(record.payload.params_mac.is_none());
+    let text = serde_json::to_string(&record).unwrap();
+    assert!(!text.contains("9876543210"), "{text}");
+
+    let status = ToolCall {
+        action: "update_status".into(),
+        ..reminder(&mandate, "x-3")
+    };
+    let err = w
+        .core
+        .authorize(&a, &status, Mode::Commit)
+        .await
+        .unwrap_err();
+    assert_eq!(err.class, kavach_ports::ErrorClass::Invalid);
+    assert!(
+        err.message.contains("no registered tool"),
+        "{}",
+        err.message
+    );
 }
 
 #[tokio::test]

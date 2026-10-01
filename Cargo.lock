@@ -2156,6 +2156,7 @@ name = "kavach-dataplane"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "hex",
  "kavach-authz",
  "kavach-domain",
  "kavach-keys",
@@ -2166,6 +2167,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
+ "serde_yaml",
  "sha2",
  "tokio",
  "uuid",
@@ -2294,6 +2296,7 @@ dependencies = [
  "kavach-evidence",
  "kavach-policy",
  "serde",
+ "serde_json",
  "serde_json_canonicalizer",
  "sha2",
  "thiserror 2.0.20",

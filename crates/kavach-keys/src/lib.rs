@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 mod evidence_keys;
 mod model_sig;
 mod pack_sig;
+mod tool_sig;
 
 pub use evidence_keys::{Ed25519EvidenceSigner, SubjectKeys};
 pub use model_sig::{
@@ -22,6 +23,10 @@ pub use model_sig::{
 pub use pack_sig::{
     sign_pack, signature_path, verify_pack_file, verify_pack_signature, PackSignature, SignerRole,
     TrustedSigners,
+};
+pub use tool_sig::{
+    sign_tool_registry, verify_tool_registry_file, verify_tool_registry_signature,
+    ToolRegistrySignature,
 };
 
 use ed25519_dalek::{Signer, SigningKey};
