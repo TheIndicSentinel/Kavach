@@ -11,9 +11,11 @@ use std::fs;
 use std::future::{ready, Future};
 use std::path::{Path, PathBuf};
 
+mod evidence_keys;
 mod model_sig;
 mod pack_sig;
 
+pub use evidence_keys::{Ed25519EvidenceSigner, SubjectKeys};
 pub use model_sig::{
     sign_model, verify_model_file, verify_model_signature, ModelIdentity, ModelSignature,
 };
@@ -169,6 +171,24 @@ impl KeyProvider for LocalFileKeyProvider {
     fn public_key(&self, kid: &str) -> impl Future<Output = Result<PublicKey, PortError>> + Send {
         ready(self.load(kid).map(|k| public_key_of(kid, &k)))
     }
+}
+
+/// Reads a hex file holding exactly 32 bytes; owner-only on Unix.
+pub(crate) fn read_seed_file(path: &Path, what: &str) -> Result<[u8; 32], PortError> {
+    if !path.is_file() {
+        return Err(PortError::rejected(format!(
+            "{what}: missing {}",
+            path.display()
+        )));
+    }
+    check_owner_only(path)?;
+    let text = fs::read_to_string(path)
+        .map_err(|e| PortError::unavailable(format!("read {what}: {e}")))?;
+    let bytes =
+        hex::decode(text.trim()).map_err(|_| PortError::invalid(format!("{what}: not hex")))?;
+    bytes
+        .try_into()
+        .map_err(|_| PortError::invalid(format!("{what}: must be exactly 32 bytes")))
 }
 
 #[cfg(unix)]

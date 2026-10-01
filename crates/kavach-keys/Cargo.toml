@@ -21,6 +21,8 @@ tokio.workspace = true
 ed25519-dalek = { workspace = true }
 getrandom = { workspace = true }
 hex = { workspace = true }
+hmac.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 kavach-ports-testkit = { workspace = true }

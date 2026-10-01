@@ -1,6 +1,7 @@
 //! Postgres persistence for evidence chain, incidents, and batch jobs.
 
 mod admin;
+mod agent_evidence;
 mod change_requests;
 mod evidence;
 mod incidents;
@@ -10,6 +11,7 @@ mod migrate;
 mod retention;
 
 pub use admin::PostgresAdminStore;
+pub use agent_evidence::PostgresAgentEvidenceStore;
 pub use change_requests::PostgresChangeStore;
 
 pub use evidence::PostgresEvidenceStore;
@@ -69,6 +71,10 @@ impl StoragePool {
 
     pub fn retention_store(&self) -> PostgresRetentionStore {
         PostgresRetentionStore::new(self.pool.clone())
+    }
+
+    pub fn agent_evidence_store(&self) -> PostgresAgentEvidenceStore {
+        PostgresAgentEvidenceStore::new(self.pool.clone())
     }
 
     pub fn mandate_store(&self) -> PostgresMandateStore {

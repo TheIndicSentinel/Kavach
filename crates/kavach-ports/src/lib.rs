@@ -4,6 +4,7 @@
 //! (e.g. `kavach-keys`, `kavach-storage`); test doubles and shared
 //! conformance suites live in `kavach-ports-testkit`.
 
+pub mod agent_evidence;
 mod error;
 mod evidence;
 mod keys;

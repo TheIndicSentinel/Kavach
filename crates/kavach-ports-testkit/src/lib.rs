@@ -4,6 +4,8 @@
 //! [`conformance`]; the doubles here pass them too, so tests that use a double
 //! exercise the same contract as production.
 
+pub mod agent_evidence;
+
 use std::collections::HashMap;
 use std::future::{ready, Future};
 use std::sync::Mutex;

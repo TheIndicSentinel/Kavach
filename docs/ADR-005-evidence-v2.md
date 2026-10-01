@@ -97,6 +97,29 @@ The verify CLI is extended to:
 
 Pack activation, rollback and model-record changes are appended to the tenant's chain as `governance_event` records (actor, approver, action, pack/model identifiers and digests), signed like agent records. This makes changes to the runtime pointer row tamper-evident: the pointer row in Postgres is a cache of the latest governance event, not an independent source of truth.
 
+### 12. Amendment (H5a-3b): first agent records
+
+The first Agent Decision Records ship ahead of the full evidence v2, with these deliberate deviations until M2:
+
+- **Own chain.** Agent records chain in `agent_decisions` with a head per `(tenant, partition)` in `agent_evidence_chains`. They are **not** linked into the v1 `decision_events` chain, so there is no single tenant chain yet. The merge (one chain, `kind`/`hash_alg` per record) is M2. `kind`, `hash_alg`, `partition_id`, `seq` and the v2 hash already follow §3–§4, so the merge needs no rehashing.
+- **Pseudonym instead of ciphertext.** `subject_pseudonym` is an HMAC of the subject reference under a tenant-bound key derived from one 32-byte secret. A second derived key produces `params_mac`, so raw identifiers are never hashed unkeyed (low-entropy values like phone numbers would be reversible).
+  - A tenant-wide key **cannot shred one subject**. Destroying it unlinks every subject, and an auditor can only recompute a pseudonym for a known reference.
+  - Per-subject crypto-shredding (§7) remains M2.
+  - The same pseudonym keys the daily contact counter, so the raw reference is never stored.
+  - Rotating the secret changes every pseudonym and resets the day's counters, so rotate only at IST midnight (dual-key rotation is M2).
+- **Signatures.**
+  - Each record is signed with a dedicated evidence key over `kavach-agent-evidence-sig-v1:` ‖ hash. `key_id` is inside the hashed payload.
+  - The evidence key signs nothing else, and is held in memory, not read from disk per record.
+- **One commit transaction (phase 1):** lock the partition head, then (allow only, lock order head → counter) re-check trusted time against `send_by` and reserve a contact slot, then build, sign, append and advance the head.
+  - A lost cap race or a passed deadline becomes `BLOCK` (`contact_cap_reached`, `window_closed`, `trusted_time_unavailable`) before the record is built. The record shows `pre_commit_decision` and the final decision.
+  - A converted allow carries no `credential_id`.
+  - The `credential_id` (`jti`) is allocated before the commit and recorded with the allow.
+- **Idempotency.** `(tenant, agent, mode, request_id)` is unique and bound to the action, `params_mac`, subject pseudonym and mandate. A retry returns the stored record; other content under the same id is a conflict.
+- **Pre-checks are not on the chain.** They authorise nothing and would let an agent load the partition lock; they are counted in metrics only. Denied commit attempts are recorded.
+- **Outcomes** (`delivered`, `failed`, `refused`) are signed rows in `agent_outcomes`, linked by `credential_id` and record hash, written once and off-chain. A deleted outcome row is not detectable. The verifier reports allows past their credential expiry without an outcome as *outcome unknown*.
+- **Verification limits.** Without an out-of-band head (`expected_head`), truncating the chain tail is undetectable. Someone holding both the database and the evidence key can rewrite history until signed checkpoints and anchoring (§5, M2).
+- **Throughput.** One partition serialises every agent commit; this is the NFR-2 ceiling of the MVP configuration, and adding partitions is configuration.
+
 ## Consequences
 
 - Appends scale by partition; the global serialisation point is removed.
