@@ -15,6 +15,7 @@
 | Service credentials (mTLS, HMAC) | Confidentiality | Operator secrets |
 | Task Mandates and system-of-record issuer keys | Integrity, authenticity | ADR-004 (planned) |
 | Backend credentials held by the broker | Confidentiality | ADR-006/007 (planned) |
+| Resource credentials (H5b) | Confidentiality and integrity: bearer secrets carrying the destination | Signed then encrypted to the provider (JWE ECDH-ES/X25519, A256GCM): opaque outside the provider; never logged or returned to agents; 15 s life; dedicated signing key, separation checked at startup |
 | Reference vault (capability ref → real value) | Confidentiality | ADR-004 §7 (planned) |
 | Per-subject keys (crypto-shredding) | Confidentiality, controlled destruction | ADR-005 §7 (planned) |
 | Trusted time | Integrity, availability | ADR-003 §7 (planned) |

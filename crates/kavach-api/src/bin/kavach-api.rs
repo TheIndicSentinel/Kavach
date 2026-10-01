@@ -69,6 +69,19 @@ struct AgentArgs {
     /// Trusted signers for the tool registry (default: `--pack-signers`).
     #[arg(long, env = "KAVACH_TOOL_SIGNERS")]
     tool_signers: Option<PathBuf>,
+    /// Directory with the credential signing key (signs resource
+    /// credentials only; a separate key from the mandate and evidence keys).
+    #[arg(long, env = "KAVACH_CREDENTIAL_KEYS_DIR")]
+    credential_keys_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "KAVACH_CREDENTIAL_KEY_ID",
+        default_value = "kavach-credential-1"
+    )]
+    credential_key_id: String,
+    /// Resource providers JSON: each audience's X25519 encryption key.
+    #[arg(long, env = "KAVACH_PROVIDERS")]
+    providers: Option<PathBuf>,
     /// Listener for agents (`/v1/authorize`, tools): the only listener to
     /// attach to the agent network.
     #[arg(long, env = "KAVACH_AGENT_LISTEN", default_value = "127.0.0.1:8091")]
@@ -109,6 +122,9 @@ impl AgentArgs {
             tool_registry: need(self.tool_registry, "--tool-registry")?,
             tool_registry_sha256: self.tool_registry_sha256,
             tool_signers: self.tool_signers,
+            credential_keys_dir: need(self.credential_keys_dir, "--credential-keys-dir")?,
+            credential_key_id: self.credential_key_id,
+            providers: need(self.providers, "--providers")?,
         }))
     }
 }
@@ -353,9 +369,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .dataplane()
         .is_some()
         .then(|| kavach_api::dataplane::agent_router(state.clone()));
-    let tools_sha256 = state
-        .dataplane()
-        .map(|dp| dp.core().tools().digest().to_string());
+    let tools_sha256 = state.dataplane().map(|dp| {
+        format!(
+            "{}; credentials signed by {} for {}",
+            dp.core().tools().digest(),
+            dp.broker().kid(),
+            dp.broker().audiences().collect::<Vec<_>>().join(", ")
+        )
+    });
     let grpc_service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
 
     print_banner(&config, http_listen, grpc_listen, &pack_sha256);

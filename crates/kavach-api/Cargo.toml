@@ -20,6 +20,7 @@ kavach-auth = { workspace = true }
 kavach-storage = { workspace = true }
 kavach-keys = { workspace = true }
 kavach-dataplane = { workspace = true }
+kavach-credential = { workspace = true }
 kavach-mandate = { workspace = true }
 kavach-authz = { workspace = true }
 kavach-clocksync = { workspace = true }
@@ -57,6 +58,7 @@ tonic-build.workspace = true
 protoc-bin-vendored = "3.2.0"
 
 [dev-dependencies]
+kavach-jws = { workspace = true }
 tower = { version = "0.5.3", features = ["util"] }
 http = "1.5.0"
 http-body-util = "0.1.3"

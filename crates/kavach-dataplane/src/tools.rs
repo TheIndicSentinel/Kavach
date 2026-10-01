@@ -84,6 +84,9 @@ pub struct ToolSpec {
     /// The Cedar agent action this tool performs.
     pub action: String,
     pub trust: Trust,
+    /// The resource provider an `external_effect` tool is forwarded to
+    /// (the credential audience); required for those, refused otherwise.
+    pub provider: Option<String>,
     pub params: BTreeMap<String, ParamSpec>,
 }
 
@@ -224,6 +227,14 @@ impl ToolRegistry {
     /// The tool that performs `action`, if one is registered.
     pub fn for_action(&self, action: &str) -> Option<&ToolSpec> {
         self.tools.values().find(|t| t.action == action)
+    }
+
+    /// Providers that `external_effect` tools forward to.
+    pub fn providers(&self) -> BTreeSet<&str> {
+        self.tools
+            .values()
+            .filter_map(|t| t.provider.as_deref())
+            .collect()
     }
 
     /// Turns a request for `tool` into a [`ToolCall`]. `Err` (`Invalid`) for
@@ -392,6 +403,17 @@ fn validate_tool(tool: &ToolSpec) -> Result<(), PortError> {
     let Some(action) = AgentAction::from_name(&tool.action) else {
         return fail(format!("unknown action {:?}", tool.action));
     };
+    match (&tool.provider, tool.trust) {
+        (Some(provider), Trust::ExternalEffect) if is_allowlist_value(provider) => {}
+        (None, Trust::ExternalEffect) => {
+            return fail("an external_effect tool must name its provider".into())
+        }
+        (Some(_), Trust::ExternalEffect) => {
+            return fail("provider must be 1-64 of [a-z0-9_.-]".into())
+        }
+        (Some(_), _) => return fail("only external_effect tools have a provider".into()),
+        (None, _) => {}
+    }
     match tool.params.get("subject_ref") {
         Some(p) if p.kind == ParamKind::CapabilityRef && !p.optional => {}
         _ => return fail("subject_ref must be a required capability_ref".into()),
@@ -492,6 +514,10 @@ mod tests {
         );
         assert_eq!(r.for_action("propose_plan").unwrap().name, "propose_plan");
         assert!(r.tool("update_status").is_none(), "not exposed to agents");
+        assert_eq!(
+            r.providers().into_iter().collect::<Vec<_>>(),
+            vec!["mock-messaging", "mock-voice"]
+        );
     }
 
     #[test]
@@ -604,21 +630,21 @@ mod tests {
         assert!(e.contains("requires parameter waiver_bps"), "{e}");
         // The subject must be reference-only.
         let e = load_err(
-            "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  params:\n    subject_ref: { kind: enum, values: [a] }\n    channel: { kind: enum, values: [sms] }\n",
+            "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  provider: p\n  params:\n    subject_ref: { kind: enum, values: [a] }\n    channel: { kind: enum, values: [sms] }\n",
         );
         assert!(e.contains("capability_ref"), "{e}");
         // An allowlist cannot contain a raw identifier.
         let e = load_err(&format!(
-            "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  params:\n    {subject}\n    channel: {{ kind: enum, values: ['9876543210'] }}\n"
+            "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  provider: p\n  params:\n    {subject}\n    channel: {{ kind: enum, values: ['9876543210'] }}\n"
         ));
         assert!(e.contains("not an identifier"), "{e}");
         // Unknown keys, unknown actions, reserved names, duplicate actions.
         assert!(load_err(&format!(
-            "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  free_text: true\n  params:\n    {subject}\n"
+            "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  provider: p\n  free_text: true\n  params:\n    {subject}\n"
         ))
         .contains("unknown field"));
         assert!(load_err(&format!(
-            "version: 1\ntools:\n- name: r\n  action: wire_money\n  trust: external_effect\n  params:\n    {subject}\n"
+            "version: 1\ntools:\n- name: r\n  action: wire_money\n  trust: external_effect\n  provider: p\n  params:\n    {subject}\n"
         ))
         .contains("unknown action"));
         assert!(load_err(&format!(
@@ -635,6 +661,15 @@ mod tests {
                 .contains("more than one tool")
         );
         assert!(load_err("version: 2\ntools: []\n").contains("version"));
+        // An external effect must say where it goes; nothing else may.
+        assert!(load_err(&format!(
+            "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  params:\n    {subject}\n    channel: {{ kind: enum, values: [sms] }}\n"
+        ))
+        .contains("must name its provider"));
+        assert!(load_err(&format!(
+            "version: 1\ntools:\n- name: r\n  action: read_fields\n  trust: read_only\n  provider: p\n  params:\n    {subject}\n    requested_fields: {{ kind: field_set, values: [name] }}\n"
+        ))
+        .contains("only external_effect"));
     }
 
     #[test]
