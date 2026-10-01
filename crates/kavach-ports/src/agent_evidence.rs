@@ -24,6 +24,8 @@ pub const HASH_ALG_V2: &str = "v2";
 pub const HASH_PREFIX: &[u8] = b"kavach-evidence-v2";
 pub const SIG_PREFIX: &[u8] = b"kavach-agent-evidence-sig-v1:";
 pub const OUTCOME_SIG_PREFIX: &[u8] = b"kavach-agent-outcome-sig-v1:";
+/// v2 adds the reason code (H5b); v1 rows (no reason) still verify.
+pub const OUTCOME_SIG_PREFIX_V2: &[u8] = b"kavach-agent-outcome-sig-v2:";
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Who acted.
@@ -221,20 +223,59 @@ pub enum CommitResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Outcome {
+    /// The provider accepted it.
     Delivered,
+    /// Nothing was sent: the connection failed before any request went out.
     Failed,
+    /// The provider refused it (provably not delivered).
     Refused,
+    /// The allow was committed but nothing was sent (resolver or broker
+    /// failure, `send_by` passed before forwarding).
+    NotExecuted,
+    /// Sent, result not known (timeout or loss after sending, 408, 5xx, a
+    /// `jti` conflict). Never retried.
+    Unknown,
 }
 
 impl Outcome {
+    pub const ALL: [Self; 5] = [
+        Self::Delivered,
+        Self::Failed,
+        Self::Refused,
+        Self::NotExecuted,
+        Self::Unknown,
+    ];
+
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Delivered => "delivered",
             Self::Failed => "failed",
             Self::Refused => "refused",
+            Self::NotExecuted => "not_executed",
+            Self::Unknown => "unknown",
         }
     }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|o| o.as_str() == value)
+    }
+
+    /// Final: a retry returns it. `Unknown` is not final for the agent (a
+    /// retry is refused as in flight).
+    #[must_use]
+    pub fn is_final(self) -> bool {
+        self != Self::Unknown
+    }
+}
+
+/// An outcome reason: `[a-z0-9_]{1,64}`, a code, never a value.
+#[must_use]
+pub fn is_reason_code(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
 }
 
 /// What happened after an allow, linked by `credential_id` (off-chain).
@@ -244,45 +285,69 @@ pub struct OutcomeRecord {
     pub credential_id: String,
     pub record_hash: String,
     pub outcome: Outcome,
+    /// Why (a code such as `provider_409` or `timeout_after_send`). Signed
+    /// (v2). `None` only on v1 rows written before H5b.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     pub ts: DateTime<Utc>,
     pub key_id: String,
     pub sig: String,
 }
 
+/// The signed message: v2 (with the reason) when there is a reason, v1
+/// otherwise (rows written before H5b).
 #[must_use]
 pub fn outcome_message(
     credential_id: &str,
     record_hash: &str,
     outcome: Outcome,
+    reason: Option<&str>,
     ts: DateTime<Utc>,
 ) -> Vec<u8> {
-    let mut message = OUTCOME_SIG_PREFIX.to_vec();
-    message.extend_from_slice(
-        format!(
-            "{credential_id}\n{record_hash}\n{}\n{}",
-            outcome.as_str(),
-            ts.to_rfc3339_opts(chrono::SecondsFormat::Micros, true)
-        )
-        .as_bytes(),
-    );
+    let ts = ts.to_rfc3339_opts(chrono::SecondsFormat::Micros, true);
+    let outcome = outcome.as_str();
+    let (mut message, body) = match reason {
+        None => (
+            OUTCOME_SIG_PREFIX.to_vec(),
+            format!("{credential_id}\n{record_hash}\n{outcome}\n{ts}"),
+        ),
+        Some(reason) => (
+            OUTCOME_SIG_PREFIX_V2.to_vec(),
+            format!("{credential_id}\n{record_hash}\n{outcome}\n{reason}\n{ts}"),
+        ),
+    };
+    message.extend_from_slice(body.as_bytes());
     message
 }
 
+/// Signs an outcome (always v2, with a reason code).
 pub fn sign_outcome(
     tenant_id: &str,
     credential_id: &str,
     record_hash: &str,
     outcome: Outcome,
+    reason: &str,
     ts: DateTime<Utc>,
     signer: &dyn EvidenceSigner,
 ) -> Result<OutcomeRecord, PortError> {
-    let sig =
-        hex::encode(signer.sign(&outcome_message(credential_id, record_hash, outcome, ts))?);
+    if !is_reason_code(reason) {
+        return Err(PortError::invalid(
+            "outcome reason must be a code: [a-z0-9_]{1,64}",
+        ));
+    }
+    let sig = hex::encode(signer.sign(&outcome_message(
+        credential_id,
+        record_hash,
+        outcome,
+        Some(reason),
+        ts,
+    ))?);
     Ok(OutcomeRecord {
         tenant_id: tenant_id.into(),
         credential_id: credential_id.into(),
         record_hash: record_hash.into(),
         outcome,
+        reason: Some(reason.into()),
         ts,
         key_id: signer.key_id().into(),
         sig,
@@ -429,15 +494,22 @@ pub struct ChainReport {
     pub records: usize,
     pub head_seq: i64,
     pub head_hash: String,
-    /// Allows whose credential has expired with no recorded outcome.
+    /// Allows whose credential lifetime has passed with no recorded
+    /// outcome (e.g. a crash between commit and forward), by credential id.
+    pub outcome_missing: Vec<String>,
+    /// Outcomes recorded as `unknown` (sent, result not known).
     pub outcome_unknown: Vec<String>,
+    /// Outcome rows whose signature does not verify (or whose key is
+    /// unknown); they count as missing.
+    pub outcome_invalid: Vec<String>,
 }
 
 /// Verifies a partition offline: `seq` continuity from 1, links, hashes and
 /// signatures against `keys`, and (when the operator recorded it out of
 /// band) the expected head — without which a truncated tail is undetectable.
-/// `outcomes` are checked for signatures; allows past their credential
-/// expiry at `now` without an outcome are reported as unknown.
+/// `outcomes` are checked for signatures (v1 or v2); allows past their
+/// credential expiry at `now` without a valid outcome are reported as
+/// missing, recorded `unknown` outcomes as unknown.
 pub fn verify_chain(
     records: &[AgentDecisionRecord],
     keys: &BTreeMap<String, PublicKey>,
@@ -482,20 +554,29 @@ pub fn verify_chain(
         }
     }
     let mut known = std::collections::BTreeSet::new();
+    let mut outcome_unknown = Vec::new();
+    let mut outcome_invalid = Vec::new();
     for outcome in outcomes {
         let key = keys.get(&outcome.key_id);
         let sig = hex::decode(&outcome.sig).unwrap_or_default();
+        let reason_ok = outcome.reason.as_deref().is_none_or(is_reason_code);
         let message = outcome_message(
             &outcome.credential_id,
             &outcome.record_hash,
             outcome.outcome,
+            outcome.reason.as_deref(),
             outcome.ts,
         );
-        if key.is_some_and(|k| verify_ed25519(k, &message, &sig).is_ok()) {
+        if reason_ok && key.is_some_and(|k| verify_ed25519(k, &message, &sig).is_ok()) {
             known.insert(outcome.credential_id.clone());
+            if outcome.outcome == Outcome::Unknown {
+                outcome_unknown.push(outcome.credential_id.clone());
+            }
+        } else {
+            outcome_invalid.push(outcome.credential_id.clone());
         }
     }
-    let outcome_unknown = records
+    let outcome_missing = records
         .iter()
         .filter(|r| r.is_allow())
         .filter_map(|r| {
@@ -508,7 +589,9 @@ pub fn verify_chain(
         records: records.len(),
         head_seq,
         head_hash: prev,
+        outcome_missing,
         outcome_unknown,
+        outcome_invalid,
     })
 }
 
@@ -606,6 +689,119 @@ mod tests {
         let back: PolicyVersions =
             serde_json::from_value(serde_json::to_value(&pinned.policy_versions).unwrap()).unwrap();
         assert_eq!(back, pinned.policy_versions);
+    }
+
+    /// Three allows (credentials c-1..c-3, expired by `now`).
+    fn allows(key: &Key) -> Vec<AgentDecisionRecord> {
+        let mut prev = GENESIS.to_string();
+        (1..=3)
+            .map(|seq| {
+                let mut p = payload(seq, &prev);
+                p.pre_commit_decision = Decision::Pass;
+                p.policy_decision = Decision::Pass;
+                p.returned_decision = Decision::Pass;
+                p.credential_id = Some(format!("c-{seq}"));
+                p.credential_expires_at = Some(DateTime::from_timestamp(1_790_000_000, 0).unwrap());
+                let record = seal(p, key).unwrap();
+                prev.clone_from(&record.hash);
+                record
+            })
+            .collect()
+    }
+
+    #[test]
+    fn outcomes_are_classified_missing_unknown_or_invalid_and_v1_still_verifies() {
+        let key = Key(SigningKey::from_bytes(&[4u8; 32]));
+        let now = DateTime::from_timestamp(1_790_000_100, 0).unwrap();
+        let records = allows(&key);
+        let at = DateTime::from_timestamp(1_790_000_001, 0).unwrap();
+
+        // c-1: a v1 (pre-H5b) outcome, signed without a reason.
+        let v1_sig = key
+            .sign(&outcome_message(
+                "c-1",
+                &records[0].hash,
+                Outcome::Delivered,
+                None,
+                at,
+            ))
+            .unwrap();
+        let v1 = OutcomeRecord {
+            tenant_id: "t".into(),
+            credential_id: "c-1".into(),
+            record_hash: records[0].hash.clone(),
+            outcome: Outcome::Delivered,
+            reason: None,
+            ts: at,
+            key_id: "ev-1".into(),
+            sig: hex::encode(v1_sig),
+        };
+        // c-2: a v2 `unknown` outcome with its reason.
+        let unknown = sign_outcome(
+            "t",
+            "c-2",
+            &records[1].hash,
+            Outcome::Unknown,
+            "timeout_after_send",
+            at,
+            &key,
+        )
+        .unwrap();
+        // c-3: no outcome at all (a crash between commit and forward).
+        let report = verify_chain(
+            &records,
+            &keys(&key),
+            None,
+            &[v1.clone(), unknown.clone()],
+            now,
+        )
+        .unwrap();
+        assert_eq!(report.outcome_missing, vec!["c-3".to_string()]);
+        assert_eq!(report.outcome_unknown, vec!["c-2".to_string()]);
+        assert_eq!(report.outcome_invalid, Vec::<String>::new());
+
+        // A rewritten reason or outcome no longer verifies: invalid, and the
+        // allow counts as missing.
+        let mut reason_edited = unknown.clone();
+        reason_edited.reason = Some("provider_202".into());
+        let mut outcome_edited = unknown;
+        outcome_edited.outcome = Outcome::Delivered;
+        for edited in [reason_edited, outcome_edited] {
+            let report =
+                verify_chain(&records, &keys(&key), None, &[v1.clone(), edited], now).unwrap();
+            assert_eq!(report.outcome_invalid, vec!["c-2".to_string()]);
+            assert_eq!(
+                report.outcome_missing,
+                vec!["c-2".to_string(), "c-3".to_string()]
+            );
+        }
+        // A v1 row cannot be upgraded by adding a reason.
+        let mut upgraded = v1;
+        upgraded.reason = Some("provider_202".into());
+        let report = verify_chain(&records, &keys(&key), None, &[upgraded], now).unwrap();
+        assert_eq!(report.outcome_invalid, vec!["c-1".to_string()]);
+    }
+
+    #[test]
+    fn outcome_values_and_reason_codes() {
+        for outcome in Outcome::ALL {
+            assert_eq!(Outcome::parse(outcome.as_str()), Some(outcome));
+        }
+        assert_eq!(Outcome::parse("maybe"), None);
+        assert!(!Outcome::Unknown.is_final() && Outcome::NotExecuted.is_final());
+        assert!(is_reason_code("send_by_passed"));
+        for bad in [
+            "",
+            "Timeout",
+            "provider 409",
+            "+919876543210",
+            &"a".repeat(65),
+        ] {
+            assert!(!is_reason_code(bad), "{bad}");
+        }
+        let key = Key(SigningKey::from_bytes(&[4u8; 32]));
+        let now = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        assert!(sign_outcome("t", "c", "h", Outcome::Failed, "call +91 98765", now, &key).is_err());
     }
 
     #[test]

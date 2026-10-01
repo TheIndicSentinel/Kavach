@@ -495,3 +495,83 @@ async fn malformed_requests_are_invalid() {
         assert_eq!(err.class, kavach_ports::ErrorClass::Invalid);
     }
 }
+
+/// Forward-once ownership and outcomes (step 8a): only the call that
+/// created the record may forward; an outcome is recorded once, with a
+/// reason, and only for an allow.
+#[tokio::test]
+async fn only_the_creator_may_forward_and_outcomes_are_recorded_once() {
+    use kavach_ports::agent_evidence::Outcome;
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let a = agent("collections-agent");
+    let call = reminder(&mandate, "o-1");
+
+    // Concurrent duplicates of one request: exactly one creator.
+    let (r1, r2, r3, r4) = tokio::join!(
+        w.core.authorize(&a, &call, Mode::Commit),
+        w.core.authorize(&a, &call, Mode::Commit),
+        w.core.authorize(&a, &call, Mode::Commit),
+        w.core.authorize(&a, &call, Mode::Commit),
+    );
+    let all = [r1.unwrap(), r2.unwrap(), r3.unwrap(), r4.unwrap()];
+    assert_eq!(all.iter().filter(|d| d.created()).count(), 1, "one creator");
+    assert!(all.iter().all(|d| d.decision == Decision::Pass));
+    let creator = all.iter().find(|d| d.created()).unwrap();
+    let record = creator.record.clone().expect("record");
+    let credential = creator.grant.clone().expect("grant").credential_id;
+    assert_eq!(
+        w.core.outcome(&credential).await.unwrap(),
+        None,
+        "nothing yet"
+    );
+
+    let written = w
+        .core
+        .record_outcome(&record, Outcome::Delivered, "provider_202")
+        .await
+        .unwrap();
+    assert_eq!(written.reason.as_deref(), Some("provider_202"));
+    assert_eq!(w.core.outcome(&credential).await.unwrap(), Some(written));
+    assert!(
+        w.core
+            .record_outcome(&record, Outcome::Unknown, "timeout_after_send")
+            .await
+            .is_err(),
+        "an outcome is recorded once and never replaced"
+    );
+    // A reason must be a code, never a value.
+    let other = w
+        .core
+        .authorize(&a, &reminder(&mandate, "o-2"), Mode::Commit)
+        .await
+        .unwrap();
+    assert!(w
+        .core
+        .record_outcome(
+            other.record.as_ref().unwrap(),
+            Outcome::Failed,
+            "to +91 98765 43210"
+        )
+        .await
+        .is_err());
+
+    // No outcome for a refusal.
+    w.at(ist(20, 0, 0));
+    let late = w
+        .core
+        .authorize(&a, &reminder(&mandate, "o-3"), Mode::Commit)
+        .await
+        .unwrap();
+    assert_eq!(late.decision, Decision::Block);
+    let err = w
+        .core
+        .record_outcome(
+            late.record.as_ref().unwrap(),
+            Outcome::Delivered,
+            "provider_202",
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err.class, kavach_ports::ErrorClass::Invalid);
+}

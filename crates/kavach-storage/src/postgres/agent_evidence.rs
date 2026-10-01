@@ -284,13 +284,14 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
             return Err(PortError::rejected("no allowed record for this credential"));
         }
         sqlx::query(
-            "INSERT INTO agent_outcomes (tenant_id, credential_id, record_hash, outcome, ts, \
-                key_id, sig) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO agent_outcomes (tenant_id, credential_id, record_hash, outcome, \
+                reason, ts, key_id, sig) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(&outcome.tenant_id)
         .bind(&outcome.credential_id)
         .bind(&outcome.record_hash)
         .bind(outcome.outcome.as_str())
+        .bind(&outcome.reason)
         .bind(outcome.ts)
         .bind(&outcome.key_id)
         .bind(&outcome.sig)
@@ -312,7 +313,7 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         credential_id: &str,
     ) -> Result<Option<OutcomeRecord>, PortError> {
         let row = sqlx::query(
-            "SELECT record_hash, outcome, ts, key_id, sig FROM agent_outcomes \
+            "SELECT record_hash, outcome, reason, ts, key_id, sig FROM agent_outcomes \
             WHERE tenant_id = $1 AND credential_id = $2",
         )
         .bind(tenant_id)
@@ -326,11 +327,10 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
             tenant_id: tenant_id.into(),
             credential_id: credential_id.into(),
             record_hash: row.try_get("record_hash").map_err(|e| unavailable(&e))?,
-            outcome: match outcome.as_str() {
-                "delivered" => Outcome::Delivered,
-                "failed" => Outcome::Failed,
-                _ => Outcome::Refused,
-            },
+            // Never guess: an unrecognised value is a corrupt row.
+            outcome: Outcome::parse(&outcome)
+                .ok_or_else(|| PortError::invalid("stored outcome has an unknown value"))?,
+            reason: row.try_get("reason").map_err(|e| unavailable(&e))?,
             ts: row.try_get("ts").map_err(|e| unavailable(&e))?,
             key_id: row.try_get("key_id").map_err(|e| unavailable(&e))?,
             sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
