@@ -5,15 +5,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration as StdDuration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use ed25519_dalek::{Signer, SigningKey};
 use http_body_util::BodyExt;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use kavach_api::dataplane::{sor_router, DataplaneConfig};
+use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig, TestClock};
 use kavach_api::{
     AccessControlKind, ApiConfig, AppState, EvidenceStoreKind, JwksSource, OidcConfig,
 };
@@ -22,7 +24,12 @@ use kavach_domain::mandate::{
     AgentPassport, ConsentRecord, ContactWindow, DelegationRules, MandateTemplate, SorEvent,
     TimeZoneId,
 };
+use kavach_jws::KeySet;
 use kavach_keys::InMemoryKeyProvider;
+use kavach_mock_provider::{MockProvider, ProviderConfig};
+use kavach_ports::agent_evidence::{AgentEvidenceStore, Outcome};
+use kavach_ports::{KeyAlgorithm, PublicKey, TimeSource};
+use kavach_ports_testkit::FakeClock;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tower::ServiceExt;
@@ -100,7 +107,7 @@ pub fn template() -> MandateTemplate {
         tenant_id: "default".into(),
         event_type: "loan.dpd30".into(),
         purpose: "loan_recovery".into(),
-        actions: set(&["read_fields", "send_reminder", "place_call"]),
+        actions: set(&["read_fields", "send_reminder", "place_call", "propose_plan"]),
         data_fields: set(&["name", "overdue_amount", "loan_ref"]),
         channels: set(&["whatsapp", "voice"]),
         window: Some(ContactWindow {
@@ -109,11 +116,13 @@ pub fn template() -> MandateTemplate {
             to_min: 19 * 60,
             max_per_day: 3,
         }),
-        ceilings: BTreeMap::new(),
+        // Waivers above 10% need a human (acceptance scenario 6).
+        ceilings: BTreeMap::from([("waiver_bps".to_string(), 1000)]),
         ttl_seconds: 7 * 24 * 3600,
+        // A translation sub-agent may receive a narrower child (scenario 7).
         delegation: DelegationRules {
             max_depth: 1,
-            allowed_agents: BTreeSet::new(),
+            allowed_agents: set(&["translation-agent"]),
         },
         eligible_agents: set(&["collections-agent"]),
     }
@@ -224,9 +233,9 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         tenant_id: "default".into(),
         owner: "collections-ops".into(),
         allowed_purposes: set(&["loan_recovery"]),
-        actions: set(&["read_fields", "send_reminder", "place_call"]),
+        actions: set(&["read_fields", "send_reminder", "place_call", "propose_plan"]),
         data_fields: set(&["name", "overdue_amount", "loan_ref"]),
-        ceilings: BTreeMap::new(),
+        ceilings: BTreeMap::from([("waiver_bps".to_string(), 1000)]),
     };
     std::fs::write(
         dir.join("mandates.json"),
@@ -235,7 +244,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
             "signing_kid": "kavach-mandate-1",
             "sor_issuers": [{ "system": "lms", "kid": "lms-issuer-1", "public_key": hex::encode(lms) }],
             "templates": [template()],
-            "passports": [passport("collections-agent")],
+            "passports": [passport("collections-agent"), passport("translation-agent")],
             "event_freshness_seconds": 300,
             "replay_window_seconds": 86400
         })
@@ -421,4 +430,143 @@ pub fn read_fields(mandate_id: &str, request_id: &str) -> Value {
             "requested_fields": ["name", "overdue_amount"]
         }
     })
+}
+
+// ---- Gateway harness: the real agent listener, gateway and mock provider ----
+
+pub const NUMBER: &str = "+910000000001";
+
+/// Today at `h`:00 IST.
+pub fn ist_today(h: i64) -> DateTime<Utc> {
+    let ist = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
+    let date = Utc::now().with_timezone(&ist).date_naive();
+    ist.from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
+        .unwrap()
+        .with_timezone(&Utc)
+        + Duration::hours(h)
+}
+
+pub struct Gw {
+    pub state: Arc<AppState>,
+    pub clock: Arc<FakeClock>,
+    pub provider: Arc<MockProvider>,
+    pub mandate: String,
+}
+
+/// A production-shaped data plane (memory stores, `--insecure-dev` for the
+/// test clock) whose `mock-messaging` provider is a real mock provider on
+/// loopback, and whose subject resolves to `destination` on WhatsApp.
+pub async fn gateway(destination: Option<&str>, provider_up: bool) -> Gw {
+    gateway_on(config_for_gateway(), destination, provider_up).await
+}
+
+pub async fn gateway_on(
+    mut api: kavach_api::ApiConfig,
+    destination: Option<&str>,
+    provider_up: bool,
+) -> Gw {
+    let clock = Arc::new(FakeClock::synced_at(ist_today(11)));
+    let credential_public = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32])
+        .verifying_key()
+        .to_bytes();
+    let mut config = ProviderConfig::new(
+        "mock-messaging",
+        messaging_key(),
+        KeySet::new([PublicKey {
+            kid: "kavach-credential-1".into(),
+            algorithm: KeyAlgorithm::Ed25519,
+            bytes: credential_public,
+        }]),
+    );
+    config.hang = StdDuration::from_secs(4);
+    let read = Arc::clone(&clock);
+    let provider = MockProvider::new(config, Arc::new(move || read.now().utc));
+    let endpoint = if provider_up {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = kavach_mock_provider::router(provider.clone());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        format!("http://{addr}")
+    } else {
+        CLOSED_PORT.to_string()
+    };
+
+    let dp = api.dataplane.as_mut().unwrap();
+    dp.test_clock = Some(TestClock(clock.clone()));
+    write_providers(&dp.providers, &endpoint, CLOSED_PORT);
+    let destinations = match destination {
+        Some(d) => json!({ "whatsapp": d, "sms": d }),
+        None => json!({ "voice": "+910000000002" }),
+    };
+    std::fs::write(
+        &dp.references,
+        json!({ "references": [{ "tenant_id": "default", "subject_ref": SUBJECT,
+            "destinations": destinations }] })
+        .to_string(),
+    )
+    .unwrap();
+    let state = Arc::new(AppState::from_config(&api).await.expect("state"));
+    let mandate = issue_at(&state, "evt-gw", clock.now().utc).await;
+    Gw {
+        state,
+        clock,
+        provider,
+        mandate,
+    }
+}
+
+pub fn config_for_gateway() -> kavach_api::ApiConfig {
+    config(EvidenceStoreKind::Memory, true, 50)
+}
+
+pub fn reminder(mandate: &str, request_id: &str) -> Value {
+    json!({
+        "mandate_id": mandate,
+        "request_id": request_id,
+        "params": {
+            "subject_ref": SUBJECT,
+            "channel": "whatsapp",
+            "template_id": "emi_reminder_v1"
+        }
+    })
+}
+
+impl Gw {
+    pub async fn call(&self, tool: &str, body: Value) -> (StatusCode, Value) {
+        let (status, reply) = send(
+            agent_router(self.state.clone()),
+            &format!("/v1/tools/{tool}"),
+            &[(
+                "authorization",
+                format!("Bearer {}", agent_token("collections-agent")),
+            )],
+            body,
+        )
+        .await;
+        let text = reply.to_string();
+        assert!(!text.contains("+91"), "destination leaked: {text}");
+        assert!(!text.contains("eyJ"), "a token leaked: {text}");
+        (status, reply)
+    }
+
+    pub async fn remind(&self, request_id: &str) -> (StatusCode, Value) {
+        self.call("send_reminder", reminder(&self.mandate, request_id))
+            .await
+    }
+
+    pub async fn stored_outcome(&self, request_id: &str) -> Option<(Outcome, Option<String>)> {
+        let dp = self.state.dataplane().unwrap();
+        let record = dp
+            .core()
+            .store()
+            .get_by_request("default", "collections-agent", request_id)
+            .await
+            .unwrap()?;
+        let credential = record.payload.credential_id?;
+        dp.core()
+            .outcome(&credential)
+            .await
+            .unwrap()
+            .map(|o| (o.outcome, o.reason))
+    }
 }
