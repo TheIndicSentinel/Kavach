@@ -156,6 +156,6 @@ mod tests {
     #[test]
     fn reading_the_host_never_panics() {
         let reading = read();
-        assert!(!reading.detail.is_empty());
+        assert_ne!(reading.detail, "");
     }
 }

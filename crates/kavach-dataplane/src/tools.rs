@@ -439,7 +439,7 @@ fn validate_tool(tool: &ToolSpec) -> Result<(), PortError> {
                 "only requested_fields may be a field_set (got {name})"
             ));
         }
-        validate_param(name, param).or_else(&fail)?;
+        validate_param(name, param).or_else(fail)?;
     }
     Ok(())
 }
