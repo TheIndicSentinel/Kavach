@@ -8,6 +8,7 @@ Everything needed to run Kavach for one organisation and to **verify** that it w
 
 - Enforcement: the gateway, Task Mandates, agent authorization, the tool registry, the credential broker, network-boundary configuration.
 - Evidence: signed decision records, the verifier, export, and the evidence formats.
+- Key protection: the `KeyProvider` port and at least one open hardware-backed or KMS-backed adapter (planned: PKCS#11, tested against SoftHSM, or OpenBao Transit), with key rotation and compromise runbooks. Protecting signing keys is a security property, so it is never enterprise-only.
 - Revocation, contact caps, time controls and every other security guarantee in [docs/SECURITY_PROPERTIES.md](docs/SECURITY_PROPERTIES.md).
 - The developer CLI, including the attack harness and the decision trace.
 - Policy packs and the formal policy analysis.
@@ -20,7 +21,7 @@ Everything needed to run Kavach for one organisation and to **verify** that it w
 Operating Kavach at scale across many teams or tenants, for example:
 
 - multi-tenant fleet management and central policy distribution with approval workflows;
-- SSO/SCIM, high availability, and KMS/HSM adapters;
+- SSO/SCIM, high availability, and fleet-scale key operations (managed key ceremonies, cross-region KMS integrations) on top of the open key port;
 - regulatory reporting and audit-export packs (RBI, DPDP and others);
 - support and SLAs.
 

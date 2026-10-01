@@ -7,13 +7,16 @@
 # Batch shadow smoke (one-shot):
 #   docker compose -f deploy/docker-compose.pilot.yml run --rm batch-shadow
 #
-# Security defaults (ADR-008): Postgres is not published to the host; the
-# database password must be set; API principals come from OIDC access tokens
-# (the X-Kavach-Principal header is refused); no example principals ship.
+# Security defaults (ADR-008): the API is published on 127.0.0.1 only (set
+# KAVACH_BIND_ADDRESS to expose it, and then terminate TLS in front of it or
+# use --tls); Postgres is not published to the host; images are pinned by
+# digest; the database password must be set; API principals come from OIDC
+# access tokens (the X-Kavach-Principal header is refused); no example
+# principals ship.
 
 services:
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-kavach}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env (e.g. openssl rand -hex 24)}
@@ -50,14 +53,17 @@ services:
     volumes:
       - ./pilot-config:/etc/kavach:ro
     ports:
-      - "${KAVACH_HTTP_PORT:-8080}:8080"
-      - "${KAVACH_GRPC_PORT:-50051}:50051"
+      - "${KAVACH_BIND_ADDRESS:-127.0.0.1}:${KAVACH_HTTP_PORT:-8080}:8080"
+      - "${KAVACH_BIND_ADDRESS:-127.0.0.1}:${KAVACH_GRPC_PORT:-50051}:50051"
 
   batch-shadow:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     profiles: ["batch"]
+    # One-shot job: the image's API healthcheck does not apply.
+    healthcheck:
+      disable: true
     # Batch evaluates the pack and model that kavach-api governs (ADR-010) and
     # never records a baseline itself: start kavach-api first.
     depends_on:

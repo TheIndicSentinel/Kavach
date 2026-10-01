@@ -25,7 +25,7 @@ This adds a `Signed-off-by: Your Name <you@example.com>` line, whose email must 
 4. **Ports and contracts.** A new adapter of a security-critical port must pass that port's suite in `kavach-ports-testkit`.
 5. **Tests.** Add tests for the behaviour and for the refusals. Use synthetic data only (for phone numbers, the `+910…` range).
 6. **Quality gates.** `./scripts/verify.sh` must pass: `cargo fmt`, `clippy` (pedantic, warnings as errors), tests, `cargo deny`. `unsafe` is forbidden outside `kavach-clocksync`.
-7. **Dependencies.** Licences must be in the `deny.toml` allowlist; prefer crates already in the tree. Explain any new dependency in the PR.
+7. **Dependencies and supply chain.** Licences must be in the `deny.toml` allowlist; prefer crates already in the tree; explain any new dependency in the PR. GitHub Actions are pinned to a full commit SHA (with the version in a comment), CI tools to exact versions, and container base images to digests; Dependabot proposes updates as PRs that pass the same checks. A weekly *Supply chain* workflow re-runs `cargo audit` and `cargo deny` and publishes CycloneDX SBOMs.
 
 ## Pull requests
 

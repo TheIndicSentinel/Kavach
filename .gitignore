@@ -14,3 +14,4 @@ console/*.tsbuildinfo
 /deploy/pilot-config/
 /deploy/.env
 scripts/jose-crosscheck/node_modules/
+*.cdx.json

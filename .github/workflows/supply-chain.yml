@@ -1,0 +1,66 @@
+name: Supply chain
+
+# Runs weekly (so a new advisory is caught even when nothing is pushed), on
+# demand, and on every push to main. Not a required PR check: CI's own
+# audit/deny jobs gate merges; this catches what changes in the world.
+on:
+  schedule:
+    - cron: "30 3 * * 1" # Mondays 03:30 UTC (09:00 IST)
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  advisories:
+    name: Advisories and dependency policy (scheduled)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-10-01)
+        with:
+          toolchain: "1.98.0"
+
+      - name: Install cargo-audit and cargo-deny (pinned)
+        run: |
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo install cargo-deny --locked --version 0.20.2
+
+      - name: cargo audit
+        run: cargo audit
+
+      - name: cargo deny
+        run: cargo deny check
+
+  sbom:
+    name: SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-10-01)
+        with:
+          toolchain: "1.98.0"
+
+      - name: Install cargo-cyclonedx (pinned)
+        run: cargo install cargo-cyclonedx --locked --version 0.5.9
+
+      - name: One SBOM per shipped binary (CycloneDX 1.5, Linux target)
+        run: |
+          cargo cyclonedx --format json --spec-version 1.5 --describe binaries \
+            --target x86_64-unknown-linux-gnu
+          mkdir -p sbom
+          find crates -name '*.cdx.json' -exec mv {} sbom/ \;
+          ls -l sbom
+
+      - name: Upload SBOMs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sbom-${{ github.sha }}
+          path: sbom/
+          retention-days: 90
