@@ -176,7 +176,7 @@ impl OidcVerifier {
             loop {
                 ticker.tick().await;
                 if let Err(e) = verifier.refresh().await {
-                    eprintln!("WARNING: kavach-api: JWKS refresh failed (keeping old keys): {e}");
+                    tracing::warn!("JWKS refresh failed (keeping old keys): {e}");
                 }
             }
         });
@@ -200,7 +200,7 @@ impl OidcVerifier {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 if let Err(e) = verifier.refresh().await {
-                    eprintln!("WARNING: kavach-api: JWKS refresh failed: {e}");
+                    tracing::warn!("JWKS refresh failed: {e}");
                 }
             });
         }

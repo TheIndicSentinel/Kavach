@@ -361,11 +361,7 @@ impl MockProvider {
             Err(outcome) => outcome,
             Ok((claims, digest)) => {
                 let (status, body) = self.decide(&claims, digest);
-                eprintln!(
-                    "kavach-mock-provider: jti={} -> {}",
-                    claims.jti,
-                    status.as_u16()
-                );
+                tracing::info!(jti = %claims.jti, status = status.as_u16(), "message request");
                 // A first delivery to the hang number loses its response.
                 if status == StatusCode::ACCEPTED && claims.req.destination.expose() == HANG_NUMBER
                 {

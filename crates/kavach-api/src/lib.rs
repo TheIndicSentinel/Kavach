@@ -6,6 +6,7 @@ pub mod change_requests;
 pub mod config;
 pub mod console;
 pub mod convert;
+pub mod correlation;
 pub mod dataplane;
 pub mod error;
 pub mod forward;

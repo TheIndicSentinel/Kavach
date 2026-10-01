@@ -64,7 +64,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         router = router.fallback(crate::console::fallback);
     }
 
-    router.with_state(state)
+    router
+        .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
+        .with_state(state)
 }
 
 async fn health(

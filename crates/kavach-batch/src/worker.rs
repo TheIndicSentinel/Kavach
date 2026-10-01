@@ -173,7 +173,7 @@ where
     ) {
         Ok(result) => {
             if let Some(err) = &result.incident_write_error {
-                eprintln!(
+                tracing::warn!(
                     "ALERT kavach-batch: incident not persisted (line {}, correlation_id={correlation_id}): {err}",
                     input.line_number
                 );

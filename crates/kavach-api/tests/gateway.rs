@@ -26,6 +26,36 @@ use agent_fixture::*;
 
 const NUMBER: &str = "+910000000001";
 
+/// Every log line written by this test binary (all tests share one global
+/// subscriber: the real redacting one, writing here instead of stderr).
+#[derive(Clone, Default)]
+struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Capture {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn logs() -> &'static Capture {
+    static LOGS: std::sync::OnceLock<Capture> = std::sync::OnceLock::new();
+    LOGS.get_or_init(|| {
+        let capture = Capture::default();
+        let writer = capture.clone();
+        kavach_telemetry::init_with(kavach_telemetry::LogFormat::Json, move || writer.clone())
+            .expect("subscriber");
+        capture
+    })
+}
+
+fn log_text() -> String {
+    String::from_utf8_lossy(&logs().0.lock().unwrap()).into_owned()
+}
+
 /// Today at `h`:00 IST.
 fn ist_today(h: i64) -> DateTime<Utc> {
     let ist = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
@@ -55,6 +85,7 @@ async fn gateway_on(
     destination: Option<&str>,
     provider_up: bool,
 ) -> Gw {
+    logs();
     let clock = Arc::new(FakeClock::synced_at(ist_today(11)));
     let credential_public = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32])
         .verifying_key()
@@ -435,4 +466,71 @@ async fn gateway_on_postgres_delivers_once_and_records_the_outcome() {
         gw.stored_outcome("pg-1").await,
         Some((Outcome::Delivered, Some("provider_202".into())))
     );
+}
+
+/// Logs carry a correlation id on every line of a request and the gateway's
+/// decision and outcome, and never a destination or a credential.
+#[tokio::test]
+async fn logs_carry_correlation_and_never_the_destination_or_credential() {
+    use tower::ServiceExt;
+    let gw = gateway(Some(NUMBER), true).await;
+    let call = |request_id: &'static str| {
+        axum::http::Request::post("/v1/tools/send_reminder")
+            .header("content-type", "application/json")
+            .header(
+                "authorization",
+                format!("Bearer {}", agent_token("collections-agent")),
+            )
+            .header("x-request-id", request_id)
+            .body(axum::body::Body::from(
+                reminder(&gw.mandate, "log-1").to_string(),
+            ))
+            .unwrap()
+    };
+    let response = agent_router(gw.state.clone())
+        .oneshot(call("corr-test-42"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["x-request-id"], "corr-test-42", "echoed");
+
+    // A malformed caller id is replaced, never logged or echoed.
+    let response = agent_router(gw.state.clone())
+        .oneshot(call("<script>"))
+        .await
+        .unwrap();
+    let echoed = response.headers()["x-request-id"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(echoed, "<script>");
+    assert_eq!(echoed.len(), 36, "a fresh UUID");
+
+    let text = log_text();
+    let ours: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("corr-test-42"))
+        .collect();
+    assert!(
+        ours.iter().any(|l| l.contains("gateway call")
+            && l.contains("send_reminder")
+            && l.contains("delivered")
+            && l.contains("provider_202")),
+        "{text}"
+    );
+    assert!(
+        ours.iter()
+            .any(|l| l.contains("handled") && l.contains("/v1/tools/{tool}")),
+        "{text}"
+    );
+    assert!(!text.contains("<script>"), "{text}");
+    for secret in [
+        "0000000001",
+        "+91",
+        "eyJ",
+        "Kavach-Credential ",
+        "Bearer ey",
+    ] {
+        assert!(!text.contains(secret), "{secret} in logs:\n{text}");
+    }
 }
