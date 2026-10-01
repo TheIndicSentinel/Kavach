@@ -1,0 +1,29 @@
+[package]
+name = "kavach-clocksync"
+description = "Kernel clock-synchronisation status for trusted time (ADR-003 §7)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kavach-clocksync"
+path = "src/bin/kavach-clocksync.rs"
+
+[dependencies]
+kavach-ports = { workspace = true }
+chrono.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.189"
+
+# The only crate that may contain `unsafe`: one read-only adjtimex call
+# (ADR-006 §7 amendment). Every other crate keeps `unsafe_code = "forbid"`.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"

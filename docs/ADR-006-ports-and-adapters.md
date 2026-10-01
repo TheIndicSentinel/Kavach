@@ -81,6 +81,7 @@ Adapters are selected by startup configuration only — no dynamic plugin loadin
 - Because `EvidenceStore`'s signature uses `kavach-evidence` types, `kavach-ports` depends on `kavach-evidence` and holds the `MemoryChain` implementation.
 - `TimeSource` ships with `SystemClock` (sync status `Unknown`) and `FakeClock`; the kernel clock-sync adapter (ADR-003 §7) needs a small FFI crate and arrives in M3, when agent resources first run in enforce mode.
 - `MandateStore` and `EventBus` are defined with the mandate service (M1.4) rather than ahead of their types.
+- *Amendment (H5a):* the kernel clock-sync adapter is `kavach-clocksync` (`KernelClock`). `rustix` has no `adjtimex`/`clock_adjtime` wrapper, so the crate is the workspace's **only** `unsafe` code: one read-only `adjtimex` call (`modes = 0`, no `CAP_SYS_TIME`), in a crate that sets `unsafe_code = "deny"` locally and allows it on that one function with a `SAFETY` note. All other crates keep `unsafe_code = "forbid"`. Anything unreadable — non-Linux, or a seccomp profile denying the syscall — classifies as `Unknown`, so critical actions fail closed. CI probes the host and containers (default and unconfined seccomp) and requires a classification, not sync.
 
 ## Consequences
 
