@@ -160,6 +160,8 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     allow_replay_conflict_and_outcome(&*store, &clock, &signer).await;
     commit_time_checks(&*store, &clock, &signer).await;
     nothing_is_kept_when_signing_fails(&*store, &clock).await;
+    every_outcome_kind_is_stored(&*store, &clock, &signer).await;
+    one_creator_per_request_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     cap_holds_under_concurrency(store, signer).await;
 }
 
@@ -207,38 +209,8 @@ async fn allow_replay_conflict_and_outcome<S: AgentEvidenceStore>(
     assert!(!denied.is_allow() && denied.payload.credential_id.is_none());
     assert_eq!(store.contacts_on(t, SUBJECT, day()).await.unwrap(), 1);
 
-    // Outcomes: once per credential, only for an allowed record.
-    let outcome = sign_outcome(
-        t,
-        "cred-r-1",
-        &record.hash,
-        Outcome::Delivered,
-        t0(),
-        signer,
-    )
-    .unwrap();
-    store.record_outcome(outcome.clone()).await.unwrap();
-    assert!(store.record_outcome(outcome.clone()).await.is_err(), "once");
-    let stray = sign_outcome(t, "cred-none", &record.hash, Outcome::Failed, t0(), signer).unwrap();
-    assert!(
-        store.record_outcome(stray).await.is_err(),
-        "unknown credential"
-    );
-    assert_eq!(
-        store.outcome(t, "cred-r-1").await.unwrap(),
-        Some(outcome.clone())
-    );
-
-    let records = store.records(t, 0).await.unwrap();
-    let report = verify_chain(
-        &records,
-        &signer.keys(),
-        Some((2, denied.hash.as_str())),
-        &[outcome],
-        t0() + Duration::minutes(5),
-    )
-    .expect("chain verifies");
-    assert_eq!(report.outcome_unknown, Vec::<String>::new());
+    let records =
+        outcomes_once_per_allowed_record(store, signer, t, &record.hash, &denied.hash).await;
     assert!(
         verify_chain(
             &records[..1],
@@ -359,4 +331,151 @@ async fn cap_holds_under_concurrency<S: AgentEvidenceStore + 'static>(
     let records = store.records(t, 0).await.unwrap();
     assert_eq!(records.len(), 50);
     verify_chain(&records, &signer.keys(), None, &[], t0()).expect("linear, signed chain");
+}
+
+/// Forward-once ownership: of many concurrent commits of the same request,
+/// exactly one creates the record (`Committed`); the rest see it
+/// (`Replayed`), so only one caller may ever forward.
+async fn one_creator_per_request_under_concurrency<S: AgentEvidenceStore + 'static>(
+    store: Arc<S>,
+    signer: TestSigner,
+) {
+    let t = "ae-once";
+    let signer = Arc::new(signer);
+    let clock = Arc::new(FakeClock::synced_at(t0()));
+    let tasks: Vec<_> = (0..20)
+        .map(|_| {
+            let (store, signer, clock) =
+                (Arc::clone(&store), Arc::clone(&signer), Arc::clone(&clock));
+            tokio::spawn(async move {
+                store
+                    .commit(request(t, "same-request", 3), &*clock, &*signer)
+                    .await
+            })
+        })
+        .collect();
+    let (mut created, mut replayed) = (0, 0);
+    for task in tasks {
+        match task.await.expect("join").expect("commit") {
+            CommitResult::Committed(_) => created += 1,
+            CommitResult::Replayed(_) => replayed += 1,
+            CommitResult::Conflict(_) => panic!("identical content is never a conflict"),
+        }
+    }
+    assert_eq!((created, replayed), (1, 19), "exactly one creator");
+    assert_eq!(store.contacts_on(t, SUBJECT, day()).await.unwrap(), 1);
+    assert_eq!(store.records(t, 0).await.unwrap().len(), 1);
+}
+
+/// Every outcome kind can be stored and read back with its reason.
+async fn every_outcome_kind_is_stored<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+) {
+    let t = "ae-kinds";
+    for (i, (outcome, reason)) in [
+        (Outcome::Delivered, "provider_202"),
+        (Outcome::Failed, "connect_failed"),
+        (Outcome::Refused, "provider_422"),
+        (Outcome::NotExecuted, "send_by_passed"),
+        (Outcome::Unknown, "provider_409"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        // Distinct subjects, so the daily cap never interferes.
+        let mut req = request(t, &format!("kind-{i}"), 3);
+        req.binding.subject_pseudonym = format!("psn:kind-{i}");
+        req.draft.subject_pseudonym = format!("psn:kind-{i}");
+        let record = committed(store.commit(req, clock, signer).await.unwrap());
+        let credential = record.payload.credential_id.clone().expect("allow");
+        let written =
+            sign_outcome(t, &credential, &record.hash, outcome, reason, t0(), signer).unwrap();
+        store.record_outcome(written.clone()).await.unwrap();
+        assert_eq!(store.outcome(t, &credential).await.unwrap(), Some(written));
+    }
+}
+
+/// Outcomes: once per credential, only for an allowed record, with a signed
+/// reason that round-trips; the verifier reports a missing outcome.
+async fn outcomes_once_per_allowed_record<S: AgentEvidenceStore>(
+    store: &S,
+    signer: &TestSigner,
+    t: &str,
+    record_hash: &str,
+    denied_hash: &str,
+) -> Vec<kavach_ports::agent_evidence::AgentDecisionRecord> {
+    // Outcomes: once per credential, only for an allowed record, with a
+    // signed reason code that round-trips through the store.
+    let outcome = sign_outcome(
+        t,
+        "cred-r-1",
+        record_hash,
+        Outcome::Delivered,
+        "provider_202",
+        t0(),
+        signer,
+    )
+    .unwrap();
+    store.record_outcome(outcome.clone()).await.unwrap();
+    assert!(store.record_outcome(outcome.clone()).await.is_err(), "once");
+    let later = sign_outcome(
+        t,
+        "cred-r-1",
+        record_hash,
+        Outcome::Unknown,
+        "timeout_after_send",
+        t0(),
+        signer,
+    )
+    .unwrap();
+    assert!(
+        store.record_outcome(later).await.is_err(),
+        "an outcome is never replaced"
+    );
+    let stray = sign_outcome(
+        t,
+        "cred-none",
+        record_hash,
+        Outcome::Failed,
+        "connect_failed",
+        t0(),
+        signer,
+    )
+    .unwrap();
+    assert!(
+        store.record_outcome(stray).await.is_err(),
+        "unknown credential"
+    );
+    let stored = store.outcome(t, "cred-r-1").await.unwrap();
+    assert_eq!(stored, Some(outcome.clone()));
+    assert_eq!(
+        stored.and_then(|o| o.reason).as_deref(),
+        Some("provider_202")
+    );
+
+    let records = store.records(t, 0).await.unwrap();
+    let report = verify_chain(
+        &records,
+        &signer.keys(),
+        Some((2, denied_hash)),
+        &[outcome],
+        t0() + Duration::minutes(5),
+    )
+    .expect("chain verifies");
+    assert_eq!(report.outcome_missing, Vec::<String>::new());
+    assert_eq!(report.outcome_unknown, Vec::<String>::new());
+    assert_eq!(report.outcome_invalid, Vec::<String>::new());
+    // Without the outcome, the expired allow is reported missing.
+    let report = verify_chain(
+        &records,
+        &signer.keys(),
+        None,
+        &[],
+        t0() + Duration::minutes(5),
+    )
+    .expect("chain verifies");
+    assert_eq!(report.outcome_missing, vec!["cred-r-1".to_string()]);
+    records
 }

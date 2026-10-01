@@ -25,9 +25,9 @@ use kavach_domain::mandate::{is_capability_ref, Mandate, CONTACT_ACTIONS, CONTAC
 use kavach_domain::Decision;
 use kavach_keys::SubjectKeys;
 use kavach_ports::agent_evidence::{
-    is_allow, Actor, AgentDecisionPayload, AgentDecisionRecord, AgentEvidenceStore, CommitRequest,
-    CommitResult, ContactReservation, EvidenceSigner, PolicyVersions, RequestBinding, TimeSync,
-    HASH_ALG_V2, KIND_AGENT_DECISION,
+    is_allow, sign_outcome, Actor, AgentDecisionPayload, AgentDecisionRecord, AgentEvidenceStore,
+    CommitRequest, CommitResult, ContactReservation, EvidenceSigner, Outcome, OutcomeRecord,
+    PolicyVersions, RequestBinding, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
 };
 use kavach_ports::{ErrorClass, PortError, TimeSource, TrustedNow};
 use serde::Serialize;
@@ -145,6 +145,17 @@ pub struct Decided {
     pub record: Option<AgentDecisionRecord>,
     /// Only for a committed (or replayed) allow.
     pub grant: Option<CredentialGrant>,
+}
+
+impl Decided {
+    /// True only for the call that created the record (`Committed`).
+    /// **Forward-once ownership:** only this call may resolve, obtain a
+    /// credential and forward; a replay (including a concurrent duplicate)
+    /// returns the stored outcome or is refused as in flight.
+    #[must_use]
+    pub fn created(&self) -> bool {
+        self.status == CommitStatus::Committed
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -267,6 +278,40 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
 
     pub fn store(&self) -> &Arc<S> {
         &self.store
+    }
+
+    /// Records what happened after an allow (signed with the evidence key,
+    /// with a reason code; append-only, once per credential).
+    pub async fn record_outcome(
+        &self,
+        record: &AgentDecisionRecord,
+        outcome: Outcome,
+        reason: &str,
+    ) -> Result<OutcomeRecord, PortError> {
+        let credential_id = record
+            .payload
+            .credential_id
+            .as_deref()
+            .filter(|_| record.is_allow())
+            .ok_or_else(|| PortError::invalid("outcomes are recorded only for allows"))?;
+        let written = sign_outcome(
+            &record.payload.tenant_id,
+            credential_id,
+            &record.hash,
+            outcome,
+            reason,
+            self.clock.now().utc,
+            &*self.signer,
+        )?;
+        self.store.record_outcome(written.clone()).await?;
+        Ok(written)
+    }
+
+    /// The recorded outcome for a credential, if any.
+    pub async fn outcome(&self, credential_id: &str) -> Result<Option<OutcomeRecord>, PortError> {
+        self.store
+            .outcome(&self.config.tenant_id, credential_id)
+            .await
     }
 
     /// The tool registry this core decides under.
