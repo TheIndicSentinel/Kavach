@@ -314,6 +314,20 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
             .await
     }
 
+    /// The tenant this core decides for.
+    pub fn tenant_id(&self) -> &str {
+        &self.config.tenant_id
+    }
+
+    /// Trusted time now, and whether it is synced within the configured
+    /// error (the gateway re-checks `send_by` just before forwarding).
+    pub fn trusted_now(&self) -> Option<DateTime<Utc>> {
+        self.clock
+            .now()
+            .require_synced(self.config.max_clock_error_ms)
+            .ok()
+    }
+
     /// The tool registry this core decides under.
     pub fn tools(&self) -> &ToolRegistry {
         &self.tools

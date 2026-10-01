@@ -16,7 +16,7 @@ An agent should not hold the credential to act unless it is authorised to act. K
 | **Evidence**: signed, hash-chained decision records committed in one transaction, before anything executes | ✅ |
 | **Credentials**: nested JWT, signed then encrypted to the provider (JWS in JWE, X25519 + A256GCM), ≤ 15 s, bound to the request | ✅ |
 | **Mock provider** (protocol fixture) and **reference resolver** (synthetic numbers only) | ✅ |
-| **Gateway route** `POST /v1/tools/{tool}` (authorize → resolve → credential → forward once → outcome) | 🚧 next |
+| **Gateway** `POST /v1/tools/{tool}`: authorize and record → resolve → credential → deadline re-check → forward once → signed outcome | ✅ |
 | **Network isolation** (compose, agent network with no egress) | 🚧 planned (H5b-2) |
 | **Developer CLI** (`kavach init`, `dev up`, offline `authorize`, `why`, `attack`) | 🗺️ v0.1 developer preview |
 | **Decision Governance** for credit decisions (packs, evaluate API, console, fairness, retention) | ✅ (earlier milestones) |

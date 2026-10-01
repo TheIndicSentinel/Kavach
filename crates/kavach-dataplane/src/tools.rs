@@ -77,6 +77,21 @@ pub struct ParamSpec {
     pub optional: bool,
 }
 
+impl ToolSpec {
+    /// The content parameter an `external_effect` tool's credential binds
+    /// (e.g. `template_id`): its one parameter besides the typed ones.
+    pub fn content_param(&self) -> Option<&str> {
+        let mut extra = self
+            .params
+            .keys()
+            .filter(|name| !TYPED.iter().any(|(typed, _)| typed == name));
+        match (extra.next(), extra.next()) {
+            (Some(name), None) => Some(name.as_str()),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolSpec {
@@ -227,6 +242,11 @@ impl ToolRegistry {
     /// The tool that performs `action`, if one is registered.
     pub fn for_action(&self, action: &str) -> Option<&ToolSpec> {
         self.tools.values().find(|t| t.action == action)
+    }
+
+    /// Every tool, in name order.
+    pub fn tools(&self) -> impl Iterator<Item = &ToolSpec> {
+        self.tools.values()
     }
 
     /// Providers that `external_effect` tools forward to.
@@ -440,6 +460,19 @@ fn validate_tool(tool: &ToolSpec) -> Result<(), PortError> {
             ));
         }
         validate_param(name, param).or_else(fail)?;
+    }
+    if tool.trust == Trust::ExternalEffect
+        && tool.content_param().is_none_or(|name| {
+            tool.params
+                .get(name)
+                .is_none_or(|p| p.optional || p.kind != ParamKind::Enum)
+        })
+    {
+        return fail(
+            "an external_effect tool needs exactly one required allowlisted content parameter \
+             (e.g. template_id) besides subject_ref and channel"
+                .into(),
+        );
     }
     Ok(())
 }
@@ -661,6 +694,23 @@ mod tests {
                 .contains("more than one tool")
         );
         assert!(load_err("version: 2\ntools: []\n").contains("version"));
+        // An external effect binds exactly one allowlisted content parameter.
+        assert!(load_err(&format!(
+            "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  provider: p\n  params:\n    {subject}\n    channel: {{ kind: enum, values: [sms] }}\n"
+        ))
+        .contains("content parameter"));
+        assert!(load_err(&format!(
+            "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  provider: p\n  params:\n    {subject}\n    channel: {{ kind: enum, values: [sms] }}\n    template_id: {{ kind: enum, values: [a] }}\n    footer_id: {{ kind: enum, values: [b] }}\n"
+        ))
+        .contains("content parameter"));
+        assert_eq!(
+            registry().tool("send_reminder").unwrap().content_param(),
+            Some("template_id")
+        );
+        assert_eq!(
+            registry().tool("place_call").unwrap().content_param(),
+            Some("script_id")
+        );
         // An external effect must say where it goes; nothing else may.
         assert!(load_err(&format!(
             "version: 1\ntools:\n- name: r\n  action: send_reminder\n  trust: external_effect\n  params:\n    {subject}\n    channel: {{ kind: enum, values: [sms] }}\n"
