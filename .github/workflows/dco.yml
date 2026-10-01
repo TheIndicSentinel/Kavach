@@ -1,0 +1,31 @@
+name: DCO
+
+# Developer Certificate of Origin sign-off for outside contributors
+# (CONTRIBUTING.md). Maintainers (owner, members, collaborators) are exempt.
+# Runs on `pull_request` (no secrets, read-only token) and executes the check
+# script from the base branch, so a PR cannot change the check it is
+# judged by.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    name: DCO sign-off (outside contributors)
+    if: ${{ !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check every commit is signed off by its author
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git show "$BASE_SHA:.github/scripts/dco-check.sh" > "$RUNNER_TEMP/dco-check.sh"
+          bash "$RUNNER_TEMP/dco-check.sh" "$BASE_SHA" "$HEAD_SHA"

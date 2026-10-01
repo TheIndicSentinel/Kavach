@@ -161,7 +161,7 @@ The MVP is a **fully local, reproducible, free/open-source reference implementat
 
 1. **Public name:** shortlist held privately. Needs formal IP India / WIPO / USPTO searches (Classes 9, 42, 45; also 35 and 36) on the final pick. When do crates get renamed from `kavach-*` — on clearance or at launch?
 2. ~~**Repository visibility**~~ — resolved: `TheIndicSentinel/Kavach` is private until launch.
-3. ~~**Contributor audit for D5**~~ — resolved: the copyright holder is the GitHub account owner `TheIndicSentinel`, including commits made by AI coding agents (e.g. Cursor Agent) under that account; `LICENSE` updated accordingly. Relicensed to Apache-2.0 on 2026-10-01 (#52).
+3. ~~**Contributor audit for D5**~~ — resolved: the copyright holder is the GitHub account owner `TheIndicSentinel`, including the owner's own local commits (author `Arjun`, confirmed by the owner on 2026-10-01) and commits made by AI coding agents (e.g. Cursor Agent, Claude) under that account; `LICENSE` updated accordingly. Relicensed to Apache-2.0 on 2026-10-01 (#52).
 4. **Model pins:** which two Apache-2.0 models, pinned by version, after a licence check.
 5. ~~**Tenant migration**~~ — resolved in ADR-005 §1–3 (tracked migrations, `tenant_id` default, existing chain becomes partition 0, hashes never recomputed).
 6. ~~**Time-sync thresholds**~~ — resolved in ADR-003 §7 (kernel sync status; critical actions require `max_error ≤ 1000 ms`; explicit `allow_unverified` developer profile refused in enforce mode).

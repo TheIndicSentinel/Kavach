@@ -10,7 +10,7 @@ Every commit must be signed off, certifying the [Developer Certificate of Origin
 git commit -s -m "feat(dataplane): ..."
 ```
 
-This adds a `Signed-off-by: Your Name <you@example.com>` line. There is no CLA.
+This adds a `Signed-off-by: Your Name <you@example.com>` line, whose email must match the commit author. The **DCO** check on pull requests enforces it for outside contributors; to fix a PR, run `git rebase --signoff <base>` and force-push. There is no CLA, so contributions stay under Apache-2.0 and are not relicensed.
 
 ## Before you start
 
