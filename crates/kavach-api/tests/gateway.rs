@@ -7,24 +7,16 @@
 mod agent_fixture;
 
 use std::sync::Arc;
-use std::time::Duration as StdDuration;
 
 use axum::http::StatusCode;
-use chrono::{DateTime, Duration, TimeZone, Utc};
-use kavach_api::dataplane::{agent_router, TestClock};
-use kavach_api::{AppState, EvidenceStoreKind};
-use kavach_jws::KeySet;
-use kavach_mock_provider::{
-    MockProvider, ProviderConfig, ERROR_NUMBER, HANG_NUMBER, REFUSE_NUMBER,
-};
+use kavach_api::dataplane::agent_router;
+use kavach_api::EvidenceStoreKind;
+use kavach_mock_provider::{ERROR_NUMBER, HANG_NUMBER, REFUSE_NUMBER};
 use kavach_ports::agent_evidence::{AgentEvidenceStore, Outcome};
-use kavach_ports::{KeyAlgorithm, PublicKey, TimeSource};
-use kavach_ports_testkit::FakeClock;
+use kavach_ports::TimeSource;
 use serde_json::{json, Value};
 
 use agent_fixture::*;
-
-const NUMBER: &str = "+910000000001";
 
 /// Every log line written by this test binary (all tests share one global
 /// subscriber: the real redacting one, writing here instead of stderr).
@@ -56,140 +48,19 @@ fn log_text() -> String {
     String::from_utf8_lossy(&logs().0.lock().unwrap()).into_owned()
 }
 
-/// Today at `h`:00 IST.
-fn ist_today(h: i64) -> DateTime<Utc> {
-    let ist = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
-    let date = Utc::now().with_timezone(&ist).date_naive();
-    ist.from_local_datetime(&date.and_hms_opt(0, 0, 0).unwrap())
-        .unwrap()
-        .with_timezone(&Utc)
-        + Duration::hours(h)
-}
-
-struct Gw {
-    state: Arc<AppState>,
-    clock: Arc<FakeClock>,
-    provider: Arc<MockProvider>,
-    mandate: String,
-}
-
-/// A production-shaped data plane (memory stores, `--insecure-dev` for the
-/// test clock) whose `mock-messaging` provider is a real mock provider on
-/// loopback, and whose subject resolves to `destination` on WhatsApp.
+/// The shared harness, with this binary's log capture installed first.
 async fn gateway(destination: Option<&str>, provider_up: bool) -> Gw {
-    gateway_on(config_for_gateway(), destination, provider_up).await
+    logs();
+    agent_fixture::gateway(destination, provider_up).await
 }
 
 async fn gateway_on(
-    mut api: kavach_api::ApiConfig,
+    api: kavach_api::ApiConfig,
     destination: Option<&str>,
     provider_up: bool,
 ) -> Gw {
     logs();
-    let clock = Arc::new(FakeClock::synced_at(ist_today(11)));
-    let credential_public = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32])
-        .verifying_key()
-        .to_bytes();
-    let mut config = ProviderConfig::new(
-        "mock-messaging",
-        messaging_key(),
-        KeySet::new([PublicKey {
-            kid: "kavach-credential-1".into(),
-            algorithm: KeyAlgorithm::Ed25519,
-            bytes: credential_public,
-        }]),
-    );
-    config.hang = StdDuration::from_secs(4);
-    let read = Arc::clone(&clock);
-    let provider = MockProvider::new(config, Arc::new(move || read.now().utc));
-    let endpoint = if provider_up {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let app = kavach_mock_provider::router(provider.clone());
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        format!("http://{addr}")
-    } else {
-        CLOSED_PORT.to_string()
-    };
-
-    let dp = api.dataplane.as_mut().unwrap();
-    dp.test_clock = Some(TestClock(clock.clone()));
-    write_providers(&dp.providers, &endpoint, CLOSED_PORT);
-    let destinations = match destination {
-        Some(d) => json!({ "whatsapp": d, "sms": d }),
-        None => json!({ "voice": "+910000000002" }),
-    };
-    std::fs::write(
-        &dp.references,
-        json!({ "references": [{ "tenant_id": "default", "subject_ref": SUBJECT,
-            "destinations": destinations }] })
-        .to_string(),
-    )
-    .unwrap();
-    let state = Arc::new(AppState::from_config(&api).await.expect("state"));
-    let mandate = issue_at(&state, "evt-gw", clock.now().utc).await;
-    Gw {
-        state,
-        clock,
-        provider,
-        mandate,
-    }
-}
-
-fn config_for_gateway() -> kavach_api::ApiConfig {
-    config(EvidenceStoreKind::Memory, true, 50)
-}
-
-fn reminder(mandate: &str, request_id: &str) -> Value {
-    json!({
-        "mandate_id": mandate,
-        "request_id": request_id,
-        "params": {
-            "subject_ref": SUBJECT,
-            "channel": "whatsapp",
-            "template_id": "emi_reminder_v1"
-        }
-    })
-}
-
-impl Gw {
-    async fn call(&self, tool: &str, body: Value) -> (StatusCode, Value) {
-        let (status, reply) = send(
-            agent_router(self.state.clone()),
-            &format!("/v1/tools/{tool}"),
-            &[(
-                "authorization",
-                format!("Bearer {}", agent_token("collections-agent")),
-            )],
-            body,
-        )
-        .await;
-        let text = reply.to_string();
-        assert!(!text.contains("+91"), "destination leaked: {text}");
-        assert!(!text.contains("eyJ"), "a token leaked: {text}");
-        (status, reply)
-    }
-
-    async fn remind(&self, request_id: &str) -> (StatusCode, Value) {
-        self.call("send_reminder", reminder(&self.mandate, request_id))
-            .await
-    }
-
-    async fn stored_outcome(&self, request_id: &str) -> Option<(Outcome, Option<String>)> {
-        let dp = self.state.dataplane().unwrap();
-        let record = dp
-            .core()
-            .store()
-            .get_by_request("default", "collections-agent", request_id)
-            .await
-            .unwrap()?;
-        let credential = record.payload.credential_id?;
-        dp.core()
-            .outcome(&credential)
-            .await
-            .unwrap()
-            .map(|o| (o.outcome, o.reason))
-    }
+    agent_fixture::gateway_on(api, destination, provider_up).await
 }
 
 /// Acceptance scenario 1, end to end.

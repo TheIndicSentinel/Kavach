@@ -1,0 +1,25 @@
+# Acceptance scenarios: status
+
+The PRD's 13 acceptance scenarios, what the automated suite proves today, and what remains. A scenario the current slice cannot fully prove is **partial**: its test name says so (`scenarioNN_partial_…`), and this page lists exactly what is missing. A green run never means more than this table says.
+
+**Where:** `crates/kavach-api/tests/acceptance.rs`. Every scenario runs through the real stack (agent listener over HTTP → gateway → authorization core and signed evidence → resolver → credential broker → the real mock provider on loopback), on the in-memory stores **and** on Postgres as the least-privilege runtime role (`<scenario>::memory`, `<scenario>::postgres`).
+
+**Flakiness gate:** the *Acceptance gate* workflow runs this suite and the gateway end-to-end tests **20 times back to back on Postgres**, nightly and on demand. Run it before tagging a release.
+
+| # | Scenario (PRD) | Status | What the suite proves | Remaining (milestone) |
+|---|---|---|---|---|
+| 1 | Reminder at 11:00 IST → PASS; credential injected; minimal fields | **Full** | Delivered once to the resolved destination; the agent sees neither destination nor credential; a retry returns the stored result; signed outcome recorded | — |
+| 2 | Injected reply → raw phone number → task tainted; BLOCK | Partial | A raw number in a reference-only parameter is a recorded BLOCK (reason only, no parameter MAC, never the value); nothing resolved or sent | Taint tracking of injected content (M3) |
+| 3 | 19:45 IST or a 4th contact in a day → BLOCK; NFR-7 boundaries | **Full** | 07:59:59 BLOCK, 08:00:00 PASS, 18:59 PASS, 19:00:00 and 19:45 BLOCK; a 4th contact BLOCK at any hour; exactly three deliveries | — |
+| 4 | Fields outside the mandate → BLOCK; mixed → PASS with masking | Partial | Pre-check: a field outside the tool's allowlist, or allowed by the tool but outside the mandate, is BLOCK; fields within the mandate PASS | `read_fields` execution and the masking obligation (mock loan-system slice) |
+| 5 | Another borrower under B-9382's mandate → BLOCK, no human | **Full** | Recorded BLOCK through the gateway; nothing resolved or sent | — |
+| 6 | 35% waiver (10% ceiling) → HUMAN_REVIEW → step-up → single-use approval | Partial | Pre-check: 35% → HUMAN_REVIEW, 5% → PASS | WebAuthn step-up, approvals bound to the action hash, single-use credentials (M4) |
+| 7 | Translation sub-agent calls `update_status` → BLOCK | Partial | A sub-agent's delegated read-only mandate cannot send a reminder (recorded BLOCK); the parent cannot use the child's mandate | The translation-agent demo and `update_status` as a gateway tool (C) |
+| 8 | Dispute → mandate revoked → in-flight credential rejected → next call BLOCK | Partial | After revocation the next call is BLOCK; the earlier delivery stays the only one | Event-driven revocation from the system of record (outbox) and refusing an in-flight credential before its 15 s expiry (B) |
+| 9 | Unregistered tool or manifest change → RESTRICTED + ALERT | Partial | An unregistered tool gets 400, is counted and is not recorded; a changed registry is refused at startup (`startup_refuses_unsigned_tampered_or_unpinned_tool_registries`) | The RESTRICTED agent state and an alert (M3) |
+| 10 | Evidence export verifies offline; crypto-shredding; chain still valid | **Full for verification** | A full run's records and outcomes, exported as plain JSON, verify offline with only the evidence public key: unbroken signed chain, a valid outcome for every allow, none missing or invalid; an edited record or rewritten outcome is caught | The export command, signed checkpoints (truncation without an out-of-band head), crypto-shredding (before v0.1 / B) |
+| 11 | Bypass attempts fail | Partial | Forged mandate id → BLOCK; a replayed system-of-record event issues no second mandate; an agent-supplied timestamp → 400; an operator token on the agent route → 401. Expired and replayed credentials are refused by the provider (`kavach-mock-provider` tests) | Direct backend calls, secret search, alternate endpoints (H5b-2 network isolation) |
+| 12 | A dependency down mid-request → critical actions BLOCK; errors visible | Partial | Trusted time unsynced → BLOCK before anything is sent; provider down → `failed`, never `delivered`. Evidence-store failure is covered by the store contract (`nothing_is_kept_when_signing_fails`) | OpenBao and Keycloak outages (Stage 2 adapters) |
+| 13 | Decision Governance: shadow then enforce on the same chain and console | Partial | Shadow and enforce behaviour are covered by the HTTP and golden tests (`kavach-api/tests/http_api.rs`, `kavach-evaluate/tests/golden_evaluate.rs`) | One evidence chain shared with agent decisions (B) |
+
+Keep this page in the same PR as any change to a scenario's coverage.
