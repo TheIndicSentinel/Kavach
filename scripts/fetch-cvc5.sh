@@ -22,7 +22,8 @@ mkdir -p "$DEST"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-curl -sSfL -o "$TMP/cvc5.zip" \
+# Retries ride out transient GitHub 5xx (a required CI check failed on one).
+curl -sSfL --retry 5 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o "$TMP/cvc5.zip" \
   "https://github.com/cvc5/cvc5/releases/download/cvc5-${VERSION}/${ASSET}.zip"
 if command -v sha256sum >/dev/null; then
   echo "${SHA}  $TMP/cvc5.zip" | sha256sum -c -
