@@ -2206,6 +2206,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-devkit"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "ed25519-dalek",
+ "getrandom 0.3.4",
+ "hex",
+ "jsonwebtoken",
+ "kavach-credential",
+ "kavach-domain",
+ "kavach-jws",
+ "kavach-keys",
+ "kavach-mandate",
+ "kavach-ports",
+ "rcgen",
+ "reqwest",
+ "serde_json",
+ "sha2",
+ "tokio",
+]
+
+[[package]]
 name = "kavach-domain"
 version = "0.1.0"
 dependencies = [
@@ -2307,6 +2331,7 @@ name = "kavach-mock-provider"
 version = "0.1.0"
 dependencies = [
  "axum 0.8.9",
+ "axum-server",
  "chrono",
  "clap",
  "getrandom 0.3.4",
@@ -2318,6 +2343,7 @@ dependencies = [
  "kavach-ports-testkit",
  "kavach-telemetry",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "tokio",

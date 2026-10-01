@@ -92,6 +92,9 @@ pub struct DataplaneConfig {
     /// credential lifetime.
     pub provider_connect_timeout_ms: u64,
     pub provider_timeout_ms: u64,
+    /// CA certificates (PEM) trusted for provider TLS, besides the system
+    /// roots (e.g. a private CA for internal providers).
+    pub provider_ca: Option<PathBuf>,
     /// Tests only (no CLI flag): a controllable trusted clock. Refused
     /// outside `--insecure-dev`.
     pub test_clock: Option<TestClock>,
@@ -400,6 +403,9 @@ impl Dataplane {
         if operator_audience == Some(config.agent_oidc.audience.as_str()) {
             return Err("the agent token audience must differ from the operator audience".into());
         }
+        // Before anything else: a dev bundle must never run as production.
+        refuse_dev_key("evidence", &config.evidence_key_id, insecure_dev)?;
+        refuse_dev_key("credential", &config.credential_key_id, insecure_dev)?;
         let tools = Arc::new(load_tools(config, pack_signers, insecure_dev)?);
         let clock = match &config.test_clock {
             Some(_) if !insecure_dev => {
@@ -414,6 +420,10 @@ impl Dataplane {
         let (mandate_config, passports) =
             load_mandate_config(&config.mandate_config, &keys).await?;
         let mandate_kid = mandate_config.signing_kid.clone();
+        refuse_dev_key("mandate signing", &mandate_kid, insecure_dev)?;
+        for issuer in &mandate_config.sor_issuers {
+            refuse_dev_key("system-of-record issuer", &issuer.key.kid, insecure_dev)?;
+        }
         let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
         let mandates = Arc::new(
             MandateService::new(
@@ -527,6 +537,19 @@ fn load_tools(
     .map_err(|e| format!("tool registry: {}", e.message))
 }
 
+/// Development keys (`dev-…`, from `kavach-devkit`) are refused outside
+/// `--insecure-dev`, so a dev bundle can never sign production evidence,
+/// mandates or credentials.
+fn refuse_dev_key(what: &str, kid: &str, insecure_dev: bool) -> Result<(), String> {
+    if !insecure_dev && kavach_ports::agent_evidence::is_dev_key(kid) {
+        return Err(format!(
+            "the {what} key {kid} is a development key (dev-…); development keys are refused \
+             outside --insecure-dev"
+        ));
+    }
+    Ok(())
+}
+
 /// The gateway's forwarder: every provider the registry forwards to needs
 /// an endpoint; timeouts stay below the credential lifetime.
 fn build_forwarder(
@@ -567,10 +590,17 @@ fn build_forwarder(
             "the tool registry forwards to {missing}, which has no endpoint in --providers"
         ));
     }
+    let extra_roots = match &config.provider_ca {
+        Some(path) => {
+            std::fs::read(path).map_err(|e| format!("provider CA {}: {e}", path.display()))?
+        }
+        None => Vec::new(),
+    };
     crate::forward::HttpForwarder::new(
         endpoints,
         std::time::Duration::from_millis(connect),
         std::time::Duration::from_millis(total),
+        &extra_roots,
     )
 }
 

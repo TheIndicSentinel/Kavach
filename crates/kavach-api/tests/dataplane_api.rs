@@ -543,3 +543,23 @@ async fn references_resolve_in_the_gateway_and_fixtures_hold_only_synthetic_numb
     assert!(message.contains("synthetic"), "{message}");
     assert!(!message.contains("9876543210"), "{message}");
 }
+
+/// Development keys (`dev-…`) never sign production evidence or credentials.
+#[tokio::test]
+async fn startup_refuses_development_keys_outside_insecure_dev() {
+    let mut cfg = config(EvidenceStoreKind::Memory, false, 50);
+    let dp = cfg.dataplane.as_mut().unwrap();
+    owner_only(
+        &dp.credential_keys_dir.join("dev-credential-1.ed25519"),
+        &hex::encode([8u8; 32]),
+    );
+    dp.credential_key_id = "dev-credential-1".into();
+    let message = format!(
+        "{:?}",
+        AppState::from_config(&cfg).await.err().expect("refused")
+    );
+    assert!(message.contains("development key"), "{message}");
+    // The same key is accepted by a development stack.
+    cfg.insecure_dev = true;
+    AppState::from_config(&cfg).await.expect("dev stack starts");
+}

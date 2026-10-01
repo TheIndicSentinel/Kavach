@@ -61,6 +61,11 @@ enum Command {
         leeway_seconds: i64,
         #[arg(long, default_value_t = 30)]
         hang_seconds: u64,
+        /// Serve the API over TLS with this certificate (PEM) and key.
+        #[arg(long, env = "MOCK_PROVIDER_TLS_CERT", requires = "tls_key")]
+        tls_cert: Option<PathBuf>,
+        #[arg(long, env = "MOCK_PROVIDER_TLS_KEY", requires = "tls_cert")]
+        tls_key: Option<PathBuf>,
     },
 }
 
@@ -121,6 +126,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             credential_keys,
             leeway_seconds,
             hang_seconds,
+            tls_cert,
+            tls_key,
         } => {
             let secret = hex32(&std::fs::read_to_string(&encryption_key)?, "encryption key")?;
             let file: KeysFile = serde_json::from_str(&std::fs::read_to_string(&credential_keys)?)?;
@@ -150,8 +157,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "PROTOCOL FIXTURE (not a real provider). audience {audience}; API on {listen}; \
                  inbox on {inspect_listen}"
             );
-            let api = tokio::net::TcpListener::bind(listen).await?;
             let inspect = tokio::net::TcpListener::bind(inspect_listen).await?;
+            if let (Some(cert), Some(key)) = (tls_cert, tls_key) {
+                // The inbox stays plain on its own (loopback/backend) listener.
+                let _ = rustls::crypto::ring::default_provider().install_default();
+                let tls = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await?;
+                tracing::info!("provider API over TLS on {listen}");
+                tokio::try_join!(
+                    async {
+                        axum_server::bind_rustls(listen, tls)
+                            .serve(router(provider.clone()).into_make_service())
+                            .await
+                    },
+                    async { axum::serve(inspect, inspect_router(provider.clone())).await },
+                )?;
+                return Ok(());
+            }
+            let api = tokio::net::TcpListener::bind(listen).await?;
             tokio::try_join!(
                 axum::serve(api, router(provider.clone())),
                 axum::serve(inspect, inspect_router(provider)),

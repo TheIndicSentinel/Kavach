@@ -94,6 +94,9 @@ struct AgentArgs {
         default_value_t = 2000
     )]
     provider_connect_timeout_ms: u64,
+    /// CA certificates (PEM) trusted for provider TLS, besides the system roots.
+    #[arg(long, env = "KAVACH_PROVIDER_CA")]
+    provider_ca: Option<PathBuf>,
     /// Gateway → provider total timeout (ms; below the 15 s credential lifetime).
     #[arg(long, env = "KAVACH_PROVIDER_TIMEOUT_MS", default_value_t = 5000)]
     provider_timeout_ms: u64,
@@ -143,6 +146,7 @@ impl AgentArgs {
             references: need(self.references, "--references")?,
             provider_connect_timeout_ms: self.provider_connect_timeout_ms,
             provider_timeout_ms: self.provider_timeout_ms,
+            provider_ca: self.provider_ca,
             test_clock: None,
         }))
     }

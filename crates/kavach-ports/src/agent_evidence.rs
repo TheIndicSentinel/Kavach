@@ -470,6 +470,11 @@ fn uuid_like(tenant: &str, partition: i32, seq: i64) -> String {
 /// Problems found by [`verify_chain`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ChainError {
+    #[error(
+        "record {seq}: signed with development key {key_id}; dev-signed evidence is not \
+         accepted (use verify_dev_chain for development stacks)"
+    )]
+    DevKey { seq: i64, key_id: String },
     #[error("record {seq}: expected seq {expected}")]
     Gap { seq: i64, expected: i64 },
     #[error("record {seq}: prev_hash does not link to the previous record")]
@@ -510,6 +515,15 @@ pub struct ChainReport {
 /// `outcomes` are checked for signatures (v1 or v2); allows past their
 /// credential expiry at `now` without a valid outcome are reported as
 /// missing, recorded `unknown` outcomes as unknown.
+/// Key ids with this prefix are development keys (`kavach-devkit`):
+/// refused at production startup and by [`verify_chain`].
+pub const DEV_KEY_PREFIX: &str = "dev-";
+
+#[must_use]
+pub fn is_dev_key(key_id: &str) -> bool {
+    key_id.starts_with(DEV_KEY_PREFIX)
+}
+
 pub fn verify_chain(
     records: &[AgentDecisionRecord],
     keys: &BTreeMap<String, PublicKey>,
@@ -517,8 +531,37 @@ pub fn verify_chain(
     outcomes: &[OutcomeRecord],
     now: DateTime<Utc>,
 ) -> Result<ChainReport, ChainError> {
+    verify(records, keys, expected_head, outcomes, now, false)
+}
+
+/// [`verify_chain`] for development stacks: also accepts evidence signed
+/// with `dev-` keys. Never use it to accept evidence from a deployment.
+pub fn verify_dev_chain(
+    records: &[AgentDecisionRecord],
+    keys: &BTreeMap<String, PublicKey>,
+    expected_head: Option<(i64, &str)>,
+    outcomes: &[OutcomeRecord],
+    now: DateTime<Utc>,
+) -> Result<ChainReport, ChainError> {
+    verify(records, keys, expected_head, outcomes, now, true)
+}
+
+fn verify(
+    records: &[AgentDecisionRecord],
+    keys: &BTreeMap<String, PublicKey>,
+    expected_head: Option<(i64, &str)>,
+    outcomes: &[OutcomeRecord],
+    now: DateTime<Utc>,
+    allow_dev_keys: bool,
+) -> Result<ChainReport, ChainError> {
     let mut prev = GENESIS.to_string();
     for (index, record) in records.iter().enumerate() {
+        if !allow_dev_keys && is_dev_key(&record.payload.key_id) {
+            return Err(ChainError::DevKey {
+                seq: record.payload.seq,
+                key_id: record.payload.key_id.clone(),
+            });
+        }
         let p = &record.payload;
         let expected = i64::try_from(index).unwrap_or(i64::MAX) + 1;
         if p.seq != expected {
@@ -780,6 +823,47 @@ mod tests {
         upgraded.reason = Some("provider_202".into());
         let report = verify_chain(&records, &keys(&key), None, &[upgraded], now).unwrap();
         assert_eq!(report.outcome_invalid, vec!["c-1".to_string()]);
+    }
+
+    #[test]
+    fn dev_signed_evidence_is_refused_unless_explicitly_verifying_a_dev_stack() {
+        struct DevSigner(SigningKey);
+        impl EvidenceSigner for DevSigner {
+            fn key_id(&self) -> &'static str {
+                "dev-evidence-1"
+            }
+            fn sign(&self, message: &[u8]) -> Result<Vec<u8>, PortError> {
+                Ok(self.0.sign(message).to_bytes().to_vec())
+            }
+        }
+        let key = Key(SigningKey::from_bytes(&[4u8; 32]));
+        let dev = DevSigner(SigningKey::from_bytes(&[4u8; 32]));
+        let now = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let mut prev = GENESIS.to_string();
+        let records: Vec<_> = (1..=2)
+            .map(|seq| {
+                let mut p = payload(seq, &prev);
+                p.key_id = "dev-evidence-1".into();
+                let record = seal(p, &dev).unwrap();
+                prev.clone_from(&record.hash);
+                record
+            })
+            .collect();
+        let mut dev_keys = keys(&key);
+        let public = dev_keys.remove("ev-1").unwrap();
+        dev_keys.insert(
+            "dev-evidence-1".into(),
+            PublicKey {
+                kid: "dev-evidence-1".into(),
+                ..public
+            },
+        );
+        assert!(matches!(
+            verify_chain(&records, &dev_keys, None, &[], now),
+            Err(ChainError::DevKey { seq: 1, .. })
+        ));
+        verify_dev_chain(&records, &dev_keys, None, &[], now)
+            .expect("a dev stack verifies its own");
     }
 
     #[test]

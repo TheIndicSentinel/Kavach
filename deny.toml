@@ -3,10 +3,10 @@
 
 [advisories]
 version = 2
-ignore = [
-    { id = "RUSTSEC-2024-0436", reason = "transitive via cel-interpreter; no upstream fix yet" },
-    { id = "RUSTSEC-2023-0071", reason = "transitive via unused sqlx-mysql lockfile entry; postgres-only build" },
-]
+# No ignored advisories. (RUSTSEC-2024-0436 and RUSTSEC-2023-0071 were
+# ignored until the 2026-10 dependency updates removed the affected crates;
+# if either returns, this check fails instead of staying silent.)
+ignore = []
 unmaintained = "none"
 
 [licenses]
