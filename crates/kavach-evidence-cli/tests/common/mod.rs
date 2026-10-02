@@ -168,27 +168,49 @@ pub fn outcomes(records: &[AgentDecisionRecord]) -> Vec<OutcomeRecord> {
     ]
 }
 
+/// A checkpoint of record `seq`, following `previous`.
+pub fn checkpoint_at(
+    records: &[AgentDecisionRecord],
+    seq: usize,
+    previous: Option<&Checkpoint>,
+) -> Checkpoint {
+    let record = &records[seq - 1];
+    sign_checkpoint(
+        Head {
+            scope: SCOPE,
+            seq: record.payload.seq,
+            hash: &record.hash,
+        },
+        previous,
+        record.payload.ts + Duration::seconds(5),
+        synced(),
+        &checkpoint_key(),
+    )
+    .unwrap()
+}
+
 /// Checkpoints of records 2 and 3; record 4 is newer than both.
 pub fn checkpoints(records: &[AgentDecisionRecord]) -> Vec<Checkpoint> {
-    let key = checkpoint_key();
-    let at = |seq: usize, previous: Option<&Checkpoint>| {
-        let record = &records[seq - 1];
-        sign_checkpoint(
-            Head {
-                scope: SCOPE,
-                seq: record.payload.seq,
-                hash: &record.hash,
-            },
-            previous,
-            record.payload.ts + Duration::seconds(5),
-            synced(),
-            &key,
-        )
-        .unwrap()
-    };
-    let second = at(2, None);
-    let third = at(3, Some(&second));
+    let second = checkpoint_at(records, 2, None);
+    let third = checkpoint_at(records, 3, Some(&second));
     vec![second, third]
+}
+
+/// The same run with records 3 and 4 rewritten (and re-signed, as someone
+/// holding the evidence key could).
+pub fn rewritten(records: &[AgentDecisionRecord]) -> Vec<AgentDecisionRecord> {
+    let key = evidence_key();
+    let mut out = records[..2].to_vec();
+    let mut prev = records[1].hash.clone();
+    for record in &records[2..] {
+        let mut payload = record.payload.clone();
+        payload.prev_hash.clone_from(&prev);
+        payload.purpose = "rewritten".into();
+        let record = seal(payload, &key).unwrap();
+        prev.clone_from(&record.hash);
+        out.push(record);
+    }
+    out
 }
 
 pub fn exported_at() -> DateTime<Utc> {

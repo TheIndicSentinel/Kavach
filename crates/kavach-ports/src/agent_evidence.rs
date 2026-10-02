@@ -492,6 +492,8 @@ pub enum ChainError {
         expected_seq: i64,
         expected_hash: String,
     },
+    #[error("the outcome of {credential_id} does not verify")]
+    Outcome { credential_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -504,17 +506,15 @@ pub struct ChainReport {
     pub outcome_missing: Vec<String>,
     /// Outcomes recorded as `unknown` (sent, result not known).
     pub outcome_unknown: Vec<String>,
-    /// Outcome rows whose signature does not verify (or whose key is
-    /// unknown); they count as missing.
-    pub outcome_invalid: Vec<String>,
 }
 
 /// Verifies a partition offline: `seq` continuity from 1, links, hashes and
 /// signatures against `keys`, and (when the operator recorded it out of
 /// band) the expected head — without which a truncated tail is undetectable.
-/// `outcomes` are checked for signatures (v1 or v2); allows past their
-/// credential expiry at `now` without a valid outcome are reported as
-/// missing, recorded `unknown` outcomes as unknown.
+/// `outcomes` are checked for signatures (v1 or v2): one that does not
+/// verify is an error, as it is for `verify-bundle`. Allows past their
+/// credential expiry at `now` without an outcome are reported as missing,
+/// recorded `unknown` outcomes as unknown.
 /// Key ids with this prefix are development keys (`kavach-devkit`):
 /// refused at production startup and by [`verify_chain`].
 pub const DEV_KEY_PREFIX: &str = "dev-";
@@ -593,6 +593,60 @@ pub fn verify_segment(
     )
 }
 
+/// One record of a chain: not dev-signed (unless allowed), the expected
+/// `seq`, linked to `prev`, hashing to its content and signed by a key in
+/// `keys`.
+pub fn check_record(
+    record: &AgentDecisionRecord,
+    expected_seq: i64,
+    prev: &str,
+    keys: &BTreeMap<String, PublicKey>,
+    allow_dev_keys: bool,
+) -> Result<(), ChainError> {
+    let p = &record.payload;
+    if !allow_dev_keys && is_dev_key(&p.key_id) {
+        return Err(ChainError::DevKey {
+            seq: p.seq,
+            key_id: p.key_id.clone(),
+        });
+    }
+    if p.seq != expected_seq {
+        return Err(ChainError::Gap {
+            seq: p.seq,
+            expected: expected_seq,
+        });
+    }
+    if p.prev_hash != prev {
+        return Err(ChainError::Link { seq: p.seq });
+    }
+    if payload_hash(p).ok().as_deref() != Some(record.hash.as_str()) {
+        return Err(ChainError::Hash { seq: p.seq });
+    }
+    let signature = |reason: String| ChainError::Signature { seq: p.seq, reason };
+    let key = keys
+        .get(&p.key_id)
+        .ok_or_else(|| signature(format!("unknown key {}", p.key_id)))?;
+    let sig = hex::decode(&record.sig).map_err(|_| signature("not hex".into()))?;
+    verify_ed25519(key, &signing_message(&record.hash), &sig).map_err(|e| signature(e.to_string()))
+}
+
+/// Whether an outcome's signature (v1 or v2) verifies with a key in `keys`
+/// and its reason, if any, is a reason code.
+#[must_use]
+pub fn outcome_verifies(outcome: &OutcomeRecord, keys: &BTreeMap<String, PublicKey>) -> bool {
+    let key = keys.get(&outcome.key_id);
+    let sig = hex::decode(&outcome.sig).unwrap_or_default();
+    let reason_ok = outcome.reason.as_deref().is_none_or(is_reason_code);
+    let message = outcome_message(
+        &outcome.credential_id,
+        &outcome.record_hash,
+        outcome.outcome,
+        outcome.reason.as_deref(),
+        outcome.ts,
+    );
+    reason_ok && key.is_some_and(|k| verify_ed25519(k, &message, &sig).is_ok())
+}
+
 fn verify(
     records: &[AgentDecisionRecord],
     keys: &BTreeMap<String, PublicKey>,
@@ -623,36 +677,11 @@ fn verify_from(
 ) -> Result<ChainReport, ChainError> {
     let mut prev = start.hash.to_string();
     for (index, record) in records.iter().enumerate() {
-        if !allow_dev_keys && is_dev_key(&record.payload.key_id) {
-            return Err(ChainError::DevKey {
-                seq: record.payload.seq,
-                key_id: record.payload.key_id.clone(),
-            });
-        }
-        let p = &record.payload;
         let expected = start
             .seq
             .saturating_add(i64::try_from(index).unwrap_or(i64::MAX))
             .saturating_add(1);
-        if p.seq != expected {
-            return Err(ChainError::Gap {
-                seq: p.seq,
-                expected,
-            });
-        }
-        if p.prev_hash != prev {
-            return Err(ChainError::Link { seq: p.seq });
-        }
-        if payload_hash(p).ok().as_deref() != Some(record.hash.as_str()) {
-            return Err(ChainError::Hash { seq: p.seq });
-        }
-        let signature = |reason: String| ChainError::Signature { seq: p.seq, reason };
-        let key = keys
-            .get(&p.key_id)
-            .ok_or_else(|| signature(format!("unknown key {}", p.key_id)))?;
-        let sig = hex::decode(&record.sig).map_err(|_| signature("not hex".into()))?;
-        verify_ed25519(key, &signing_message(&record.hash), &sig)
-            .map_err(|e| signature(e.to_string()))?;
+        check_record(record, expected, &prev, keys, allow_dev_keys)?;
         prev.clone_from(&record.hash);
     }
     let head_seq = records.last().map_or(start.seq, |r| r.payload.seq);
@@ -668,25 +697,18 @@ fn verify_from(
     }
     let mut known = std::collections::BTreeSet::new();
     let mut outcome_unknown = Vec::new();
-    let mut outcome_invalid = Vec::new();
     for outcome in outcomes {
-        let key = keys.get(&outcome.key_id);
-        let sig = hex::decode(&outcome.sig).unwrap_or_default();
-        let reason_ok = outcome.reason.as_deref().is_none_or(is_reason_code);
-        let message = outcome_message(
-            &outcome.credential_id,
-            &outcome.record_hash,
-            outcome.outcome,
-            outcome.reason.as_deref(),
-            outcome.ts,
-        );
-        if reason_ok && key.is_some_and(|k| verify_ed25519(k, &message, &sig).is_ok()) {
+        if outcome_verifies(outcome, keys) {
             known.insert(outcome.credential_id.clone());
             if outcome.outcome == Outcome::Unknown {
                 outcome_unknown.push(outcome.credential_id.clone());
             }
         } else {
-            outcome_invalid.push(outcome.credential_id.clone());
+            // A row that does not verify is evidence of tampering, not a
+            // gap: fail, as the bundle verifier does.
+            return Err(ChainError::Outcome {
+                credential_id: outcome.credential_id.clone(),
+            });
         }
     }
     let outcome_missing = records
@@ -704,7 +726,6 @@ fn verify_from(
         head_hash: prev,
         outcome_missing,
         outcome_unknown,
-        outcome_invalid,
     })
 }
 
@@ -823,7 +844,7 @@ mod tests {
     }
 
     #[test]
-    fn outcomes_are_classified_missing_unknown_or_invalid_and_v1_still_verifies() {
+    fn outcomes_are_missing_or_unknown_an_invalid_one_fails_and_v1_still_verifies() {
         let key = Key(SigningKey::from_bytes(&[4u8; 32]));
         let now = DateTime::from_timestamp(1_790_000_100, 0).unwrap();
         let records = allows(&key);
@@ -871,28 +892,30 @@ mod tests {
         .unwrap();
         assert_eq!(report.outcome_missing, vec!["c-3".to_string()]);
         assert_eq!(report.outcome_unknown, vec!["c-2".to_string()]);
-        assert_eq!(report.outcome_invalid, Vec::<String>::new());
 
-        // A rewritten reason or outcome no longer verifies: invalid, and the
-        // allow counts as missing.
+        // A rewritten reason or outcome no longer verifies: the chain fails.
+        let invalid = |credential_id: &str| {
+            Err(ChainError::Outcome {
+                credential_id: credential_id.into(),
+            })
+        };
         let mut reason_edited = unknown.clone();
         reason_edited.reason = Some("provider_202".into());
         let mut outcome_edited = unknown;
         outcome_edited.outcome = Outcome::Delivered;
         for edited in [reason_edited, outcome_edited] {
-            let report =
-                verify_chain(&records, &keys(&key), None, &[v1.clone(), edited], now).unwrap();
-            assert_eq!(report.outcome_invalid, vec!["c-2".to_string()]);
             assert_eq!(
-                report.outcome_missing,
-                vec!["c-2".to_string(), "c-3".to_string()]
+                verify_chain(&records, &keys(&key), None, &[v1.clone(), edited], now),
+                invalid("c-2")
             );
         }
         // A v1 row cannot be upgraded by adding a reason.
         let mut upgraded = v1;
         upgraded.reason = Some("provider_202".into());
-        let report = verify_chain(&records, &keys(&key), None, &[upgraded], now).unwrap();
-        assert_eq!(report.outcome_invalid, vec!["c-1".to_string()]);
+        assert_eq!(
+            verify_chain(&records, &keys(&key), None, &[upgraded], now),
+            invalid("c-1")
+        );
     }
 
     #[test]

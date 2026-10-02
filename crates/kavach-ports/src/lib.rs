@@ -6,6 +6,7 @@
 
 pub mod agent_evidence;
 pub mod bundle;
+pub mod bundle_verify;
 pub mod checkpoint;
 pub mod credential;
 mod error;

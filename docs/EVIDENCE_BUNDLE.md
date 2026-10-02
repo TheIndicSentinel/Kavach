@@ -12,10 +12,11 @@ How Kavach's agent evidence is checkpointed, exported and verified offline. The 
 | Writing checkpoints in a running deployment (background writer, mandatory key, metrics, stall alert) | Done (E2b) |
 | Bundle format v1: manifest, writer, export key rules, test vector; read-only `kavach_auditor` database role | Done (E3a) |
 | Export command (`kavach-evidence export`, `checkpoints`) | Done (E3b) |
-| `verify-bundle` command | Not yet (E4) |
+| `verify-bundle` command (offline, fail-closed, constant memory) | Done (E4a) |
+| Export and verify from a deployed stack in CI | Not yet (E4b) |
 | Detecting a deleted outcome row | Not yet (E5, only if a benchmark shows the lock is cheap) |
 
-Deployments write checkpoints and can export them and the chain, but **there is no bundle verifier command yet**. Until E4 ships, Kavach does not claim protection against a truncated or rewritten chain: an operator can copy checkpoints off-host (`kavach-evidence checkpoints`), but no shipped command checks a chain against them. The limits in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md) still apply.
+With a checkpoint kept off-host, `kavach-evidence verify-bundle --expect-checkpoint` detects a chain that was cut short or rewritten, also by someone who holds the database and the keys. Without a kept checkpoint it cannot, and it says so. The exact property and its conditions are in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md).
 
 ## What a checkpoint does and does not prove
 
@@ -95,7 +96,7 @@ A bundle is one export of one chain segment. It is a directory with exactly four
 |---|---|
 | `manifest.json` | What the bundle is, the segment it covers and the SHA-256 of the other three files |
 | `records.jsonl` | The segment's Agent Decision Records, one JSON object per line, in `seq` order |
-| `outcomes.jsonl` | The outcomes of those records, one per line |
+| `outcomes.jsonl` | The outcomes of those records, one per line, in the order of their records |
 | `checkpoints.jsonl` | The checkpoints from the segment's start, one per line, in `seq` order |
 
 A bundle contains **no public keys**. A verifier gets its keys from the operator (see "Trusted keys").
@@ -158,15 +159,66 @@ It lists the evidence key, the checkpoint key and the export key (and earlier on
 
 ### Verifying a bundle
 
-1. Read `manifest.json`. Refuse an unknown `format` or `version`, bounds out of order, or a record count that does not match the segment.
-2. Recompute `hash`. If the manifest is signed: refuse a `key_id` that is not an export key, refuse a `dev-` key unless verifying a development stack, and verify `sig` with the operator's key. If it is unsigned, say so in the result. `key_id` without `sig`, or the reverse, is malformed.
-3. For each of the three files: its SHA-256 and line count match the manifest.
-4. Records: `seq` runs from `after_seq + 1` to `last_seq`; each links to the one before (the first to `after_hash`); each hash and signature verifies; the last hash is `head_hash`.
-5. Outcomes: each signature verifies; report allows whose credential has expired with no valid outcome, outcomes recorded as `unknown`, and outcomes that do not verify.
-6. Checkpoints: as in "Verifying checkpoints", against the records of this segment.
-7. With a kept checkpoint: as in step 7 there.
+```sh
+kavach-evidence verify-bundle ./bundle-2026-10-02 \
+  --keys ~/kavach-trusted-keys.json \
+  --expect-checkpoint /mnt/offsite/kavach-checkpoints.jsonl
+```
 
-Step 4 for a segment that does not start at the first record trusts `after_hash` only as far as a checkpoint vouches for it: a checkpoint at `after_seq` with that `head_hash`, in the bundle or kept by the operator.
+It needs no database and no network, and reads the files as streams, so its memory use does not grow with the chain.
+
+**Three results, three exit statuses.**
+
+| Exit | Meaning |
+|---|---|
+| `0` | Verified, and nothing is left unprotected |
+| `2` | Verified, **but something is not protected** (listed first in the report). This is a failure unless `--allow-warnings` is given, which makes it exit `0` |
+| `1` | Does not verify, or could not be read |
+
+The verifier fails closed: a script that only tests for a non-zero status treats a warning as a failure. What counts as "not protected":
+
+| Kind | Meaning |
+|---|---|
+| `unsigned` | The manifest is unsigned: a removed outcome would not be noticed |
+| `no_kept_checkpoint` | No `--expect-checkpoint`: a chain cut short or rewritten by someone holding the keys would not be noticed |
+| `uncovered_records` | Records newer than the last checkpoint (or no checkpoint at all) |
+| `outcome_missing` | Allows whose credential has expired with no recorded outcome |
+| `outcome_unknown` | Outcomes recorded as `unknown` (sent, result not known) |
+| `clock_stepped_back` | A checkpoint dated before the one preceding it |
+
+Other options: `--json` (the same report for programs), `--at <time>` (the reference time for "expired"; the default is now, never the bundle's own `exported_at`), `--dev` (accept `dev-` keys: a development stack).
+
+**The first export.** Until a checkpoint has been kept off-host there is nothing to compare a chain with, so the first verification of a deployment's evidence reports `no_kept_checkpoint` and exits `2`. Nothing that happened before that moment can be checked against an earlier state; this is where protection starts.
+
+```sh
+# 1. Keep the newest checkpoint off-host. This is the anchor from now on.
+kavach-evidence checkpoints --latest >> /mnt/offsite/kavach-checkpoints.jsonl
+
+# 2. Export, and verify once with warnings allowed. Read the report:
+#    `no_kept_checkpoint` should be the only thing listed as not protected.
+kavach-evidence export --out ./bundle-first --key-dir … --key-id export-…
+kavach-evidence verify-bundle ./bundle-first --keys ~/kavach-trusted-keys.json --allow-warnings
+
+# 3. Every later verification names the kept file, without --allow-warnings.
+kavach-evidence verify-bundle ./bundle-next --keys ~/kavach-trusted-keys.json \
+  --expect-checkpoint /mnt/offsite/kavach-checkpoints.jsonl
+```
+
+- `--allow-warnings` accepts every kind of warning, so do not leave it in a scheduled job. A script that must accept exactly one kind can read `--json` and compare `not_protected[].kind` with what it expects.
+- Keep appending the newest checkpoint on a schedule (step 1). A verification is only as recent as the last line of that file: records newer than it are reported as uncovered or are simply not compared.
+- A bundle older than the kept checkpoint fails with "records after it were removed". That is correct for a chain, and expected for an old bundle: verify old bundles with the checkpoint that was newest when they were exported.
+
+**The steps.**
+
+1. The directory holds exactly the four files, as plain files. The keys file must not be inside it.
+2. Read `manifest.json`. Refuse an unknown `format` or `version`, bounds out of order, or a record count that does not match the segment.
+3. Recompute `hash`. If the manifest is signed: refuse a `key_id` that is not an export key, refuse a `dev-` key unless verifying a development stack, and verify `sig` with the operator's key. If it is unsigned, report it. `key_id` without `sig`, or the reverse, is malformed.
+4. For each of the three files: its SHA-256 and line count match the manifest. No line is longer than a megabyte.
+5. Records: `seq` runs from `after_seq + 1` to `last_seq`; each links to the one before (the first to `after_hash`); each hash and signature verifies; the last hash is `head_hash`.
+6. Outcomes, in the order of their records: each belongs to the record whose credential it names (same tenant, that record's hash) and its signature verifies. An outcome that belongs to no record of the segment, is out of order, is repeated or does not verify fails the bundle. Allows whose credential has expired with no outcome are reported.
+7. Checkpoints, in `seq` order: as in "Verifying checkpoints". A checkpoint newer than the newest record means records were removed.
+8. **A segment's start is never trusted on its own.** When `after_seq` is not `0`, a checkpoint at `after_seq` naming `after_hash` must be in the bundle, or be the kept checkpoint. Otherwise the bundle fails.
+9. With a kept checkpoint (one JSON object, or the last line of a file of them): it must verify; the record at its `seq` must have its hash; if the chain ends before it, records were removed; and when the bundle's checkpoints cover its `seq` it must be among them.
 
 ## Exporting
 
@@ -189,9 +241,9 @@ kavach-evidence checkpoints --after 12000
 - **A whole bundle or nothing.** The target directory must not exist. If the stored evidence is not one consistent segment (records that do not link, a head that does not match, a checkpoint newer than the chain), the export fails and writes nothing.
 - **Signing.** `--key-dir` and `--key-id` (an `export-` key, in an owner-only file) or, explicitly, `--unsigned`. One of the two must be given.
 - **A segment** starts after an existing checkpoint (`--after-checkpoint <seq>`) and carries that checkpoint and the later ones.
-- The export reports how many records are newer than the last checkpoint. It does not verify signatures; that is the verifier's job.
+- The export reports how many records are newer than the last checkpoint. It does not verify signatures; that is `verify-bundle`'s job.
 - The database password is read from the environment and never printed. Connections to Postgres are not encrypted by this build, so run the export on the database's network.
-- A build with `--no-default-features` leaves out `export` and `checkpoints`, and with them all database and network code.
+- A build with `--no-default-features` leaves out `export` and `checkpoints`, and with them all database and network code; `verify` and `verify-bundle` remain.
 
 ## Test vectors
 

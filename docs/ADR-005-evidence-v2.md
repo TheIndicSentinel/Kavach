@@ -119,7 +119,7 @@ The first Agent Decision Records ship ahead of the full evidence v2, with these 
 - **Outcomes** are signed rows in `agent_outcomes`, linked by `credential_id` and record hash, written once and off-chain:
   - `delivered`; `refused` (the provider refused: provably not delivered); `failed` (the connection failed before anything was sent); `not_executed` (allowed, but nothing was sent: resolver or broker failure, or `send_by` passed before forwarding); `unknown` (sent, result not known: timeout or loss after sending, 408, 5xx, a `jti` conflict; never retried).
   - Each carries a **reason code** (`[a-z0-9_]{1,64}`, e.g. `provider_409`, `timeout_after_send`, `send_by_passed`), signed under `kavach-agent-outcome-sig-v2:`. Rows written before H5b have no reason and verify under v1; a v1 row cannot gain a reason without failing verification.
-  - The verifier reports three lists: *outcome missing* (an allow past its credential lifetime with no valid outcome, e.g. a crash between commit and forward), *outcome unknown* (recorded `unknown`) and *outcome invalid* (a signature that does not verify; that allow also counts as missing). A deleted outcome row shows up as missing. Reconciliation of missing and unknown outcomes against provider records is a P1 follow-up.
+  - The verifier reports two lists: *outcome missing* (an allow past its credential lifetime with no outcome, e.g. a crash between commit and forward) and *outcome unknown* (recorded `unknown`). An outcome whose signature does not verify is not a list entry but a **failure**, in the library verifier and in `verify-bundle` alike (§13): it is evidence of tampering, not a gap. A deleted outcome row shows up as missing. Reconciliation of missing and unknown outcomes against provider records is a P1 follow-up.
   - **Forward-once ownership:** only the call that created a record (`Committed`, `Decided::created()`) may forward; replays, including concurrent duplicates, never do.
 - **Verification limits.** Without an out-of-band head (`expected_head`), truncating the chain tail is undetectable. Someone holding both the database and the evidence key can rewrite history until signed checkpoints are kept off-host (§13) or anchored (§5).
 - **Throughput.** One partition serialises every agent commit; this is the NFR-2 ceiling of the MVP configuration, and adding partitions is configuration.
@@ -149,6 +149,9 @@ This replaces the outline in §5 and §10 for the agent chain. Delivery is in st
   - It verifies a whole chain or a segment that starts after a checkpoint.
   - Given a kept checkpoint, it fails if the chain ends before it (records removed), if the record at that `seq` differs (rewritten), or if the checkpoints supplied cover that point without including it (checkpoint history rewritten).
   - It reports how many records are newer than the last checkpoint.
+  - It fails closed. A bundle that verifies but is not fully protected (unsigned, records no checkpoint covers, not compared with a kept checkpoint, allows with no final outcome) is a warning, and a warning is a non-zero exit (`2`) unless `--allow-warnings` is given; a failure is `1`. The report lists what is not protected first.
+  - A segment's start is never trusted on its own: a checkpoint at that record, in the bundle or kept by the operator, must name the same hash.
+  - It reads the bundle as streams, in constant memory. Outcomes are therefore exported, and required, in the order of their records.
 - **Outcome rows.** A deleted outcome row stays undetected for now (§12). Chaining outcomes would add a second per-partition lock on the gateway path; it is done only after a benchmark shows that lock is cheap (E5).
 
 ## Consequences

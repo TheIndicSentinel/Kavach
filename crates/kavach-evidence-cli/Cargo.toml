@@ -25,6 +25,13 @@ kavach-keys = { workspace = true, optional = true }
 kavach-storage = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
+# The bounded-memory test measures the whole process's heap, so it runs as
+# a plain single-threaded program: no test harness, no other threads, and
+# its figures are always printed.
+[[test]]
+name = "memory"
+harness = false
+
 [features]
 default = ["export"]
 # The commands that read a database: `export` and `checkpoints`. Without
@@ -36,6 +43,8 @@ kavach-domain = { workspace = true }
 kavach-ports-testkit = { workspace = true }
 kavach-storage = { workspace = true, features = ["test-support"] }
 ed25519-dalek = { workspace = true }
+# Measures peak heap use in the bounded-memory test (tests/memory.rs).
+peak_alloc.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 

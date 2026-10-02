@@ -466,7 +466,6 @@ async fn outcomes_once_per_allowed_record<S: AgentEvidenceStore>(
     .expect("chain verifies");
     assert_eq!(report.outcome_missing, Vec::<String>::new());
     assert_eq!(report.outcome_unknown, Vec::<String>::new());
-    assert_eq!(report.outcome_invalid, Vec::<String>::new());
     // Without the outcome, the expired allow is reported missing.
     let report = verify_chain(
         &records,
