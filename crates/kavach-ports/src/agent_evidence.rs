@@ -593,6 +593,60 @@ pub fn verify_segment(
     )
 }
 
+/// One record of a chain: not dev-signed (unless allowed), the expected
+/// `seq`, linked to `prev`, hashing to its content and signed by a key in
+/// `keys`.
+pub fn check_record(
+    record: &AgentDecisionRecord,
+    expected_seq: i64,
+    prev: &str,
+    keys: &BTreeMap<String, PublicKey>,
+    allow_dev_keys: bool,
+) -> Result<(), ChainError> {
+    let p = &record.payload;
+    if !allow_dev_keys && is_dev_key(&p.key_id) {
+        return Err(ChainError::DevKey {
+            seq: p.seq,
+            key_id: p.key_id.clone(),
+        });
+    }
+    if p.seq != expected_seq {
+        return Err(ChainError::Gap {
+            seq: p.seq,
+            expected: expected_seq,
+        });
+    }
+    if p.prev_hash != prev {
+        return Err(ChainError::Link { seq: p.seq });
+    }
+    if payload_hash(p).ok().as_deref() != Some(record.hash.as_str()) {
+        return Err(ChainError::Hash { seq: p.seq });
+    }
+    let signature = |reason: String| ChainError::Signature { seq: p.seq, reason };
+    let key = keys
+        .get(&p.key_id)
+        .ok_or_else(|| signature(format!("unknown key {}", p.key_id)))?;
+    let sig = hex::decode(&record.sig).map_err(|_| signature("not hex".into()))?;
+    verify_ed25519(key, &signing_message(&record.hash), &sig).map_err(|e| signature(e.to_string()))
+}
+
+/// Whether an outcome's signature (v1 or v2) verifies with a key in `keys`
+/// and its reason, if any, is a reason code.
+#[must_use]
+pub fn outcome_verifies(outcome: &OutcomeRecord, keys: &BTreeMap<String, PublicKey>) -> bool {
+    let key = keys.get(&outcome.key_id);
+    let sig = hex::decode(&outcome.sig).unwrap_or_default();
+    let reason_ok = outcome.reason.as_deref().is_none_or(is_reason_code);
+    let message = outcome_message(
+        &outcome.credential_id,
+        &outcome.record_hash,
+        outcome.outcome,
+        outcome.reason.as_deref(),
+        outcome.ts,
+    );
+    reason_ok && key.is_some_and(|k| verify_ed25519(k, &message, &sig).is_ok())
+}
+
 fn verify(
     records: &[AgentDecisionRecord],
     keys: &BTreeMap<String, PublicKey>,
@@ -623,36 +677,11 @@ fn verify_from(
 ) -> Result<ChainReport, ChainError> {
     let mut prev = start.hash.to_string();
     for (index, record) in records.iter().enumerate() {
-        if !allow_dev_keys && is_dev_key(&record.payload.key_id) {
-            return Err(ChainError::DevKey {
-                seq: record.payload.seq,
-                key_id: record.payload.key_id.clone(),
-            });
-        }
-        let p = &record.payload;
         let expected = start
             .seq
             .saturating_add(i64::try_from(index).unwrap_or(i64::MAX))
             .saturating_add(1);
-        if p.seq != expected {
-            return Err(ChainError::Gap {
-                seq: p.seq,
-                expected,
-            });
-        }
-        if p.prev_hash != prev {
-            return Err(ChainError::Link { seq: p.seq });
-        }
-        if payload_hash(p).ok().as_deref() != Some(record.hash.as_str()) {
-            return Err(ChainError::Hash { seq: p.seq });
-        }
-        let signature = |reason: String| ChainError::Signature { seq: p.seq, reason };
-        let key = keys
-            .get(&p.key_id)
-            .ok_or_else(|| signature(format!("unknown key {}", p.key_id)))?;
-        let sig = hex::decode(&record.sig).map_err(|_| signature("not hex".into()))?;
-        verify_ed25519(key, &signing_message(&record.hash), &sig)
-            .map_err(|e| signature(e.to_string()))?;
+        check_record(record, expected, &prev, keys, allow_dev_keys)?;
         prev.clone_from(&record.hash);
     }
     let head_seq = records.last().map_or(start.seq, |r| r.payload.seq);
@@ -670,17 +699,7 @@ fn verify_from(
     let mut outcome_unknown = Vec::new();
     let mut outcome_invalid = Vec::new();
     for outcome in outcomes {
-        let key = keys.get(&outcome.key_id);
-        let sig = hex::decode(&outcome.sig).unwrap_or_default();
-        let reason_ok = outcome.reason.as_deref().is_none_or(is_reason_code);
-        let message = outcome_message(
-            &outcome.credential_id,
-            &outcome.record_hash,
-            outcome.outcome,
-            outcome.reason.as_deref(),
-            outcome.ts,
-        );
-        if reason_ok && key.is_some_and(|k| verify_ed25519(k, &message, &sig).is_ok()) {
+        if outcome_verifies(outcome, keys) {
             known.insert(outcome.credential_id.clone());
             if outcome.outcome == Outcome::Unknown {
                 outcome_unknown.push(outcome.credential_id.clone());

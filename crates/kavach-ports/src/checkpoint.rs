@@ -363,7 +363,7 @@ pub struct CheckpointReport {
 }
 
 /// Format, scope, key, hash and signature of one checkpoint.
-fn check_one(
+pub fn check_one(
     checkpoint: &Checkpoint,
     scope: Scope<'_>,
     keys: &BTreeMap<String, PublicKey>,
