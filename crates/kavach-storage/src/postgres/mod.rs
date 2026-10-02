@@ -4,6 +4,7 @@ mod admin;
 mod agent_evidence;
 mod change_requests;
 mod evidence;
+mod export;
 mod incidents;
 mod jobs;
 mod mandates;
@@ -15,6 +16,7 @@ pub use agent_evidence::PostgresAgentEvidenceStore;
 pub use change_requests::PostgresChangeStore;
 
 pub use evidence::PostgresEvidenceStore;
+pub use export::EvidenceSnapshot;
 pub use incidents::PostgresIncidentStore;
 pub use jobs::{
     BatchJobCreate, BatchJobStore, JobStoreError, NoopBatchJobStore, PostgresBatchJobStore,
