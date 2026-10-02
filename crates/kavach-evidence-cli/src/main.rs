@@ -38,6 +38,35 @@ enum Commands {
         #[arg(short, long)]
         file: PathBuf,
     },
+    /// Verify an evidence bundle offline, with keys you supply. Exit status:
+    /// 0 verified, 1 failed, 2 verified but not fully protected.
+    VerifyBundle {
+        /// The bundle directory.
+        bundle: PathBuf,
+        /// Your trusted public keys (JSON). Never taken from the bundle.
+        #[arg(long)]
+        keys: PathBuf,
+        /// A checkpoint you kept off-host (one JSON object, or the last
+        /// line of a file of them). Without it, a chain cut short or
+        /// rewritten by someone holding the keys is not noticed.
+        #[arg(long)]
+        expect_checkpoint: Option<PathBuf>,
+        /// Accept `dev-` keys: a development stack is being verified.
+        #[arg(long)]
+        dev: bool,
+        /// The time (RFC 3339) at which an allow without an outcome counts
+        /// as missing one. Defaults to now.
+        #[arg(long)]
+        at: Option<chrono::DateTime<chrono::Utc>>,
+        /// Exit 0 even when the bundle verifies but is not fully protected
+        /// (unsigned, uncovered records, no kept checkpoint, missing
+        /// outcomes). Without this, such a bundle exits 2.
+        #[arg(long)]
+        allow_warnings: bool,
+        /// Print the report as JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Export the agent evidence chain as a bundle (docs/EVIDENCE_BUNDLE.md).
     #[cfg(feature = "export")]
     Export {
@@ -153,8 +182,46 @@ mod database {
     }
 }
 
+/// `verify-bundle`: prints the report and returns the exit status.
+fn verify_bundle(command: Commands) -> i32 {
+    use kavach_evidence_cli::verify::{verify_dir, Verdict, VerifyRequest, EXIT_FAILED};
+    let Commands::VerifyBundle {
+        bundle,
+        keys,
+        expect_checkpoint,
+        dev,
+        at,
+        allow_warnings,
+        json,
+    } = command
+    else {
+        return EXIT_FAILED;
+    };
+    let verdict = Verdict {
+        result: verify_dir(&VerifyRequest {
+            bundle: &bundle,
+            keys: &keys,
+            expect_checkpoint: expect_checkpoint.as_deref(),
+            dev,
+            now: at.unwrap_or_else(chrono::Utc::now),
+        }),
+        allow_warnings,
+        bundle,
+    };
+    if json {
+        println!("{}", verdict.json());
+    } else {
+        print!("{}", verdict.text());
+    }
+    verdict.exit_code()
+}
+
 fn run(command: Commands) -> Result<(), String> {
     match command {
+        command @ Commands::VerifyBundle { .. } => match verify_bundle(command) {
+            0 => Ok(()),
+            code => process::exit(code),
+        },
         Commands::Verify { file } => {
             let report = verify_export_file(&file).map_err(|e| e.to_string())?;
             println!(
