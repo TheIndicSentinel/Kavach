@@ -17,11 +17,22 @@ use chrono::Duration;
 use kavach_api::dataplane::agent_router;
 use kavach_api::EvidenceStoreKind;
 use kavach_domain::mandate::{DelegationRequest, RevocationReason};
-use kavach_ports::agent_evidence::{verify_chain, AgentEvidenceStore, Outcome, OutcomeRecord};
-use kavach_ports::{KeyAlgorithm, PublicKey, SyncStatus, TimeSource};
+use kavach_evidence_cli::postgres::{run_export, Signing, Target};
+use kavach_evidence_cli::verify::{verify_dir, Verdict, VerifyRequest};
+use kavach_evidence_cli::writer::BundleWriter;
+use kavach_ports::agent_evidence::{AgentEvidenceStore, Outcome, SegmentStart};
+use kavach_ports::bundle::Exporter;
+use kavach_ports::checkpoint::{CheckpointStore, Scope, CHAIN_AGENT_DECISIONS};
+use kavach_ports::{SyncStatus, TimeSource};
 use serde_json::{json, Value};
 
 use agent_fixture::*;
+
+const SCENARIO_SCOPE: Scope<'static> = Scope {
+    tenant_id: "default",
+    partition_id: 0,
+    chain: CHAIN_AGENT_DECISIONS,
+};
 
 #[derive(Clone, Copy)]
 enum Store {
@@ -31,8 +42,17 @@ enum Store {
 
 /// The stack for one scenario, or `None` (Postgres without a database).
 async fn world(store: Store, destination: Option<&str>, provider_up: bool) -> Option<Gw> {
-    let api = match store {
-        Store::Memory => config_for_gateway(),
+    Some(world_and_database(store, destination, provider_up).await?.0)
+}
+
+/// [`world`], with the owner's database URL when the store is Postgres.
+async fn world_and_database(
+    store: Store,
+    destination: Option<&str>,
+    provider_up: bool,
+) -> Option<(Gw, Option<String>)> {
+    let (api, owner) = match store {
+        Store::Memory => (config_for_gateway(), None),
         Store::Postgres => {
             let (owner, runtime) = kavach_storage::testing::isolated_database_urls().await?;
             let mut api = config(
@@ -42,11 +62,11 @@ async fn world(store: Store, destination: Option<&str>, provider_up: bool) -> Op
                 true,
                 50,
             );
-            api.migration_database_url = Some(owner);
-            api
+            api.migration_database_url = Some(owner.clone());
+            (api, Some(owner))
         }
     };
-    Some(gateway_on(api, destination, provider_up).await)
+    Some((gateway_on(api, destination, provider_up).await, owner))
 }
 
 /// Runs a scenario on both evidence stores, as `<scenario>::memory` and
@@ -381,12 +401,111 @@ async fn scenario09_partial_unregistered_tool_is_refused(store: Store) {
     );
 }
 
-/// Scenario 10: The evidence of a full run, exported as plain JSON, verifies offline
-/// with only the evidence public key: an unbroken signed chain, a valid
-/// outcome for every allow, none missing; any edit is caught. Remaining:
-/// the export command, signed checkpoints and crypto-shredding (v0.1 / B).
+const EXPORT_KID: &str = "export-s10-1";
+
+/// Creates `work` with what an auditor holds: an export key
+/// (`export-keys/`), the trusted public keys and the kept checkpoint.
+/// Returns the paths of the last two.
+fn auditor_material(
+    work: &std::path::Path,
+    kept_checkpoint: &kavach_ports::checkpoint::Checkpoint,
+) -> (std::path::PathBuf, std::path::PathBuf) {
+    std::fs::create_dir(work).unwrap();
+    let export_public = kavach_keys::LocalFileKeyProvider::new(work.join("export-keys"))
+        .create_key(EXPORT_KID)
+        .unwrap();
+    let public = |seed: [u8; 32]| {
+        hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&seed)
+                .verifying_key()
+                .to_bytes(),
+        )
+    };
+    let keys = work.join("trusted-keys.json");
+    std::fs::write(
+        &keys,
+        json!({ "keys": [
+            { "kid": "kavach-evidence-1", "alg": "Ed25519", "public_key": public([3u8; 32]) },
+            { "kid": "kavach-checkpoint-1", "alg": "Ed25519",
+              "public_key": public(CHECKPOINT_SEED) },
+            { "kid": EXPORT_KID, "alg": "Ed25519",
+              "public_key": hex::encode(export_public.bytes) },
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let kept = work.join("kept-checkpoint.json");
+    std::fs::write(&kept, serde_json::to_string(kept_checkpoint).unwrap()).unwrap();
+    (keys, kept)
+}
+
+/// The memory store has no export command: write the same bundle from the
+/// store, signed with the auditor's export key.
+async fn export_from_memory(gw: &Gw, work: &std::path::Path, bundle: &std::path::Path) {
+    let core = gw.state.dataplane().unwrap().core();
+    let records = core.store().records("default", 0).await.unwrap();
+    let mut writer = BundleWriter::create(bundle, SCENARIO_SCOPE, SegmentStart::GENESIS).unwrap();
+    for record in &records {
+        writer.record(record).unwrap();
+    }
+    for record in records.iter().filter(|r| r.is_allow()) {
+        let id = record.payload.credential_id.as_deref().unwrap();
+        let outcome = core
+            .outcome(id)
+            .await
+            .unwrap()
+            .expect("an outcome per allow");
+        writer.outcome(&outcome).unwrap();
+    }
+    for checkpoint in core.store().list(SCENARIO_SCOPE, 0, 100).await.unwrap() {
+        writer.checkpoint(&checkpoint).unwrap();
+    }
+    let signer =
+        kavach_keys::Ed25519EvidenceSigner::from_key_dir(&work.join("export-keys"), EXPORT_KID)
+            .unwrap();
+    let exporter = Exporter {
+        tool: "kavach-evidence".into(),
+        version: "test".into(),
+    };
+    writer
+        .finish(chrono::Utc::now(), exporter, Some(&signer))
+        .unwrap();
+}
+
+/// Any change to the exported evidence fails verification; restored, it
+/// verifies again.
+fn changes_to_the_bundle_are_caught(request: &VerifyRequest<'_>, bundle: &std::path::Path) {
+    let records_file = bundle.join("records.jsonl");
+    let original = std::fs::read_to_string(&records_file).unwrap();
+    std::fs::write(
+        &records_file,
+        original.replacen("send_reminder", "place_call", 1),
+    )
+    .unwrap();
+    assert!(verify_dir(request).is_err(), "an edited record");
+    // The newest record removed: the kept checkpoint is ahead of the chain.
+    let mut lines: Vec<&str> = original.lines().collect();
+    lines.pop();
+    std::fs::write(&records_file, lines.join("\n") + "\n").unwrap();
+    assert!(verify_dir(request).is_err(), "a removed record");
+    std::fs::write(&records_file, &original).unwrap();
+    let outcomes_file = bundle.join("outcomes.jsonl");
+    let outcomes = std::fs::read_to_string(&outcomes_file).unwrap();
+    std::fs::write(&outcomes_file, outcomes.replacen("delivered", "failed", 1)).unwrap();
+    assert!(verify_dir(request).is_err(), "a rewritten outcome");
+    std::fs::write(&outcomes_file, &outcomes).unwrap();
+    assert!(verify_dir(request).is_ok(), "restored, it verifies again");
+}
+
+/// Scenario 10: The evidence of a full run is exported as a bundle and
+/// verified offline with only public keys the operator supplies: a signed
+/// manifest, an unbroken signed chain, a valid outcome for every allow, a
+/// checkpoint over the head that matches the one kept off-host, and
+/// nothing left unprotected. On Postgres the export is the real command's,
+/// as the read-only auditor role. Any change to the bundle is caught.
+/// Remaining: crypto-shredding (B).
 async fn scenario10_a_full_run_verifies_offline_from_public_keys(store: Store) {
-    let Some(gw) = world(store, Some(NUMBER), true).await else {
+    let Some((gw, owner)) = world_and_database(store, Some(NUMBER), true).await else {
         return;
     };
     gw.remind("s10-a").await;
@@ -398,59 +517,76 @@ async fn scenario10_a_full_run_verifies_offline_from_public_keys(store: Store) {
     at(&gw, 20, 0, 0);
     gw.remind("s10-late").await; // a recorded BLOCK
 
-    // Export: records and outcomes as plain JSON, as an auditor gets them.
-    let core = gw.state.dataplane().unwrap().core();
-    let records = core.store().records("default", 0).await.unwrap();
-    let mut outcomes = Vec::new();
-    for record in records.iter().filter(|r| r.is_allow()) {
-        let id = record.payload.credential_id.as_deref().unwrap();
-        outcomes.push(
-            core.outcome(id)
-                .await
-                .unwrap()
-                .expect("an outcome per allow"),
-        );
-    }
-    let exported =
-        serde_json::to_string(&json!({ "records": records, "outcomes": outcomes })).unwrap();
+    // The deployment checkpoints its chain; the operator keeps the newest
+    // checkpoint off-host.
+    let dataplane = gw.state.dataplane().unwrap();
+    // (Two steps of the writer: it sees the uncovered records, and a
+    // minute later they are due.)
+    let seen = std::time::Instant::now();
+    dataplane.checkpointer().tick(seen).await;
+    let due = seen + std::time::Duration::from_secs(61);
+    let written = dataplane.checkpointer().tick(due).await.tick;
+    assert_eq!(written, kavach_dataplane::Tick::Written { seq: 4 });
+    let store_ref = dataplane.core().store().clone();
+    let kept_checkpoint = store_ref
+        .latest(SCENARIO_SCOPE)
+        .await
+        .unwrap()
+        .expect("a checkpoint");
+    assert_eq!(kept_checkpoint.payload.seq, 4);
 
-    // Offline: only the export and the evidence public key.
-    let bundle: Value = serde_json::from_str(&exported).unwrap();
-    let records: Vec<_> = serde_json::from_value(bundle["records"].clone()).unwrap();
-    let outcomes: Vec<OutcomeRecord> = serde_json::from_value(bundle["outcomes"].clone()).unwrap();
-    let evidence_public = ed25519_dalek::SigningKey::from_bytes(&[3u8; 32])
-        .verifying_key()
-        .to_bytes();
-    let keys = BTreeMap::from([(
-        "kavach-evidence-1".to_string(),
-        PublicKey {
-            kid: "kavach-evidence-1".into(),
-            algorithm: KeyAlgorithm::Ed25519,
-            bytes: evidence_public,
-        },
-    )]);
-    let later = gw.clock.now().utc + Duration::hours(1);
-    let report = verify_chain(&records, &keys, None, &outcomes, later).expect("chain verifies");
+    // What the auditor holds: an export key, the public keys, the kept
+    // checkpoint. None of it comes from the bundle.
+    let work = std::env::temp_dir().join(format!("kavach-s10-{}", uuid::Uuid::new_v4().simple()));
+    let (keys, kept) = auditor_material(&work, &kept_checkpoint);
+
+    // Export: on Postgres the real command's export, as the read-only
+    // auditor role; in memory the same bundle, written from the store.
+    let bundle = work.join("bundle");
+    if let Some(owner) = &owner {
+        let target = Target {
+            database_url: kavach_storage::testing::auditor_url(owner),
+            tenant_id: "default".into(),
+            partition_id: 0,
+            allow_write_role: false,
+        };
+        let signing = Signing::Key {
+            key_dir: work.join("export-keys"),
+            key_id: EXPORT_KID.into(),
+        };
+        run_export(&target, None, &bundle, &signing)
+            .await
+            .expect("export");
+    } else {
+        export_from_memory(&gw, &work, &bundle).await;
+    }
+
+    // Offline: the bundle, the operator's keys and the kept checkpoint.
+    let request = VerifyRequest {
+        bundle: &bundle,
+        keys: &keys,
+        expect_checkpoint: Some(&kept),
+        dev: false,
+        now: gw.clock.now().utc + Duration::hours(1),
+    };
+    let report = verify_dir(&request).expect("the bundle verifies");
     assert_eq!(
         report.records, 4,
         "two deliveries and two refusals, no duplicate for the replay"
     );
-    assert_eq!(report.outcome_missing, Vec::<String>::new());
-    assert_eq!(report.outcome_invalid, Vec::<String>::new());
-    assert_eq!(report.outcome_unknown, Vec::<String>::new());
+    assert_eq!((report.outcomes, report.checkpoints), (2, 1));
+    assert_eq!(report.kept_checkpoint, Some(4));
+    assert_eq!(report.not_protected(), [], "nothing is left unprotected");
+    let verdict = Verdict {
+        result: Ok(report),
+        allow_warnings: false,
+        bundle: bundle.clone(),
+    };
+    assert_eq!(verdict.exit_code(), 0);
 
-    // Any edit to the exported evidence is caught.
-    let mut edited = records.clone();
-    edited[1].payload.action = "place_call".into();
-    assert!(verify_chain(&edited, &keys, None, &outcomes, later).is_err());
-    let mut forged = outcomes.clone();
-    forged[0].outcome = Outcome::Failed;
-    let report = verify_chain(&records, &keys, None, &forged, later).unwrap();
-    assert_eq!(
-        report.outcome_invalid.len(),
-        1,
-        "a rewritten outcome is caught"
-    );
+    changes_to_the_bundle_are_caught(&request, &bundle);
+
+    std::fs::remove_dir_all(&work).unwrap();
 }
 
 /// Scenario 11 (partial): Bypass attempts fail: a forged mandate id, a replayed
