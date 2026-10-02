@@ -17,6 +17,7 @@ members = [
     "crates/kavach-domain",
     "crates/kavach-policy",
     "crates/kavach-evidence",
+    "crates/kavach-evidence-cli",
     "crates/kavach-evaluate",
     "crates/kavach-storage",
     "crates/kavach-auth",
@@ -37,6 +38,7 @@ default-members = [
     "crates/kavach-domain",
     "crates/kavach-policy",
     "crates/kavach-evidence",
+    "crates/kavach-evidence-cli",
     "crates/kavach-evaluate",
     "crates/kavach-storage",
     "crates/kavach-auth",
@@ -63,6 +65,7 @@ jsonschema = "0.29.1"
 kavach-domain = { path = "crates/kavach-domain", version = "0.1.0" }
 kavach-policy = { path = "crates/kavach-policy", version = "0.1.0" }
 kavach-evidence = { path = "crates/kavach-evidence", version = "0.1.0" }
+kavach-evidence-cli = { path = "crates/kavach-evidence-cli", version = "0.1.0" }
 kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0" }
 kavach-storage = { path = "crates/kavach-storage", version = "0.1.0" }
 kavach-dataplane = { path = "crates/kavach-dataplane", version = "0.1.0" }

@@ -1,0 +1,20 @@
+{
+  "description": "Public keys for tests/vectors/bundle-v1 (test keys only). A verifier is given keys like these by the operator; a bundle never contains them.",
+  "keys": [
+    {
+      "alg": "Ed25519",
+      "kid": "export-kat-1",
+      "public_key": "4508a07aa941707f3eb2db94c8897a80b2c1197476b6de213ac273df7d86c4ff"
+    },
+    {
+      "alg": "Ed25519",
+      "kid": "kavach-checkpoint-kat",
+      "public_key": "197f6b23e16c8532c6abc838facd5ea789be0c76b2920334039bfa8b3d368d61"
+    },
+    {
+      "alg": "Ed25519",
+      "kid": "kavach-evidence-kat",
+      "public_key": "fa4834147f6e690c3693eff61336046403cd8ae2a14f31b3c407358569239565"
+    }
+  ]
+}

@@ -29,7 +29,8 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`), plus Postgres tests, c
 | `partner/` | Partner-shaped payload samples (not test oracles) |
 | `crates/kavach-domain/` | Domain types (no I/O) |
 | `crates/kavach-policy/` | CEL pack loader and evaluator |
-| `crates/kavach-evidence/` | Hash chain, memory store, verify CLI |
+| `crates/kavach-evidence/` | Hash chain, memory store, v1 verification (library) |
+| `crates/kavach-evidence-cli/` | The `kavach-evidence` binary: `verify`, evidence bundle writer |
 | `crates/kavach-evaluate/` | Evaluate pipeline orchestration |
 | `crates/kavach-storage/` | Postgres evidence chain, incidents, batch jobs |
 | `crates/kavach-auth/` | Cedar RBAC policies and authorizer (API access) |

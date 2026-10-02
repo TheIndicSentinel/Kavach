@@ -61,6 +61,7 @@ protoc-bin-vendored = "3.2.0"
 
 [dev-dependencies]
 kavach-mock-provider = { workspace = true }
+kavach-evidence-cli = { workspace = true }
 kavach-ports-testkit = { workspace = true }
 kavach-jws = { workspace = true }
 tower = { version = "0.5.3", features = ["util"] }

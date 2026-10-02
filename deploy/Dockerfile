@@ -16,7 +16,7 @@ FROM rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1
 WORKDIR /build
 COPY . .
 COPY --from=console /build/console/dist ./console/dist
-RUN cargo build --release --locked -p kavach-api -p kavach-batch -p kavach-evidence
+RUN cargo build --release --locked -p kavach-api -p kavach-batch -p kavach-evidence-cli
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251 AS runtime
 RUN apt-get update \

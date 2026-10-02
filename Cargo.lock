@@ -2054,6 +2054,7 @@ dependencies = [
  "kavach-domain",
  "kavach-evaluate",
  "kavach-evidence",
+ "kavach-evidence-cli",
  "kavach-jws",
  "kavach-keys",
  "kavach-mandate",
@@ -2266,7 +2267,6 @@ name = "kavach-evidence"
 version = "0.1.0"
 dependencies = [
  "chrono",
- "clap",
  "kavach-domain",
  "kavach-policy",
  "serde",
@@ -2275,6 +2275,24 @@ dependencies = [
  "thiserror 2.0.21",
  "uuid",
  "walkdir",
+]
+
+[[package]]
+name = "kavach-evidence-cli"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "ed25519-dalek",
+ "hex",
+ "kavach-domain",
+ "kavach-evidence",
+ "kavach-ports",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]
