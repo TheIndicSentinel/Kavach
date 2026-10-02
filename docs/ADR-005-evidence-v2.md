@@ -149,6 +149,9 @@ This replaces the outline in §5 and §10 for the agent chain. Delivery is in st
   - It verifies a whole chain or a segment that starts after a checkpoint.
   - Given a kept checkpoint, it fails if the chain ends before it (records removed), if the record at that `seq` differs (rewritten), or if the checkpoints supplied cover that point without including it (checkpoint history rewritten).
   - It reports how many records are newer than the last checkpoint.
+  - It fails closed. A bundle that verifies but is not fully protected (unsigned, records no checkpoint covers, not compared with a kept checkpoint, allows with no final outcome) is a warning, and a warning is a non-zero exit (`2`) unless `--allow-warnings` is given; a failure is `1`. The report lists what is not protected first.
+  - A segment's start is never trusted on its own: a checkpoint at that record, in the bundle or kept by the operator, must name the same hash.
+  - It reads the bundle as streams, in constant memory. Outcomes are therefore exported, and required, in the order of their records.
 - **Outcome rows.** A deleted outcome row stays undetected for now (§12). Chaining outcomes would add a second per-partition lock on the gateway path; it is done only after a benchmark shows that lock is cheap (E5).
 
 ## Consequences

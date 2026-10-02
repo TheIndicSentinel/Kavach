@@ -20,6 +20,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 - Evidence bundle format v1 (manifest, writer, test vector), the export key rules and the read-only `kavach_auditor` database role (migration 013).
 - `kavach-evidence export` writes the agent chain (or a segment after a checkpoint) as a signed bundle from one read-only snapshot, and `kavach-evidence checkpoints` prints checkpoints to copy off-host. Both refuse a database role that can write evidence.
 - Development bundles (`kavach-dev generate`) include an export key, `auditor/dev-export-1`.
+- `kavach-evidence verify-bundle` checks a bundle offline with keys the operator supplies and, with `--expect-checkpoint`, against a checkpoint kept off-host: a chain cut short or rewritten is detected. It fails closed: exit `1` when the bundle does not verify, exit `2` when it verifies but is not fully protected (`--allow-warnings` accepts that), exit `0` otherwise.
 
 - Signed evidence checkpoints for the agent chain (ADR-005 §13): a background writer, the `evidence_checkpoints` table (migration 012), `--checkpoint-interval-seconds` and `--checkpoint-stall-seconds`.
 - Checkpoint health in `GET /v1/runtime` (`checkpoint_lag_seconds`, `checkpoint_stalled`, `checkpoint_last_seq`, `checkpoint_uncovered_records`) and in the metrics (`kavach_checkpoint_*`, `kavach_checkpoints_*`).
@@ -27,4 +28,5 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Not yet
 
-- Offline verification of a bundle against kept checkpoints is not shipped. Until it is, Kavach does not claim protection against a truncated or rewritten evidence chain.
+- Truncation and rewrites are detected only by verifying an export against a checkpoint the operator copied off-host; the live database is not checked continuously, and nothing is anchored outside the operator's own storage.
+- A deleted outcome row is detected only against an earlier signed bundle that contains it.
