@@ -7,6 +7,10 @@ name: Network isolation
 # through the gateway (TLS to the provider). The test agent's exit status
 # is the result.
 #
+# Then the evidence: the read-only auditor role exports what the probe
+# left behind and `kavach-evidence verify-bundle` checks it offline,
+# against a checkpoint the running API wrote (ADR-005 §13).
+#
 # Delivery depends on the 08:00–19:00 IST contact window: outside it the
 # probe expects a window BLOCK. The scheduled run at 12:00 IST sets
 # REQUIRE_DELIVERY, so anything but a delivery fails loudly.
@@ -68,6 +72,14 @@ jobs:
           docker compose up -d --no-build --wait --wait-timeout 180 postgres kavach mock-provider
           docker compose run --rm issue-mandate
           docker compose run --rm test-agent
+
+      # The deployed-stack test of evidence checkpoints: the running API
+      # (production image, Postgres) must have checkpointed the probe's
+      # records; the auditor role exports them and the bundle verifies
+      # offline against a checkpoint taken first, with nothing unprotected.
+      - name: Export the evidence as the auditor and verify it offline
+        working-directory: deploy/agent-stack
+        run: docker compose run --rm export-evidence
 
       - name: Stack logs
         if: always()
