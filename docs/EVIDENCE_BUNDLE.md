@@ -188,6 +188,26 @@ The verifier fails closed: a script that only tests for a non-zero status treats
 
 Other options: `--json` (the same report for programs), `--at <time>` (the reference time for "expired"; the default is now, never the bundle's own `exported_at`), `--dev` (accept `dev-` keys: a development stack).
 
+**The first export.** Until a checkpoint has been kept off-host there is nothing to compare a chain with, so the first verification of a deployment's evidence reports `no_kept_checkpoint` and exits `2`. Nothing that happened before that moment can be checked against an earlier state; this is where protection starts.
+
+```sh
+# 1. Keep the newest checkpoint off-host. This is the anchor from now on.
+kavach-evidence checkpoints --latest >> /mnt/offsite/kavach-checkpoints.jsonl
+
+# 2. Export, and verify once with warnings allowed. Read the report:
+#    `no_kept_checkpoint` should be the only thing listed as not protected.
+kavach-evidence export --out ./bundle-first --key-dir … --key-id export-…
+kavach-evidence verify-bundle ./bundle-first --keys ~/kavach-trusted-keys.json --allow-warnings
+
+# 3. Every later verification names the kept file, without --allow-warnings.
+kavach-evidence verify-bundle ./bundle-next --keys ~/kavach-trusted-keys.json \
+  --expect-checkpoint /mnt/offsite/kavach-checkpoints.jsonl
+```
+
+- `--allow-warnings` accepts every kind of warning, so do not leave it in a scheduled job. A script that must accept exactly one kind can read `--json` and compare `not_protected[].kind` with what it expects.
+- Keep appending the newest checkpoint on a schedule (step 1). A verification is only as recent as the last line of that file: records newer than it are reported as uncovered or are simply not compared.
+- A bundle older than the kept checkpoint fails with "records after it were removed". That is correct for a chain, and expected for an old bundle: verify old bundles with the checkpoint that was newest when they were exported.
+
 **The steps.**
 
 1. The directory holds exactly the four files, as plain files. The keys file must not be inside it.
