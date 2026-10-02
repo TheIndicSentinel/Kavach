@@ -36,6 +36,8 @@ kavach-domain = { workspace = true }
 kavach-ports-testkit = { workspace = true }
 kavach-storage = { workspace = true, features = ["test-support"] }
 ed25519-dalek = { workspace = true }
+# Measures peak heap use in the bounded-memory test (tests/memory.rs).
+peak_alloc.workspace = true
 tokio.workspace = true
 uuid.workspace = true
 

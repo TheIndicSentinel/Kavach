@@ -89,6 +89,7 @@ regex = "1.13.1"
 ring = "0.17.14"
 x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }
 proptest = "1.11.0"
+peak_alloc = "0.3.0"
 kavach-mandate = { path = "crates/kavach-mandate", version = "0.1.0" }
 serde_json_canonicalizer = "0.3.2"
 base64 = "0.22.1"
@@ -139,3 +140,14 @@ incremental = false
 
 [profile.dev.package."*"]
 debug = false
+
+# Signature and hash arithmetic is too slow unoptimised for tests that
+# sign or verify thousands of records (the bounded-memory verifier test).
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+
+[profile.dev.package.sha2]
+opt-level = 3
