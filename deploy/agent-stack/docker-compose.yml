@@ -99,8 +99,11 @@ services:
       - path: ./bundle/kavach/kavach.env
         required: false
     environment:
-      KAVACH_MIGRATION_DATABASE_URL: postgres://kavach:kavach-isolation-owner@172.30.20.20:5432/kavach
-      KAVACH_DATABASE_URL: postgres://kavach_runtime:kavach-isolation-runtime@172.30.20.20:5432/kavach
+      # This stack's Postgres serves no TLS yet, so the URLs ask for
+      # plaintext, which only --insecure-dev accepts. (TLS-only Postgres
+      # here is the next change.)
+      KAVACH_MIGRATION_DATABASE_URL: postgres://kavach:kavach-isolation-owner@172.30.20.20:5432/kavach?sslmode=disable
+      KAVACH_DATABASE_URL: postgres://kavach_runtime:kavach-isolation-runtime@172.30.20.20:5432/kavach?sslmode=disable
       KAVACH_CEDAR_POLICY: crates/kavach-auth/policies/kavach.cedar
       KAVACH_CEDAR_ENTITIES: crates/kavach-auth/policies/entities.example.json
       KAVACH_LOG_FORMAT: json
@@ -197,7 +200,7 @@ services:
     profiles: ["run"]
     user: "10001:10001"
     environment:
-      KAVACH_AUDITOR_DATABASE_URL: postgres://kavach_auditor:kavach-isolation-auditor@172.30.20.20:5432/kavach
+      KAVACH_AUDITOR_DATABASE_URL: postgres://kavach_auditor:kavach-isolation-auditor@172.30.20.20:5432/kavach?sslmode=disable
     volumes:
       - ./bundle/auditor:/auditor:ro
       - ./export-evidence.sh:/usr/local/bin/export-evidence.sh:ro
