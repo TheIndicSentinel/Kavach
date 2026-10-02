@@ -1,0 +1,61 @@
+{
+  "checkpoints": [
+    {
+      "canonical_payload": "{\"chain\":\"agent_decisions\",\"head_hash\":\"dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986\",\"key_id\":\"kavach-checkpoint-kat\",\"kind\":\"evidence_checkpoint\",\"partition_id\":0,\"prev_checkpoint_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"seq\":2,\"tenant_id\":\"default\",\"time_sync\":{\"max_error_ms\":12,\"status\":\"synced\"},\"ts\":\"2026-10-02T06:30:00Z\",\"version\":1}",
+      "checkpoint": {
+        "chain": "agent_decisions",
+        "hash": "3b3f63414ccde0e4828451b8d4331298652d12c71ddb1512d2776012fc04aeb8",
+        "head_hash": "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986",
+        "key_id": "kavach-checkpoint-kat",
+        "kind": "evidence_checkpoint",
+        "partition_id": 0,
+        "prev_checkpoint_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "seq": 2,
+        "sig": "64b1260c0a08bb58f463d286e7b749a877bae4ce5b8a26b0b4c1aee7a6c3622871375d90d4ad7c96ef3d0e4a5075c219b71429f98cbf2e30c3b3b3163bba7406",
+        "tenant_id": "default",
+        "time_sync": {
+          "max_error_ms": 12,
+          "status": "synced"
+        },
+        "ts": "2026-10-02T06:30:00Z",
+        "version": 1
+      }
+    },
+    {
+      "canonical_payload": "{\"chain\":\"agent_decisions\",\"head_hash\":\"e77b9a9ae9e30b0dbdb6f510a264ef9de781501d7b6b92ae89eb059c5ab743db\",\"key_id\":\"kavach-checkpoint-kat\",\"kind\":\"evidence_checkpoint\",\"partition_id\":0,\"prev_checkpoint_hash\":\"3b3f63414ccde0e4828451b8d4331298652d12c71ddb1512d2776012fc04aeb8\",\"seq\":5,\"tenant_id\":\"default\",\"time_sync\":{\"max_error_ms\":null,\"status\":\"unknown\"},\"ts\":\"2026-10-02T06:30:59.250Z\",\"version\":1}",
+      "checkpoint": {
+        "chain": "agent_decisions",
+        "hash": "0c57c01ba02491f1fea372a904562bf605c9b678045a156f501677b293d8992a",
+        "head_hash": "e77b9a9ae9e30b0dbdb6f510a264ef9de781501d7b6b92ae89eb059c5ab743db",
+        "key_id": "kavach-checkpoint-kat",
+        "kind": "evidence_checkpoint",
+        "partition_id": 0,
+        "prev_checkpoint_hash": "3b3f63414ccde0e4828451b8d4331298652d12c71ddb1512d2776012fc04aeb8",
+        "seq": 5,
+        "sig": "6b5e69373d74800ddd8e7e569058468b5269f66d7c10fc4277c80440b3b0e25aef23bb241ac964cdff76294cb4e21b9f5e1a58257e37caa86cda70810707f002",
+        "tenant_id": "default",
+        "time_sync": {
+          "max_error_ms": null,
+          "status": "unknown"
+        },
+        "ts": "2026-10-02T06:30:59.250Z",
+        "version": 1
+      }
+    }
+  ],
+  "description": "Kavach evidence checkpoint v1. hash = SHA-256(hash_prefix || canonical_payload), lowercase hex; canonical_payload is the RFC 8785 (JCS) form of the checkpoint without `hash` and `sig`. sig = Ed25519(signing_prefix || hash as ASCII), hex. Test key only.",
+  "hash_prefix": "kavach-evidence-checkpoint-v1",
+  "public_key": {
+    "alg": "Ed25519",
+    "kid": "kavach-checkpoint-kat",
+    "public_key": "43046bfe4092b3e94994eada15dcc20d8aaa07b658fd3954eb8e0efb8bdca5de"
+  },
+  "record_hashes": [
+    "4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a",
+    "dbc1b4c900ffe48d575b5da5c638040125f65db0fe3e24494b76ea986457d986",
+    "084fed08b978af4d7d196a7446a86b58009e636b611db16211b65a9aadff29c5",
+    "e52d9c508c502347344d8c07ad91cbd6068afc75ff6292f062a09ca381c89e71",
+    "e77b9a9ae9e30b0dbdb6f510a264ef9de781501d7b6b92ae89eb059c5ab743db"
+  ],
+  "signing_prefix": "kavach-evidence-checkpoint-v1:"
+}
