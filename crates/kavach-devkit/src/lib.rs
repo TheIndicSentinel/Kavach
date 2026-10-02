@@ -6,7 +6,7 @@
 //!
 //! | Path | For | Contents |
 //! |---|---|---|
-//! | `kavach/keys/` | kavach-api | `dev-mandate-1`, `dev-evidence-1`, `dev-credential-1` (owner-only) |
+//! | `kavach/keys/` | kavach-api | `dev-mandate-1`, `dev-evidence-1`, `dev-checkpoint-1`, `dev-credential-1` (owner-only) |
 //! | `kavach/pseudonym.key` | kavach-api | subject pseudonym secret (owner-only) |
 //! | `kavach/*.json`, `kavach/tools/` | kavach-api | mandate config, consents, references (synthetic numbers), providers, JWKS, signed tool registry, tool signers |
 //! | `kavach/tls/ca.pem` | kavach-api | the dev CA the gateway trusts for providers |
@@ -49,6 +49,8 @@ pub const PROVIDER_AUDIENCE: &str = "mock-messaging";
 
 pub const MANDATE_KID: &str = "dev-mandate-1";
 pub const EVIDENCE_KID: &str = "dev-evidence-1";
+/// Signs evidence checkpoints and nothing else (ADR-005 §13).
+pub const CHECKPOINT_KID: &str = "dev-checkpoint-1";
 pub const CREDENTIAL_KID: &str = "dev-credential-1";
 pub const TOOL_SIGNER_KID: &str = "dev-tool-signer-1";
 pub const SOR_KID: &str = "dev-sor-issuer-1";
@@ -236,6 +238,7 @@ pub async fn generate(opts: &Options) -> Result<Summary, String> {
     let keys = LocalFileKeyProvider::new(kavach.join("keys"));
     keys.create_key(MANDATE_KID).map_err(|e| e.to_string())?;
     keys.create_key(EVIDENCE_KID).map_err(|e| e.to_string())?;
+    keys.create_key(CHECKPOINT_KID).map_err(|e| e.to_string())?;
     let credential_public = keys.create_key(CREDENTIAL_KID).map_err(|e| e.to_string())?;
     write_secret(&kavach.join("pseudonym.key"), &hex::encode(random32()?))?;
 
@@ -459,6 +462,7 @@ mod tests {
         for kid in [
             MANDATE_KID,
             EVIDENCE_KID,
+            CHECKPOINT_KID,
             CREDENTIAL_KID,
             TOOL_SIGNER_KID,
             SOR_KID,
@@ -469,6 +473,7 @@ mod tests {
         }
         for file in [
             "kavach/keys/dev-mandate-1.ed25519",
+            "kavach/keys/dev-checkpoint-1.ed25519",
             "kavach/mandate-config.json",
             "kavach/tools/agent-tools.yaml.sig",
             "kavach/tls/ca.pem",

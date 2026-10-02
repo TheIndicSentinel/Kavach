@@ -121,8 +121,34 @@ The first Agent Decision Records ship ahead of the full evidence v2, with these 
   - Each carries a **reason code** (`[a-z0-9_]{1,64}`, e.g. `provider_409`, `timeout_after_send`, `send_by_passed`), signed under `kavach-agent-outcome-sig-v2:`. Rows written before H5b have no reason and verify under v1; a v1 row cannot gain a reason without failing verification.
   - The verifier reports three lists: *outcome missing* (an allow past its credential lifetime with no valid outcome, e.g. a crash between commit and forward), *outcome unknown* (recorded `unknown`) and *outcome invalid* (a signature that does not verify; that allow also counts as missing). A deleted outcome row shows up as missing. Reconciliation of missing and unknown outcomes against provider records is a P1 follow-up.
   - **Forward-once ownership:** only the call that created a record (`Committed`, `Decided::created()`) may forward; replays, including concurrent duplicates, never do.
-- **Verification limits.** Without an out-of-band head (`expected_head`), truncating the chain tail is undetectable. Someone holding both the database and the evidence key can rewrite history until signed checkpoints and anchoring (§5, M2).
+- **Verification limits.** Without an out-of-band head (`expected_head`), truncating the chain tail is undetectable. Someone holding both the database and the evidence key can rewrite history until signed checkpoints are kept off-host (§13) or anchored (§5).
 - **Throughput.** One partition serialises every agent commit; this is the NFR-2 ceiling of the MVP configuration, and adding partitions is configuration.
+
+### 13. Amendment (E1): checkpoints, export and the offline verifier
+
+This replaces the outline in §5 and §10 for the agent chain. Delivery is in steps (E1–E5); the status of each is in [EVIDENCE_BUNDLE.md](EVIDENCE_BUNDLE.md).
+
+- **What a checkpoint is worth.** A checkpoint is written by the same deployment that writes the records. On its own it proves nothing against someone who holds both the database and the keys. It becomes useful only once a copy has left the system: a verifier given a checkpoint the operator kept detects a chain that was cut short or rewritten below it. **Operators must copy checkpoints off-host on a schedule.** External anchoring (the `EvidenceAnchor` port) stays a later item.
+- **Scope.** The agent chain (`agent_decisions`) only. The v1 `decision_events` chain gets checkpoints in a separate change.
+- **Format (v1).** A checkpoint states `kind`, `version`, `tenant_id`, `partition_id`, `chain`, `seq`, `head_hash`, `prev_checkpoint_hash`, `key_id`, `time_sync` and `ts` (trusted time, microseconds).
+  - `hash` = SHA-256 over `kavach-evidence-checkpoint-v1` ‖ RFC 8785 (JCS) payload.
+  - `sig` = Ed25519 over `kavach-evidence-checkpoint-v1:` ‖ `hash`.
+  - Checkpoints link through `prev_checkpoint_hash` (all zeros for the first), so one cannot be dropped from the middle unnoticed.
+  - This is the same style as records. The transparency-log checkpoint format was not used, because this chain is a hash chain, not a Merkle tree.
+  - The format carries a version from the first release; a verifier refuses versions it does not know.
+- **Key.** A dedicated checkpoint key, separate from the evidence key, which signs nothing else. It signs rarely, so it can later sit in a KMS or HSM.
+  - It is mandatory: when the agent data plane is on, startup refuses without it. There is no "off" mode.
+  - A `dev-` checkpoint key is accepted only in the development profile (`--insecure-dev`), and the verifier refuses `dev-`-signed checkpoints unless it is told it is verifying a development stack.
+- **When.** Every 1,000 records or 60 seconds, whichever comes first, and only if the head moved. The writer reads the head without taking the commit lock; a unique key on (tenant, partition, chain, seq) makes several replicas safe.
+- **Trusted time unavailable.** The checkpoint is skipped, counted in a metric and logged. Decisions are not blocked. If the head has moved and no checkpoint has been written for 10 minutes (configurable), an alert is raised, so a silent gap cannot last.
+- **Tenant-wide Merkle root (§5).** Deferred: the MVP has one partition.
+- **Export.** A command-line export reads Postgres through a read-only role, in one snapshot, into a versioned bundle (records, outcomes, checkpoints, signed manifest). No API endpoint is added.
+- **Offline verifier.**
+  - It takes trusted public keys **only from the operator**, never from the bundle.
+  - It verifies a whole chain or a segment that starts after a checkpoint.
+  - Given a kept checkpoint, it fails if the chain ends before it (records removed), if the record at that `seq` differs (rewritten), or if the checkpoints supplied cover that point without including it (checkpoint history rewritten).
+  - It reports how many records are newer than the last checkpoint.
+- **Outcome rows.** A deleted outcome row stays undetected for now (§12). Chaining outcomes would add a second per-partition lock on the gateway path; it is done only after a benchmark shows that lock is cheap (E5).
 
 ## Consequences
 

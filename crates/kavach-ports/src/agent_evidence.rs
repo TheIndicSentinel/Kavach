@@ -546,6 +546,53 @@ pub fn verify_dev_chain(
     verify(records, keys, expected_head, outcomes, now, true)
 }
 
+/// Whether evidence signed with `dev-` keys is accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DevKeys {
+    /// Evidence from a deployment: `dev-` keys are an error.
+    Refuse,
+    /// A development stack only.
+    Accept,
+}
+
+/// The record a segment follows: its `seq` and hash, taken from a verified
+/// checkpoint. [`SegmentStart::GENESIS`] is the start of the chain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SegmentStart<'a> {
+    pub seq: i64,
+    pub hash: &'a str,
+}
+
+impl SegmentStart<'static> {
+    pub const GENESIS: Self = Self {
+        seq: 0,
+        hash: GENESIS,
+    };
+}
+
+/// [`verify_chain`] for a segment that starts after a checkpoint rather
+/// than at the first record (ADR-005 §10). The caller must have verified
+/// the checkpoint that supplies `start`; nothing before it is checked.
+pub fn verify_segment(
+    records: &[AgentDecisionRecord],
+    start: SegmentStart<'_>,
+    keys: &BTreeMap<String, PublicKey>,
+    expected_head: Option<(i64, &str)>,
+    outcomes: &[OutcomeRecord],
+    now: DateTime<Utc>,
+    dev_keys: DevKeys,
+) -> Result<ChainReport, ChainError> {
+    verify_from(
+        records,
+        start,
+        keys,
+        expected_head,
+        outcomes,
+        now,
+        dev_keys == DevKeys::Accept,
+    )
+}
+
 fn verify(
     records: &[AgentDecisionRecord],
     keys: &BTreeMap<String, PublicKey>,
@@ -554,7 +601,27 @@ fn verify(
     now: DateTime<Utc>,
     allow_dev_keys: bool,
 ) -> Result<ChainReport, ChainError> {
-    let mut prev = GENESIS.to_string();
+    verify_from(
+        records,
+        SegmentStart::GENESIS,
+        keys,
+        expected_head,
+        outcomes,
+        now,
+        allow_dev_keys,
+    )
+}
+
+fn verify_from(
+    records: &[AgentDecisionRecord],
+    start: SegmentStart<'_>,
+    keys: &BTreeMap<String, PublicKey>,
+    expected_head: Option<(i64, &str)>,
+    outcomes: &[OutcomeRecord],
+    now: DateTime<Utc>,
+    allow_dev_keys: bool,
+) -> Result<ChainReport, ChainError> {
+    let mut prev = start.hash.to_string();
     for (index, record) in records.iter().enumerate() {
         if !allow_dev_keys && is_dev_key(&record.payload.key_id) {
             return Err(ChainError::DevKey {
@@ -563,7 +630,10 @@ fn verify(
             });
         }
         let p = &record.payload;
-        let expected = i64::try_from(index).unwrap_or(i64::MAX) + 1;
+        let expected = start
+            .seq
+            .saturating_add(i64::try_from(index).unwrap_or(i64::MAX))
+            .saturating_add(1);
         if p.seq != expected {
             return Err(ChainError::Gap {
                 seq: p.seq,
@@ -585,7 +655,7 @@ fn verify(
             .map_err(|e| signature(e.to_string()))?;
         prev.clone_from(&record.hash);
     }
-    let head_seq = records.last().map_or(0, |r| r.payload.seq);
+    let head_seq = records.last().map_or(start.seq, |r| r.payload.seq);
     if let Some((expected_seq, expected_hash)) = expected_head {
         if head_seq != expected_seq || prev != expected_hash {
             return Err(ChainError::Head {
@@ -928,6 +998,62 @@ mod tests {
         assert!(verify_chain(&good[..2], &keys(&key), None, &[], now).is_ok());
         assert!(matches!(
             verify_chain(&good[..2], &keys(&key), Some((3, &good[2].hash)), &[], now),
+            Err(ChainError::Head { .. })
+        ));
+    }
+
+    #[test]
+    fn a_segment_verifies_from_the_record_it_follows() {
+        let key = Key(SigningKey::from_bytes(&[4u8; 32]));
+        let now = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let good = chain(5, &key);
+        let start = SegmentStart {
+            seq: 2,
+            hash: &good[1].hash,
+        };
+        let verify = |records: &[AgentDecisionRecord], start| {
+            verify_segment(records, start, &keys(&key), None, &[], now, DevKeys::Refuse)
+        };
+
+        let report = verify(&good[2..], start).unwrap();
+        assert_eq!((report.records, report.head_seq), (3, 5));
+        assert_eq!(report.head_hash, good[4].hash);
+        // From genesis it is the same as verify_chain.
+        assert_eq!(
+            verify(&good, SegmentStart::GENESIS).unwrap(),
+            verify_chain(&good, &keys(&key), None, &[], now).unwrap()
+        );
+        // An empty segment reports its start as the head.
+        assert_eq!(verify(&[], start).unwrap().head_seq, 2);
+
+        // A segment that does not follow the stated record is refused.
+        let wrong = SegmentStart {
+            seq: 2,
+            hash: &good[0].hash,
+        };
+        assert!(matches!(
+            verify(&good[2..], wrong),
+            Err(ChainError::Link { seq: 3 })
+        ));
+        // So is one that skips its first record.
+        assert!(matches!(
+            verify(&good[3..], start),
+            Err(ChainError::Gap {
+                seq: 4,
+                expected: 3
+            })
+        ));
+        // And the segment still needs a head to detect a cut tail.
+        assert!(matches!(
+            verify_segment(
+                &good[2..4],
+                start,
+                &keys(&key),
+                Some((5, &good[4].hash)),
+                &[],
+                now,
+                DevKeys::Refuse
+            ),
             Err(ChainError::Head { .. })
         ));
     }
