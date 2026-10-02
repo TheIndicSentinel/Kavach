@@ -23,8 +23,9 @@ use axum::{Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
 use kavach_credential::{JoseCredentialBroker, RecipientKey};
 use kavach_dataplane::{
-    execute, AgentIdentity, AuthorizeConfig, AuthorizeCore, FixtureResolver, GatewayDeps,
-    GatewayError, GatewayReply, Mode, RegistryTrust, ToolRegistry, ToolRequest,
+    execute, AgentIdentity, AuthorizeConfig, AuthorizeCore, CheckpointPolicy, Checkpointer,
+    FixtureResolver, GatewayDeps, GatewayError, GatewayReply, Mode, RegistryTrust, ToolRegistry,
+    ToolRequest,
 };
 use kavach_domain::mandate::{AgentPassport, ConsentRecord, MandateTemplate, RevocationReason};
 use kavach_domain::Decision;
@@ -36,6 +37,7 @@ use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
 };
+use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::CredentialBroker;
 use kavach_ports::{
     ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey, ReplayGuard,
@@ -65,6 +67,15 @@ pub struct DataplaneConfig {
     /// Directory and id of the evidence signing key (signs evidence only).
     pub evidence_keys_dir: PathBuf,
     pub evidence_key_id: String,
+    /// Directory and id of the checkpoint signing key (signs evidence
+    /// checkpoints only; must differ from every other key). Mandatory:
+    /// there is no mode without checkpoints (ADR-005 §13).
+    pub checkpoint_keys_dir: PathBuf,
+    pub checkpoint_key_id: String,
+    /// Uncovered records get a checkpoint at least this often (1–3600).
+    pub checkpoint_interval_seconds: u64,
+    /// Records uncovered by a checkpoint for this long raise an alert.
+    pub checkpoint_stall_seconds: u64,
     /// 32-byte hex secret for subject pseudonyms and parameter MACs.
     pub subject_pseudonym_key: PathBuf,
     /// Consent fixture (JSON list of consent records; PRD D7).
@@ -314,6 +325,38 @@ impl AgentEvidenceStore for EvidenceBackend {
     }
 }
 
+impl CheckpointStore for EvidenceBackend {
+    async fn head(&self, scope: Scope<'_>) -> Result<Option<(i64, String)>, PortError> {
+        match self {
+            Self::Memory(s) => s.head(scope).await,
+            Self::Postgres(s) => s.head(scope).await,
+        }
+    }
+    async fn latest(&self, scope: Scope<'_>) -> Result<Option<Checkpoint>, PortError> {
+        match self {
+            Self::Memory(s) => s.latest(scope).await,
+            Self::Postgres(s) => s.latest(scope).await,
+        }
+    }
+    async fn append(&self, checkpoint: &Checkpoint) -> Result<Appended, PortError> {
+        match self {
+            Self::Memory(s) => s.append(checkpoint).await,
+            Self::Postgres(s) => s.append(checkpoint).await,
+        }
+    }
+    async fn list(
+        &self,
+        scope: Scope<'_>,
+        after_seq: i64,
+        limit: u32,
+    ) -> Result<Vec<Checkpoint>, PortError> {
+        match self {
+            Self::Memory(s) => s.list(scope, after_seq, limit).await,
+            Self::Postgres(s) => s.list(scope, after_seq, limit).await,
+        }
+    }
+}
+
 /// Trusted time: the kernel clock, or — only with `--insecure-dev` — the
 /// system clock declared synced (development machines without NTP status).
 #[derive(Clone)]
@@ -381,6 +424,7 @@ impl TokenBucket {
 pub struct Dataplane {
     mandates: Arc<Mandates>,
     core: AuthorizeCore<Arc<Mandates>, EvidenceBackend>,
+    checkpointer: Arc<Checkpointer<EvidenceBackend>>,
     agents: Arc<OidcVerifier>,
     passports: BTreeSet<(String, String)>,
     tenant: String,
@@ -405,6 +449,7 @@ impl Dataplane {
         }
         // Before anything else: a dev bundle must never run as production.
         refuse_dev_key("evidence", &config.evidence_key_id, insecure_dev)?;
+        refuse_dev_key("checkpoint", &config.checkpoint_key_id, insecure_dev)?;
         refuse_dev_key("credential", &config.credential_key_id, insecure_dev)?;
         let tools = Arc::new(load_tools(config, pack_signers, insecure_dev)?);
         let clock = match &config.test_clock {
@@ -448,17 +493,33 @@ impl Dataplane {
         let broker = build_broker(config, &tools, &mandate_kid, insecure_dev).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
             .map_err(|e| format!("subject pseudonym key: {e}"))?;
+        let evidence = Arc::new(evidence);
+        let authorize = AuthorizeConfig {
+            tenant_id: config.tenant_id.clone(),
+            ..AuthorizeConfig::default()
+        };
+        let checkpointer = Arc::new(Checkpointer::new(
+            Arc::clone(&evidence),
+            Box::new(checkpoint_signer(config, &mandate_kid, &signer)?),
+            Box::new(clock.clone()),
+            &authorize.tenant_id,
+            authorize.partition_id,
+            CheckpointPolicy {
+                every: std::time::Duration::from_secs(config.checkpoint_interval_seconds),
+                stall_after: std::time::Duration::from_secs(config.checkpoint_stall_seconds),
+                max_clock_error_ms: authorize.max_clock_error_ms,
+                ..CheckpointPolicy::default()
+            },
+            Instant::now(),
+        ));
         let core = AuthorizeCore::new(
             Arc::clone(&mandates),
-            Arc::new(evidence),
+            evidence,
             tools,
             subject_keys,
             Box::new(signer),
             Box::new(clock),
-            AuthorizeConfig {
-                tenant_id: config.tenant_id.clone(),
-                ..AuthorizeConfig::default()
-            },
+            authorize,
         )
         .map_err(|e| format!("authorization core: {e}"))?;
         let agents = OidcVerifier::load(config.agent_oidc.clone())
@@ -469,6 +530,7 @@ impl Dataplane {
         Ok(Self {
             mandates,
             core,
+            checkpointer,
             agents,
             passports,
             tenant: config.tenant_id.clone(),
@@ -499,6 +561,11 @@ impl Dataplane {
 
     pub fn core(&self) -> &AuthorizeCore<Arc<Mandates>, EvidenceBackend> {
         &self.core
+    }
+
+    /// The checkpoint writer's state (the background task ticks it).
+    pub fn checkpointer(&self) -> &Arc<Checkpointer<EvidenceBackend>> {
+        &self.checkpointer
     }
 
     pub fn mandates(&self) -> &Arc<Mandates> {
@@ -548,6 +615,40 @@ fn refuse_dev_key(what: &str, kid: &str, insecure_dev: bool) -> Result<(), Strin
         ));
     }
     Ok(())
+}
+
+/// The checkpoint signer: a key of its own. The same id or the same key
+/// material as the mandate, evidence or credential key is refused, so a
+/// checkpoint signature can never be produced by a key with another job.
+fn checkpoint_signer(
+    config: &DataplaneConfig,
+    mandate_kid: &str,
+    evidence: &Ed25519EvidenceSigner,
+) -> Result<Ed25519EvidenceSigner, String> {
+    if !(1..=3600).contains(&config.checkpoint_interval_seconds)
+        || config.checkpoint_stall_seconds <= config.checkpoint_interval_seconds
+    {
+        return Err(
+            "the checkpoint interval must be 1 to 3600 seconds, and the stall threshold longer \
+             than the interval"
+                .into(),
+        );
+    }
+    let kid = &config.checkpoint_key_id;
+    if kid == mandate_kid || kid == &config.evidence_key_id || kid == &config.credential_key_id {
+        return Err(format!(
+            "the checkpoint key {kid} must be a separate key from the mandate, evidence and \
+             credential keys"
+        ));
+    }
+    let signer = Ed25519EvidenceSigner::from_key_dir(&config.checkpoint_keys_dir, kid)
+        .map_err(|e| format!("checkpoint key: {e}"))?;
+    if signer.public_key().bytes == evidence.public_key().bytes {
+        return Err(format!(
+            "the checkpoint key {kid} has the same key material as the evidence key"
+        ));
+    }
+    Ok(signer)
 }
 
 /// The gateway's forwarder: every provider the registry forwards to needs

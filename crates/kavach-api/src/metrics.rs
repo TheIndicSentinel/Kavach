@@ -18,6 +18,60 @@ pub struct Metrics {
     gateway_malformed: prometheus::IntCounter,
     gateway_jti_conflicts: prometheus::IntCounter,
     gateway_outcome_write_failures: prometheus::IntCounter,
+    checkpoints: CheckpointMetrics,
+}
+
+/// Evidence checkpoints (ADR-005 §13). `reason` is a fixed vocabulary.
+#[derive(Clone)]
+struct CheckpointMetrics {
+    written: prometheus::IntCounter,
+    skipped: IntCounterVec,
+    last_seq: prometheus::IntGauge,
+    uncovered_records: prometheus::IntGauge,
+    last_covered: prometheus::IntGauge,
+    stalled: prometheus::IntGauge,
+}
+
+impl CheckpointMetrics {
+    fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
+        let gauge = |name: &str, help: &str| prometheus::IntGauge::new(name, help);
+        let metrics = Self {
+            written: prometheus::IntCounter::new(
+                "kavach_checkpoints_written_total",
+                "Evidence checkpoints written by this process",
+            )?,
+            skipped: IntCounterVec::new(
+                Opts::new(
+                    "kavach_checkpoints_skipped_total",
+                    "Due evidence checkpoints that were not written, by reason",
+                ),
+                &["reason"],
+            )?,
+            last_seq: gauge(
+                "kavach_checkpoint_last_seq",
+                "seq of the newest evidence checkpoint (0: none)",
+            )?,
+            uncovered_records: gauge(
+                "kavach_checkpoint_uncovered_records",
+                "Agent records newer than the newest evidence checkpoint",
+            )?,
+            last_covered: gauge(
+                "kavach_checkpoint_last_covered_timestamp_seconds",
+                "Unix time when every agent record was last covered by a checkpoint; alert when it is old",
+            )?,
+            stalled: gauge(
+                "kavach_checkpoint_stalled",
+                "1 when agent records have had no checkpoint for longer than the stall threshold",
+            )?,
+        };
+        registry.register(Box::new(metrics.written.clone()))?;
+        registry.register(Box::new(metrics.skipped.clone()))?;
+        registry.register(Box::new(metrics.last_seq.clone()))?;
+        registry.register(Box::new(metrics.uncovered_records.clone()))?;
+        registry.register(Box::new(metrics.last_covered.clone()))?;
+        registry.register(Box::new(metrics.stalled.clone()))?;
+        Ok(metrics)
+    }
 }
 
 impl Metrics {
@@ -77,6 +131,7 @@ impl Metrics {
         registry.register(Box::new(gateway_malformed.clone()))?;
         registry.register(Box::new(gateway_jti_conflicts.clone()))?;
         registry.register(Box::new(gateway_outcome_write_failures.clone()))?;
+        let checkpoints = CheckpointMetrics::register(&registry)?;
         Ok(Self {
             registry: Arc::new(registry),
             evaluate_total,
@@ -87,6 +142,7 @@ impl Metrics {
             gateway_malformed,
             gateway_jti_conflicts,
             gateway_outcome_write_failures,
+            checkpoints,
         })
     }
 
@@ -121,6 +177,24 @@ impl Metrics {
 
     pub fn observe_gateway_malformed(&self) {
         self.gateway_malformed.inc();
+    }
+
+    pub fn observe_checkpoint_written(&self) {
+        self.checkpoints.written.inc();
+    }
+
+    pub fn observe_checkpoint_skipped(&self, reason: &str) {
+        self.checkpoints.skipped.with_label_values(&[reason]).inc();
+    }
+
+    pub fn set_checkpoint_status(&self, status: &kavach_dataplane::CheckpointStatus) {
+        let checkpoints = &self.checkpoints;
+        checkpoints.last_seq.set(status.last_seq.unwrap_or(0));
+        checkpoints.uncovered_records.set(status.uncovered_records);
+        checkpoints
+            .last_covered
+            .set(status.last_covered_at.timestamp());
+        checkpoints.stalled.set(i64::from(status.stalled));
     }
 
     pub fn gather_text(&self) -> Result<String, prometheus::Error> {

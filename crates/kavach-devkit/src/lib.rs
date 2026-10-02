@@ -394,6 +394,8 @@ fn env_file(m: &str) -> String {
          KAVACH_MANDATE_KEYS_DIR={m}/keys\n\
          KAVACH_EVIDENCE_KEYS_DIR={m}/keys\n\
          KAVACH_EVIDENCE_KEY_ID={EVIDENCE_KID}\n\
+         KAVACH_CHECKPOINT_KEYS_DIR={m}/keys\n\
+         KAVACH_CHECKPOINT_KEY_ID={CHECKPOINT_KID}\n\
          KAVACH_CREDENTIAL_KEYS_DIR={m}/keys\n\
          KAVACH_CREDENTIAL_KEY_ID={CREDENTIAL_KID}\n\
          KAVACH_SUBJECT_PSEUDONYM_KEY={m}/pseudonym.key\n\

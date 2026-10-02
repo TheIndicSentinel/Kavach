@@ -210,10 +210,8 @@ pub fn write_providers(path: &Path, messaging: &str, voice: &str) {
     .unwrap();
 }
 
-pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
-    let dir = std::env::temp_dir().join(format!("kavach-dp-{}", uuid::Uuid::new_v4().simple()));
-    let keys = dir.join("keys");
-    std::fs::create_dir_all(&keys).unwrap();
+/// The mandate, evidence and checkpoint keys (one key each, one job each).
+fn signing_keys(keys: &Path) {
     owner_only(
         &keys.join("kavach-mandate-1.ed25519"),
         &hex::encode([1u8; 32]),
@@ -222,6 +220,20 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         &keys.join("kavach-evidence-1.ed25519"),
         &hex::encode([3u8; 32]),
     );
+    owner_only(
+        &keys.join("kavach-checkpoint-1.ed25519"),
+        &hex::encode(CHECKPOINT_SEED),
+    );
+}
+
+/// Seed of the fixture's checkpoint key (`kavach-checkpoint-1`).
+pub const CHECKPOINT_SEED: [u8; 32] = [8u8; 32];
+
+pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
+    let dir = std::env::temp_dir().join(format!("kavach-dp-{}", uuid::Uuid::new_v4().simple()));
+    let keys = dir.join("keys");
+    std::fs::create_dir_all(&keys).unwrap();
+    signing_keys(&keys);
     owner_only(&dir.join("pseudonym.key"), &hex::encode([6u8; 32]));
     credential_files(&dir, &keys);
 
@@ -292,6 +304,10 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         mandate_keys_dir: keys.clone(),
         evidence_keys_dir: keys.clone(),
         evidence_key_id: "kavach-evidence-1".into(),
+        checkpoint_keys_dir: keys.clone(),
+        checkpoint_key_id: "kavach-checkpoint-1".into(),
+        checkpoint_interval_seconds: 60,
+        checkpoint_stall_seconds: 600,
         subject_pseudonym_key: dir.join("pseudonym.key"),
         consents: dir.join("consents.json"),
         tenant_id: "default".into(),
@@ -548,6 +564,11 @@ impl Gw {
         assert!(!text.contains("+91"), "destination leaked: {text}");
         assert!(!text.contains("eyJ"), "a token leaked: {text}");
         (status, reply)
+    }
+
+    /// The test clock's current time.
+    pub fn clock_now(&self) -> DateTime<Utc> {
+        self.clock.now().utc
     }
 
     pub async fn remind(&self, request_id: &str) -> (StatusCode, Value) {

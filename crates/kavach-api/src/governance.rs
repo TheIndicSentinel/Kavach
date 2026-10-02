@@ -44,6 +44,9 @@ pub struct RuntimeView {
     /// True when another replica applied a change this process has not
     /// loaded; restart it to converge.
     pub pointer_drift: bool,
+    /// Evidence checkpoint health; present when the agent surfaces are on.
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    pub checkpoints: Option<crate::checkpoints::CheckpointView>,
 }
 
 pub async fn runtime(
@@ -62,6 +65,9 @@ pub async fn runtime(
         pointer_drift: stored_pointer_version != runtime.pointer_version,
         stored_pointer_version,
         runtime,
+        checkpoints: state
+            .dataplane()
+            .map(|dp| crate::checkpoints::CheckpointView::of(dp.checkpointer())),
     }))
 }
 
