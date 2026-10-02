@@ -226,6 +226,13 @@ impl BundleWriter {
         Ok(())
     }
 
+    /// The newest record written so far (`seq`, hash); the record the
+    /// segment follows while it is empty.
+    #[must_use]
+    pub fn head(&self) -> (i64, &str) {
+        (self.last_seq, &self.head_hash)
+    }
+
     /// An outcome of a record of this tenant.
     pub fn outcome(&mut self, outcome: &OutcomeRecord) -> Result<(), BundleError> {
         if outcome.tenant_id != self.tenant_id {

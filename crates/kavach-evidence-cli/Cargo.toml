@@ -20,10 +20,23 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+# Only for `export` and `checkpoints` (feature `export`).
+kavach-keys = { workspace = true, optional = true }
+kavach-storage = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[features]
+default = ["export"]
+# The commands that read a database: `export` and `checkpoints`. Without
+# it (`--no-default-features`) the binary has no database or network code.
+export = ["dep:kavach-keys", "dep:kavach-storage", "dep:tokio"]
 
 [dev-dependencies]
 kavach-domain = { workspace = true }
+kavach-ports-testkit = { workspace = true }
+kavach-storage = { workspace = true, features = ["test-support"] }
 ed25519-dalek = { workspace = true }
+tokio.workspace = true
 uuid.workspace = true
 
 [lints]
