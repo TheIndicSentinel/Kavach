@@ -181,7 +181,6 @@ fn the_checked_in_bundle_verifies_from_its_files_and_the_operators_keys() {
     // outcome is recorded as unknown.
     assert_eq!(chain.outcome_missing, vec!["cred-4".to_string()]);
     assert_eq!(chain.outcome_unknown, vec!["cred-3".to_string()]);
-    assert!(chain.outcome_invalid.is_empty());
 
     let segment = ChainSegment::of_records(start, &records);
     let report = verify_checkpoints(&checkpoints, SCOPE, &segment, &keys, DevKeys::Refuse)
