@@ -1,10 +1,13 @@
 //! The verifier's memory does not grow with the chain (E4a).
 //!
-//! This test binary runs under an allocator that records peak heap use. It
+//! This program runs under an allocator that records peak heap use. It
 //! writes two bundles, one ten times longer than the other, verifies both,
 //! and requires the peak during verification to be the same for both (and
-//! far below the size of the larger bundle). It has one test, so no other
-//! test's allocations are measured.
+//! far below the size of the larger bundle).
+//!
+//! It has no test harness (`harness = false`): the measurement is of the
+//! whole process, so it runs single-threaded with nothing else allocating,
+//! and it always prints its figures.
 
 mod common;
 
@@ -17,7 +20,10 @@ use kavach_ports::agent_evidence::{seal, sign_outcome, Outcome, SegmentStart, GE
 use kavach_ports::checkpoint::{sign_checkpoint, Checkpoint, Head};
 use peak_alloc::PeakAlloc;
 
-use common::*;
+use common::{
+    checkpoint_key, evidence_key, export_key, exported_at, exporter, records, scratch, t0, SCOPE,
+    TENANT,
+};
 
 #[global_allocator]
 static PEAK: PeakAlloc = PeakAlloc;
@@ -112,8 +118,7 @@ fn peak_while_verifying(bundle: &std::path::Path, keys: &std::path::Path, record
     peak.saturating_sub(before)
 }
 
-#[test]
-fn verifying_a_ten_times_longer_chain_uses_no_more_memory() {
+fn main() {
     let keys =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/vectors/bundle-v1.keys.json");
     let (small, large) = (scratch("memory-small"), scratch("memory-large"));
@@ -130,8 +135,9 @@ fn verifying_a_ten_times_longer_chain_uses_no_more_memory() {
 
     let small_peak = peak_while_verifying(&small, &keys, SMALL.unsigned_abs());
     let large_peak = peak_while_verifying(&large, &keys, LARGE.unsigned_abs());
-    eprintln!(
-        "bundle {small_size} B: peak {small_peak} B; bundle {large_size} B: peak {large_peak} B"
+    println!(
+        "verifier memory: {SMALL} records ({small_size} B) peak {small_peak} B; {LARGE} records \
+         ({large_size} B) peak {large_peak} B"
     );
 
     // Ten times the chain, the same memory (a little slack for allocator
@@ -149,4 +155,5 @@ fn verifying_a_ten_times_longer_chain_uses_no_more_memory() {
 
     fs::remove_dir_all(&small).unwrap();
     fs::remove_dir_all(&large).unwrap();
+    println!("test verifying_a_ten_times_longer_chain_uses_no_more_memory ... ok");
 }

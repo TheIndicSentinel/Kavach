@@ -25,6 +25,13 @@ kavach-keys = { workspace = true, optional = true }
 kavach-storage = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
+# The bounded-memory test measures the whole process's heap, so it runs as
+# a plain single-threaded program: no test harness, no other threads, and
+# its figures are always printed.
+[[test]]
+name = "memory"
+harness = false
+
 [features]
 default = ["export"]
 # The commands that read a database: `export` and `checkpoints`. Without
