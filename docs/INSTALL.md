@@ -43,7 +43,7 @@ cd Kavach
 ./scripts/build-console.sh
 
 # Release binaries
-cargo build --release -p kavach-api -p kavach-batch -p kavach-evidence
+cargo build --release -p kavach-api -p kavach-batch -p kavach-evidence-cli
 ```
 
 Binaries: `target/release/kavach-api`, `target/release/kavach-batch`, `target/release/kavach-evidence`.
@@ -68,6 +68,12 @@ export KAVACH_DATABASE_URL="postgres://kavach_runtime:runtime-secret@db.internal
 - If you create `kavach_runtime` **after** migrations already ran, grant it: `psql -U kavach -d kavach -c 'SELECT kavach_grant_runtime();'`.
 - `kavach-batch` never migrates unless given `--migration-database-url`; start `kavach-api` first.
 - **Development only:** with just `KAVACH_DATABASE_URL` (no migration URL), one role both migrates and serves, and it owns its tables.
+- **Evidence export role (optional).** Create a third, read-only role for whoever exports agent evidence:
+  ```sql
+  CREATE ROLE kavach_auditor LOGIN PASSWORD 'auditor-secret';   -- kavach-evidence export
+  ```
+  Migrations grant it `SELECT` on the agent evidence tables only (`agent_decisions`, `agent_outcomes`, `evidence_checkpoints`, `agent_evidence_chains`): it can write nothing and read nothing else, so an export cannot change what it reads. If you create it **after** migrations already ran, grant it: `psql -U kavach -d kavach -c 'SELECT kavach_grant_auditor();'`. The compose init script creates it when `KAVACH_AUDITOR_DB_PASSWORD` is set. Give this role's credentials to the auditor, not to the API.
+- **Export key.** Evidence bundles are signed by the person who exports them, with a key of their own whose id starts with `export-` (`kavach-keys generate --dir <their dir> --kid export-<name>-1`). Keep it off the API host. The API refuses to start if one of its own keys is named `export-…` ([EVIDENCE_BUNDLE.md](EVIDENCE_BUNDLE.md)).
 - The pilot compose stack creates `kavach_runtime` on first init (`deploy/postgres/init`); set `KAVACH_RUNTIME_DB_PASSWORD` in `deploy/.env`.
 
 ## Configuration reference

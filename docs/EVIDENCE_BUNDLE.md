@@ -10,11 +10,12 @@ How Kavach's agent evidence is checkpointed, exported and verified offline. The 
 | Segment verification: a chain checked from a checkpoint instead of from the first record | Done (E1) |
 | Checkpoint storage: append-only table, one unforked line of checkpoints per chain | Done (E2a) |
 | Writing checkpoints in a running deployment (background writer, mandatory key, metrics, stall alert) | Done (E2b) |
-| Export command and bundle layout | Not yet (E3) |
+| Bundle format v1: manifest, writer, export key rules, test vector; read-only `kavach_auditor` database role | Done (E3a) |
+| Export command (`kavach-evidence export`, `checkpoints`) | Not yet (E3b) |
 | `verify-bundle` command | Not yet (E4) |
 | Detecting a deleted outcome row | Not yet (E5, only if a benchmark shows the lock is cheap) |
 
-Deployments now write checkpoints, but **there is no export command or bundle verifier yet**. Until E3 and E4 ship, Kavach does not claim protection against a truncated or rewritten chain: an operator can copy checkpoints off-host with SQL ([INSTALL.md](INSTALL.md)), but nothing shipped checks a chain against them. The limits in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md) still apply.
+Deployments now write checkpoints, but **there is no export command or bundle verifier yet**. Until E3b and E4 ship, Kavach does not claim protection against a truncated or rewritten chain: an operator can copy checkpoints off-host with SQL ([INSTALL.md](INSTALL.md)), but nothing shipped checks a chain against them. The limits in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md) still apply.
 
 ## What a checkpoint does and does not prove
 
@@ -86,10 +87,88 @@ A checkpoint dated before the one preceding it is a warning (the clock stepped b
 - The server has no graceful shutdown yet, so no final checkpoint is written when it stops. Records written after the last checkpoint are covered after the next start.
 - The checkpoint key is separate from every other key by id and from the evidence key by material. By default it sits in a directory beside the other keys, so the separation only becomes a real boundary when keys move to a KMS or HSM.
 
+## Bundle format, version 1
+
+A bundle is one export of one chain segment. It is a directory with exactly four files; the names are fixed, and a manifest never names a path.
+
+| File | Contents |
+|---|---|
+| `manifest.json` | What the bundle is, the segment it covers and the SHA-256 of the other three files |
+| `records.jsonl` | The segment's Agent Decision Records, one JSON object per line, in `seq` order |
+| `outcomes.jsonl` | The outcomes of those records, one per line |
+| `checkpoints.jsonl` | The checkpoints from the segment's start, one per line, in `seq` order |
+
+A bundle contains **no public keys**. A verifier gets its keys from the operator (see "Trusted keys").
+
+**What is in a bundle.** Agent, mandate and request identifiers, decisions, signals, reason codes, times, a keyed pseudonym of the subject and a keyed MAC of the parameters. It holds no destination (phone number) and no raw subject reference; a test fails the build if either reaches a bundle. It is still evidence about people's cases: the writer creates the directory and files readable by their owner only, and a bundle should be stored and shared accordingly.
+
+### Manifest
+
+| Field | Type | Meaning |
+|---|---|---|
+| `format` | string | `kavach-evidence-bundle` |
+| `version` | integer | `1`. A verifier refuses a version it does not know. |
+| `tenant_id`, `partition_id`, `chain` | | The chain, as in a checkpoint |
+| `segment.after_seq` | integer ≥ 0 | The record the segment follows; `0` when it starts at the first record |
+| `segment.after_hash` | 64 lowercase hex | Hash of that record; 64 zeros when `after_seq` is `0` |
+| `segment.last_seq` | integer | The newest record in the bundle; equals `after_seq` when the segment is empty |
+| `segment.head_hash` | 64 lowercase hex | Hash of record `last_seq` |
+| `files.records`, `files.outcomes`, `files.checkpoints` | object | `sha256` (lowercase hex of the file's bytes) and `count` (its number of lines) |
+| `exported_at` | string | RFC 3339 UTC, at most microseconds. The exporter's own clock, not trusted time |
+| `exporter` | object | `tool` and `version` |
+| `key_id` | string | The export key. Absent on an unsigned bundle |
+| `hash` | 64 lowercase hex | See below; not part of the hashed content |
+| `sig` | 128 hex | See below; not part of the hashed content. Absent on an unsigned bundle |
+
+`files.records.count` always equals `last_seq − after_seq`.
+
+**Hash.** Remove `hash` and `sig`, serialise the rest with RFC 8785 (JCS), then:
+
+```
+hash = lowercase_hex( SHA-256( "kavach-evidence-bundle-v1" || canonical_json ) )
+```
+
+**Signature.** Ed25519 with the export key:
+
+```
+sig = hex( Ed25519_sign( "kavach-evidence-bundle-v1:" || hash_as_ASCII ) )
+```
+
+### Why the manifest is signed, and by whom
+
+Records and checkpoints carry their own signatures, so an unsigned manifest cannot hide a forged record. Outcomes are different: each row is signed, but nothing signs them as a set, so a missing outcome cannot be seen from the rows. The manifest signature closes that gap for the bundle: it states "this is what the exporter saw", including how many outcomes there were and the digest of the file that holds them.
+
+- The **export key** belongs to whoever runs the export (an auditor or operator) and lives with them, **not on the API host**.
+- Its key id must start with `export-` (`dev-export-` for a development key). A manifest signed under any other key id is refused, even if the operator's key list contains it. The API refuses to start with a mandate, evidence, checkpoint or credential key whose id starts with `export-`. So one key can never do both jobs.
+- Signing is the default. A bundle is unsigned only when the exporter asks for it explicitly, and a verifier must report an unsigned bundle as such.
+
+### Records, outcomes and checkpoints
+
+Each line is the JSON of one object, as stored: an Agent Decision Record or an outcome (ADR-005 §12), or a checkpoint (above). Lines end with a line feed; the last line too. A verifier parses each line and checks its hash and signature from its content, so the bytes of a line need not be canonical, but the file's bytes must match the digest in the manifest.
+
+### Trusted keys
+
+The operator gives the verifier a JSON file of public keys, kept apart from any bundle:
+
+```json
+{ "keys": [ { "kid": "kavach-evidence-1", "alg": "Ed25519", "public_key": "<64 hex>" } ] }
+```
+
+It lists the evidence key, the checkpoint key and the export key (and earlier ones after a rotation).
+
+### Verifying a bundle
+
+1. Read `manifest.json`. Refuse an unknown `format` or `version`, bounds out of order, or a record count that does not match the segment.
+2. Recompute `hash`. If the manifest is signed: refuse a `key_id` that is not an export key, refuse a `dev-` key unless verifying a development stack, and verify `sig` with the operator's key. If it is unsigned, say so in the result. `key_id` without `sig`, or the reverse, is malformed.
+3. For each of the three files: its SHA-256 and line count match the manifest.
+4. Records: `seq` runs from `after_seq + 1` to `last_seq`; each links to the one before (the first to `after_hash`); each hash and signature verifies; the last hash is `head_hash`.
+5. Outcomes: each signature verifies; report allows whose credential has expired with no valid outcome, outcomes recorded as `unknown`, and outcomes that do not verify.
+6. Checkpoints: as in "Verifying checkpoints", against the records of this segment.
+7. With a kept checkpoint: as in step 7 there.
+
+Step 4 for a segment that does not start at the first record trusts `after_hash` only as far as a checkpoint vouches for it: a checkpoint at `after_seq` with that `head_hash`, in the bundle or kept by the operator.
+
 ## Test vectors
 
-[`crates/kavach-ports/tests/vectors/checkpoint-v1.json`](../crates/kavach-ports/tests/vectors/checkpoint-v1.json) holds two linked checkpoints signed with a test-only key, the public key, the record hashes they cover and, for each checkpoint, the exact canonical bytes that were hashed. An independent implementation should reproduce `hash` from `canonical_payload` and verify `sig`.
-
-## Bundle layout
-
-Defined with the export command (E3). It will carry a format version from its first release.
+- **A bundle:** [`crates/kavach-evidence-cli/tests/vectors/bundle-v1/`](../crates/kavach-evidence-cli/tests/vectors/bundle-v1/) is a complete bundle of four records (one of them a block), two outcomes and two checkpoints, with its trusted keys in [`bundle-v1.keys.json`](../crates/kavach-evidence-cli/tests/vectors/bundle-v1.keys.json) beside it. Verifying it should report one allow with no outcome (`cred-4`), one outcome recorded as `unknown` (`cred-3`) and one record newer than the last checkpoint.
+- **Checkpoints:** [`crates/kavach-ports/tests/vectors/checkpoint-v1.json`](../crates/kavach-ports/tests/vectors/checkpoint-v1.json) holds two linked checkpoints signed with a test-only key, the public key, the record hashes they cover and, for each checkpoint, the exact canonical bytes that were hashed. An independent implementation should reproduce `hash` from `canonical_payload` and verify `sig`.
