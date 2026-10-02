@@ -11,6 +11,10 @@ use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, OutcomeRecord, RequestBinding, GENESIS,
 };
+use kavach_ports::checkpoint::{
+    check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
+    CHAIN_AGENT_DECISIONS,
+};
 use kavach_ports::{PortError, TimeSource};
 
 type RequestKey = (String, String, String);
@@ -22,6 +26,12 @@ struct State {
     requests: HashMap<RequestKey, (usize, RequestBinding)>,
     counters: HashMap<(String, String, NaiveDate), u32>,
     outcomes: HashMap<(String, String), OutcomeRecord>,
+    checkpoints: Vec<Checkpoint>,
+}
+
+fn in_scope(checkpoint: &Checkpoint, scope: Scope<'_>) -> bool {
+    let p = &checkpoint.payload;
+    p.tenant_id == scope.tenant_id && p.partition_id == scope.partition_id && p.chain == scope.chain
 }
 
 #[derive(Default)]
@@ -178,6 +188,105 @@ impl MemoryAgentEvidenceStore {
             .get(&(tenant_id.into(), subject_pseudonym.into(), ist_date))
             .copied()
             .unwrap_or(0))
+    }
+}
+
+impl MemoryAgentEvidenceStore {
+    fn head_sync(&self, scope: Scope<'_>) -> Result<Option<(i64, String)>, PortError> {
+        if scope.chain != CHAIN_AGENT_DECISIONS {
+            return Ok(None);
+        }
+        let state = self.state.lock().map_err(poisoned)?;
+        Ok(state
+            .heads
+            .get(&(scope.tenant_id.to_string(), scope.partition_id))
+            .filter(|(seq, _)| *seq > 0)
+            .cloned())
+    }
+
+    fn latest_sync(&self, scope: Scope<'_>) -> Result<Option<Checkpoint>, PortError> {
+        let state = self.state.lock().map_err(poisoned)?;
+        Ok(state
+            .checkpoints
+            .iter()
+            .rfind(|c| in_scope(c, scope))
+            .cloned())
+    }
+
+    fn append_sync(&self, checkpoint: &Checkpoint) -> Result<Appended, PortError> {
+        check_storable(checkpoint)?;
+        let p = &checkpoint.payload;
+        let mut state = self.state.lock().map_err(poisoned)?;
+        let covered = state.records.iter().any(|r| {
+            r.payload.tenant_id == p.tenant_id
+                && r.payload.partition_id == p.partition_id
+                && r.payload.seq == p.seq
+                && r.hash == p.head_hash
+        });
+        if !covered {
+            return Err(PortError::rejected(
+                "no record with this seq and hash to checkpoint",
+            ));
+        }
+        let scope = Scope {
+            tenant_id: &p.tenant_id,
+            partition_id: p.partition_id,
+            chain: &p.chain,
+        };
+        let latest = state.checkpoints.iter().rfind(|c| in_scope(c, scope));
+        let result = check_follows(checkpoint, latest)?;
+        if result == Appended::Written {
+            state.checkpoints.push(checkpoint.clone());
+        }
+        Ok(result)
+    }
+
+    fn list_sync(
+        &self,
+        scope: Scope<'_>,
+        after_seq: i64,
+        limit: u32,
+    ) -> Result<Vec<Checkpoint>, PortError> {
+        let state = self.state.lock().map_err(poisoned)?;
+        Ok(state
+            .checkpoints
+            .iter()
+            .filter(|c| in_scope(c, scope) && c.payload.seq > after_seq)
+            .take(usize::try_from(limit).unwrap_or(usize::MAX))
+            .cloned()
+            .collect())
+    }
+}
+
+impl CheckpointStore for MemoryAgentEvidenceStore {
+    fn head(
+        &self,
+        scope: Scope<'_>,
+    ) -> impl Future<Output = Result<Option<(i64, String)>, PortError>> + Send {
+        ready(self.head_sync(scope))
+    }
+
+    fn latest(
+        &self,
+        scope: Scope<'_>,
+    ) -> impl Future<Output = Result<Option<Checkpoint>, PortError>> + Send {
+        ready(self.latest_sync(scope))
+    }
+
+    fn append(
+        &self,
+        checkpoint: &Checkpoint,
+    ) -> impl Future<Output = Result<Appended, PortError>> + Send {
+        ready(self.append_sync(checkpoint))
+    }
+
+    fn list(
+        &self,
+        scope: Scope<'_>,
+        after_seq: i64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Checkpoint>, PortError>> + Send {
+        ready(self.list_sync(scope, after_seq, limit))
     }
 }
 

@@ -8,12 +8,13 @@ How Kavach's agent evidence is checkpointed, exported and verified offline. The 
 |---|---|
 | Checkpoint format v1 and its verification logic (library, test vectors) | Done (E1) |
 | Segment verification: a chain checked from a checkpoint instead of from the first record | Done (E1) |
-| Writing checkpoints in a running deployment | Not yet (E2) |
+| Checkpoint storage: append-only table, one unforked line of checkpoints per chain | Done (E2a) |
+| Writing checkpoints in a running deployment | Not yet (E2b) |
 | Export command and bundle layout | Not yet (E3) |
 | `verify-bundle` command | Not yet (E4) |
 | Detecting a deleted outcome row | Not yet (E5, only if a benchmark shows the lock is cheap) |
 
-Until E2 ships, **no deployment writes checkpoints**, and the limits in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md) are unchanged.
+Until E2b ships, **no deployment writes checkpoints**, and the limits in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md) are unchanged.
 
 ## What a checkpoint does and does not prove
 
