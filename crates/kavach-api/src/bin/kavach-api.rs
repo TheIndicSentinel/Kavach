@@ -49,6 +49,23 @@ struct AgentArgs {
         default_value = "kavach-evidence-1"
     )]
     evidence_key_id: String,
+    /// Directory with the checkpoint signing key (signs evidence checkpoints
+    /// only). Required with the agent surfaces.
+    #[arg(long, env = "KAVACH_CHECKPOINT_KEYS_DIR")]
+    checkpoint_keys_dir: Option<PathBuf>,
+    #[arg(
+        long,
+        env = "KAVACH_CHECKPOINT_KEY_ID",
+        default_value = "kavach-checkpoint-1"
+    )]
+    checkpoint_key_id: String,
+    /// Uncovered records get a checkpoint at least this often (or after
+    /// 1,000 records, whichever comes first).
+    #[arg(long, env = "KAVACH_CHECKPOINT_INTERVAL_SECONDS", default_value_t = 60)]
+    checkpoint_interval_seconds: u64,
+    /// Alert when records have had no checkpoint for this many seconds.
+    #[arg(long, env = "KAVACH_CHECKPOINT_STALL_SECONDS", default_value_t = 600)]
+    checkpoint_stall_seconds: u64,
     /// Owner-only file with a 32-byte hex secret for subject pseudonyms.
     #[arg(long, env = "KAVACH_SUBJECT_PSEUDONYM_KEY")]
     subject_pseudonym_key: Option<PathBuf>,
@@ -133,6 +150,10 @@ impl AgentArgs {
             mandate_keys_dir: need(self.mandate_keys_dir, "--mandate-keys-dir")?,
             evidence_keys_dir: need(self.evidence_keys_dir, "--evidence-keys-dir")?,
             evidence_key_id: self.evidence_key_id,
+            checkpoint_keys_dir: need(self.checkpoint_keys_dir, "--checkpoint-keys-dir")?,
+            checkpoint_key_id: self.checkpoint_key_id,
+            checkpoint_interval_seconds: self.checkpoint_interval_seconds,
+            checkpoint_stall_seconds: self.checkpoint_stall_seconds,
             subject_pseudonym_key: need(self.subject_pseudonym_key, "--subject-pseudonym-key")?,
             consents: need(self.consents, "--consents")?,
             tenant_id: self.tenant_id,

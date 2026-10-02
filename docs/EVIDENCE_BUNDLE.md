@@ -9,12 +9,12 @@ How Kavach's agent evidence is checkpointed, exported and verified offline. The 
 | Checkpoint format v1 and its verification logic (library, test vectors) | Done (E1) |
 | Segment verification: a chain checked from a checkpoint instead of from the first record | Done (E1) |
 | Checkpoint storage: append-only table, one unforked line of checkpoints per chain | Done (E2a) |
-| Writing checkpoints in a running deployment | Not yet (E2b) |
+| Writing checkpoints in a running deployment (background writer, mandatory key, metrics, stall alert) | Done (E2b) |
 | Export command and bundle layout | Not yet (E3) |
 | `verify-bundle` command | Not yet (E4) |
 | Detecting a deleted outcome row | Not yet (E5, only if a benchmark shows the lock is cheap) |
 
-Until E2b ships, **no deployment writes checkpoints**, and the limits in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md) are unchanged.
+Deployments now write checkpoints, but **there is no export command or bundle verifier yet**. Until E3 and E4 ship, Kavach does not claim protection against a truncated or rewritten chain: an operator can copy checkpoints off-host with SQL ([INSTALL.md](INSTALL.md)), but nothing shipped checks a chain against them. The limits in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md) still apply.
 
 ## What a checkpoint does and does not prove
 
@@ -74,6 +74,17 @@ Given the records of a chain (or a segment of it), its checkpoints in `seq` orde
 7. With a kept checkpoint: it must verify (step 2), pass step 5, and be among the supplied checkpoints whenever they cover its `seq`.
 
 A checkpoint dated before the one preceding it is a warning (the clock stepped back), not an integrity failure.
+
+## How checkpoints are written
+
+- A background task in the API process checks once a second. It writes a checkpoint when records are uncovered and either 1,000 of them have accumulated or they have been uncovered for the interval (default 60 seconds). The record count is checked by polling, so a busy system can pass 1,000 before the next check.
+- It reads the chain head without taking the commit lock, and never blocks or fails a decision.
+- Several replicas may run it. The store keeps one line of checkpoints: a replica that loses the race writes nothing and reads the winner's checkpoint on its next check.
+- The checkpoint is dated by trusted time, under the same clock-error bound as decisions. If trusted time is unavailable the checkpoint is skipped and counted; it is never dated by a guess.
+- If records stay uncovered past the stall threshold (default 10 minutes), an alert is logged and shown in `/v1/runtime` and the metrics. `/health` and decisions are unaffected.
+- The task is restarted if it ever exits, and a panic is logged.
+- The server has no graceful shutdown yet, so no final checkpoint is written when it stops. Records written after the last checkpoint are covered after the next start.
+- The checkpoint key is separate from every other key by id and from the evidence key by material. By default it sits in a directory beside the other keys, so the separation only becomes a real boundary when keys move to a KMS or HSM.
 
 ## Test vectors
 

@@ -74,7 +74,7 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 
 - **One evidence chain.** Agent records chain separately from v1 `decision_events` until M2 (ADR-005 §12).
 - **Per-subject erasure of agent records.** Subjects are keyed pseudonyms; one subject cannot be crypto-shredded until M2.
-- **Chain truncation and full rewrites.** Removing the newest records is detected only against an out-of-band head; whoever holds both the database and the evidence key can rewrite the agent chain until signed checkpoints and anchoring (M2). A deleted outcome row is not detected.
+- **Chain truncation and full rewrites.** Removing the newest records is detected only against an out-of-band head; whoever holds both the database and the keys can rewrite the agent chain. Signed checkpoints are now written (ADR-005 §13), but they protect nothing until a copy is kept off-host, and the export command and the verifier that checks a chain against a kept checkpoint are not shipped yet ([EVIDENCE_BUNDLE.md](EVIDENCE_BUNDLE.md)). A deleted outcome row is not detected.
 - **Agent inputs that are still caller-supplied.** In the agent-authorization library, the delegating agent (`by_agent`) and `contacts_today` come from the caller until H5 derives them from authenticated agent identity and stored counters. Until then they are unsafe inputs (ADR-011).
 - **Contact-hours source.** The 08:00–19:00 IST floor follows RBI directions on recovery agents as summarised in our research; it awaits compliance sign-off and is guidance, not legal advice.
 - **Delivery time on asynchronous channels.** Authorising a WhatsApp or SMS contact at 18:59 does not guarantee delivery before 19:00; a send-by deadline is planned with the H5 gateway.

@@ -100,8 +100,7 @@ impl AppState {
             model_pack_mismatch: model.pack_id != pack.pack.id,
         };
 
-        let metrics = Metrics::new().map_err(|e| ApiError::Internal(format!("metrics: {e}")))?;
-        metrics.set_model_pack_mismatch(runtime.model_pack_mismatch);
+        let metrics = start_metrics(runtime.model_pack_mismatch, dataplane.as_ref())?;
         let service = EvaluateService::new(
             pack,
             model,
@@ -418,6 +417,18 @@ impl AppState {
         }
         Ok(result.response)
     }
+}
+
+/// The metrics registry, with the evidence checkpoint writer reporting into
+/// it when the agent surfaces are on.
+fn start_metrics(
+    model_pack_mismatch: bool,
+    dataplane: Option<&crate::dataplane::Dataplane>,
+) -> Result<Metrics, ApiError> {
+    let metrics = Metrics::new().map_err(|e| ApiError::Internal(format!("metrics: {e}")))?;
+    metrics.set_model_pack_mismatch(model_pack_mismatch);
+    crate::checkpoints::start(dataplane, &metrics);
+    Ok(metrics)
 }
 
 /// The agent surfaces, when configured (ADR-007).
