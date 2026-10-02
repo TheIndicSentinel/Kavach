@@ -14,6 +14,8 @@ use kavach_ports::agent_evidence::{AgentDecisionRecord, Outcome, OutcomeRecord};
 use kavach_ports::checkpoint::{Checkpoint, CHAIN_AGENT_DECISIONS};
 use kavach_ports::PortError;
 use sqlx::postgres::{PgPoolOptions, PgRow};
+
+use super::tls::{connect_options, DatabaseTls};
 use sqlx::{Postgres, Row, Transaction};
 
 fn unavailable(err: &sqlx::Error) -> PortError {
@@ -52,12 +54,15 @@ impl EvidenceSnapshot {
     /// through it reflects a write made after this returns.
     pub async fn open(
         database_url: &str,
+        tls: &DatabaseTls,
         tenant_id: &str,
         partition_id: i32,
     ) -> Result<Self, PortError> {
+        let options = connect_options(database_url, tls)
+            .map_err(|e| PortError::invalid(format!("evidence export: {e}")))?;
         let pool = PgPoolOptions::new()
             .max_connections(1)
-            .connect(database_url)
+            .connect_with(options)
             .await
             .map_err(|e| unavailable(&e))?;
         let mut tx = pool.begin().await.map_err(|e| unavailable(&e))?;

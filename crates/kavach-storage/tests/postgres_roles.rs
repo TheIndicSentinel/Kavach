@@ -9,9 +9,13 @@ async fn runtime_role_cannot_alter_evidence_or_governance_history() {
     let Some((owner, runtime)) = isolated_database_urls().await else {
         return;
     };
-    let pool = StoragePool::connect_with_roles(&runtime, Some(&owner))
-        .await
-        .expect("migrate as owner, connect as runtime");
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .expect("migrate as owner, connect as runtime");
 
     // What the application does still works.
     let admin = pool.admin_store();
@@ -77,9 +81,13 @@ async fn auditor_role_reads_agent_evidence_and_nothing_else() {
     let Some((owner, runtime)) = isolated_database_urls().await else {
         return;
     };
-    StoragePool::connect_with_roles(&runtime, Some(&owner))
-        .await
-        .expect("migrate as owner");
+    StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .expect("migrate as owner");
     let auditor = sqlx::PgPool::connect(&auditor_url(&owner))
         .await
         .expect("connect as kavach_auditor");
@@ -129,9 +137,16 @@ async fn migrations_apply_once_on_fresh_and_upgraded_databases() {
     let Some(url) = isolated_database_url().await else {
         return;
     };
-    kavach_storage::migrate(&url).await.expect("fresh");
-    kavach_storage::migrate(&url).await.expect("idempotent");
-    let pool = StoragePool::connect_with_roles(&url, None).await.unwrap();
+    kavach_storage::migrate(&url, &kavach_storage::DatabaseTls::development())
+        .await
+        .expect("fresh");
+    kavach_storage::migrate(&url, &kavach_storage::DatabaseTls::development())
+        .await
+        .expect("idempotent");
+    let pool =
+        StoragePool::connect_with_roles(&url, None, &kavach_storage::DatabaseTls::development())
+            .await
+            .unwrap();
     let applied: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM _sqlx_migrations WHERE success")
         .fetch_one(&pool.pool)
         .await
@@ -164,8 +179,13 @@ async fn migrations_apply_once_on_fresh_and_upgraded_databases() {
         .await
         .unwrap();
     legacy.close().await;
-    kavach_storage::migrate(&url).await.expect("adopt tracking");
-    let pool = StoragePool::connect_with_roles(&url, None).await.unwrap();
+    kavach_storage::migrate(&url, &kavach_storage::DatabaseTls::development())
+        .await
+        .expect("adopt tracking");
+    let pool =
+        StoragePool::connect_with_roles(&url, None, &kavach_storage::DatabaseTls::development())
+            .await
+            .unwrap();
     let kept: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM admin_audit_log WHERE action = 'kept'")
             .fetch_one(&pool.pool)

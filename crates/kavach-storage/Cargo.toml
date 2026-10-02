@@ -26,6 +26,8 @@ uuid.workspace = true
 test-support = []
 
 [dev-dependencies]
+# The wire-level TLS test reads and writes a raw socket with a timeout.
+tokio = { workspace = true, features = ["io-util", "time"] }
 kavach-storage = { path = ".", features = ["test-support"] }
 kavach-policy = { workspace = true }
 serde_yaml.workspace = true

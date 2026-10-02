@@ -51,6 +51,9 @@ pub struct Target {
     pub partition_id: i32,
     /// Accept a role that could change the evidence (development only).
     pub allow_write_role: bool,
+    /// How the connection is secured: `verify-full` unless the URL asks
+    /// for less and this allows it.
+    pub tls: kavach_storage::DatabaseTls,
 }
 
 /// How the bundle is signed.
@@ -78,10 +81,14 @@ pub enum CommandError {
 }
 
 async fn open(target: &Target) -> Result<EvidenceSnapshot, CommandError> {
-    let snapshot =
-        EvidenceSnapshot::open(&target.database_url, &target.tenant_id, target.partition_id)
-            .await
-            .map_err(CommandError::Database)?;
+    let snapshot = EvidenceSnapshot::open(
+        &target.database_url,
+        &target.tls,
+        &target.tenant_id,
+        target.partition_id,
+    )
+    .await
+    .map_err(CommandError::Database)?;
     if snapshot.can_write() && !target.allow_write_role {
         return Err(CommandError::WriteRole);
     }

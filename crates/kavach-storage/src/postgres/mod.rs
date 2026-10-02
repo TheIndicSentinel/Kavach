@@ -10,6 +10,7 @@ mod jobs;
 mod mandates;
 mod migrate;
 mod retention;
+mod tls;
 
 pub use admin::PostgresAdminStore;
 pub use agent_evidence::PostgresAgentEvidenceStore;
@@ -24,6 +25,7 @@ pub use jobs::{
 pub use mandates::{PostgresMandateStore, PostgresReplayGuard};
 pub use migrate::{connect_pool, connect_runtime, migrate};
 pub use retention::PostgresRetentionStore;
+pub use tls::{connect_options, DatabaseTls, DatabaseTlsError};
 
 use sqlx::PgPool;
 
@@ -35,8 +37,11 @@ pub struct StoragePool {
 
 impl StoragePool {
     /// Migrates and connects with one role (development).
-    pub async fn connect(database_url: &str) -> Result<Self, kavach_evidence::EvidenceError> {
-        connect_pool(database_url).await
+    pub async fn connect(
+        database_url: &str,
+        tls: &DatabaseTls,
+    ) -> Result<Self, kavach_evidence::EvidenceError> {
+        connect_pool(database_url, tls).await
     }
 
     /// Migrates as `migration_url` (owner role) when given, then connects as
@@ -45,13 +50,14 @@ impl StoragePool {
     pub async fn connect_with_roles(
         database_url: &str,
         migration_url: Option<&str>,
+        tls: &DatabaseTls,
     ) -> Result<Self, kavach_evidence::EvidenceError> {
         match migration_url {
             Some(owner) => {
-                migrate(owner).await?;
-                connect_runtime(database_url).await
+                migrate(owner, tls).await?;
+                connect_runtime(database_url, tls).await
             }
-            None => connect_pool(database_url).await,
+            None => connect_pool(database_url, tls).await,
         }
     }
 

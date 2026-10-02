@@ -10,7 +10,11 @@ use kavach_storage::StoragePool;
 
 async fn pool() -> Option<StoragePool> {
     let url = isolated_database_url().await?;
-    Some(StoragePool::connect(&url).await.expect("connect + migrate"))
+    Some(
+        StoragePool::connect(&url, &kavach_storage::DatabaseTls::development())
+            .await
+            .expect("connect + migrate"),
+    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

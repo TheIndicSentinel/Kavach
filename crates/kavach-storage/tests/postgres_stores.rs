@@ -13,7 +13,11 @@ use kavach_storage::{
 
 async fn pool() -> Option<StoragePool> {
     let url = isolated_database_url().await?;
-    Some(StoragePool::connect(&url).await.expect("connect + migrate"))
+    Some(
+        StoragePool::connect(&url, &kavach_storage::DatabaseTls::development())
+            .await
+            .expect("connect + migrate"),
+    )
 }
 
 fn event(correlation_id: &str, input_digest: &str, age_days: i64) -> AppendDecisionEvent {

@@ -19,9 +19,13 @@ async fn postgres_store_meets_the_contract_as_the_runtime_role() {
     let Some((owner, runtime)) = isolated_database_urls().await else {
         return;
     };
-    let pool = StoragePool::connect_with_roles(&runtime, Some(&owner))
-        .await
-        .expect("connect");
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .expect("connect");
     conformance(Arc::new(pool.agent_evidence_store())).await;
 }
 
@@ -35,9 +39,13 @@ async fn postgres_checkpoint_store_meets_the_contract_as_the_runtime_role() {
     let Some((owner, runtime)) = isolated_database_urls().await else {
         return;
     };
-    let pool = StoragePool::connect_with_roles(&runtime, Some(&owner))
-        .await
-        .expect("connect");
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .expect("connect");
     checkpoint_store::conformance(Arc::new(pool.agent_evidence_store())).await;
 }
 
@@ -46,9 +54,13 @@ async fn checkpoints_are_append_only_even_for_their_owner() {
     let Some((owner, runtime)) = isolated_database_urls().await else {
         return;
     };
-    let pool = StoragePool::connect_with_roles(&runtime, Some(&owner))
-        .await
-        .unwrap();
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .unwrap();
     // The conformance run leaves checkpoints behind to try to alter.
     checkpoint_store::conformance(Arc::new(pool.agent_evidence_store())).await;
 
@@ -96,9 +108,13 @@ async fn evidence_is_append_only_even_for_its_owner() {
     let Some((owner, runtime)) = isolated_database_urls().await else {
         return;
     };
-    let pool = StoragePool::connect_with_roles(&runtime, Some(&owner))
-        .await
-        .unwrap();
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .unwrap();
     let store = pool.agent_evidence_store();
     let signer = TestSigner::new("evidence-test", 9);
     let clock = FakeClock::synced_at(chrono::Utc::now());

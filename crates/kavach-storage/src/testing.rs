@@ -36,8 +36,10 @@ pub async fn isolated_database_url() -> Option<String> {
         .expect("create test schema");
     pool.close().await;
     let separator = if base.contains('?') { '&' } else { '?' };
+    // The test database serves no TLS: the URL says so, and tests connect
+    // with `DatabaseTls::development()`, which lets a URL ask for that.
     Some(format!(
-        "{base}{separator}options=-c%20search_path%3D{schema}"
+        "{base}{separator}options=-c%20search_path%3D{schema}&sslmode=disable"
     ))
 }
 

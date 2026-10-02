@@ -28,6 +28,16 @@ struct TargetArgs {
     /// stacks only.
     #[arg(long)]
     allow_write_role: bool,
+    /// Extra CA certificates (PEM) trusted for the Postgres server's
+    /// certificate, besides the system roots. The connection always uses
+    /// TLS with a verified certificate and host name.
+    #[arg(long, env = "KAVACH_DATABASE_CA")]
+    database_ca: Option<PathBuf>,
+    /// Accept a database URL that asks for a weaker `sslmode` than
+    /// `verify-full` (for example `sslmode=disable`). Development stacks
+    /// only; without it such a URL is refused.
+    #[arg(long)]
+    allow_plaintext_database: bool,
 }
 
 #[derive(Subcommand)]
@@ -118,6 +128,7 @@ mod database {
             tenant_id: args.tenant,
             partition_id: args.partition,
             allow_write_role: args.allow_write_role,
+            tls: kavach_storage::DatabaseTls::new(args.allow_plaintext_database, args.database_ca),
         }
     }
 
