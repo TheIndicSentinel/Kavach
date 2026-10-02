@@ -42,7 +42,9 @@ async fn records<S: AgentEvidenceStore>(
     let signer = TestSigner::new(EVIDENCE_KID, 9);
     let clock = FakeClock::synced_at(t0());
     for i in 0..n {
-        let mut req = request(tenant, &format!("cp-{i}"), 1);
+        // Credential ids derive from the request id and are unique across
+        // tenants, so the request id names the tenant.
+        let mut req = request(tenant, &format!("{tenant}-{i}"), 1);
         req.contact = None;
         req.draft.send_by = None;
         let result = store.commit(req, &clock, &signer).await.expect("commit");
