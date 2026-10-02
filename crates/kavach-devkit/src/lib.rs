@@ -20,6 +20,8 @@
 //! Each consumer mounts only its own directory: an agent container gets its
 //! token and no key material.
 
+pub mod probe;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 

@@ -15,3 +15,4 @@ console/*.tsbuildinfo
 /deploy/.env
 scripts/jose-crosscheck/node_modules/
 *.cdx.json
+deploy/agent-stack/bundle/
