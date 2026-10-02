@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use kavach_ports::agent_evidence::{AgentEvidenceStore, CommitResult};
 use kavach_ports_testkit::agent_evidence::{conformance, request, TestSigner};
+use kavach_ports_testkit::checkpoint_store;
 use kavach_ports_testkit::FakeClock;
 use kavach_storage::testing::isolated_database_urls;
 use kavach_storage::{MemoryAgentEvidenceStore, StoragePool};
@@ -22,6 +23,72 @@ async fn postgres_store_meets_the_contract_as_the_runtime_role() {
         .await
         .expect("connect");
     conformance(Arc::new(pool.agent_evidence_store())).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn memory_checkpoint_store_meets_the_contract() {
+    checkpoint_store::conformance(Arc::new(MemoryAgentEvidenceStore::default())).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_checkpoint_store_meets_the_contract_as_the_runtime_role() {
+    let Some((owner, runtime)) = isolated_database_urls().await else {
+        return;
+    };
+    let pool = StoragePool::connect_with_roles(&runtime, Some(&owner))
+        .await
+        .expect("connect");
+    checkpoint_store::conformance(Arc::new(pool.agent_evidence_store())).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn checkpoints_are_append_only_even_for_their_owner() {
+    let Some((owner, runtime)) = isolated_database_urls().await else {
+        return;
+    };
+    let pool = StoragePool::connect_with_roles(&runtime, Some(&owner))
+        .await
+        .unwrap();
+    // The conformance run leaves checkpoints behind to try to alter.
+    checkpoint_store::conformance(Arc::new(pool.agent_evidence_store())).await;
+
+    let statements = [
+        "UPDATE evidence_checkpoints SET sig = 'x'",
+        "DELETE FROM evidence_checkpoints",
+        "TRUNCATE evidence_checkpoints",
+    ];
+    for statement in statements {
+        let err = sqlx::query(statement)
+            .execute(&pool.pool)
+            .await
+            .expect_err(statement);
+        assert!(
+            err.to_string().contains("permission denied"),
+            "{statement}: {err}"
+        );
+    }
+    let owner_pool = sqlx::PgPool::connect(&owner).await.unwrap();
+    for statement in statements {
+        let err = sqlx::query(statement)
+            .execute(&owner_pool)
+            .await
+            .expect_err(statement);
+        assert!(
+            err.to_string().contains("append-only"),
+            "{statement}: {err}"
+        );
+    }
+    // The database itself refuses a second successor of the same checkpoint.
+    let err = sqlx::query(
+        "INSERT INTO evidence_checkpoints (tenant_id, partition_id, chain, seq, head_hash, \
+            prev_checkpoint_hash, key_id, ts, hash, sig, payload) \
+        SELECT tenant_id, partition_id, chain, seq + 1000, head_hash, prev_checkpoint_hash, \
+            key_id, ts, hash || 'x', sig, payload FROM evidence_checkpoints LIMIT 1",
+    )
+    .execute(&owner_pool)
+    .await
+    .expect_err("fork");
+    assert!(err.to_string().contains("duplicate key"), "{err}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

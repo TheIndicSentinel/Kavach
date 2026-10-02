@@ -10,6 +10,10 @@ use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding, GENESIS,
 };
+use kavach_ports::checkpoint::{
+    check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
+    CHAIN_AGENT_DECISIONS,
+};
 use kavach_ports::{PortError, TimeSource};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
@@ -371,5 +375,131 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         .await
         .map_err(|e| unavailable(&e))?;
         Ok(count.map_or(0, |c| u32::try_from(c).unwrap_or(0)))
+    }
+}
+
+fn row_to_checkpoint(row: &sqlx::postgres::PgRow) -> Result<Checkpoint, PortError> {
+    let payload: serde_json::Value = row.try_get("payload").map_err(|e| unavailable(&e))?;
+    Ok(Checkpoint {
+        payload: serde_json::from_value(payload)
+            .map_err(|e| PortError::invalid(format!("stored checkpoint: {e}")))?,
+        hash: row.try_get("hash").map_err(|e| unavailable(&e))?,
+        sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
+    })
+}
+
+/// Checkpoints of the agent chain (ADR-005 §13). No lock is taken: the
+/// table's unique keys (one checkpoint per `seq`, one successor per
+/// checkpoint) keep the stored checkpoints in one line when several
+/// writers run.
+impl CheckpointStore for PostgresAgentEvidenceStore {
+    async fn head(&self, scope: Scope<'_>) -> Result<Option<(i64, String)>, PortError> {
+        if scope.chain != CHAIN_AGENT_DECISIONS {
+            return Ok(None);
+        }
+        let row = sqlx::query(
+            "SELECT head_seq, head_hash FROM agent_evidence_chains \
+            WHERE tenant_id = $1 AND partition_id = $2 AND head_seq > 0",
+        )
+        .bind(scope.tenant_id)
+        .bind(scope.partition_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        let Some(row) = row else { return Ok(None) };
+        Ok(Some((
+            row.try_get("head_seq").map_err(|e| unavailable(&e))?,
+            row.try_get("head_hash").map_err(|e| unavailable(&e))?,
+        )))
+    }
+
+    async fn latest(&self, scope: Scope<'_>) -> Result<Option<Checkpoint>, PortError> {
+        let row = sqlx::query(
+            "SELECT payload, hash, sig FROM evidence_checkpoints \
+            WHERE tenant_id = $1 AND partition_id = $2 AND chain = $3 \
+            ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(scope.tenant_id)
+        .bind(scope.partition_id)
+        .bind(scope.chain)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        row.as_ref().map(row_to_checkpoint).transpose()
+    }
+
+    async fn append(&self, checkpoint: &Checkpoint) -> Result<Appended, PortError> {
+        check_storable(checkpoint)?;
+        let p = &checkpoint.payload;
+        let record_hash: Option<String> = sqlx::query_scalar(
+            "SELECT hash FROM agent_decisions \
+            WHERE tenant_id = $1 AND partition_id = $2 AND seq = $3",
+        )
+        .bind(&p.tenant_id)
+        .bind(p.partition_id)
+        .bind(p.seq)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        if record_hash.as_deref() != Some(p.head_hash.as_str()) {
+            return Err(PortError::rejected(
+                "no record with this seq and hash to checkpoint",
+            ));
+        }
+        let scope = Scope {
+            tenant_id: &p.tenant_id,
+            partition_id: p.partition_id,
+            chain: &p.chain,
+        };
+        let latest = self.latest(scope).await?;
+        if check_follows(checkpoint, latest.as_ref())? == Appended::Superseded {
+            return Ok(Appended::Superseded);
+        }
+        // A writer that raced past the check above loses on a unique key.
+        let inserted = sqlx::query(
+            "INSERT INTO evidence_checkpoints (tenant_id, partition_id, chain, seq, head_hash, \
+                prev_checkpoint_hash, key_id, ts, hash, sig, payload) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(&p.tenant_id)
+        .bind(p.partition_id)
+        .bind(&p.chain)
+        .bind(p.seq)
+        .bind(&p.head_hash)
+        .bind(&p.prev_checkpoint_hash)
+        .bind(&p.key_id)
+        .bind(p.ts)
+        .bind(&checkpoint.hash)
+        .bind(&checkpoint.sig)
+        .bind(json(p)?)
+        .execute(&self.pool)
+        .await;
+        match inserted {
+            Ok(_) => Ok(Appended::Written),
+            Err(e) if is_unique_violation(&e) => Ok(Appended::Superseded),
+            Err(e) => Err(unavailable(&e)),
+        }
+    }
+
+    async fn list(
+        &self,
+        scope: Scope<'_>,
+        after_seq: i64,
+        limit: u32,
+    ) -> Result<Vec<Checkpoint>, PortError> {
+        let rows = sqlx::query(
+            "SELECT payload, hash, sig FROM evidence_checkpoints \
+            WHERE tenant_id = $1 AND partition_id = $2 AND chain = $3 AND seq > $4 \
+            ORDER BY seq LIMIT $5",
+        )
+        .bind(scope.tenant_id)
+        .bind(scope.partition_id)
+        .bind(scope.chain)
+        .bind(after_seq)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter().map(row_to_checkpoint).collect()
     }
 }

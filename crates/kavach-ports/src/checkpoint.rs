@@ -15,6 +15,7 @@
 //! and exporting them are separate.
 
 use std::collections::BTreeMap;
+use std::future::Future;
 
 use chrono::{DateTime, DurationRound, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
@@ -160,6 +161,96 @@ pub fn sign_checkpoint(
     let hash = checkpoint_hash(&payload)?;
     let sig = hex::encode(signer.sign(&checkpoint_signing_message(&hash))?);
     Ok(Checkpoint { payload, hash, sig })
+}
+
+/// What became of an [`CheckpointStore::append`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Appended {
+    Written,
+    /// Another writer checkpointed this chain first. Nothing was stored;
+    /// read the latest checkpoint again before the next attempt.
+    Superseded,
+}
+
+/// Checkpoint persistence (ADR-005 §13). Append-only.
+///
+/// The stored checkpoints of a chain form **one line**: each links to the
+/// one before it and at most one checkpoint follows any other, also when
+/// several writers run. A store does not verify signatures (it holds no
+/// keys); it refuses what it can check.
+pub trait CheckpointStore: Send + Sync {
+    /// The newest record of the chain (`seq`, hash); `None` while it has
+    /// none. Read without taking the commit lock.
+    fn head(
+        &self,
+        scope: Scope<'_>,
+    ) -> impl Future<Output = Result<Option<(i64, String)>, PortError>> + Send;
+
+    /// The newest checkpoint of the chain.
+    fn latest(
+        &self,
+        scope: Scope<'_>,
+    ) -> impl Future<Output = Result<Option<Checkpoint>, PortError>> + Send;
+
+    /// Stores a checkpoint.
+    /// - `Rejected` when its hash does not match its content, when the
+    ///   record at its `seq` does not have its `head_hash`, or when it does
+    ///   not advance past the latest checkpoint.
+    /// - [`Appended::Superseded`] when it does not follow the latest
+    ///   checkpoint because another writer got there first.
+    fn append(
+        &self,
+        checkpoint: &Checkpoint,
+    ) -> impl Future<Output = Result<Appended, PortError>> + Send;
+
+    /// Checkpoints with `seq > after_seq`, oldest first, at most `limit`.
+    fn list(
+        &self,
+        scope: Scope<'_>,
+        after_seq: i64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Checkpoint>, PortError>> + Send;
+}
+
+/// What a store checks before it writes: the checkpoint is well formed, of
+/// a chain the store holds, and hashes to its content.
+pub fn check_storable(checkpoint: &Checkpoint) -> Result<(), PortError> {
+    let p = &checkpoint.payload;
+    if p.kind != KIND_CHECKPOINT || p.version != CHECKPOINT_VERSION {
+        return Err(PortError::rejected("not a version 1 evidence checkpoint"));
+    }
+    if p.chain != CHAIN_AGENT_DECISIONS {
+        return Err(PortError::rejected(format!("unknown chain {}", p.chain)));
+    }
+    if p.seq < 1 || !is_hash(&p.head_hash) || !is_hash(&p.prev_checkpoint_hash) {
+        return Err(PortError::rejected(
+            "checkpoint seq must be >= 1 and hashes 64 lowercase hex",
+        ));
+    }
+    if checkpoint_hash(p)? != checkpoint.hash {
+        return Err(PortError::rejected(
+            "checkpoint hash does not match its content",
+        ));
+    }
+    Ok(())
+}
+
+/// Where a storable checkpoint stands against the latest stored one.
+/// `Ok(Appended::Written)` means it may be written.
+pub fn check_follows(
+    checkpoint: &Checkpoint,
+    latest: Option<&Checkpoint>,
+) -> Result<Appended, PortError> {
+    let expected_prev = latest.map_or(GENESIS, |c| c.hash.as_str());
+    if checkpoint.payload.prev_checkpoint_hash != expected_prev {
+        return Ok(Appended::Superseded);
+    }
+    if latest.is_some_and(|c| checkpoint.payload.seq <= c.payload.seq) {
+        return Err(PortError::rejected(
+            "checkpoint does not advance past the latest checkpoint",
+        ));
+    }
+    Ok(Appended::Written)
 }
 
 /// The record hashes a set of checkpoints is checked against: a contiguous

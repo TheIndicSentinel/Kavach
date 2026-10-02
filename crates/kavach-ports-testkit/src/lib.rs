@@ -5,6 +5,7 @@
 //! exercise the same contract as production.
 
 pub mod agent_evidence;
+pub mod checkpoint_store;
 pub mod credential_broker;
 pub mod reference_resolver;
 
