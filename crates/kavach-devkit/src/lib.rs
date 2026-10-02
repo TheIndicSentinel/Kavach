@@ -16,7 +16,7 @@
 //! | `operator.jwt` | operators | an operator token |
 //! | `sor/` | system of record | the event-signing key, used by `kavach-dev sor-event` |
 //! | `signing/` | offline | the tool-registry signing key |
-//! | `auditor/` | whoever exports evidence | the export key `dev-export-1`, which signs evidence bundles (never mounted into Kavach) |
+//! | `auditor/` | whoever exports evidence | the export key `dev-export-1`, which signs evidence bundles, and `trusted-keys.json`, the public keys for `kavach-evidence verify-bundle --dev` (never mounted into Kavach) |
 //!
 //! Each consumer mounts only its own directory: an agent container gets its
 //! token and no key material.
@@ -225,8 +225,8 @@ pub async fn generate(opts: &Options) -> Result<Summary, String> {
         out.join("sor"),
         out.join("signing"),
     );
-    // The auditor's export key: its own directory, mounted into nothing.
-    LocalFileKeyProvider::new(out.join("auditor"))
+    // The auditor's export key: its own directory, never mounted into Kavach.
+    let export_public = LocalFileKeyProvider::new(out.join("auditor"))
         .create_key(EXPORT_KID)
         .map_err(|e| e.to_string())?;
     for dir in [
@@ -244,8 +244,20 @@ pub async fn generate(opts: &Options) -> Result<Summary, String> {
     // Kavach's own keys (dev- ids).
     let keys = LocalFileKeyProvider::new(kavach.join("keys"));
     keys.create_key(MANDATE_KID).map_err(|e| e.to_string())?;
-    keys.create_key(EVIDENCE_KID).map_err(|e| e.to_string())?;
-    keys.create_key(CHECKPOINT_KID).map_err(|e| e.to_string())?;
+    let evidence_public = keys.create_key(EVIDENCE_KID).map_err(|e| e.to_string())?;
+    let checkpoint_public = keys.create_key(CHECKPOINT_KID).map_err(|e| e.to_string())?;
+    // What the auditor trusts when verifying a bundle from this stack:
+    // public keys only, kept with the auditor and never in a bundle.
+    let trusted: Vec<Value> = [&evidence_public, &checkpoint_public, &export_public]
+        .iter()
+        .map(
+            |key| json!({ "kid": key.kid, "alg": "Ed25519", "public_key": hex::encode(key.bytes) }),
+        )
+        .collect();
+    write_json(
+        &out.join("auditor/trusted-keys.json"),
+        &json!({ "keys": trusted }),
+    )?;
     let credential_public = keys.create_key(CREDENTIAL_KID).map_err(|e| e.to_string())?;
     write_secret(&kavach.join("pseudonym.key"), &hex::encode(random32()?))?;
 
@@ -486,6 +498,7 @@ mod tests {
             "kavach/keys/dev-mandate-1.ed25519",
             "kavach/keys/dev-checkpoint-1.ed25519",
             "auditor/dev-export-1.ed25519",
+            "auditor/trusted-keys.json",
             "kavach/mandate-config.json",
             "kavach/tools/agent-tools.yaml.sig",
             "kavach/tls/ca.pem",
@@ -501,6 +514,17 @@ mod tests {
         // among Kavach's keys.
         assert!(kavach_ports::bundle::is_export_key(EXPORT_KID));
         assert!(!out.join("kavach/keys/dev-export-1.ed25519").exists());
+        // The trusted keys file lists exactly the three keys a bundle of
+        // this stack is verified with, and no private material.
+        let trusted = std::fs::read_to_string(out.join("auditor/trusted-keys.json")).unwrap();
+        let trusted: Value = serde_json::from_str(&trusted).unwrap();
+        let kids: Vec<&str> = trusted["keys"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["kid"].as_str().unwrap())
+            .collect();
+        assert_eq!(kids, [EVIDENCE_KID, CHECKPOINT_KID, EXPORT_KID]);
         // An agent's directory holds only tokens: no key material.
         for entry in std::fs::read_dir(out.join("agents")).unwrap() {
             let path = entry.unwrap().path();

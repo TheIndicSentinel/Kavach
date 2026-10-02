@@ -13,7 +13,7 @@ How Kavach's agent evidence is checkpointed, exported and verified offline. The 
 | Bundle format v1: manifest, writer, export key rules, test vector; read-only `kavach_auditor` database role | Done (E3a) |
 | Export command (`kavach-evidence export`, `checkpoints`) | Done (E3b) |
 | `verify-bundle` command (offline, fail-closed, constant memory) | Done (E4a) |
-| Export and verify from a deployed stack in CI | Not yet (E4b) |
+| Export and verify from a deployed stack in CI (the required isolation job) | Done (E4b) |
 | Detecting a deleted outcome row | Not yet (E5, only if a benchmark shows the lock is cheap) |
 
 With a checkpoint kept off-host, `kavach-evidence verify-bundle --expect-checkpoint` detects a chain that was cut short or rewritten, also by someone who holds the database and the keys. Without a kept checkpoint it cannot, and it says so. The exact property and its conditions are in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md).

@@ -17,6 +17,7 @@
 #   docker compose up -d --wait postgres kavach mock-provider
 #   docker compose run --rm issue-mandate               # SoR event -> mandate
 #   docker compose run --rm test-agent                  # the probe; exit status = result
+#   docker compose run --rm export-evidence             # export as the auditor, verify offline
 #   docker compose down -v
 
 name: kavach-isolation
@@ -71,6 +72,8 @@ services:
       POSTGRES_PASSWORD: kavach-isolation-owner
       POSTGRES_DB: kavach
       KAVACH_RUNTIME_DB_PASSWORD: kavach-isolation-runtime
+      # Creates the read-only kavach_auditor role (evidence export).
+      KAVACH_AUDITOR_DB_PASSWORD: kavach-isolation-auditor
     volumes:
       - ../postgres/init:/docker-entrypoint-initdb.d:ro
     networks:
@@ -101,6 +104,9 @@ services:
       KAVACH_CEDAR_POLICY: crates/kavach-auth/policies/kavach.cedar
       KAVACH_CEDAR_ENTITIES: crates/kavach-auth/policies/entities.example.json
       KAVACH_LOG_FORMAT: json
+      # Checkpoint the agent chain every few seconds, so the evidence step
+      # below finds the probe's records covered (the default is 60).
+      KAVACH_CHECKPOINT_INTERVAL_SECONDS: "5"
     volumes:
       - ./bundle/kavach:/etc/kavach:ro
     command:
@@ -179,6 +185,26 @@ services:
     networks:
       backend_net:
         ipv4_address: 172.30.20.41
+
+  # One-shot, as the auditor: exports the agent evidence from the running
+  # stack as the read-only kavach_auditor role and verifies the bundle
+  # offline against a checkpoint taken first. This is the deployed-stack
+  # test of the checkpoint writer: real Postgres, the production image.
+  # The export key and trusted keys come from bundle/auditor, which is
+  # mounted into nothing else.
+  export-evidence:
+    image: kavach:local
+    profiles: ["run"]
+    user: "10001:10001"
+    environment:
+      KAVACH_AUDITOR_DATABASE_URL: postgres://kavach_auditor:kavach-isolation-auditor@172.30.20.20:5432/kavach
+    volumes:
+      - ./bundle/auditor:/auditor:ro
+      - ./export-evidence.sh:/usr/local/bin/export-evidence.sh:ro
+    entrypoint: ["sh", "/usr/local/bin/export-evidence.sh"]
+    networks:
+      backend_net:
+        ipv4_address: 172.30.20.42
 
   # The agent: agent network only; holds its token and mandate id, nothing
   # else. Its exit status is the test result.
