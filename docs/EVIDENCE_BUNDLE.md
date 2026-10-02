@@ -11,11 +11,11 @@ How Kavach's agent evidence is checkpointed, exported and verified offline. The 
 | Checkpoint storage: append-only table, one unforked line of checkpoints per chain | Done (E2a) |
 | Writing checkpoints in a running deployment (background writer, mandatory key, metrics, stall alert) | Done (E2b) |
 | Bundle format v1: manifest, writer, export key rules, test vector; read-only `kavach_auditor` database role | Done (E3a) |
-| Export command (`kavach-evidence export`, `checkpoints`) | Not yet (E3b) |
+| Export command (`kavach-evidence export`, `checkpoints`) | Done (E3b) |
 | `verify-bundle` command | Not yet (E4) |
 | Detecting a deleted outcome row | Not yet (E5, only if a benchmark shows the lock is cheap) |
 
-Deployments now write checkpoints, but **there is no export command or bundle verifier yet**. Until E3b and E4 ship, Kavach does not claim protection against a truncated or rewritten chain: an operator can copy checkpoints off-host with SQL ([INSTALL.md](INSTALL.md)), but nothing shipped checks a chain against them. The limits in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md) still apply.
+Deployments write checkpoints and can export them and the chain, but **there is no bundle verifier command yet**. Until E4 ships, Kavach does not claim protection against a truncated or rewritten chain: an operator can copy checkpoints off-host (`kavach-evidence checkpoints`), but no shipped command checks a chain against them. The limits in [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md) still apply.
 
 ## What a checkpoint does and does not prove
 
@@ -167,6 +167,31 @@ It lists the evidence key, the checkpoint key and the export key (and earlier on
 7. With a kept checkpoint: as in step 7 there.
 
 Step 4 for a segment that does not start at the first record trusts `after_hash` only as far as a checkpoint vouches for it: a checkpoint at `after_seq` with that `head_hash`, in the bundle or kept by the operator.
+
+## Exporting
+
+```sh
+export KAVACH_AUDITOR_DATABASE_URL='postgres://kavach_auditor:…@db.internal:5432/kavach'
+
+# The whole chain, signed with the exporter's own key.
+kavach-evidence export --out ./bundle-2026-10-02 --key-dir ~/kavach-export-keys --key-id export-asha-1
+
+# Only what follows the checkpoint at record 12000.
+kavach-evidence export --out ./bundle-next --after-checkpoint 12000 --key-dir … --key-id …
+
+# Checkpoints to keep off-host: the newest, or all after a record.
+kavach-evidence checkpoints --latest >> /mnt/offsite/kavach-checkpoints.jsonl
+kavach-evidence checkpoints --after 12000
+```
+
+- **One snapshot.** Everything is read in one read-only `REPEATABLE READ` transaction, in pages: records, outcomes and checkpoints agree with each other, and a write made during the export is not in it.
+- **A read-only role.** The command refuses a database role that could change the evidence (the API's own role, or the owner); use `kavach_auditor`. `--allow-write-role` overrides this for development stacks.
+- **A whole bundle or nothing.** The target directory must not exist. If the stored evidence is not one consistent segment (records that do not link, a head that does not match, a checkpoint newer than the chain), the export fails and writes nothing.
+- **Signing.** `--key-dir` and `--key-id` (an `export-` key, in an owner-only file) or, explicitly, `--unsigned`. One of the two must be given.
+- **A segment** starts after an existing checkpoint (`--after-checkpoint <seq>`) and carries that checkpoint and the later ones.
+- The export reports how many records are newer than the last checkpoint. It does not verify signatures; that is the verifier's job.
+- The database password is read from the environment and never printed. Connections to Postgres are not encrypted by this build, so run the export on the database's network.
+- A build with `--no-default-features` leaves out `export` and `checkpoints`, and with them all database and network code.
 
 ## Test vectors
 

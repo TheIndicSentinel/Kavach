@@ -11,7 +11,7 @@ name: Network isolation
 # probe expects a window BLOCK. The scheduled run at 12:00 IST sets
 # REQUIRE_DELIVERY, so anything but a delivery fails loudly.
 #
-# Not yet a required check: promote it after ~10 consecutive green runs.
+# A required check on main (promoted after 11 consecutive green runs).
 on:
   pull_request:
   push:

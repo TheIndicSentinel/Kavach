@@ -17,7 +17,9 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
-- Evidence bundle format v1 (manifest, writer, test vector), the export key rules and the read-only `kavach_auditor` database role (migration 013). The export command itself is not shipped yet.
+- Evidence bundle format v1 (manifest, writer, test vector), the export key rules and the read-only `kavach_auditor` database role (migration 013).
+- `kavach-evidence export` writes the agent chain (or a segment after a checkpoint) as a signed bundle from one read-only snapshot, and `kavach-evidence checkpoints` prints checkpoints to copy off-host. Both refuse a database role that can write evidence.
+- Development bundles (`kavach-dev generate`) include an export key, `auditor/dev-export-1`.
 
 - Signed evidence checkpoints for the agent chain (ADR-005 §13): a background writer, the `evidence_checkpoints` table (migration 012), `--checkpoint-interval-seconds` and `--checkpoint-stall-seconds`.
 - Checkpoint health in `GET /v1/runtime` (`checkpoint_lag_seconds`, `checkpoint_stalled`, `checkpoint_last_seq`, `checkpoint_uncovered_records`) and in the metrics (`kavach_checkpoint_*`, `kavach_checkpoints_*`).
@@ -25,4 +27,4 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Not yet
 
-- Export and offline verification of checkpoints are not shipped. Until they are, Kavach does not claim protection against a truncated or rewritten evidence chain.
+- Offline verification of a bundle against kept checkpoints is not shipped. Until it is, Kavach does not claim protection against a truncated or rewritten evidence chain.
