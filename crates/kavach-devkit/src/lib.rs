@@ -16,6 +16,7 @@
 //! | `operator.jwt` | operators | an operator token |
 //! | `sor/` | system of record | the event-signing key, used by `kavach-dev sor-event` |
 //! | `signing/` | offline | the tool-registry signing key |
+//! | `auditor/` | whoever exports evidence | the export key `dev-export-1`, which signs evidence bundles (never mounted into Kavach) |
 //!
 //! Each consumer mounts only its own directory: an agent container gets its
 //! token and no key material.
@@ -52,6 +53,8 @@ pub const EVIDENCE_KID: &str = "dev-evidence-1";
 /// Signs evidence checkpoints and nothing else (ADR-005 §13).
 pub const CHECKPOINT_KID: &str = "dev-checkpoint-1";
 pub const CREDENTIAL_KID: &str = "dev-credential-1";
+/// Signs evidence bundles; held by the auditor, never by Kavach (ADR-005 §13).
+pub const EXPORT_KID: &str = "dev-export-1";
 pub const TOOL_SIGNER_KID: &str = "dev-tool-signer-1";
 pub const SOR_KID: &str = "dev-sor-issuer-1";
 pub const IDP_KID: &str = "dev-idp-1";
@@ -222,6 +225,10 @@ pub async fn generate(opts: &Options) -> Result<Summary, String> {
         out.join("sor"),
         out.join("signing"),
     );
+    // The auditor's export key: its own directory, mounted into nothing.
+    LocalFileKeyProvider::new(out.join("auditor"))
+        .create_key(EXPORT_KID)
+        .map_err(|e| e.to_string())?;
     for dir in [
         &kavach.join("keys"),
         &kavach.join("tools"),
@@ -412,7 +419,8 @@ const README: &str = "Kavach DEVELOPMENT bundle (kavach-devkit).\n\n\
 Every key here is a dev- key: kavach-api refuses them outside --insecure-dev and\n\
 the offline evidence verifier refuses evidence they signed. The dev CA must never\n\
 be trusted outside this stack. Mount each directory only into the service it is\n\
-for: agents get agents/<id>.jwt and nothing else.\n";
+for: agents get agents/<id>.jwt and nothing else. auditor/ holds the export key\n\
+that signs evidence bundles: it belongs to whoever exports, never to Kavach.\n";
 
 /// A signed system-of-record event that assigns `agent` to `subject_ref`.
 pub async fn sor_event(
@@ -466,6 +474,7 @@ mod tests {
             EVIDENCE_KID,
             CHECKPOINT_KID,
             CREDENTIAL_KID,
+            EXPORT_KID,
             TOOL_SIGNER_KID,
             SOR_KID,
             IDP_KID,
@@ -476,6 +485,7 @@ mod tests {
         for file in [
             "kavach/keys/dev-mandate-1.ed25519",
             "kavach/keys/dev-checkpoint-1.ed25519",
+            "auditor/dev-export-1.ed25519",
             "kavach/mandate-config.json",
             "kavach/tools/agent-tools.yaml.sig",
             "kavach/tls/ca.pem",
@@ -487,6 +497,10 @@ mod tests {
         ] {
             assert!(out.join(file).exists(), "{file}");
         }
+        // The export key is the auditor's: an export key by name, and not
+        // among Kavach's keys.
+        assert!(kavach_ports::bundle::is_export_key(EXPORT_KID));
+        assert!(!out.join("kavach/keys/dev-export-1.ed25519").exists());
         // An agent's directory holds only tokens: no key material.
         for entry in std::fs::read_dir(out.join("agents")).unwrap() {
             let path = entry.unwrap().path();
