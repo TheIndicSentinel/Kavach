@@ -6,10 +6,6 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "kavach-evidence"
-path = "src/bin/kavach-evidence.rs"
-
 [dependencies]
 kavach-domain = { workspace = true }
 serde.workspace = true
@@ -18,7 +14,6 @@ chrono.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 sha2.workspace = true
-clap.workspace = true
 
 [dev-dependencies]
 kavach-policy = { workspace = true }

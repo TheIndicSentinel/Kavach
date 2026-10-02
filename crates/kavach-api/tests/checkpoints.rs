@@ -240,6 +240,28 @@ async fn startup_refuses_an_unsafe_checkpoint_key() {
     let message = refused(dev(true)).await;
     assert!(message.contains("checkpoint key:"), "{message}");
 
+    // An export key is the auditor's: never a key of the API, in any profile.
+    for (insecure, kid) in [
+        (true, "export-1"),
+        (false, "export-1"),
+        (true, "dev-export-1"),
+    ] {
+        let mut export = config(EvidenceStoreKind::Memory, insecure, 50);
+        export.dataplane.as_mut().unwrap().checkpoint_key_id = kid.into();
+        let message = refused(export).await;
+        assert!(
+            message.contains("named as an export key"),
+            "{kid}: {message}"
+        );
+    }
+    let mut export = config(EvidenceStoreKind::Memory, true, 50);
+    export.dataplane.as_mut().unwrap().evidence_key_id = "export-evidence".into();
+    let message = refused(export).await;
+    assert!(
+        message.contains("evidence key export-evidence"),
+        "{message}"
+    );
+
     // No key at all: there is no mode without checkpoints.
     let mut missing = config(EvidenceStoreKind::Memory, true, 50);
     missing.dataplane.as_mut().unwrap().checkpoint_key_id = "kavach-checkpoint-9".into();

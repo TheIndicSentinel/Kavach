@@ -12,7 +12,12 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
   - A `dev-` key is accepted only with `--insecure-dev`. Development bundles from `kavach-dev generate` already include `dev-checkpoint-1` and its settings; regenerate older bundles.
   - Deployments that do not enable the agent data plane are unaffected.
 
+- The `kavach-evidence` binary moved to the new `kavach-evidence-cli` crate. Its name and its `verify` command are unchanged; build it with `-p kavach-evidence-cli` instead of `-p kavach-evidence`.
+- The API refuses to start if its mandate, evidence, checkpoint or credential key id starts with `export-` (or `dev-export-`): those ids are reserved for evidence export keys.
+
 ### Added
+
+- Evidence bundle format v1 (manifest, writer, test vector), the export key rules and the read-only `kavach_auditor` database role (migration 013). The export command itself is not shipped yet.
 
 - Signed evidence checkpoints for the agent chain (ADR-005 §13): a background writer, the `evidence_checkpoints` table (migration 012), `--checkpoint-interval-seconds` and `--checkpoint-stall-seconds`.
 - Checkpoint health in `GET /v1/runtime` (`checkpoint_lag_seconds`, `checkpoint_stalled`, `checkpoint_last_seq`, `checkpoint_uncovered_records`) and in the metrics (`kavach_checkpoint_*`, `kavach_checkpoints_*`).

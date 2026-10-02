@@ -11,3 +11,16 @@ psql -v ON_ERROR_STOP=1 -v pw="$KAVACH_RUNTIME_DB_PASSWORD" \
 SELECT format('CREATE ROLE kavach_runtime LOGIN PASSWORD %L', :'pw')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kavach_runtime')\gexec
 SQL
+
+# Optional: the read-only export role (ADR-005 §13). Set
+# KAVACH_AUDITOR_DB_PASSWORD to create it. It reads the agent evidence
+# tables only; `kavach-evidence export` connects as this role. Created
+# later instead: create the role, then run
+#   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'SELECT kavach_grant_auditor();'
+if [ -n "${KAVACH_AUDITOR_DB_PASSWORD:-}" ]; then
+  psql -v ON_ERROR_STOP=1 -v pw="$KAVACH_AUDITOR_DB_PASSWORD" \
+    --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'SQL'
+SELECT format('CREATE ROLE kavach_auditor LOGIN PASSWORD %L', :'pw')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kavach_auditor')\gexec
+SQL
+fi

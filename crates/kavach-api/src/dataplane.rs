@@ -607,7 +607,16 @@ fn load_tools(
 /// Development keys (`dev-…`, from `kavach-devkit`) are refused outside
 /// `--insecure-dev`, so a dev bundle can never sign production evidence,
 /// mandates or credentials.
+/// Export keys (`export-…`) are refused always.
 fn refuse_dev_key(what: &str, kid: &str, insecure_dev: bool) -> Result<(), String> {
+    // Export keys sign bundles and live with the auditor (ADR-005 §13):
+    // never a key of this process, in any profile.
+    if kavach_ports::bundle::is_export_key(kid) {
+        return Err(format!(
+            "the {what} key {kid} is named as an export key (export-…); export keys sign \
+             evidence bundles and are never used by the API"
+        ));
+    }
     if !insecure_dev && kavach_ports::agent_evidence::is_dev_key(kid) {
         return Err(format!(
             "the {what} key {kid} is a development key (dev-…); development keys are refused \

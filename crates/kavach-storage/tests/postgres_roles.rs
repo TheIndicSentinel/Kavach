@@ -1,7 +1,7 @@
 //! Migration tracking and role separation (H5a-3a, ADR-005 §1).
 
 use chrono::Utc;
-use kavach_storage::testing::{isolated_database_url, isolated_database_urls};
+use kavach_storage::testing::{auditor_url, isolated_database_url, isolated_database_urls};
 use kavach_storage::{AuditInsert, RuntimePointers, StoragePool};
 
 #[tokio::test(flavor = "multi_thread")]
@@ -66,6 +66,59 @@ async fn runtime_role_cannot_alter_evidence_or_governance_history() {
         assert!(
             message.contains("permission denied") || message.contains("must be owner"),
             "{statement}: {message}"
+        );
+    }
+}
+
+/// The export role reads the agent evidence and nothing else, and writes
+/// nothing (ADR-005 §13).
+#[tokio::test(flavor = "multi_thread")]
+async fn auditor_role_reads_agent_evidence_and_nothing_else() {
+    let Some((owner, runtime)) = isolated_database_urls().await else {
+        return;
+    };
+    StoragePool::connect_with_roles(&runtime, Some(&owner))
+        .await
+        .expect("migrate as owner");
+    let auditor = sqlx::PgPool::connect(&auditor_url(&owner))
+        .await
+        .expect("connect as kavach_auditor");
+
+    for table in [
+        "agent_decisions",
+        "agent_outcomes",
+        "evidence_checkpoints",
+        "agent_evidence_chains",
+    ] {
+        sqlx::query(&format!("SELECT * FROM {table} LIMIT 1"))
+            .fetch_optional(&auditor)
+            .await
+            .unwrap_or_else(|e| panic!("auditor reads {table}: {e}"));
+    }
+    for statement in [
+        // No writes to what it reads.
+        "INSERT INTO agent_evidence_chains (tenant_id, partition_id, head_seq, head_hash) \
+            VALUES ('t', 0, 0, 'x')",
+        "UPDATE agent_evidence_chains SET head_seq = 0",
+        "DELETE FROM agent_decisions",
+        "DELETE FROM agent_outcomes",
+        "DELETE FROM evidence_checkpoints",
+        "TRUNCATE evidence_checkpoints",
+        // No access to anything else.
+        "SELECT * FROM mandates",
+        "SELECT * FROM contact_counters",
+        "SELECT * FROM decision_events",
+        "SELECT * FROM admin_audit_log",
+        "SELECT * FROM replay_guard",
+        "CREATE TABLE intruder (id INT)",
+    ] {
+        let err = sqlx::query(statement)
+            .execute(&auditor)
+            .await
+            .expect_err(statement);
+        assert!(
+            err.to_string().contains("permission denied"),
+            "{statement}: {err}"
         );
     }
 }
