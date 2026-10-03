@@ -22,6 +22,8 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- `kavach-bench`, a benchmark harness for the gateway path (delivered, blocked, pre-check and hot-subject calls at fixed concurrency), and a nightly *Benchmarks* workflow that records trends with and without database TLS. How figures may be quoted: `docs/PERFORMANCE.md`. No published numbers yet.
+
 - Evidence bundle format v1 (manifest, writer, test vector), the export key rules and the read-only `kavach_auditor` database role (migration 013).
 - `kavach-evidence export` writes the agent chain (or a segment after a checkpoint) as a signed bundle from one read-only snapshot, and `kavach-evidence checkpoints` prints checkpoints to copy off-host. Both refuse a database role that can write evidence.
 - Development bundles (`kavach-dev generate`) include an export key, `auditor/dev-export-1`, and the public keys for verifying a bundle of that stack, `auditor/trusted-keys.json`.
