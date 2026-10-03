@@ -58,5 +58,17 @@ async fn every_scenario_runs_with_only_expected_replies() {
     .await
     .unwrap_err();
     assert!(refused.contains("need Postgres"), "{refused}");
+    // Signing alone needs no database.
+    let seal = kavach_bench::micro::run_micro(
+        &stack,
+        Scenario::Seal,
+        1,
+        Duration::ZERO,
+        Duration::from_millis(200),
+        &sequence,
+    )
+    .await
+    .expect("seal runs without a database");
+    assert!(seal.requests > 0 && seal.errors == 0, "{seal:?}");
     std::fs::remove_dir_all(&work).unwrap();
 }

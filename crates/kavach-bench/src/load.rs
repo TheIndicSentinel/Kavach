@@ -32,6 +32,10 @@ pub enum Scenario {
     /// Micro: the evidence commit alone (`AgentEvidenceStore::commit`),
     /// no HTTP. Postgres only.
     Commit,
+    /// Micro: hashing and signing one record (JCS, SHA-256, Ed25519), the
+    /// CPU work the commit does while it holds the partition lock. No
+    /// database.
+    Seal,
     /// Micro: the outcome write alone, as it is today (no lock). Each
     /// operation first commits an allow, which is not timed.
     Outcome,
@@ -50,13 +54,14 @@ impl Scenario {
         Self::HotSubject,
     ];
     /// The storage micro-benchmarks (Postgres only).
-    pub const MICRO: [Self; 3] = [Self::Commit, Self::Outcome, Self::OutcomeLocked];
-    pub const ALL: [Self; 7] = [
+    pub const MICRO: [Self; 4] = [Self::Commit, Self::Seal, Self::Outcome, Self::OutcomeLocked];
+    pub const ALL: [Self; 8] = [
         Self::Delivered,
         Self::Blocked,
         Self::Precheck,
         Self::HotSubject,
         Self::Commit,
+        Self::Seal,
         Self::Outcome,
         Self::OutcomeLocked,
     ];
@@ -64,6 +69,12 @@ impl Scenario {
     #[must_use]
     pub fn is_micro(self) -> bool {
         Self::MICRO.contains(&self)
+    }
+
+    /// Whether the scenario needs Postgres.
+    #[must_use]
+    pub fn needs_database(self) -> bool {
+        self.is_micro() && self != Self::Seal
     }
 
     #[must_use]
@@ -74,6 +85,7 @@ impl Scenario {
             Self::Precheck => "precheck",
             Self::HotSubject => "hot-subject",
             Self::Commit => "commit",
+            Self::Seal => "seal",
             Self::Outcome => "outcome",
             Self::OutcomeLocked => "outcome-locked",
         }

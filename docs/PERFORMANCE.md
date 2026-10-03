@@ -41,6 +41,7 @@ ADR-003 named `criterion` and `oha` for these. The gateway is measured with `kav
 | Scenario | What one operation does |
 |---|---|
 | `commit` | The evidence commit alone: lock the partition head, insert the record, advance the head. |
+| `seal` | Hashing and signing one record (JCS, SHA-256, Ed25519): the CPU work the commit does while it holds the partition lock. No database; also runs on the memory store. |
 | `outcome` | The outcome write as it is today: check the record, insert the outcome. Each operation first commits an allow, which is not timed. |
 | `outcome-locked` | The same write as E5 would make it: in one transaction that locks a per-partition outcome head and then advances it. Timed the same way. |
 
