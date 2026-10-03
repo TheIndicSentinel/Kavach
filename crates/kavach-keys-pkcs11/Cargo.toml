@@ -15,7 +15,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 kavach-ports-testkit = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
 
 [lints]
 workspace = true

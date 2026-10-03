@@ -86,6 +86,10 @@ jobs:
           sudo apt-get install -y -qq softhsm2
           dpkg -s softhsm2 | grep -E "^Version"
 
+      # Before the tests start: they must not change their own environment.
+      - name: Prepare a SoftHSM token
+        run: scripts/softhsm-test-token.sh "$RUNNER_TEMP/softhsm" >>"$GITHUB_ENV"
+
       - name: cargo test
         env:
           KAVACH_TEST_DATABASE_URL: postgres://kavach:kavach-ci@localhost:5432/kavach_test

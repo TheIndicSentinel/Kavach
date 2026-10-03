@@ -17,7 +17,7 @@ use kavach_ports::{verify_ed25519, ErrorClass, KeyProvider};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_key_generated_in_the_hsm_meets_the_key_provider_contract() {
-    let module = require_hsm!();
+    let (module, _serial) = require_hsm!();
     generate(&module, "conform-1", false);
     let provider = Pkcs11KeyProvider::open(config(module, &["conform-1"], true)).unwrap();
     kavach_ports_testkit::conformance::key_provider(&provider, "conform-1").await;
@@ -27,7 +27,7 @@ async fn a_key_generated_in_the_hsm_meets_the_key_provider_contract() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn keys_that_could_have_been_read_out_are_refused_unless_development() {
-    let module = require_hsm!();
+    let (module, _serial) = require_hsm!();
     generate(&module, "extractable-1", true);
     import(&module, "imported-1");
     for kid in ["extractable-1", "imported-1"] {
@@ -44,7 +44,7 @@ async fn keys_that_could_have_been_read_out_are_refused_unless_development() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_missing_key_or_token_is_refused() {
-    let module = require_hsm!();
+    let (module, _serial) = require_hsm!();
     let err = Pkcs11KeyProvider::open(config(module.clone(), &["no-such-key"], true)).unwrap_err();
     assert_eq!(err.class, ErrorClass::Rejected, "{err:?}");
     let mut wrong = config(module, &["no-such-key"], true);
@@ -55,7 +55,7 @@ async fn a_missing_key_or_token_is_refused() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn evidence_is_signed_in_the_hsm_from_inside_the_runtime() {
-    let module = require_hsm!();
+    let (module, _serial) = require_hsm!();
     generate(&module, "evidence-1", false);
     let provider = Pkcs11KeyProvider::open(config(module, &["evidence-1"], true)).unwrap();
     let signer = provider.evidence_signer("evidence-1").unwrap();
@@ -75,7 +75,7 @@ async fn evidence_is_signed_in_the_hsm_from_inside_the_runtime() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "measurement; run on demand"]
 async fn sign_latency() {
-    let module = require_hsm!();
+    let (module, _serial) = require_hsm!();
     generate(&module, "latency-1", false);
     let provider = Pkcs11KeyProvider::open(config(module, &["latency-1"], true)).unwrap();
     let signer = provider.evidence_signer("latency-1").unwrap();

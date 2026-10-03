@@ -10,7 +10,7 @@ use kavach_ports::{verify_ed25519, KeyProvider};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_provider_recovers_after_the_module_restarts() {
-    let module = require_hsm!();
+    let (module, _serial) = require_hsm!();
     generate(&module, "reconnect-1", false);
     let provider = Pkcs11KeyProvider::open(config(module.clone(), &["reconnect-1"], true)).unwrap();
     provider.sign("reconnect-1", b"before").await.unwrap();

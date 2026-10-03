@@ -1,9 +1,14 @@
-//! Shared set-up for the SoftHSM tests: one throw-away token per test
-//! process, and helpers that make keys in it.
+//! Shared set-up for the SoftHSM tests.
+//!
+//! The token is prepared before the tests start (CI: the "Prepare a SoftHSM
+//! token" step; locally: `scripts/softhsm-test-token.sh`), and the tests
+//! find it through the environment. Nothing here changes the environment:
+//! setting a variable while other test threads read it can crash the
+//! process. One module context stays loaded for the whole process, and the
+//! tests run one at a time ([`serial`]).
 #![allow(dead_code)]
 
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::OnceLock;
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
@@ -14,69 +19,64 @@ use cryptoki::session::{Session, UserType};
 use cryptoki::types::AuthPin;
 use kavach_keys_pkcs11::Pkcs11Config;
 
+/// Must match the token the preparation step made.
 pub const TOKEN: &str = "kavach-test";
 pub const PIN: &str = "1234";
 pub const ED25519_OID: [u8; 5] = [0x06, 0x03, 0x2B, 0x65, 0x70];
 
-/// The module path, after creating the token once; `None` skips the test.
+/// The module path when a prepared token is available; `None` skips.
 pub fn module() -> Option<PathBuf> {
-    static MODULE: OnceLock<Option<PathBuf>> = OnceLock::new();
-    MODULE
+    let module = PathBuf::from(std::env::var_os("KAVACH_TEST_PKCS11_MODULE")?);
+    std::env::var_os("SOFTHSM2_CONF")?;
+    Some(module)
+}
+
+/// The process-wide context: loaded once and never dropped, so the module
+/// is not unloaded and reloaded between tests.
+pub fn context(module: &PathBuf) -> Pkcs11 {
+    static CONTEXT: OnceLock<Pkcs11> = OnceLock::new();
+    CONTEXT
         .get_or_init(|| {
-            let module = PathBuf::from(std::env::var_os("KAVACH_TEST_PKCS11_MODULE")?);
-            let dir = std::env::temp_dir().join(format!("kavach-softhsm-{}", std::process::id()));
-            std::fs::create_dir_all(dir.join("tokens")).unwrap();
-            let conf = dir.join("softhsm2.conf");
-            std::fs::write(
-                &conf,
-                format!(
-                    "directories.tokendir = {}\nobjectstore.backend = file\n",
-                    dir.join("tokens").display()
-                ),
-            )
-            .unwrap();
-            // Read by SoftHSM when the module initialises; set before that.
-            std::env::set_var("SOFTHSM2_CONF", &conf);
-            let status = Command::new("softhsm2-util")
-                .args([
-                    "--init-token",
-                    "--free",
-                    "--label",
-                    TOKEN,
-                    "--so-pin",
-                    "0000",
-                    "--pin",
-                    PIN,
-                ])
-                .status()
-                .expect("softhsm2-util");
-            assert!(status.success(), "init token");
-            Some(module)
+            let pkcs11 = Pkcs11::new(module).expect("load module");
+            initialize(&pkcs11);
+            pkcs11
         })
         .clone()
+}
+
+pub fn initialize(pkcs11: &Pkcs11) {
+    match pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)) {
+        Ok(()) | Err(CkError::Pkcs11(RvError::CryptokiAlreadyInitialized, _)) => {}
+        Err(e) => panic!("initialise: {e}"),
+    }
+}
+
+/// One test at a time against the token (an async lock: tests await while
+/// holding it).
+pub async fn serial() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
 }
 
 #[macro_export]
 macro_rules! require_hsm {
     () => {
         match common::module() {
-            Some(module) => module,
+            Some(module) => (module, common::serial().await),
             None => {
-                eprintln!("skipped: set KAVACH_TEST_PKCS11_MODULE to run against SoftHSM2");
+                eprintln!(
+                    "skipped: set KAVACH_TEST_PKCS11_MODULE and SOFTHSM2_CONF \
+                     (scripts/softhsm-test-token.sh) to run against SoftHSM2"
+                );
                 return;
             }
         }
     };
 }
 
-/// A read-write session for making test keys (a second context in the same
-/// process: the module is already initialised, which is fine).
+/// A read-write session for making test keys, on the shared context.
 pub fn admin(module: &PathBuf) -> (Pkcs11, Session) {
-    let pkcs11 = Pkcs11::new(module).unwrap();
-    match pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)) {
-        Ok(()) | Err(CkError::Pkcs11(RvError::CryptokiAlreadyInitialized, _)) => {}
-        Err(e) => panic!("initialise: {e}"),
-    }
+    let pkcs11 = context(module);
     let slot = pkcs11
         .get_slots_with_token()
         .unwrap()
