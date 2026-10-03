@@ -159,6 +159,43 @@ async fn evidence_is_append_only_even_for_its_owner() {
     }
 }
 
+/// A commit stopped by a unique key other than the request's (here: a
+/// `credential_id` already used by a different request) is an error, never
+/// treated as a retry of a stored record.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_clash_on_another_key_is_an_error_not_a_retry() {
+    let Some((owner, runtime)) = isolated_database_urls().await else {
+        return;
+    };
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .unwrap();
+    let store = pool.agent_evidence_store();
+    let signer = TestSigner::new("evidence-test", 9);
+    let clock = FakeClock::synced_at(chrono::Utc::now());
+    let mut first = request("clash", "r-1", 3);
+    first.draft.send_by = None;
+    assert!(matches!(
+        store.commit(first, &clock, &signer).await.unwrap(),
+        CommitResult::Committed(_)
+    ));
+    // A different request that reuses r-1's credential id.
+    let mut second = request("clash", "r-2", 3);
+    second.draft.send_by = None;
+    second.credential_id = "cred-r-1".into();
+    let err = store
+        .commit(second, &clock, &signer)
+        .await
+        .expect_err("a different request must not be answered with r-1's record");
+    assert_eq!(err.class, kavach_ports::ErrorClass::Unavailable, "{err:?}");
+    // Nothing of it was kept: no record, no reserved slot.
+    assert_eq!(store.records("clash", 0).await.unwrap().len(), 1);
+}
+
 /// A request refused for a raw phone number in a reference-only field is
 /// recorded without the number or anything that reverses to it.
 #[tokio::test]

@@ -84,30 +84,47 @@ impl PostgresAgentEvidenceStore {
         Self { pool }
     }
 
+    /// Locks the partition head and returns it. One round trip on every
+    /// commit after the first: the row is created (and locked again) only
+    /// when it does not exist yet, once per tenant and partition.
     async fn lock_head(
         tx: &mut Transaction<'_, Postgres>,
         tenant_id: &str,
         partition_id: i32,
     ) -> Result<(i64, String), PortError> {
-        sqlx::query(
-            "INSERT INTO agent_evidence_chains (tenant_id, partition_id, head_seq, head_hash) \
-            VALUES ($1, $2, 0, $3) ON CONFLICT DO NOTHING",
-        )
-        .bind(tenant_id)
-        .bind(partition_id)
-        .bind(GENESIS)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| unavailable(&e))?;
-        let row = sqlx::query(
-            "SELECT head_seq, head_hash FROM agent_evidence_chains \
-            WHERE tenant_id = $1 AND partition_id = $2 FOR UPDATE",
-        )
-        .bind(tenant_id)
-        .bind(partition_id)
-        .fetch_one(&mut **tx)
-        .await
-        .map_err(|e| unavailable(&e))?;
+        let select = || {
+            sqlx::query(
+                "SELECT head_seq, head_hash FROM agent_evidence_chains \
+                WHERE tenant_id = $1 AND partition_id = $2 FOR UPDATE",
+            )
+            .bind(tenant_id)
+            .bind(partition_id)
+        };
+        let mut row = select()
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|e| unavailable(&e))?;
+        if row.is_none() {
+            // Concurrent first commits both insert-or-skip, then both lock
+            // the one row: they still run one after the other.
+            sqlx::query(
+                "INSERT INTO agent_evidence_chains (tenant_id, partition_id, head_seq, head_hash) \
+                VALUES ($1, $2, 0, $3) ON CONFLICT DO NOTHING",
+            )
+            .bind(tenant_id)
+            .bind(partition_id)
+            .bind(GENESIS)
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| unavailable(&e))?;
+            row = Some(
+                select()
+                    .fetch_one(&mut **tx)
+                    .await
+                    .map_err(|e| unavailable(&e))?,
+            );
+        }
+        let row = row.ok_or_else(|| PortError::unavailable("partition head missing"))?;
         Ok((
             row.try_get("head_seq").map_err(|e| unavailable(&e))?,
             row.try_get("head_hash").map_err(|e| unavailable(&e))?,
@@ -153,19 +170,10 @@ impl PostgresAgentEvidenceStore {
             Self::lock_head(&mut tx, &request.tenant_id, request.partition_id)
                 .await
                 .map_err(|e| sqlx::Error::Protocol(e.message))?;
-        let agent = &request.draft.actor.agent_id;
-        if let Some((record, binding)) = find(
-            &mut *tx,
-            &request.tenant_id,
-            agent,
-            &request.draft.request_id,
-        )
-        .await
-        .map_err(|e| sqlx::Error::Protocol(e.message))?
-        {
-            return Ok(classify(record, &binding, &request.binding));
-        }
-
+        // No second request lookup here: a concurrent duplicate is stopped
+        // by the unique key on (tenant, agent, mode, request_id), which
+        // aborts this transaction (and any slot it reserved); `commit`
+        // then reads the stored record on a fresh connection.
         let now = clock.now();
         let (mut decision, mut reason) = finalise(request.draft.pre_commit_decision, request, now);
         if let (true, Some(contact)) = (is_allow(decision), &request.contact) {
@@ -186,11 +194,18 @@ impl PostgresAgentEvidenceStore {
         let payload = complete_payload(request, head_seq + 1, &head_hash, decision, reason, now);
         let record = seal(payload, signer).map_err(|e| sqlx::Error::Protocol(e.message))?;
         let p = &record.payload;
-        sqlx::query(
-            "INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, prev_hash, \
-                hash, sig, key_id, payload, agent_id, request_id, binding, credential_id, \
-                returned_decision) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
+        // The record and the head it advances, in one statement.
+        let advanced = sqlx::query(
+            "WITH inserted AS ( \
+                INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, \
+                    prev_hash, hash, sig, key_id, payload, agent_id, request_id, binding, \
+                    credential_id, returned_decision) \
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+                RETURNING tenant_id, partition_id, seq, hash) \
+            UPDATE agent_evidence_chains AS c SET head_seq = inserted.seq, \
+                head_hash = inserted.hash \
+            FROM inserted \
+            WHERE c.tenant_id = inserted.tenant_id AND c.partition_id = inserted.partition_id",
         )
         .bind(&p.tenant_id)
         .bind(p.partition_id)
@@ -208,16 +223,13 @@ impl PostgresAgentEvidenceStore {
         .bind(decision_str(p.returned_decision))
         .execute(&mut *tx)
         .await?;
-        sqlx::query(
-            "UPDATE agent_evidence_chains SET head_seq = $3, head_hash = $4 \
-            WHERE tenant_id = $1 AND partition_id = $2",
-        )
-        .bind(&p.tenant_id)
-        .bind(p.partition_id)
-        .bind(p.seq)
-        .bind(&record.hash)
-        .execute(&mut *tx)
-        .await?;
+        if advanced.rows_affected() != 1 {
+            // The head is locked above, so this cannot happen; if it does,
+            // nothing is committed.
+            return Err(sqlx::Error::Protocol(
+                "the partition head did not advance".into(),
+            ));
+        }
         tx.commit().await?;
         Ok(CommitResult::Committed(Box::new(record)))
     }
@@ -244,8 +256,14 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         }
         match self.commit_once(&request, clock, signer).await {
             Ok(result) => Ok(result),
-            // A concurrent commit of the same request won (another
-            // partition); the unique constraint decided.
+            // A unique key stopped this commit, and its transaction rolled
+            // back (with any slot it reserved). The stored record decides
+            // what that was, read on a fresh connection: a record for this
+            // request means a concurrent duplicate won; none means a clash
+            // on another key (`record_id`, `credential_id`), which is an
+            // error and never a retry. (A duplicate may break the request
+            // key and the credential key at once; which index Postgres
+            // reports first does not matter here.)
             Err(err) if is_unique_violation(&err) => {
                 match find(
                     &self.pool,

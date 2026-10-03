@@ -6,6 +6,8 @@
 //!
 //! - `commit`: the evidence commit alone (partition head lock, record
 //!   insert, head update).
+//! - `seal`: hashing and signing one record, the CPU work the commit does
+//!   while it holds the partition lock (no database).
 //! - `outcome`: the outcome write as it is today: check the record, insert
 //!   the outcome. Each operation first commits an allow to write the
 //!   outcome for; that commit is not timed.
@@ -137,10 +139,13 @@ pub async fn run_micro(
     duration: Duration,
     sequence: &Arc<AtomicU64>,
 ) -> Result<RunResult, String> {
+    if scenario == Scenario::Seal {
+        return Ok(run_seal(stack, concurrency, warmup, duration, sequence).await);
+    }
     let pool = stack
         .storage
         .clone()
-        .ok_or("the micro-benchmarks need Postgres")?;
+        .ok_or("the storage micro-benchmarks need Postgres")?;
     if scenario == Scenario::OutcomeLocked {
         create_outcome_head(&pool).await?;
     }
@@ -185,4 +190,38 @@ pub async fn run_micro(
         duration,
         measured,
     ))
+}
+
+/// Times `seal` (JCS, SHA-256, Ed25519) on a complete record payload.
+async fn run_seal(
+    stack: &Arc<Stack>,
+    concurrency: usize,
+    warmup: Duration,
+    duration: Duration,
+    sequence: &Arc<AtomicU64>,
+) -> RunResult {
+    let signer = Arc::new(TestSigner::new(EVIDENCE_KID, 9));
+    let mut template = request(TENANT, "seal", 1).draft;
+    template.seq = 1;
+    template.prev_hash = kavach_ports::agent_evidence::GENESIS.into();
+    template.record_id = "adr:default:0:1".into();
+    let template = Arc::new(template);
+    let measured = measure(concurrency, warmup, duration, sequence, move |n| {
+        let (signer, template) = (Arc::clone(&signer), Arc::clone(&template));
+        async move {
+            let mut payload = (*template).clone();
+            payload.seq = i64::try_from(n).unwrap_or(i64::MAX).saturating_add(1);
+            let started = Instant::now();
+            kavach_ports::agent_evidence::seal(payload, &*signer).map_err(|e| e.to_string())?;
+            Ok(started.elapsed())
+        }
+    })
+    .await;
+    summarise(
+        Scenario::Seal,
+        concurrency,
+        stack.database_pool(),
+        duration,
+        measured,
+    )
 }

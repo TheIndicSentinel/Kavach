@@ -33,7 +33,7 @@ struct Cli {
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "delivered,blocked,precheck,hot-subject,commit,outcome,outcome-locked"
+        default_value = "delivered,blocked,precheck,hot-subject,commit,seal,outcome,outcome-locked"
     )]
     scenarios: Vec<String>,
     /// Postgres pool sizes to compare, comma separated: each gets its own
@@ -136,7 +136,7 @@ async fn main() -> Result<(), String> {
         database.clone_from(&stack.database);
         let sequence = Arc::new(AtomicU64::new(0));
         for scenario in &scenarios {
-            if scenario.is_micro() && stack.storage.is_none() {
+            if scenario.needs_database() && stack.storage.is_none() {
                 skipped = true;
                 continue;
             }
@@ -168,7 +168,10 @@ async fn main() -> Result<(), String> {
         }
     }
     if skipped {
-        eprintln!("the storage micro-benchmarks need Postgres: skipped on the memory store");
+        eprintln!(
+            "the storage micro-benchmarks (commit, outcome, outcome-locked) need Postgres: \
+             skipped on the memory store"
+        );
     }
     let environment = environment(&cli, database.as_ref());
     let report = Report::new(environment, runs);
