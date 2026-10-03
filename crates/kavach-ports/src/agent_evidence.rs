@@ -140,8 +140,7 @@ pub fn is_allow(decision: Decision) -> bool {
 
 /// `v2` hash of a payload, as lowercase hex.
 pub fn payload_hash(payload: &AgentDecisionPayload) -> Result<String, PortError> {
-    let canonical = serde_json_canonicalizer::to_vec(payload)
-        .map_err(|e| PortError::invalid(format!("canonical payload: {e}")))?;
+    let canonical = crate::jcs::to_vec(payload)?;
     let mut hasher = Sha256::new();
     hasher.update(HASH_PREFIX);
     hasher.update(payload.prev_hash.as_bytes());

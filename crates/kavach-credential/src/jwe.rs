@@ -147,10 +147,7 @@ pub fn encrypt(
         typ: typ.into(),
         cty: cty.into(),
     };
-    let header_b64 = URL_SAFE_NO_PAD.encode(
-        serde_json_canonicalizer::to_vec(&header)
-            .map_err(|e| PortError::invalid(format!("jwe header: {e}")))?,
-    );
+    let header_b64 = URL_SAFE_NO_PAD.encode(kavach_ports::jcs::to_vec(&header)?);
     let mut iv = [0u8; NONCE_LEN];
     getrandom::fill(&mut iv).map_err(|e| PortError::unavailable(format!("os rng: {e}")))?;
     let key = content_key(shared.as_bytes())?;

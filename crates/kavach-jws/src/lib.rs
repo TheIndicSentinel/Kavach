@@ -49,8 +49,7 @@ impl KeySet {
 }
 
 fn canonical<T: Serialize>(value: &T) -> Result<Vec<u8>, PortError> {
-    serde_json_canonicalizer::to_vec(value)
-        .map_err(|e| PortError::invalid(format!("canonical json: {e}")))
+    kavach_ports::jcs::to_vec(value)
 }
 
 fn b64d(part: &str, what: &str) -> Result<Vec<u8>, PortError> {

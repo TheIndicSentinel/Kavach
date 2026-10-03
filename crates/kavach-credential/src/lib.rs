@@ -170,8 +170,7 @@ pub fn open_credential(
 /// same claims differs.
 pub fn claims_digest(claims: &CredentialClaims) -> Result<String, PortError> {
     use sha2::{Digest, Sha256};
-    let canonical = serde_json_canonicalizer::to_vec(claims)
-        .map_err(|e| PortError::invalid(format!("canonical claims: {e}")))?;
+    let canonical = kavach_ports::jcs::to_vec(claims)?;
     Ok(hex::encode(Sha256::digest(canonical)))
 }
 

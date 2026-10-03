@@ -11,6 +11,7 @@ pub mod checkpoint;
 pub mod credential;
 mod error;
 mod evidence;
+pub mod jcs;
 mod keys;
 mod mandate;
 mod policy;
