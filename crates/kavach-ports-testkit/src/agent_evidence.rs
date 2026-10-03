@@ -162,7 +162,73 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     nothing_is_kept_when_signing_fails(&*store, &clock).await;
     every_outcome_kind_is_stored(&*store, &clock, &signer).await;
     one_creator_per_request_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
+    duplicates_race_near_the_cap(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     cap_holds_under_concurrency(store, signer).await;
+}
+
+/// Duplicates of one request race distinct requests while the day's cap is
+/// nearly reached. One record per request; the duplicate has exactly one
+/// creator; the counter equals the allows on the chain, so a duplicate that
+/// lost (and rolled back) left no reserved slot behind; the chain is
+/// linear and signed.
+async fn duplicates_race_near_the_cap<S: AgentEvidenceStore + 'static>(
+    store: Arc<S>,
+    signer: TestSigner,
+) {
+    let t = "ae-dup-race";
+    let signer = Arc::new(signer);
+    let clock = Arc::new(FakeClock::synced_at(t0()));
+    // Two of the three slots are already used.
+    for id in ["early-1", "early-2"] {
+        let record = committed(
+            store
+                .commit(request(t, id, 3), &*clock, &*signer)
+                .await
+                .expect("commit"),
+        );
+        assert!(record.is_allow());
+    }
+    let tasks: Vec<_> = (0..24)
+        .map(|i| {
+            let (store, signer, clock) =
+                (Arc::clone(&store), Arc::clone(&signer), Arc::clone(&clock));
+            let id = if i % 2 == 0 {
+                "dup".to_string()
+            } else {
+                format!("distinct-{i}")
+            };
+            tokio::spawn(async move { store.commit(request(t, &id, 3), &*clock, &*signer).await })
+        })
+        .collect();
+    let (mut dup_created, mut dup_replayed) = (0, 0);
+    for task in tasks {
+        match task.await.expect("join").expect("commit") {
+            CommitResult::Committed(record) if record.payload.request_id == "dup" => {
+                dup_created += 1;
+            }
+            CommitResult::Replayed(record) => {
+                assert_eq!(
+                    record.payload.request_id, "dup",
+                    "only the duplicate replays"
+                );
+                dup_replayed += 1;
+            }
+            CommitResult::Committed(_) => {}
+            CommitResult::Conflict(_) => panic!("identical content is never a conflict"),
+        }
+    }
+    assert_eq!((dup_created, dup_replayed), (1, 11), "exactly one creator");
+
+    let records = store.records(t, 0).await.unwrap();
+    assert_eq!(records.len(), 2 + 1 + 12, "one record per request");
+    let allows = records.iter().filter(|r| r.is_allow()).count();
+    assert_eq!(allows, 3, "exactly the cap");
+    assert_eq!(
+        store.contacts_on(t, SUBJECT, day()).await.unwrap(),
+        3,
+        "no slot left behind by a duplicate that lost"
+    );
+    verify_chain(&records, &signer.keys(), None, &[], t0()).expect("linear, signed chain");
 }
 
 async fn allow_replay_conflict_and_outcome<S: AgentEvidenceStore>(
