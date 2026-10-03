@@ -1,0 +1,2 @@
+{"alg":"HS256","kid":"agent-key"}
+{"aud": "kavach-agents", "azp": "collections-agent", "exp": 4102444800, "groups": ["agents"], "iss": "https://idp.fuzz.local", "nbf": 1700000000, "sub": "collections-agent"}

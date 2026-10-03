@@ -1,0 +1,46 @@
+# Fuzzing
+
+[cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) (libFuzzer) targets for the parsers that read untrusted input. This is its own workspace, built with the dated nightly in `rust-toolchain.toml`; the main workspace keeps its stable pin and never builds this one.
+
+## Targets
+
+Ordered by exposure: who can send the input.
+
+| Target | Input | Reached by | Invariants beyond "no crash" |
+|---|---|---|---|
+| `jws_verify` | Any string as a compact JWS of every Kavach type (mandate, SoR event, credential) | Agents, systems of record, providers | — |
+| `jws_signed` | `header\npayload`, signed with a trusted key so parsing after the signature check is reached | The same, past the signature | A verified token has exactly one encoding: its header and payload are the JCS form of what was parsed, and re-signing gives the same token |
+| `sor_event` | An SoR event payload, signed by the registered `lms` issuer, through the whole issuance path | Systems of record | An issued mandate verifies as active; a retry finds the same mandate; issuing from the same event again is refused |
+| `agent_token` | First byte `0`: any string as an agent token. Otherwise `header\nclaims`, signed with the JWKS key | Agents | An accepted token was signed with EdDSA and names a 1–256 character principal |
+
+Planned next, in this order: tool-parameter extraction, HMAC v2 headers, JWE (provider side), bundle and checkpoint parsers, a JCS differential test, CEL.
+
+## Limits
+
+Each of these counts as a finding, the same as a crash:
+
+| Limit | Value |
+|---|---|
+| Process memory (`-rss_limit_mb`) | 2048 MB |
+| One allocation (`-malloc_limit_mb`) | 512 MB |
+| One input (`-timeout`) | 10 s |
+| Input size (`-max_len`) | Per target, in `.github/workflows/fuzz.yml` |
+
+## Running
+
+```sh
+cargo install cargo-fuzz --version 0.13.2 --locked
+cd fuzz
+cargo fuzz run jws_signed corpus/jws_signed seeds/jws_signed -- \
+  -max_total_time=60 -rss_limit_mb=2048 -malloc_limit_mb=512 -timeout=10
+```
+
+`seeds/` holds the starting inputs and is committed. `corpus/` and `artifacts/` are not. The nightly **Fuzz** workflow runs every target for 10 minutes and is not a required check. A pull request that changes `fuzz/` or the workflow builds every target and runs each for 60 s, to check the harness still works.
+
+## A finding
+
+1. Download the input from the failed run's artifact. Reproduce it with `cargo fuzz run <target> <file>`.
+2. Fix the code, then add the input as a regression test in the owning crate's tests.
+3. Add the input to `seeds/<target>/` as well.
+
+Findings in key, credential, data-plane or migration code go to the second reviewer.

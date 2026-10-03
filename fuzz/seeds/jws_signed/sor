@@ -1,0 +1,2 @@
+{"alg":"EdDSA","kid":"k1","typ":"kavach-sor-event+jws"}
+{"assigned_agent":"collections-agent","consent_refs":["C-1"],"event_id":"E-1","event_type":"loan.dpd30","nonce":"n-E-1","occurred_at":"2026-10-01T05:30:00Z","principal":"nbfc-collections-system","record_ref":"lms:loan/L-4471","subject_ref":"ref:borrower:B-9382","system":"lms","tenant_id":"nbfc-demo"}
