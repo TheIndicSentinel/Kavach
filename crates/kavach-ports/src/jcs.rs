@@ -10,6 +10,12 @@
 //! refusing every other number removes that risk instead of testing for it.
 //! A value that breaks the rule is refused before anything is signed or
 //! accepted.
+//!
+//! Objects may not use the key `$serde_json::private::RawValue` either.
+//! With serde_json's `raw_value` feature (switched on by axum and sqlx), an
+//! object whose first key is that token is not parsed as an object: its
+//! value is read as a string of JSON. Canonical output sorts `$` first, so
+//! such a value would not parse back to itself.
 
 use serde::Serialize;
 use serde_json::Value;
@@ -18,6 +24,9 @@ use crate::PortError;
 
 /// The largest integer every JCS implementation represents exactly.
 pub const MAX_SAFE_INTEGER: u64 = (1 << 53) - 1;
+
+/// serde_json's private marker for raw values (feature `raw_value`).
+pub const SERDE_RAW_VALUE_KEY: &str = "$serde_json::private::RawValue";
 
 /// Whether `n` is an integer of magnitude at most [`MAX_SAFE_INTEGER`].
 #[must_use]
@@ -44,6 +53,11 @@ pub fn to_vec<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, PortError> {
                 )));
             }
             Value::Array(items) => pending.extend(items),
+            Value::Object(map) if map.contains_key(SERDE_RAW_VALUE_KEY) => {
+                return Err(PortError::invalid(format!(
+                    "canonical json: the key {SERDE_RAW_VALUE_KEY} is not allowed"
+                )));
+            }
             Value::Object(map) => pending.extend(map.values()),
             _ => {}
         }
@@ -87,6 +101,22 @@ mod tests {
                 err.message.contains("not a safe integer"),
                 "{value}: {err:?}"
             );
+        }
+    }
+
+    /// Found by the `jcs_differential` fuzz target: canonical output that
+    /// starts with this key would not parse back to the same value.
+    #[test]
+    fn the_serde_raw_value_key_is_refused_wherever_it_is() {
+        let mut inner = serde_json::Map::new();
+        inner.insert(SERDE_RAW_VALUE_KEY.into(), json!(3));
+        inner.insert("a".into(), json!(1));
+        for value in [
+            Value::Object(inner.clone()),
+            json!({ "outer": [Value::Object(inner)] }),
+        ] {
+            let err = to_vec(&value).unwrap_err();
+            assert!(err.message.contains("is not allowed"), "{err:?}");
         }
     }
 

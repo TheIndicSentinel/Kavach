@@ -4,8 +4,9 @@
 //! the two Rust implementations disagree.
 //!
 //! Invariants: both refuse exactly the same values (numbers that are not
-//! safe integers); otherwise their bytes are identical, and canonicalising
-//! the output again changes nothing.
+//! safe integers, and objects with serde_json's raw-value key); otherwise
+//! their bytes are identical, and canonicalising the output again changes
+//! nothing.
 
 #![no_main]
 
@@ -16,6 +17,8 @@ use libfuzzer_sys::fuzz_target;
 use serde_json::Value;
 
 const MAX_SAFE: u64 = (1 << 53) - 1;
+/// Parsed specially by serde_json with `raw_value`: refused by Kavach.
+const RAW_VALUE_KEY: &str = "$serde_json::private::RawValue";
 
 /// RFC 8785 §3.2.2.2: escape `"`, `\` and controls; everything else is
 /// written as is.
@@ -68,6 +71,9 @@ fn reference(out: &mut String, value: &Value) -> Option<()> {
             out.push(']');
         }
         Value::Object(map) => {
+            if map.contains_key(RAW_VALUE_KEY) {
+                return None;
+            }
             let mut keys: Vec<&String> = map.keys().collect();
             keys.sort_by(|a, b| utf16_order(a, b));
             out.push('{');
