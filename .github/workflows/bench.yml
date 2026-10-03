@@ -40,6 +40,11 @@ jobs:
     # Nightly: about 50 min for the TLS run (7 scenarios x 4 concurrency
     # levels x 3 pool sizes x 35 s) and 10 min for the baseline, plus set-up.
     timeout-minutes: 120
+    defaults:
+      run:
+        # bash with -o pipefail: a benchmark that fails must fail its step,
+        # even though its output is piped into tee.
+        shell: bash
     env:
       CARGO_INCREMENTAL: "0"
       DURATION: ${{ github.event.inputs.duration_seconds || (github.event_name == 'pull_request' && '5') || '30' }}
@@ -80,11 +85,19 @@ jobs:
           docker run -d --name pg-plain -p 5434:5432 \
             -e POSTGRES_USER=kavach -e POSTGRES_PASSWORD=bench -e POSTGRES_DB=kavach \
             "$POSTGRES_IMAGE"
+          # Ready over TCP, not the socket: the image's first-start
+          # initialisation runs a temporary server on the socket only, then
+          # restarts. Waiting on the socket can catch that temporary server.
           for db in pg-tls pg-plain; do
-            for _ in $(seq 1 60); do
-              docker exec "$db" pg_isready -U kavach -d kavach && break
+            ready=false
+            for _ in $(seq 1 90); do
+              if docker exec "$db" pg_isready -h 127.0.0.1 -U kavach -d kavach; then
+                ready=true
+                break
+              fi
               sleep 1
             done
+            "$ready" || { docker logs "$db"; echo "$db did not start"; exit 1; }
           done
 
       - name: Benchmark with TLS (verify-full)
