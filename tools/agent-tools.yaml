@@ -16,6 +16,12 @@
 #
 # Parameter kinds: capability_ref (reference-only, ref:<type>:<id>),
 # enum (values), field_set (values; requested_fields only), integer (min, max).
+#
+# Reference format (ADR-004 §7): a capability_ref holds at most 8 digits in
+# total, however spread, and nothing that reads as a PAN; anything else is a
+# recorded BLOCK (raw_identifier). Systems of record issue short, opaque ids
+# (a short counter such as B-9382, or random letters), never hex or numeric
+# ids. A per-field limit above 8 would be declared here, signed, never global.
 version: 1
 tools:
   - name: read_fields

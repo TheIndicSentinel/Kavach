@@ -79,8 +79,9 @@ A mandate is rejected at issuance if any of the following hold:
 
 ### 7. Capability references
 
-- Sensitive values are never given to agents. Tools take typed opaque references of the form `ref:<type>:<opaque>` (e.g. `ref:borrower:9f3c…`), issued per tenant.
-- A raw value in a parameter that the tool registration marks as reference-only (phone number, account number, PAN, Aadhaar, email, payment destination) results in `BLOCK`.
+- Sensitive values are never given to agents. Tools take typed opaque references of the form `ref:<type>:<opaque>` (e.g. `ref:borrower:B-9382`), issued per tenant.
+- **Reference format (published rule).** `<type>` and `<opaque>` are each 1–128 characters of `[A-Za-z0-9_.-]`. The whole reference holds **at most 8 digits** in total, however they are spread, and nothing in it may read as a PAN. A system of record issues short, opaque ids: a short counter (`B-9382`) or a random id drawn from letters only. Random hexadecimal or numeric ids are not suitable, because they routinely hold more than 8 digits. A reference that breaks the rule is refused (`BLOCK`, reason `raw_identifier:<field>:<kind>`), not repaired. If a partner needs longer numeric ids, the limit is raised per field in the signed tool registry, never globally.
+- A raw value in a parameter that the tool registration marks as reference-only (phone number, account number, PAN, Aadhaar, email, payment destination) results in `BLOCK`. Detected today: Indian mobile numbers, Aadhaar numbers (12 digits with a valid Verhoeff check digit), PANs, and any run of 9 or more digits, in any supported script and through separators. Detectors for UPI IDs, IFSC codes and account-number formats follow (PRD FR-5).
 - References are resolved to real values **only inside the gateway**, after authorization, through the `ReferenceResolver` port (ADR-006, ADR-007).
 
 ### 8. Revocation and expiry
