@@ -30,6 +30,9 @@ enum Command {
         /// DNS names and IPs for the provider's TLS certificate.
         #[arg(long = "provider-host", default_values_t = ["mock-provider".to_string()])]
         provider_hosts: Vec<String>,
+        /// DNS names and IPs for Postgres's TLS certificate.
+        #[arg(long = "database-host", default_values_t = ["postgres".to_string()])]
+        database_hosts: Vec<String>,
         #[arg(long, default_value_t = 24)]
         token_hours: i64,
     },
@@ -84,6 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             kavach_mount,
             provider_endpoint,
             provider_hosts,
+            database_hosts,
             token_hours,
         } => {
             let summary = kavach_devkit::generate(&kavach_devkit::Options {
@@ -91,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 kavach_mount,
                 provider_endpoint,
                 provider_hosts,
+                database_hosts,
                 token_hours,
             })
             .await?;
