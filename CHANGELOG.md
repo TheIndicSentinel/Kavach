@@ -26,6 +26,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 ### Added
 
 - Fuzz target `cel_policy`: CEL rules through pack loading and evaluation. A crash is always fixed; a hang becomes a tighter load limit or a documented gap.
+- `kavach-keys-pkcs11` (KMS milestone, K1): a PKCS#11 key provider for Ed25519 signing keys held in an HSM. It refuses keys that could have been imported or read out (sensitive, always sensitive, not extractable, never extractable), proves each public key at startup, pools sessions and logs in again after an HSM restart, and fails closed otherwise. Tested against SoftHSM2 in CI. Not wired into the API yet (K2).
 - Fuzz target `bundle_verify`: evidence bundles through the whole `verify-bundle` path, from byte edits to the checked-in signed bundle and from arbitrary files. A bundle that verifies as signed must be byte-identical to the original.
 - Fuzz target `credential_open`: resource credentials as a provider opens them, from any string, from fuzzed claims that are signed and encrypted, and from byte edits to the checked-in credential vector.
 - Fuzz targets for agent tool parameters (no raw identifier in a reference-only field), HMAC v2 headers (fixed clock, fresh nonce store) and canonical JSON (a differential against a reference serialiser), plus RFC 8785 vectors that CI checks independently with the `canonicalize` package.
