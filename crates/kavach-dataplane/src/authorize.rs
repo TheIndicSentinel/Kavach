@@ -145,6 +145,9 @@ pub struct Decided {
     pub record: Option<AgentDecisionRecord>,
     /// Only for a committed (or replayed) allow.
     pub grant: Option<CredentialGrant>,
+    /// Time spent in the evidence store's commit, when one was made (for
+    /// the gateway's per-stage latency).
+    pub commit_time: Option<std::time::Duration>,
 }
 
 impl Decided {
@@ -376,6 +379,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
                 status: CommitStatus::NotRecorded,
                 record: None,
                 grant: None,
+                commit_time: None,
             });
         }
         Ok(self
@@ -517,11 +521,15 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
             reasons,
             mandate_view,
         );
+        let started = std::time::Instant::now();
         let result = self
             .store
             .commit(request, self.clock.as_ref(), self.signer.as_ref())
             .await;
-        decided(result)
+        Decided {
+            commit_time: Some(started.elapsed()),
+            ..decided(result)
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -613,6 +621,7 @@ fn decided(result: Result<CommitResult, PortError>) -> Decided {
                 status: CommitStatus::Conflict,
                 record: Some(*r),
                 grant: None,
+                commit_time: None,
             };
         }
         Err(_) => {
@@ -622,6 +631,7 @@ fn decided(result: Result<CommitResult, PortError>) -> Decided {
                 status: CommitStatus::Failed,
                 record: None,
                 grant: None,
+                commit_time: None,
             };
         }
     };
@@ -641,5 +651,6 @@ fn decided(result: Result<CommitResult, PortError>) -> Decided {
         status,
         grant,
         record: Some(record),
+        commit_time: None,
     }
 }

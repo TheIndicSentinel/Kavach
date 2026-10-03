@@ -18,6 +18,7 @@ pub use checkpointer::{
 };
 pub use gateway::{
     execute, ForwardResult, Forwarder, GatewayDeps, GatewayError, GatewayObserver, GatewayReply,
+    Stage,
 };
 pub use resolve::FixtureResolver;
 pub use tools::{RegistryTrust, ToolRegistry, ToolRequest, Trust};

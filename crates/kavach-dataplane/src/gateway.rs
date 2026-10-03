@@ -13,6 +13,7 @@
 //! provider's raw response to the agent: [`GatewayReply`] is an allowlist.
 
 use std::future::Future;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use kavach_domain::Decision;
@@ -119,11 +120,55 @@ pub enum GatewayError {
     InFlight,
 }
 
+/// One stage of a gateway call, for per-stage latency. A fixed list: it is
+/// a metric label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// Mandate, policy and parameter checks (everything in `authorize` but
+    /// the evidence commit).
+    Decide,
+    /// The evidence commit: the signed record, in one transaction.
+    Commit,
+    /// The capability reference resolved to a destination.
+    Resolve,
+    /// The resource credential issued (signed and encrypted).
+    Credential,
+    /// The request forwarded to the provider, until its reply.
+    Forward,
+    /// The signed outcome written.
+    Outcome,
+}
+
+impl Stage {
+    pub const ALL: [Self; 6] = [
+        Self::Decide,
+        Self::Commit,
+        Self::Resolve,
+        Self::Credential,
+        Self::Forward,
+        Self::Outcome,
+    ];
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Decide => "decide",
+            Self::Commit => "commit",
+            Self::Resolve => "resolve",
+            Self::Credential => "credential",
+            Self::Forward => "forward",
+            Self::Outcome => "outcome",
+        }
+    }
+}
+
 /// Counters the caller exports; labels are fixed vocabularies only.
 pub trait GatewayObserver: Send + Sync {
     fn call(&self, tool: &str, decision: Decision, outcome: Option<Outcome>);
     fn jti_conflict(&self);
     fn outcome_write_failed(&self);
+    /// How long one stage of a call took. Ignored unless implemented.
+    fn stage(&self, _stage: Stage, _elapsed: Duration) {}
 }
 
 /// What the gateway needs from its host.
@@ -173,10 +218,18 @@ where
         .tools()
         .extract(tool, request)
         .map_err(|e| GatewayError::Invalid(e.message))?;
+    let started = Instant::now();
     let decided = core
         .authorize(agent, &call, Mode::Commit)
         .await
         .map_err(|e| GatewayError::Invalid(e.message))?;
+    let authorize_time = started.elapsed();
+    let commit_time = decided.commit_time.unwrap_or_default();
+    deps.observer
+        .stage(Stage::Decide, authorize_time.saturating_sub(commit_time));
+    if decided.commit_time.is_some() {
+        deps.observer.stage(Stage::Commit, commit_time);
+    }
 
     let mut reply = GatewayReply {
         decision: decided.decision,
@@ -226,7 +279,10 @@ where
     if reason == "provider_409" {
         deps.observer.jti_conflict();
     }
-    if core.record_outcome(record, outcome, &reason).await.is_err() {
+    let started = Instant::now();
+    let written = core.record_outcome(record, outcome, &reason).await;
+    deps.observer.stage(Stage::Outcome, started.elapsed());
+    if written.is_err() {
         reply.outcome_recorded = false;
         deps.observer.outcome_write_failed();
     }
@@ -266,11 +322,13 @@ where
         return not_executed("tool_not_forwardable");
     };
 
-    let destination = match deps
+    let started = Instant::now();
+    let resolved = deps
         .resolver
         .resolve(core.tenant_id(), &call.subject_ref, channel)
-        .await
-    {
+        .await;
+    deps.observer.stage(Stage::Resolve, started.elapsed());
+    let destination = match resolved {
         Ok(destination) => destination,
         Err(err) => {
             return not_executed(match err.class {
@@ -284,6 +342,7 @@ where
     let Some(now) = core.trusted_now() else {
         return not_executed("trusted_time_unavailable");
     };
+    let started = Instant::now();
     let issued = deps
         .broker
         .issue(&CredentialRequest {
@@ -302,6 +361,7 @@ where
             now,
         })
         .await;
+    deps.observer.stage(Stage::Credential, started.elapsed());
     drop(destination);
     let credential = match issued {
         Ok(credential) => credential,
@@ -325,7 +385,9 @@ where
         return not_executed("credential_expired");
     }
 
+    let started = Instant::now();
     let result = deps.forwarder.forward(provider, &credential.token).await;
+    deps.observer.stage(Stage::Forward, started.elapsed());
     drop(credential);
     let (outcome, reason, _) = classify(&result);
     let message_id = match result {
