@@ -37,7 +37,7 @@ jobs:
   bench:
     name: Gateway benchmark (trend)
     runs-on: ubuntu-latest
-    # Nightly: about 50 min for the TLS run (7 scenarios x 4 concurrency
+    # Nightly: about 63 min for the TLS run (9 scenarios x 4 concurrency
     # levels x 3 pool sizes x 35 s) and 10 min for the baseline, plus set-up.
     timeout-minutes: 120
     defaults:

@@ -36,6 +36,11 @@ pub enum Scenario {
     /// CPU work the commit does while it holds the partition lock. No
     /// database.
     Seal,
+    /// Micro: the decision alone, in process (NFR-2 `authorize`): extract
+    /// the tool call and run `AuthorizeCore::authorize` as a pre-check. No
+    /// HTTP and no token verification; mandate verification reads the
+    /// store. Runs on either store.
+    Authorize,
     /// Micro: the outcome write alone, as it is today (no lock). Each
     /// operation first commits an allow, which is not timed.
     Outcome,
@@ -53,15 +58,22 @@ impl Scenario {
         Self::Precheck,
         Self::HotSubject,
     ];
-    /// The storage micro-benchmarks (Postgres only).
-    pub const MICRO: [Self; 4] = [Self::Commit, Self::Seal, Self::Outcome, Self::OutcomeLocked];
-    pub const ALL: [Self; 8] = [
+    /// The in-process micro-benchmarks (no HTTP).
+    pub const MICRO: [Self; 5] = [
+        Self::Commit,
+        Self::Seal,
+        Self::Authorize,
+        Self::Outcome,
+        Self::OutcomeLocked,
+    ];
+    pub const ALL: [Self; 9] = [
         Self::Delivered,
         Self::Blocked,
         Self::Precheck,
         Self::HotSubject,
         Self::Commit,
         Self::Seal,
+        Self::Authorize,
         Self::Outcome,
         Self::OutcomeLocked,
     ];
@@ -74,7 +86,7 @@ impl Scenario {
     /// Whether the scenario needs Postgres.
     #[must_use]
     pub fn needs_database(self) -> bool {
-        self.is_micro() && self != Self::Seal
+        self.is_micro() && !matches!(self, Self::Seal | Self::Authorize)
     }
 
     #[must_use]
@@ -86,6 +98,7 @@ impl Scenario {
             Self::HotSubject => "hot-subject",
             Self::Commit => "commit",
             Self::Seal => "seal",
+            Self::Authorize => "authorize",
             Self::Outcome => "outcome",
             Self::OutcomeLocked => "outcome-locked",
         }

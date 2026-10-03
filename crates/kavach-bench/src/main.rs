@@ -28,12 +28,13 @@ struct Cli {
     #[arg(long, value_delimiter = ',', default_value = "1,8,32,64")]
     concurrency: Vec<usize>,
     /// Scenarios, comma separated. Gateway (HTTP): delivered, blocked,
-    /// precheck, hot-subject. Storage micro-benchmarks (Postgres only):
-    /// commit, outcome, outcome-locked.
+    /// precheck, hot-subject. In-process micro-benchmarks: seal and
+    /// authorize (either store); commit, outcome, outcome-locked (Postgres
+    /// only).
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "delivered,blocked,precheck,hot-subject,commit,seal,outcome,outcome-locked"
+        default_value = "delivered,blocked,precheck,hot-subject,commit,seal,authorize,outcome,outcome-locked"
     )]
     scenarios: Vec<String>,
     /// Postgres pool sizes to compare, comma separated: each gets its own

@@ -24,6 +24,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- `kavach-bench` scenario `authorize`: the decision alone, in process, for the NFR-2 `authorize` p99 target. It leaves out HTTP and token verification, which `precheck` includes.
 - `kavach_gateway_stage_seconds{stage}`: a histogram of each gateway call's stages (decide, commit, resolve, credential, forward, outcome), and a per-stage breakdown in the benchmark report.
 - `--database-pool-size` / `KAVACH_DATABASE_POOL_SIZE` for the API's runtime Postgres pool (default 5, as before).
 - `kavach-bench`, a benchmark harness for the gateway path (delivered, blocked, pre-check and hot-subject calls at fixed concurrency; storage micro-benchmarks for the evidence commit and the outcome write with and without an extra lock; several pool sizes per run), and a nightly *Benchmarks* workflow that records trends with and without database TLS. How figures may be quoted: `docs/PERFORMANCE.md`. No published numbers yet.

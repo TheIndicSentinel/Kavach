@@ -8,6 +8,9 @@
 //!   insert, head update).
 //! - `seal`: hashing and signing one record, the CPU work the commit does
 //!   while it holds the partition lock (no database).
+//! - `authorize`: the decision alone, in process (PRD NFR-2): the tool
+//!   call extracted and decided as a pre-check, with no HTTP and no token
+//!   verification. Either store.
 //! - `outcome`: the outcome write as it is today: check the record, insert
 //!   the outcome. Each operation first commits an allow to write the
 //!   outcome for; that commit is not timed.
@@ -23,6 +26,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use chrono::Duration as ChronoDuration;
+use kavach_dataplane::{AgentIdentity, Mode, ToolRequest};
+use kavach_domain::Decision;
 use kavach_ports::agent_evidence::{
     sign_outcome, AgentDecisionRecord, AgentEvidenceStore, CommitResult, Outcome,
 };
@@ -31,7 +36,7 @@ use kavach_ports_testkit::agent_evidence::{request, TestSigner};
 use kavach_storage::StoragePool;
 
 use crate::load::{measure, summarise, RunResult, Scenario};
-use crate::stack::{Stack, TENANT};
+use crate::stack::{Stack, AGENT, TENANT};
 
 const EVIDENCE_KID: &str = "evidence-test";
 
@@ -142,6 +147,9 @@ pub async fn run_micro(
     if scenario == Scenario::Seal {
         return Ok(run_seal(stack, concurrency, warmup, duration, sequence).await);
     }
+    if scenario == Scenario::Authorize {
+        return run_authorize(stack, concurrency, warmup, duration, sequence).await;
+    }
     let pool = stack
         .storage
         .clone()
@@ -224,4 +232,65 @@ async fn run_seal(
         duration,
         measured,
     )
+}
+
+/// Times the decision the gateway makes before it records anything:
+/// `ToolRegistry::extract` and `AuthorizeCore::authorize` in pre-check mode,
+/// spread over all subjects. The agent is the one the stack's token names,
+/// already authenticated: token verification and HTTP are left out (the
+/// `precheck` scenario includes both).
+async fn run_authorize(
+    stack: &Arc<Stack>,
+    concurrency: usize,
+    warmup: Duration,
+    duration: Duration,
+    sequence: &Arc<AtomicU64>,
+) -> Result<RunResult, String> {
+    if stack.dataplane().is_none() {
+        return Err("authorize needs the data plane".into());
+    }
+    let agent = Arc::new(AgentIdentity {
+        agent_id: AGENT.into(),
+        identity_key: format!("oidc:{}#{AGENT}", kavach_devkit::ISSUER),
+        state: kavach_authz::AgentState::Active,
+    });
+    let stack_op = Arc::clone(stack);
+    let measured = measure(concurrency, warmup, duration, sequence, move |n| {
+        let (stack, agent) = (Arc::clone(&stack_op), Arc::clone(&agent));
+        async move {
+            let core = stack.dataplane().ok_or("no data plane")?.core();
+            let subject = &stack.subjects[usize::try_from(n).unwrap_or(0) % stack.subjects.len()];
+            let mut params = serde_json::Map::new();
+            params.insert("subject_ref".into(), subject.subject_ref.clone().into());
+            params.insert("channel".into(), "whatsapp".into());
+            params.insert("template_id".into(), "emi_reminder_v1".into());
+            let request = ToolRequest {
+                mandate_id: subject.mandate_id.clone(),
+                request_id: format!("bench-authorize-{n}"),
+                params,
+            };
+            let started = Instant::now();
+            let call = core
+                .tools()
+                .extract("send_reminder", request)
+                .map_err(|e| e.message)?;
+            let decided = core
+                .authorize(&agent, &call, Mode::Precheck)
+                .await
+                .map_err(|e| e.to_string())?;
+            let elapsed = started.elapsed();
+            if decided.decision != Decision::Pass {
+                return Err(format!("expected PASS: {:?}", decided.reasons));
+            }
+            Ok(elapsed)
+        }
+    })
+    .await;
+    Ok(summarise(
+        Scenario::Authorize,
+        concurrency,
+        stack.database_pool(),
+        duration,
+        measured,
+    ))
 }

@@ -70,5 +70,21 @@ async fn every_scenario_runs_with_only_expected_replies() {
     .await
     .expect("seal runs without a database");
     assert!(seal.requests > 0 && seal.errors == 0, "{seal:?}");
+    // The in-process decision needs no database either, and every call on
+    // a covered subject passes.
+    let authorize = kavach_bench::micro::run_micro(
+        &stack,
+        Scenario::Authorize,
+        2,
+        Duration::ZERO,
+        Duration::from_millis(200),
+        &sequence,
+    )
+    .await
+    .expect("authorize runs on the memory store");
+    assert!(
+        authorize.requests > 0 && authorize.errors == 0,
+        "{authorize:?}"
+    );
     std::fs::remove_dir_all(&work).unwrap();
 }

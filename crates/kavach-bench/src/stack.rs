@@ -483,6 +483,12 @@ impl Stack {
         totals
     }
 
+    /// The API's data plane (the decision core the gateway uses).
+    #[must_use]
+    pub fn dataplane(&self) -> Option<&kavach_api::dataplane::Dataplane> {
+        self.state.dataplane()
+    }
+
     /// The Postgres pool size, when there is a database.
     #[must_use]
     pub fn database_pool(&self) -> Option<u32> {

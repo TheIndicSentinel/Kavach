@@ -17,7 +17,7 @@ On the reference hardware (ADR-003 §10: 4 CPU cores, 16 GB RAM, local PostgreSQ
 
 | Target | Measured by |
 |---|---|
-| `authorize` p99 < 5 ms in-process | Not yet: the `precheck` scenario includes HTTP and authentication, so it is an upper bound. An in-process measurement is planned with the evidence micro-benchmarks. |
+| `authorize` p99 < 5 ms in-process | `authorize`: the decision alone, in process. `precheck` adds HTTP and token verification, so it is an upper bound. |
 | Gateway overhead p99 < 15 ms, including the minimal critical evidence write | `delivered` and `hot-subject` with no provider delay; `commit` isolates the evidence write |
 | 1,000 requests/s, single node | Requests per second of `delivered` at the highest concurrency |
 
@@ -36,12 +36,13 @@ ADR-003 named `criterion` and `oha` for these. The gateway is measured with `kav
 
 **Where the time goes.** For every gateway run the report also gives the mean time per call in each stage (`decide`, `commit`, `resolve`, `credential`, `forward`, `outcome`), from the API's `kavach_gateway_stage_seconds` histogram, and "other": the rest of the mean, which is HTTP, token verification and request parsing. Stage means include the warm-up calls.
 
-**Storage micro-benchmarks** (Postgres only, no HTTP), for two open questions: is the bottleneck the pool or the evidence partition lock, and what would E5's extra lock cost?
+**Micro-benchmarks** (in process, no HTTP). `commit`, `outcome` and `outcome-locked` need Postgres and answer two open questions: is the bottleneck the pool or the evidence partition lock, and what would E5's extra lock cost? `authorize` measures the NFR-2 decision target.
 
 | Scenario | What one operation does |
 |---|---|
 | `commit` | The evidence commit alone: lock the partition head, insert the record, advance the head. |
 | `seal` | Hashing and signing one record (JCS, SHA-256, Ed25519): the CPU work the commit does while it holds the partition lock. No database; also runs on the memory store. |
+| `authorize` | The decision alone, in process (NFR-2): the tool call extracted and decided as a pre-check (`AuthorizeCore::authorize`), spread over all subjects. Includes mandate verification, which reads the store, and the policy decision. Leaves out HTTP and token verification, which `precheck` includes. Runs on either store. |
 | `outcome` | The outcome write as it is today: check the record, insert the outcome. Each operation first commits an allow, which is not timed. |
 | `outcome-locked` | The same write as E5 would make it: in one transaction that locks a per-partition outcome head and then advances it. Timed the same way. |
 
