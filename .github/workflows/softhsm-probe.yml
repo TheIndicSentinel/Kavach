@@ -1,0 +1,31 @@
+name: SoftHSM EdDSA probe
+
+# KMS milestone, step zero: proves that the SoftHSM2 package on the CI image
+# generates Ed25519 keys inside the token and signs with CKM_EDDSA, before
+# the PKCS#11 key provider (K1) is built on it. Runs when the probe changes
+# and on demand. Not a required check.
+on:
+  pull_request:
+    paths:
+      - "scripts/softhsm-eddsa-probe.sh"
+      - ".github/workflows/softhsm-probe.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: SoftHSM EdDSA probe
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install SoftHSM2 and OpenSC
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq softhsm2 opensc python3-cryptography
+          dpkg -s softhsm2 | grep -E "^Version"
+
+      - name: Probe
+        run: scripts/softhsm-eddsa-probe.sh
