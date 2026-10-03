@@ -19,8 +19,8 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 - The `kavach-evidence` binary moved to the new `kavach-evidence-cli` crate. Its name and its `verify` command are unchanged; build it with `-p kavach-evidence-cli` instead of `-p kavach-evidence`.
 - The API refuses to start if its mandate, evidence, checkpoint or credential key id starts with `export-` (or `dev-export-`): those ids are reserved for evidence export keys.
-
 - The evidence commit makes fewer database round trips: 6 instead of 9 for a recorded allow, 3 instead of 5 while it holds the partition lock. Same transaction, lock order and durability.
+- Bearer tokens (API callers and agents) are checked against keys decoded once per JWKS load or refresh, rather than on every request. Acceptance rules are unchanged.
 
 ### Added
 
