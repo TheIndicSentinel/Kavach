@@ -40,12 +40,14 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 from cryptography.hazmat.primitives.serialization import load_der_public_key
 w = Path(sys.argv[1])
 raw = (w / "pub.der").read_bytes()
-# pkcs11-tool writes an Edwards key as its CKA_EC_POINT (a DER OCTET STRING
-# around the 32-byte point) rather than as a SubjectPublicKeyInfo.
-if len(raw) == 34 and raw[:2] == b"\x04\x20":
-    key = Ed25519PublicKey.from_public_bytes(raw[2:])
-elif len(raw) == 32:
-    key = Ed25519PublicKey.from_public_bytes(raw)
+print("public key object:", len(raw), "bytes:", raw.hex())
+# pkcs11-tool writes an Edwards key as its CKA_EC_POINT: the 32-byte point
+# inside one or more DER OCTET STRINGs. Fall back to SubjectPublicKeyInfo.
+point = raw
+while len(point) > 32 and point[0] == 0x04 and point[1] == len(point) - 2:
+    point = point[2:]
+if len(point) == 32:
+    key = Ed25519PublicKey.from_public_bytes(point)
 else:
     key = load_der_public_key(raw)
 key.verify((w / "sig").read_bytes(), (w / "msg").read_bytes())  # raises if invalid
