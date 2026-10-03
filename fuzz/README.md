@@ -18,8 +18,7 @@ Ordered by exposure: who can send the input.
 | `credential_open` | Mode 0: any string as a credential. Mode 1: claims bytes signed with the credential key and encrypted to the provider. Mode 2: byte edits to the checked-in credential vector | Providers | An opened credential is addressed to this provider, lives at most 15 s, is not expired or past `send_by`, and its claims are the canonical form of what was signed; any edit to the vector token is refused |
 
 | `bundle_verify` | Even first byte: (file, position, byte) edits to the checked-in signed bundle. Odd: all four files from the input | Operators and auditors (`verify-bundle`) | A bundle that verifies with the trusted export signature has data files identical to the original and a manifest with the same content. A changed bundle fails, or at most verifies unsigned (the documented warning) |
-
-Planned next: CEL.
+| `cel_policy` | A CEL expression, then the JSON value bound as `request` | Operators (signed packs) | Loading enforces the 2048-character expression limit; a loaded rule decides or errors (recorded as a BLOCK), never panics. A hang past the per-input timeout becomes a tighter load limit, or a documented gap when no limit can catch it |
 
 ## Limits
 

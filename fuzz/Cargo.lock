@@ -1977,6 +1977,7 @@ dependencies = [
  "kavach-jws",
  "kavach-keys",
  "kavach-mandate",
+ "kavach-policy",
  "kavach-ports",
  "kavach-ports-testkit",
  "libfuzzer-sys",
