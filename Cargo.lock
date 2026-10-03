@@ -2141,6 +2141,33 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-bench"
+version = "0.1.0"
+dependencies = [
+ "axum 0.8.9",
+ "chrono",
+ "clap",
+ "hex",
+ "kavach-api",
+ "kavach-credential",
+ "kavach-devkit",
+ "kavach-domain",
+ "kavach-jws",
+ "kavach-keys",
+ "kavach-mandate",
+ "kavach-mock-provider",
+ "kavach-ports",
+ "kavach-ports-testkit",
+ "kavach-storage",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "kavach-cedar-analysis"
 version = "0.1.0"
 dependencies = [

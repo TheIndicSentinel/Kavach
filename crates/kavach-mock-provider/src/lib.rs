@@ -89,6 +89,9 @@ pub struct ProviderConfig {
     pub grace_seconds: i64,
     /// How long [`HANG_NUMBER`] delays its response.
     pub hang: StdDuration,
+    /// Added to every response, to stand in for a real provider's latency
+    /// (benchmarks). Zero by default.
+    pub delay: StdDuration,
 }
 
 impl ProviderConfig {
@@ -105,6 +108,7 @@ impl ProviderConfig {
             capacity: 100_000,
             grace_seconds: 300,
             hang: StdDuration::from_secs(30),
+            delay: StdDuration::ZERO,
         }
     }
 }
@@ -357,6 +361,9 @@ impl MockProvider {
     }
 
     async fn handle(&self, headers: &HeaderMap, body: &Bytes) -> Response {
+        if !self.config.delay.is_zero() {
+            tokio::time::sleep(self.config.delay).await;
+        }
         let (status, body) = match self.admit(headers, body) {
             Err(outcome) => outcome,
             Ok((claims, digest)) => {
