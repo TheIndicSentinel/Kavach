@@ -53,6 +53,8 @@ jobs:
             max_len: 20000
           - target: jcs_differential # canonical JSON behind every signature
             max_len: 20000
+          - target: credential_open # provider side: credential JWE and JWS
+            max_len: 20000
     defaults:
       run:
         shell: bash
