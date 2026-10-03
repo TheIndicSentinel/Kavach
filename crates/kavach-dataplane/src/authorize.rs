@@ -423,8 +423,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
             }
         }
         let params_mac = if violations.is_empty() {
-            let canonical = serde_json_canonicalizer::to_vec(call)
-                .map_err(|e| PortError::invalid(format!("canonical params: {e}")))?;
+            let canonical = kavach_ports::jcs::to_vec(call)?;
             Some(self.subject_keys.params_mac(tenant, &canonical))
         } else {
             None

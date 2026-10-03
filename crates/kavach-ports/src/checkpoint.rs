@@ -90,8 +90,7 @@ fn is_hash(value: &str) -> bool {
 
 /// RFC 8785 (JCS) bytes of a payload: what is hashed.
 pub fn canonical_payload(payload: &CheckpointPayload) -> Result<Vec<u8>, PortError> {
-    serde_json_canonicalizer::to_vec(payload)
-        .map_err(|e| PortError::invalid(format!("canonical checkpoint: {e}")))
+    crate::jcs::to_vec(payload)
 }
 
 /// SHA-256 over the hash prefix and the canonical payload, as lowercase hex.
