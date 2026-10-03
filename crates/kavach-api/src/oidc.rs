@@ -9,12 +9,15 @@
 //! - JWKS comes from a file (fully offline) or an HTTPS URL at the bank's own
 //!   identity provider (fetched at startup, refreshed periodically and — rate
 //!   limited — on an unknown `kid`).
+//! - Each JWK is decoded once, when the JWKS is loaded or refreshed, not on
+//!   every token.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use jsonwebtoken::jwk::JwkSet;
+use jsonwebtoken::jwk::{JwkSet, KeyAlgorithm};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde_json::{Map, Value};
 
@@ -70,9 +73,35 @@ pub enum OidcError {
     Claim(String, String),
 }
 
+/// A JWK decoded for verification. A JWK that does not decode keeps its
+/// error, so a token naming it is rejected exactly as before the cache.
+struct VerifyingKey {
+    algorithm: Option<KeyAlgorithm>,
+    key: Result<Arc<DecodingKey>, String>,
+}
+
+/// Decoded keys by `kid`. As with `JwkSet::find`, the first JWK with a given
+/// `kid` wins and a JWK without one can never be selected.
+type KeySet = HashMap<String, VerifyingKey>;
+
+fn decode_keys(jwks: &JwkSet) -> KeySet {
+    let mut keys = KeySet::new();
+    for jwk in &jwks.keys {
+        if let Some(kid) = &jwk.common.key_id {
+            keys.entry(kid.clone()).or_insert_with(|| VerifyingKey {
+                algorithm: jwk.common.key_algorithm,
+                key: DecodingKey::from_jwk(jwk)
+                    .map(Arc::new)
+                    .map_err(|e| e.to_string()),
+            });
+        }
+    }
+    keys
+}
+
 pub struct OidcVerifier {
     config: OidcConfig,
-    keys: RwLock<JwkSet>,
+    keys: RwLock<KeySet>,
     last_refresh: Mutex<Instant>,
     client: Option<reqwest::Client>,
 }
@@ -112,7 +141,7 @@ impl OidcVerifier {
         };
         let verifier = Self {
             config,
-            keys: RwLock::new(JwkSet { keys: vec![] }),
+            keys: RwLock::new(KeySet::new()),
             last_refresh: Mutex::new(Instant::now()),
             client,
         };
@@ -120,15 +149,15 @@ impl OidcVerifier {
         if keys.keys.is_empty() {
             return Err("JWKS contains no keys".into());
         }
-        *verifier.keys.write().map_err(|_| "jwks lock poisoned")? = keys;
+        *verifier.keys.write().map_err(|_| "jwks lock poisoned")? = decode_keys(&keys);
         Ok(Arc::new(verifier))
     }
 
     /// Builds a verifier from an in-memory JWKS (tests, embedded setups).
-    pub fn from_jwks(config: OidcConfig, keys: JwkSet) -> Arc<Self> {
+    pub fn from_jwks(config: OidcConfig, keys: &JwkSet) -> Arc<Self> {
         Arc::new(Self {
             config,
-            keys: RwLock::new(keys),
+            keys: RwLock::new(decode_keys(keys)),
             last_refresh: Mutex::new(Instant::now()),
             client: None,
         })
@@ -160,6 +189,7 @@ impl OidcVerifier {
         if keys.keys.is_empty() {
             return Err("refreshed JWKS contains no keys".into());
         }
+        let keys = decode_keys(&keys);
         *self.keys.write().map_err(|_| "jwks lock poisoned")? = keys;
         Ok(())
     }
@@ -218,15 +248,20 @@ impl OidcVerifier {
                 .keys
                 .read()
                 .map_err(|_| OidcError::Invalid("jwks lock poisoned".into()))?;
-            let jwk = keys
-                .find(&kid)
+            let entry = keys
+                .get(&kid)
                 .ok_or_else(|| OidcError::UnknownKid(kid.clone()))?;
-            if let Some(alg) = jwk.common.key_algorithm {
+            if let Some(alg) = entry.algorithm {
                 if format!("{alg:?}") != format!("{:?}", header.alg) {
                     return Err(OidcError::KeyAlgorithmMismatch);
                 }
             }
-            DecodingKey::from_jwk(jwk).map_err(|e| OidcError::Invalid(e.to_string()))?
+            Arc::clone(
+                entry
+                    .key
+                    .as_ref()
+                    .map_err(|e| OidcError::Invalid(e.clone()))?,
+            )
         };
 
         let mut validation = Validation::new(header.alg);
@@ -271,5 +306,122 @@ impl OidcVerifier {
             }
         };
         Ok(VerifiedToken { principal, groups })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    use ed25519_dalek::SigningKey;
+    use jsonwebtoken::{encode, EncodingKey, Header};
+    use serde_json::json;
+
+    use super::*;
+
+    const ISSUER: &str = "https://idp.test";
+    const AUDIENCE: &str = "kavach-api";
+
+    fn config(jwks: JwksSource) -> OidcConfig {
+        OidcConfig {
+            issuer: ISSUER.into(),
+            audience: AUDIENCE.into(),
+            jwks,
+            principal_claim: "sub".into(),
+            groups_claim: "groups".into(),
+            leeway_seconds: 0,
+        }
+    }
+
+    fn jwk(seed: u8, kid: &str) -> Value {
+        let public = SigningKey::from_bytes(&[seed; 32])
+            .verifying_key()
+            .to_bytes();
+        json!({ "kty": "OKP", "crv": "Ed25519", "x": URL_SAFE_NO_PAD.encode(public),
+                "kid": kid, "alg": "EdDSA", "use": "sig" })
+    }
+
+    fn jwks(keys: &[Value]) -> JwkSet {
+        serde_json::from_value(json!({ "keys": keys })).unwrap()
+    }
+
+    fn token(seed: u8, kid: &str) -> String {
+        // PKCS#8 v1 DER for an Ed25519 private key (RFC 8410).
+        let mut der = vec![
+            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
+            0x04, 0x20,
+        ];
+        der.extend_from_slice(&[seed; 32]);
+        let mut header = Header::new(Algorithm::EdDSA);
+        header.kid = Some(kid.into());
+        let now = chrono::Utc::now().timestamp();
+        let claims = json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice",
+                             "groups": ["ops"], "exp": now + 300 });
+        encode(&header, &claims, &EncodingKey::from_ed_der(&der)).unwrap()
+    }
+
+    #[test]
+    fn a_key_that_does_not_decode_rejects_only_its_own_tokens() {
+        let broken = json!({ "kty": "OKP", "crv": "Ed25519", "x": "not-base64!", "kid": "broken" });
+        let verifier = OidcVerifier::from_jwks(
+            config(JwksSource::File(PathBuf::new())),
+            &jwks(&[broken, jwk(1, "good")]),
+        );
+        assert!(matches!(
+            verifier.verify(&token(1, "broken")),
+            Err(OidcError::Invalid(_))
+        ));
+        assert_eq!(
+            verifier.verify(&token(1, "good")).unwrap(),
+            VerifiedToken {
+                principal: "alice".into(),
+                groups: vec!["ops".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn the_first_key_with_a_kid_wins() {
+        let verifier = OidcVerifier::from_jwks(
+            config(JwksSource::File(PathBuf::new())),
+            &jwks(&[jwk(1, "k"), jwk(2, "k")]),
+        );
+        assert!(verifier.verify(&token(1, "k")).is_ok());
+        assert!(matches!(
+            verifier.verify(&token(2, "k")),
+            Err(OidcError::Invalid(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_refresh_replaces_the_decoded_keys() {
+        let path = std::env::temp_dir().join(format!(
+            "kavach-oidc-rotation-{}-{}.json",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        std::fs::write(&path, json!({ "keys": [jwk(1, "old")] }).to_string()).unwrap();
+        let verifier = OidcVerifier::load(config(JwksSource::File(path.clone())))
+            .await
+            .unwrap();
+        assert!(verifier.verify(&token(1, "old")).is_ok());
+        assert_eq!(
+            verifier.verify(&token(2, "new")),
+            Err(OidcError::UnknownKid("new".into()))
+        );
+
+        std::fs::write(&path, json!({ "keys": [jwk(2, "new")] }).to_string()).unwrap();
+        verifier.refresh().await.unwrap();
+        assert!(verifier.verify(&token(2, "new")).is_ok());
+        assert_eq!(
+            verifier.verify(&token(1, "old")),
+            Err(OidcError::UnknownKid("old".into()))
+        );
+
+        // A refresh that fails keeps the keys it had.
+        std::fs::write(&path, json!({ "keys": [] }).to_string()).unwrap();
+        assert!(verifier.refresh().await.is_err());
+        assert!(verifier.verify(&token(2, "new")).is_ok());
+        std::fs::remove_file(&path).ok();
     }
 }
