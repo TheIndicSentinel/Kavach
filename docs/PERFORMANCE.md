@@ -7,7 +7,7 @@ What Kavach's gateway path costs, how it is measured, and which figures may be q
 | Figures | Status |
 |---|---|
 | **Published numbers** (reference machine, below) | **Not yet measured.** No figure in this file is a performance claim until this row says otherwise. |
-| CI trends (nightly, shared runners) | Running: the *Benchmarks* workflow. These are **trends**: they show whether a change made things faster or slower, not how fast Kavach is. |
+| CI trends (on demand, shared runners) | The *Benchmarks* workflow, run when a decision needs the data. These are **trends**: they show whether a change made things faster or slower, not how fast Kavach is. |
 
 Until the reference run exists, quote only CI trends, and say that they are trends.
 
@@ -98,7 +98,7 @@ Run once, on a fixed cloud VM matching NFR-2, then whenever a release is tagged.
 
 ## CI trends
 
-The *Benchmarks* workflow runs nightly and on demand on a shared GitHub runner: one run against Postgres with TLS (`verify-full`), every scenario at pool sizes 5, 16 and 32, and one without TLS (the baseline), the gateway scenarios at pool size 5. Each run's tables appear in its summary, and the JSON reports are kept for 90 days.
+The *Benchmarks* workflow runs on demand (`gh workflow run bench.yml --ref <branch>`), when a change or decision needs the data, on a shared GitHub runner. A pull request that changes the harness gets a short run that checks it still works. A full run is one run against Postgres with TLS (`verify-full`), every scenario at pool sizes 5, 16 and 32, and one without TLS (the baseline), the gateway scenarios at pool size 5. Each run's tables appear in its summary, and the JSON reports are kept for 90 days.
 
-- **No pass/fail threshold yet.** Thresholds come after at least a week of nightly runs shows how much the figures vary between runs of the same commit.
+- **No pass/fail threshold.** On-demand runs are too few and too noisy to set one. Compare a change against a run of its base commit made in the same session.
 - **Not a required check.** Neither is the nightly 20× acceptance gate.
