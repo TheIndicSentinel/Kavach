@@ -26,7 +26,7 @@ use crate::retention::{get_retention_settings, list_tombstones};
 use crate::state::AppState;
 
 pub fn router(state: Arc<AppState>) -> Router {
-    let mut router = Router::new()
+    let router = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
         .route("/v1/evaluate", post(evaluate))
@@ -59,10 +59,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/admin/batch-jobs", get(list_batch_jobs))
         .route("/v1/admin/batch-jobs/{job_id}", get(get_batch_job));
 
+    // The governance console, when it was built into this binary.
     #[cfg(console_embedded)]
-    {
-        router = router.fallback(crate::console::fallback);
-    }
+    let router = router.fallback(crate::console::fallback);
 
     router
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
