@@ -12,6 +12,7 @@ name = "kavach-api"
 path = "src/bin/kavach-api.rs"
 
 [dependencies]
+base64 = { workspace = true }
 kavach-domain = { workspace = true }
 kavach-evaluate = { workspace = true }
 kavach-evidence = { workspace = true }

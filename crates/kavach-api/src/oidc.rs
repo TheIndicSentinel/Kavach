@@ -3,6 +3,9 @@
 //!
 //! - Only asymmetric algorithms are accepted (RS256, PS256, ES256, EdDSA);
 //!   `none` and HMAC algorithms are rejected.
+//! - The header must be valid UTF-8 JSON, a JSON object (RFC 7515 §4). The
+//!   JWT library skips unknown header members without checking their
+//!   bytes, so this is checked first.
 //! - `kid` is required and must be in the configured JWKS; the JWK's own
 //!   `alg`, when present, must match the token header.
 //! - `iss`, `aud`, `exp` and `nbf` are validated with a small leeway.
@@ -17,6 +20,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use jsonwebtoken::jwk::{JwkSet, KeyAlgorithm};
 use jsonwebtoken::{decode, decode_header, Algorithm, DecodingKey, Validation};
 use serde_json::{Map, Value};
@@ -238,6 +243,17 @@ impl OidcVerifier {
 
     /// Verifies a bearer token and extracts the principal and groups.
     pub fn verify(&self, token: &str) -> Result<VerifiedToken, OidcError> {
+        // RFC 7515 §4: the whole header is UTF-8 JSON, an object. Checked
+        // before the library, which would skip invalid bytes in members it
+        // does not know.
+        let header_json = token
+            .split('.')
+            .next()
+            .and_then(|part| URL_SAFE_NO_PAD.decode(part).ok())
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok());
+        if !matches!(header_json, Some(Value::Object(_))) {
+            return Err(OidcError::Header("not a JSON object in UTF-8".into()));
+        }
         let header = decode_header(token).map_err(|e| OidcError::Header(e.to_string()))?;
         if !ALLOWED_ALGORITHMS.contains(&header.alg) {
             return Err(OidcError::Algorithm(header.alg));
@@ -311,9 +327,7 @@ impl OidcVerifier {
 
 #[cfg(test)]
 mod tests {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use base64::Engine;
-    use ed25519_dalek::SigningKey;
+    use ed25519_dalek::{Signer, SigningKey};
     use jsonwebtoken::{encode, EncodingKey, Header};
     use serde_json::json;
 
@@ -423,5 +437,48 @@ mod tests {
         assert!(verifier.refresh().await.is_err());
         assert!(verifier.verify(&token(2, "new")).is_ok());
         std::fs::remove_file(&path).ok();
+    }
+
+    /// A token signed over raw header and claims bytes.
+    fn raw_token(seed: u8, header: &[u8], claims: &[u8]) -> String {
+        let input = format!(
+            "{}.{}",
+            URL_SAFE_NO_PAD.encode(header),
+            URL_SAFE_NO_PAD.encode(claims)
+        );
+        let signature = SigningKey::from_bytes(&[seed; 32]).sign(input.as_bytes());
+        format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
+    }
+
+    /// Found by the `agent_token` fuzz target: a correctly signed token whose
+    /// header holds a byte that is not UTF-8 in a member the library does
+    /// not know. RFC 7515 §4 requires UTF-8 JSON, so it is refused.
+    #[test]
+    fn a_header_that_is_not_utf8_json_is_refused_even_when_signed() {
+        let verifier = OidcVerifier::from_jwks(
+            config(JwksSource::File(PathBuf::new())),
+            &jwks(&[jwk(1, "good")]),
+        );
+        let now = chrono::Utc::now().timestamp();
+        let claims =
+            json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice", "exp": now + 300 }).to_string();
+        let good = br#"{"alg":"EdDSA","kid":"good"}"#;
+        assert!(verifier
+            .verify(&raw_token(1, good, claims.as_bytes()))
+            .is_ok());
+        for header in [
+            &b"{\"alg\":\"EdDSA\",\"kid\":\"good\",\"x\":\"a\x84t\"}"[..],
+            &br#"["EdDSA"]"#[..],
+            &b"{\"alg\":\"EdDSA\",\"kid\":\"good\"} trailing"[..],
+        ] {
+            assert!(
+                matches!(
+                    verifier.verify(&raw_token(1, header, claims.as_bytes())),
+                    Err(OidcError::Header(_))
+                ),
+                "{}",
+                String::from_utf8_lossy(header)
+            );
+        }
     }
 }
