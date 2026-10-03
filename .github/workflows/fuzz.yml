@@ -1,0 +1,97 @@
+name: Fuzz
+
+# Nightly fuzzing of the parsers that read untrusted input (fuzz/README.md).
+# Not a required check. A crash, an out-of-memory (RSS or a single
+# allocation over the limit) and a hang (one input over the time limit) all
+# fail the target and keep the input as an artifact; each finding becomes a
+# regression test.
+#
+# The fuzz workspace builds with the dated nightly in fuzz/rust-toolchain.toml
+# (cargo-fuzz needs -Zsanitizer); the main workspace keeps its 1.98.0 pin.
+#
+# On a pull request that changes the fuzz workspace or this workflow, each
+# target builds and runs for 60 s: a check that the harness still works,
+# not fuzzing.
+on:
+  pull_request:
+    paths:
+      - "fuzz/**"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "30 20 * * *" # 02:00 IST, before the acceptance gate
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per target
+        default: "600"
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ordered by exposure. max_len: the largest input the real path
+          # accepts, plus room to cross the limit.
+          - target: jws_verify # mandates, SoR events, credentials: any string
+            max_len: 20000
+          - target: jws_signed # the same, past the signature
+            max_len: 20000
+          - target: sor_event # SoR listener, whole issuance path
+            max_len: 20000
+          - target: agent_token # agent access tokens (OIDC JWT)
+            max_len: 20000
+    defaults:
+      run:
+        shell: bash
+        working-directory: fuzz
+    env:
+      CARGO_INCREMENTAL: "0"
+      SECONDS_PER_TARGET: ${{ github.event.inputs.seconds || (github.event_name == 'pull_request' && '60') || '600' }}
+      CARGO_FUZZ_VERSION: "0.13.2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust (fuzz/rust-toolchain.toml)
+        run: |
+          rustup toolchain install
+          rustc --version
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: fuzz
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --version "$CARGO_FUZZ_VERSION" --locked
+
+      - name: Build
+        run: cargo fuzz build "${{ matrix.target }}"
+
+      # New inputs go to corpus/ (not kept); seeds/ is read only.
+      # -rss_limit_mb: whole-process memory; -malloc_limit_mb: one
+      # allocation; -timeout: seconds for one input. Each counts as a finding.
+      - name: Fuzz
+        run: |
+          mkdir -p "corpus/${{ matrix.target }}"
+          cargo fuzz run "${{ matrix.target }}" \
+            "corpus/${{ matrix.target }}" "seeds/${{ matrix.target }}" -- \
+            -max_total_time="$SECONDS_PER_TARGET" \
+            -max_len="${{ matrix.max_len }}" \
+            -rss_limit_mb=2048 -malloc_limit_mb=512 -timeout=10 \
+            -print_final_stats=1
+
+      - name: Keep the failing input
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-${{ matrix.target }}-${{ github.run_number }}
+          path: fuzz/artifacts/${{ matrix.target }}
+          retention-days: 30
+          if-no-files-found: warn
