@@ -1,10 +1,11 @@
 {
   "name": "kavach-jose-crosscheck",
   "private": true,
-  "description": "Independent check: the checked-in Kavach credential vector decrypts and verifies with the jose library (ADR-006 D12).",
+  "description": "Independent checks with other implementations: the checked-in Kavach credential vector decrypts and verifies with jose (ADR-006 D12), and the JCS vectors canonicalise identically with canonicalize (RFC 8785).",
   "type": "module",
   "license": "Apache-2.0",
   "dependencies": {
+    "canonicalize": "5.1.0",
     "jose": "6.2.12"
   }
 }

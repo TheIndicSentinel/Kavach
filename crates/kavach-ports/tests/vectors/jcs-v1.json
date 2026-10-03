@@ -1,0 +1,80 @@
+{
+  "description": "RFC 8785 (JCS) vectors for kavach_ports::jcs (numbers restricted to safe integers). Checked by crates/kavach-ports/tests/jcs_vectors.rs and, independently, by scripts/jose-crosscheck/jcs.mjs with the canonicalize package.",
+  "cases": [
+    {
+      "name": "rfc8785-sorting",
+      "input": "{\"\\u20ac\":\"Euro Sign\",\"\\r\":\"Carriage Return\",\"\\ufb33\":\"Hebrew Letter Dalet With Dagesh\",\"1\":\"One\",\"\\ud83d\\ude00\":\"Emoji: Grinning Face\",\"\\u0080\":\"Control\",\"\\u00f6\":\"Latin Small Letter O With Diaeresis\"}",
+      "canonical": "{\"\\r\":\"Carriage Return\",\"1\":\"One\",\"\":\"Control\",\"ö\":\"Latin Small Letter O With Diaeresis\",\"€\":\"Euro Sign\",\"😀\":\"Emoji: Grinning Face\",\"דּ\":\"Hebrew Letter Dalet With Dagesh\"}"
+    },
+    {
+      "name": "string-escapes",
+      "input": "{\"s\":\"\\u0000\\u0001\\u001f\\b\\t\\n\\f\\r\\\"\\\\/\\u007f\"}",
+      "canonical": "{\"s\":\"\\u0000\\u0001\\u001f\\b\\t\\n\\f\\r\\\"\\\\/\"}"
+    },
+    {
+      "name": "non-ascii-literal",
+      "input": "{\"s\":\"\\u00e9\\u2028\\u2029\\ud83d\\ude00\\u0939\\u093f\\u0928\\u094d\\u0926\\u0940\"}",
+      "canonical": "{\"s\":\"é  😀हिन्दी\"}"
+    },
+    {
+      "name": "whitespace-removed",
+      "input": " { \"b\" : [ 1 , 2 ] ,\n \"a\" : { } , \"c\" : [ ] } ",
+      "canonical": "{\"a\":{},\"b\":[1,2],\"c\":[]}"
+    },
+    {
+      "name": "literals",
+      "input": "{\"t\":true,\"f\":false,\"n\":null}",
+      "canonical": "{\"f\":false,\"n\":null,\"t\":true}"
+    },
+    {
+      "name": "nested-order",
+      "input": "{\"z\":{\"b\":1,\"a\":[{\"y\":2,\"x\":3}]},\"a\":0}",
+      "canonical": "{\"a\":0,\"z\":{\"a\":[{\"x\":3,\"y\":2}],\"b\":1}}"
+    },
+    {
+      "name": "safe-integers",
+      "input": "{\"max\":9007199254740991,\"min\":-9007199254740991,\"zero\":0,\"neg\":-1}",
+      "canonical": "{\"max\":9007199254740991,\"min\":-9007199254740991,\"neg\":-1,\"zero\":0}"
+    },
+    {
+      "name": "keys-numeric-strings",
+      "input": "{\"10\":1,\"9\":2,\"1\":3,\"a\":4,\"A\":5,\"_\":6}",
+      "canonical": "{\"1\":3,\"10\":1,\"9\":2,\"A\":5,\"_\":6,\"a\":4}"
+    },
+    {
+      "name": "empty-string-key",
+      "input": "{\"\":1,\"a\":\"\"}",
+      "canonical": "{\"\":1,\"a\":\"\"}"
+    }
+  ],
+  "refused": [
+    {
+      "name": "fraction",
+      "input": "{\"n\":1.5}"
+    },
+    {
+      "name": "exponent",
+      "input": "{\"n\":1e2}"
+    },
+    {
+      "name": "negative-zero",
+      "input": "{\"n\":-0.0}"
+    },
+    {
+      "name": "integer-with-fraction-part",
+      "input": "{\"n\":1.0}"
+    },
+    {
+      "name": "above-safe",
+      "input": "{\"n\":9007199254740992}"
+    },
+    {
+      "name": "below-safe",
+      "input": "{\"n\":-9007199254740992}"
+    },
+    {
+      "name": "nested-fraction",
+      "input": "{\"a\":[{\"b\":0.1}]}"
+    }
+  ]
+}
