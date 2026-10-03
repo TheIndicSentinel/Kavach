@@ -23,7 +23,9 @@ pub use jobs::{
     BatchJobCreate, BatchJobStore, JobStoreError, NoopBatchJobStore, PostgresBatchJobStore,
 };
 pub use mandates::{PostgresMandateStore, PostgresReplayGuard};
-pub use migrate::{connect_pool, connect_runtime, migrate};
+pub use migrate::{
+    connect_pool, connect_runtime, connect_runtime_sized, migrate, DEFAULT_POOL_SIZE,
+};
 pub use retention::PostgresRetentionStore;
 pub use tls::{connect_options, DatabaseTls, DatabaseTlsError};
 
@@ -59,6 +61,18 @@ impl StoragePool {
             }
             None => connect_pool(database_url, tls).await,
         }
+    }
+
+    /// [`Self::connect_with_roles`] with a runtime pool of `pool_size`
+    /// connections.
+    pub async fn connect_with_roles_sized(
+        database_url: &str,
+        migration_url: Option<&str>,
+        tls: &DatabaseTls,
+        pool_size: u32,
+    ) -> Result<Self, kavach_evidence::EvidenceError> {
+        migrate(migration_url.unwrap_or(database_url), tls).await?;
+        connect_runtime_sized(database_url, tls, pool_size).await
     }
 
     pub fn evidence_store(&self) -> PostgresEvidenceStore {

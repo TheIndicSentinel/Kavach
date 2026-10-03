@@ -285,6 +285,15 @@ struct Cli {
     #[arg(long, env = "KAVACH_DATABASE_CA")]
     database_ca: Option<PathBuf>,
 
+    /// Connections in the runtime Postgres pool (1–256).
+    #[arg(
+        long,
+        env = "KAVACH_DATABASE_POOL_SIZE",
+        default_value_t = kavach_api::DEFAULT_POOL_SIZE,
+        value_parser = clap::value_parser!(u32).range(1..=256)
+    )]
+    database_pool_size: u32,
+
     /// Access control for API principals. Defaults to Cedar (secure by default).
     #[arg(
         long,
@@ -400,6 +409,7 @@ impl Cli {
             change_ttl_seconds: self.change_request_ttl_hours * 3600,
             migration_database_url: self.migration_database_url,
             database_tls: kavach_api::DatabaseTls::new(self.insecure_dev, self.database_ca),
+            database_pool_size: self.database_pool_size,
             dataplane,
         };
         validate_principal_sources(&config)?;

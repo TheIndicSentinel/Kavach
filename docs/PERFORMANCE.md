@@ -18,7 +18,7 @@ On the reference hardware (ADR-003 §10: 4 CPU cores, 16 GB RAM, local PostgreSQ
 | Target | Measured by |
 |---|---|
 | `authorize` p99 < 5 ms in-process | Not yet: the `precheck` scenario includes HTTP and authentication, so it is an upper bound. An in-process measurement is planned with the evidence micro-benchmarks. |
-| Gateway overhead p99 < 15 ms, including the minimal critical evidence write | `delivered` and `hot-subject` with no provider delay |
+| Gateway overhead p99 < 15 ms, including the minimal critical evidence write | `delivered` and `hot-subject` with no provider delay; `commit` isolates the evidence write |
 | 1,000 requests/s, single node | Requests per second of `delivered` at the highest concurrency |
 
 ADR-003 named `criterion` and `oha` for these. The gateway is measured with `kavach-bench` instead: every request needs its own `request_id` and a mandate per subject, which a generic load tool does not produce.
@@ -34,12 +34,22 @@ ADR-003 named `criterion` and `oha` for these. The gateway is measured with `kav
 | `precheck` | `POST /v1/authorize`: decide only, nothing recorded. |
 | `hot-subject` | As `delivered`, every call on one borrower: all calls contend for one contact-counter row. |
 
+**Storage micro-benchmarks** (Postgres only, no HTTP), for two open questions: is the bottleneck the pool or the evidence partition lock, and what would E5's extra lock cost?
+
+| Scenario | What one operation does |
+|---|---|
+| `commit` | The evidence commit alone: lock the partition head, insert the record, advance the head. |
+| `outcome` | The outcome write as it is today: check the record, insert the outcome. Each operation first commits an allow, which is not timed. |
+| `outcome-locked` | The same write as E5 would make it: in one transaction that locks a per-partition outcome head and then advances it. Timed the same way. |
+
+**Pool size.** `--pool-sizes 5,16,32` runs everything once per pool size, each on its own stack and fresh schema, so the pool can be ruled in or out as the ceiling before blaming the partition lock. Every row of the report carries its pool size. Partitioning (by subject hash, so a borrower's daily cap stays in one partition) waits for the reference run to confirm where the ceiling is.
+
 **What the figures do not measure:**
 - **A real provider.** With no provider delay the figures are Kavach's own cost only; every real delivery adds the provider's latency. `--provider-delay-ms` stands in for one.
 - **A real network.** Agent, Kavach and provider share one machine over loopback.
 - **A deployment.** The harness uses a fixed trusted clock and development keys. The daily contact cap is set to its maximum: it is checked on every call but never reached.
 - **Partitioning.** One evidence partition serialises every recorded decision; that is the configuration measured.
-- **Pool size.** The API's Postgres pool is 5 connections; the report states it.
+- **One pool size per row.** The API's Postgres pool defaults to 5 connections (`--database-pool-size`); each row of the report states the size it ran with.
 
 ## Every figure carries its environment
 
@@ -84,7 +94,7 @@ Run once, on a fixed cloud VM matching NFR-2, then whenever a release is tagged.
 
 ## CI trends
 
-The *Benchmarks* workflow runs nightly and on demand on a shared GitHub runner: one run against Postgres with TLS (`verify-full`) and one without (the baseline). Each run's tables appear in its summary, and the JSON reports are kept for 90 days.
+The *Benchmarks* workflow runs nightly and on demand on a shared GitHub runner: one run against Postgres with TLS (`verify-full`), every scenario at pool sizes 5, 16 and 32, and one without TLS (the baseline), the gateway scenarios at pool size 5. Each run's tables appear in its summary, and the JSON reports are kept for 90 days.
 
 - **No pass/fail threshold yet.** Thresholds come after at least a week of nightly runs shows how much the figures vary between runs of the same commit.
 - **Not a required check.** Neither is the nightly 20× acceptance gate.

@@ -46,6 +46,8 @@ pub struct StackOptions {
     pub subjects: usize,
     /// Added to every provider response.
     pub provider_delay: Duration,
+    /// Connections in the API's Postgres pool (and the micro-benchmarks').
+    pub pool_size: u32,
     /// Scratch directory for the development bundle and configuration.
     pub work: PathBuf,
 }
@@ -64,6 +66,11 @@ pub struct Stack {
     /// A reference no mandate covers (for blocked calls).
     pub stranger: String,
     pub database: Option<DatabaseInfo>,
+    /// Direct storage for the micro-benchmarks (Postgres only), with a pool
+    /// of the same size as the API's.
+    pub storage: Option<kavach_storage::StoragePool>,
+    pub clock: Arc<FakeClock>,
+    pool_size: u32,
     state: Arc<AppState>,
     cleanup: Option<(String, DatabaseTls, String)>,
 }
@@ -150,6 +157,7 @@ fn api_config(
     bundle: &Path,
     store: EvidenceStoreKind,
     tls: DatabaseTls,
+    pool_size: u32,
     clock: TestClock,
 ) -> ApiConfig {
     let kavach = bundle.join("kavach");
@@ -180,6 +188,7 @@ fn api_config(
         change_ttl_seconds: 3600,
         migration_database_url: None,
         database_tls: tls,
+        database_pool_size: pool_size,
         dataplane: Some(DataplaneConfig {
             agent_oidc: OidcConfig {
                 audience: kavach_devkit::AGENT_AUDIENCE.into(),
@@ -393,8 +402,21 @@ impl Stack {
                 )
             }
         };
-        let test_clock = TestClock(clock as Arc<dyn TimeSource + Send + Sync>);
-        let config = api_config(&bundle, store, tls, test_clock);
+        let storage = match &store {
+            EvidenceStoreKind::Postgres { database_url } => Some(
+                kavach_storage::StoragePool::connect_with_roles_sized(
+                    database_url,
+                    None,
+                    &tls,
+                    opts.pool_size,
+                )
+                .await
+                .map_err(|e| format!("storage: {e}"))?,
+            ),
+            EvidenceStoreKind::Memory => None,
+        };
+        let test_clock = TestClock(Arc::clone(&clock) as Arc<dyn TimeSource + Send + Sync>);
+        let config = api_config(&bundle, store, tls, opts.pool_size, test_clock);
         let state = Arc::new(
             AppState::from_config(&config)
                 .await
@@ -419,14 +441,26 @@ impl Stack {
             subjects,
             stranger: subject_ref(opts.subjects),
             database,
+            storage,
+            clock,
+            pool_size: opts.pool_size,
             state,
             cleanup,
         })
     }
 
+    /// The Postgres pool size, when there is a database.
+    #[must_use]
+    pub fn database_pool(&self) -> Option<u32> {
+        self.database.as_ref().map(|_| self.pool_size)
+    }
+
     /// Drops the run's schema (unless it was kept).
     pub async fn finish(self) {
         drop(self.state);
+        if let Some(storage) = self.storage {
+            storage.pool.close().await;
+        }
         if let Some((url, tls, schema)) = &self.cleanup {
             drop_schema(url, tls, schema).await;
         }

@@ -6,7 +6,8 @@ name: Benchmarks
 # the fixed reference-machine run described in docs/PERFORMANCE.md.
 #
 # Two runs of the same build: Postgres with TLS (verify-full; the figure to
-# quote) and plaintext Postgres (the baseline). Both use the official
+# quote), every scenario at pool sizes 5, 16 and 32, and plaintext Postgres
+# (the baseline), the gateway scenarios at pool size 5. Both use the official
 # Postgres 16 image; the TLS one is set up exactly like the compose stacks.
 #
 # On a pull request that changes the harness or this workflow, a short run
@@ -36,11 +37,20 @@ jobs:
   bench:
     name: Gateway benchmark (trend)
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # Nightly: about 50 min for the TLS run (7 scenarios x 4 concurrency
+    # levels x 3 pool sizes x 35 s) and 10 min for the baseline, plus set-up.
+    timeout-minutes: 120
+    defaults:
+      run:
+        # bash with -o pipefail: a benchmark that fails must fail its step,
+        # even though its output is piped into tee.
+        shell: bash
     env:
       CARGO_INCREMENTAL: "0"
       DURATION: ${{ github.event.inputs.duration_seconds || (github.event_name == 'pull_request' && '5') || '30' }}
       CONCURRENCY: ${{ (github.event_name == 'pull_request' && '1,8') || '1,8,32,64' }}
+      # Pool sizes compared on the TLS run (the plaintext baseline uses 5).
+      POOL_SIZES: ${{ (github.event_name == 'pull_request' && '5,16') || '5,16,32' }}
       PROVIDER_DELAY_MS: ${{ github.event.inputs.provider_delay_ms || '0' }}
       POSTGRES_IMAGE: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     steps:
@@ -75,11 +85,19 @@ jobs:
           docker run -d --name pg-plain -p 5434:5432 \
             -e POSTGRES_USER=kavach -e POSTGRES_PASSWORD=bench -e POSTGRES_DB=kavach \
             "$POSTGRES_IMAGE"
+          # Ready over TCP, not the socket: the image's first-start
+          # initialisation runs a temporary server on the socket only, then
+          # restarts. Waiting on the socket can catch that temporary server.
           for db in pg-tls pg-plain; do
-            for _ in $(seq 1 60); do
-              docker exec "$db" pg_isready -U kavach -d kavach && break
+            ready=false
+            for _ in $(seq 1 90); do
+              if docker exec "$db" pg_isready -h 127.0.0.1 -U kavach -d kavach; then
+                ready=true
+                break
+              fi
               sleep 1
             done
+            "$ready" || { docker logs "$db"; echo "$db did not start"; exit 1; }
           done
 
       - name: Benchmark with TLS (verify-full)
@@ -87,6 +105,7 @@ jobs:
           target/release/kavach-bench \
             --database-url "postgres://kavach:bench@postgres:5433/kavach" \
             --database-ca "$RUNNER_TEMP/db-tls/ca.pem" --concurrency "$CONCURRENCY" \
+            --pool-sizes "$POOL_SIZES" \
             --duration-seconds "$DURATION" --provider-delay-ms "$PROVIDER_DELAY_MS" \
             --out bench-tls.json | tee bench-tls.md
 
@@ -94,7 +113,8 @@ jobs:
         run: |
           target/release/kavach-bench \
             --database-url "postgres://kavach:bench@127.0.0.1:5434/kavach?sslmode=disable" \
-            --concurrency "$CONCURRENCY" \
+            --concurrency "$CONCURRENCY" --pool-sizes 5 \
+            --scenarios delivered,blocked,precheck,hot-subject \
             --duration-seconds "$DURATION" --provider-delay-ms "$PROVIDER_DELAY_MS" \
             --out bench-plaintext.json | tee bench-plaintext.md
 

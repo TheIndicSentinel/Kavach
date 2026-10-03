@@ -191,6 +191,7 @@ async fn cedar_test_state() -> Arc<AppState> {
         change_ttl_seconds: 3600,
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
+        database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
         dataplane: None,
     };
     Arc::new(AppState::from_config(&config).await.expect("cedar state"))
@@ -529,6 +530,7 @@ async fn change_requests_can_be_cancelled_rejected_and_expire() {
         change_ttl_seconds: 3600,
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
+        database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
         dataplane: None,
     };
     let app = router(Arc::new(
@@ -1096,6 +1098,7 @@ async fn signed_packs_required_when_signers_configured() {
         change_ttl_seconds: 3600,
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
+        database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
         dataplane: None,
     };
 

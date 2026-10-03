@@ -35,6 +35,8 @@ pub struct ApiConfig {
     /// How Postgres connections are secured: `verify-full` unless the URL
     /// asks for less **and** this allows it (development only).
     pub database_tls: kavach_storage::DatabaseTls,
+    /// Connections in the runtime Postgres pool.
+    pub database_pool_size: u32,
     /// Agent surfaces (`/v1/authorize`, `/v1/sor/events`; ADR-007, H5a-5).
     pub dataplane: Option<crate::dataplane::DataplaneConfig>,
 }
