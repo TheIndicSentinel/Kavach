@@ -15,8 +15,9 @@ Ordered by exposure: who can send the input.
 | `tool_params` | First byte picks a registry tool; the rest is its parameters as JSON | Agents | A call extracted without violations holds no raw identifier in a reference-only field. The oracle is independent of the detector: at most 8 digits, no PAN |
 | `hmac_v2` | Method, path, body and the three HMAC headers. Fixed server time, fresh nonce store per input | Service callers of `/v1/evaluate` | Accepted only with the right MAC, a timestamp within 300 s and a well-formed nonce; a nonce is never accepted twice |
 | `jcs_differential` | Any JSON | Everything signed | `kavach_ports::jcs` and a small reference serialiser written from RFC 8785 refuse the same values and otherwise produce the same bytes; canonicalising twice changes nothing. The Node `canonicalize` cross-check in CI is the authority (`crates/kavach-ports/tests/vectors/jcs-v1.json`) |
+| `credential_open` | Mode 0: any string as a credential. Mode 1: claims bytes signed with the credential key and encrypted to the provider. Mode 2: byte edits to the checked-in credential vector | Providers | An opened credential is addressed to this provider, lives at most 15 s, is not expired or past `send_by`, and its claims are the canonical form of what was signed; any edit to the vector token is refused |
 
-Planned next, in this order: JWE (provider side), bundle and checkpoint parsers, CEL.
+Planned next: bundle and checkpoint parsers, CEL.
 
 ## Limits
 

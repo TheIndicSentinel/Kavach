@@ -1,0 +1,1 @@
+{"action":"send_reminder","agent":"collections-agent","aud":"mock-messaging","exp":1790832615,"iat":1790832600,"iss":"kavach","jti":"cred-kat-1","mandate_id":"m-1","record_id":"rec-1","req":{"channel":"whatsapp","destination":"+910000000001","template_id":"emi_reminder_v1"},"send_by":1790861400,"tenant":"conformance"}

@@ -85,3 +85,10 @@ path = "fuzz_targets/jcs_differential.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "credential_open"
+path = "fuzz_targets/credential_open.rs"
+test = false
+doc = false
+bench = false
