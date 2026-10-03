@@ -67,13 +67,13 @@ impl PolicyEngine {
                 return Err(PolicyError::Timeout { timeout_ms });
             }
 
-            let value = rule
-                .program
-                .execute(context)
-                .map_err(|e| PolicyError::CelExecute {
-                    rule_id: rule.id.clone(),
-                    message: e.to_string(),
-                })?;
+            let execute_error = |message: String| PolicyError::CelExecute {
+                rule_id: rule.id.clone(),
+                message,
+            };
+            let value = crate::loader::contained(|| rule.program.execute(context))
+                .map_err(|panic| execute_error(format!("the CEL interpreter failed: {panic}")))?
+                .map_err(|e| execute_error(e.to_string()))?;
 
             if !cel_bool(&value)? {
                 continue;

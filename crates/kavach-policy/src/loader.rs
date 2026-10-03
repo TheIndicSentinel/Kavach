@@ -84,6 +84,21 @@ pub struct PackLoader;
 
 /// Load-time bounds that stand in for CEL memory limits (the interpreter has
 /// no allocation-limit API, and the timeout is only checked between rules).
+/// Runs CEL work (the third-party parser or interpreter) and turns a panic
+/// inside it into an error message. The parser has panicked on malformed
+/// input (a trailing `&&`, found by the `cel_policy` fuzz target): a pack
+/// with such a rule must be refused, and an evaluation that panics must be
+/// a recorded BLOCK, never a crash.
+pub(crate) fn contained<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).map_err(|panic| {
+        panic
+            .downcast_ref::<&str>()
+            .map(ToString::to_string)
+            .or_else(|| panic.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".into())
+    })
+}
+
 pub const MAX_PACK_BYTES: usize = 256 * 1024;
 pub const MAX_RULES: usize = 200;
 pub const MAX_EXPRESSION_CHARS: usize = 2048;
@@ -114,11 +129,13 @@ impl PackLoader {
 
         let mut compiled_rules = Vec::with_capacity(pack.rules.len());
         for rule in &pack.rules {
-            let program =
-                Program::compile(&rule.expression).map_err(|e| PolicyError::CelCompile {
-                    rule_id: rule.id.clone(),
-                    message: e.to_string(),
-                })?;
+            let compile_error = |message: String| PolicyError::CelCompile {
+                rule_id: rule.id.clone(),
+                message,
+            };
+            let program = contained(|| Program::compile(&rule.expression))
+                .map_err(|panic| compile_error(format!("the CEL parser failed: {panic}")))?
+                .map_err(|e| compile_error(e.to_string()))?;
             compiled_rules.push(CompiledRule {
                 id: rule.id.clone(),
                 program,
@@ -173,6 +190,33 @@ mod tests {
             limits.timeout_ms = MAX_TIMEOUT_MS + 1;
         }
         assert!(PackLoader::load_from_pack(slow).is_err());
+    }
+
+    /// Found by the `cel_policy` fuzz target: the CEL parser panicked
+    /// ("entered unreachable code") on an expression with a trailing `&&`.
+    /// The pack is refused instead.
+    #[test]
+    fn an_expression_that_makes_the_parser_panic_is_refused() {
+        let mut pack = PackLoader::load_from_path(&finance_pack_path())
+            .expect("load pack")
+            .pack;
+        pack.rules[0].expression = r#"request.purpose.startsWith("credit") && "#.into();
+        match PackLoader::load_from_pack(pack) {
+            Err(PolicyError::CelCompile { rule_id, message }) => {
+                assert!(!rule_id.is_empty());
+                assert!(!message.is_empty());
+            }
+            other => panic!("expected a refused pack, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn contained_work_returns_its_value_or_the_panic_message() {
+        assert_eq!(contained(|| 7), Ok(7));
+        assert_eq!(
+            contained(|| -> u8 { panic!("boom") }),
+            Err("boom".to_string())
+        );
     }
 
     #[test]
