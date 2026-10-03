@@ -2,6 +2,7 @@
 # Usage:
 #   cp deploy/pilot.env.example deploy/.env      # then set every required value
 #   mkdir -p deploy/pilot-config                 # entities.json + jwks.json (see docs/INSTALL.md)
+#   scripts/pilot-db-tls.sh                      # Postgres TLS: deploy/pilot-db-tls/
 #   docker compose -f deploy/docker-compose.pilot.yml up --build
 #
 # Batch shadow smoke (one-shot):
@@ -10,7 +11,9 @@
 # Security defaults (ADR-008): the API is published on 127.0.0.1 only (set
 # KAVACH_BIND_ADDRESS to expose it, and then terminate TLS in front of it or
 # use --tls); Postgres is not published to the host; images are pinned by
-# digest; the database password must be set; API principals come from OIDC
+# digest; the database password must be set; Postgres serves TLS only and
+# Kavach verifies its certificate and name (sslmode=verify-full); API
+# principals come from OIDC
 # access tokens (the X-Kavach-Principal header is refused); no example
 # principals ship.
 
@@ -23,10 +26,27 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-kavach}
       KAVACH_RUNTIME_DB_PASSWORD: ${KAVACH_RUNTIME_DB_PASSWORD:?set KAVACH_RUNTIME_DB_PASSWORD in deploy/.env (e.g. openssl rand -hex 24)}
     # No `ports:` — the database is reachable only from this compose network.
+    # TLS only: the certificate from scripts/pilot-db-tls.sh, and a
+    # pg_hba.conf that refuses plaintext connections.
+    entrypoint: ["sh", "/usr/local/bin/kavach-pg-tls.sh"]
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/postgresql-tls/server.crt
+      - -c
+      - ssl_key_file=/etc/postgresql-tls/server.key
+      - -c
+      - hba_file=/etc/kavach-pg/pg_hba.conf
     volumes:
       - kavach-pilot-pg:/var/lib/postgresql/data
       # Creates the least-privilege kavach_runtime role on first init.
       - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - ./postgres/tls-entrypoint.sh:/usr/local/bin/kavach-pg-tls.sh:ro
+      - ./postgres/pg_hba.conf:/etc/kavach-pg/pg_hba.conf:ro
+      # Only Postgres gets the key; Kavach gets the CA certificate.
+      - ./pilot-db-tls:/run/kavach-tls-src:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kavach} -d ${POSTGRES_DB:-kavach}"]
       interval: 5s
@@ -50,8 +70,10 @@ services:
       KAVACH_OIDC_AUDIENCE: ${KAVACH_OIDC_AUDIENCE:?set KAVACH_OIDC_AUDIENCE in deploy/.env}
       KAVACH_OIDC_JWKS_FILE: /etc/kavach/jwks.json
       KAVACH_OIDC_GROUPS_CLAIM: ${KAVACH_OIDC_GROUPS_CLAIM:-groups}
+      KAVACH_DATABASE_CA: /etc/kavach-db/ca.pem
     volumes:
       - ./pilot-config:/etc/kavach:ro
+      - ./pilot-db-tls/ca.pem:/etc/kavach-db/ca.pem:ro
     ports:
       - "${KAVACH_BIND_ADDRESS:-127.0.0.1}:${KAVACH_HTTP_PORT:-8080}:8080"
       - "${KAVACH_BIND_ADDRESS:-127.0.0.1}:${KAVACH_GRPC_PORT:-50051}:50051"
@@ -86,8 +108,10 @@ services:
       - postgres
     environment:
       KAVACH_DATABASE_URL: postgres://kavach_runtime:${KAVACH_RUNTIME_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
+      KAVACH_DATABASE_CA: /etc/kavach-db/ca.pem
     volumes:
       - pilot-batch-out:/tmp
+      - ./pilot-db-tls/ca.pem:/etc/kavach-db/ca.pem:ro
 
 volumes:
   kavach-pilot-pg:

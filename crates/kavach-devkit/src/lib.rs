@@ -9,7 +9,8 @@
 //! | `kavach/keys/` | kavach-api | `dev-mandate-1`, `dev-evidence-1`, `dev-checkpoint-1`, `dev-credential-1` (owner-only) |
 //! | `kavach/pseudonym.key` | kavach-api | subject pseudonym secret (owner-only) |
 //! | `kavach/*.json`, `kavach/tools/` | kavach-api | mandate config, consents, references (synthetic numbers), providers, JWKS, signed tool registry, tool signers |
-//! | `kavach/tls/ca.pem` | kavach-api | the dev CA the gateway trusts for providers |
+//! | `kavach/tls/ca.pem` | kavach-api | the dev CA the gateway trusts for providers and for Postgres |
+//! | `postgres/` | Postgres | its TLS certificate and key (`server.crt`, `server.key`) |
 //! | `kavach/kavach.env` | kavach-api | every setting, as environment variables |
 //! | `provider/` | mock provider | X25519 encryption key, credential public keys, TLS certificate and key |
 //! | `agents/<id>.jwt` | each agent | its access token (and nothing else) |
@@ -71,6 +72,9 @@ pub struct Options {
     pub provider_endpoint: String,
     /// DNS names and IPs on the provider's TLS certificate.
     pub provider_hosts: Vec<String>,
+    /// DNS names and IPs on Postgres's TLS certificate (prefer a DNS name
+    /// in database URLs).
+    pub database_hosts: Vec<String>,
     /// Lifetime of the minted access tokens.
     pub token_hours: i64,
 }
@@ -178,10 +182,10 @@ fn mint(seed: &[u8; 32], audience: &str, claims: Value, hours: i64) -> Result<St
 }
 
 /// The dev CA and a provider certificate for `hosts` (PEM: ca, cert, key).
-fn tls(hosts: &[String]) -> Result<(String, String, String), String> {
+/// The dev CA (PEM) and an issuer for leaf certificates.
+fn dev_ca() -> Result<(String, rcgen::Issuer<'static, rcgen::KeyPair>), String> {
     use rcgen::{
-        BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer,
-        KeyPair, KeyUsagePurpose,
+        BasicConstraints, CertificateParams, DnType, IsCa, Issuer, KeyPair, KeyUsagePurpose,
     };
     let err = |e: rcgen::Error| format!("dev CA: {e}");
     let mut ca = CertificateParams::new(Vec::<String>::new()).map_err(err)?;
@@ -193,15 +197,24 @@ fn tls(hosts: &[String]) -> Result<(String, String, String), String> {
     );
     let ca_key = KeyPair::generate().map_err(err)?;
     let ca_pem = ca.self_signed(&ca_key).map_err(err)?.pem();
-    let issuer = Issuer::new(ca, ca_key);
+    Ok((ca_pem, Issuer::new(ca, ca_key)))
+}
 
+/// A server certificate and key (PEM) for `hosts` (DNS names and IPs),
+/// issued by the dev CA.
+fn server_cert(
+    issuer: &rcgen::Issuer<'static, rcgen::KeyPair>,
+    hosts: &[String],
+    name: &str,
+) -> Result<(String, String), String> {
+    use rcgen::{CertificateParams, DnType, ExtendedKeyUsagePurpose, KeyPair};
+    let err = |e: rcgen::Error| format!("dev certificate for {name}: {e}");
     let mut leaf = CertificateParams::new(hosts.to_vec()).map_err(err)?;
     leaf.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
-    leaf.distinguished_name
-        .push(DnType::CommonName, "kavach dev mock provider");
+    leaf.distinguished_name.push(DnType::CommonName, name);
     let leaf_key = KeyPair::generate().map_err(err)?;
-    let cert = leaf.signed_by(&leaf_key, &issuer).map_err(err)?;
-    Ok((ca_pem, cert.pem(), leaf_key.serialize_pem()))
+    let cert = leaf.signed_by(&leaf_key, issuer).map_err(err)?;
+    Ok((cert.pem(), leaf_key.serialize_pem()))
 }
 
 /// What `generate` produced, for the caller to print.
@@ -299,8 +312,17 @@ pub async fn generate(opts: &Options) -> Result<Summary, String> {
         &provider.join("credential-keys.json"),
         &json!({ "keys": [{ "kid": CREDENTIAL_KID, "public_key": hex::encode(credential_public.bytes) }] }),
     )?;
-    let (ca_pem, cert_pem, key_pem) = tls(&opts.provider_hosts)?;
+    let (ca_pem, issuer) = dev_ca()?;
+    let (cert_pem, key_pem) =
+        server_cert(&issuer, &opts.provider_hosts, "kavach dev mock provider")?;
     write(&kavach.join("tls/ca.pem"), &ca_pem)?;
+    // Postgres serves TLS only; Kavach and the auditor verify it with the
+    // dev CA (sslmode=verify-full, the default).
+    let (db_cert, db_key) = server_cert(&issuer, &opts.database_hosts, "kavach dev postgres")?;
+    mkdir(&out.join("postgres"))?;
+    write(&out.join("postgres/server.crt"), &db_cert)?;
+    write_secret(&out.join("postgres/server.key"), &db_key)?;
+    write(&out.join("auditor/database-ca.pem"), &ca_pem)?;
     write(&provider.join("tls.pem"), &cert_pem)?;
     write_secret(&provider.join("tls-key.pem"), &key_pem)?;
 
@@ -415,6 +437,7 @@ fn env_file(m: &str) -> String {
          KAVACH_EVIDENCE_KEY_ID={EVIDENCE_KID}\n\
          KAVACH_CHECKPOINT_KEYS_DIR={m}/keys\n\
          KAVACH_CHECKPOINT_KEY_ID={CHECKPOINT_KID}\n\
+         KAVACH_DATABASE_CA={m}/tls/ca.pem\n\
          KAVACH_CREDENTIAL_KEYS_DIR={m}/keys\n\
          KAVACH_CREDENTIAL_KEY_ID={CREDENTIAL_KID}\n\
          KAVACH_SUBJECT_PSEUDONYM_KEY={m}/pseudonym.key\n\
@@ -465,6 +488,27 @@ pub async fn sor_event(
 mod tests {
     use super::*;
 
+    /// Secrets in the bundle are readable by their owner only.
+    fn secrets_are_owner_only(out: &std::path::Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for secret in [
+                "kavach/pseudonym.key",
+                "provider/encryption.key",
+                "postgres/server.key",
+                "agents/collections-agent.jwt",
+            ] {
+                let mode = std::fs::metadata(out.join(secret))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777;
+                assert_eq!(mode, 0o600, "{secret}");
+            }
+        }
+    }
+
     #[tokio::test]
     async fn the_bundle_is_complete_dev_marked_and_least_privilege() {
         let out = std::env::temp_dir().join(format!("kavach-devkit-{}", std::process::id()));
@@ -474,6 +518,7 @@ mod tests {
             kavach_mount: "/etc/kavach".into(),
             provider_endpoint: "https://172.30.20.30:8443".into(),
             provider_hosts: vec!["mock-provider".into(), "172.30.20.30".into()],
+            database_hosts: vec!["postgres".into(), "172.30.20.20".into()],
             token_hours: 24,
         })
         .await
@@ -499,6 +544,9 @@ mod tests {
             "kavach/keys/dev-checkpoint-1.ed25519",
             "auditor/dev-export-1.ed25519",
             "auditor/trusted-keys.json",
+            "auditor/database-ca.pem",
+            "postgres/server.crt",
+            "postgres/server.key",
             "kavach/mandate-config.json",
             "kavach/tools/agent-tools.yaml.sig",
             "kavach/tls/ca.pem",
@@ -543,23 +591,7 @@ mod tests {
             &signers,
         )
         .unwrap();
-        // Secrets are owner-only.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            for secret in [
-                "kavach/pseudonym.key",
-                "provider/encryption.key",
-                "agents/collections-agent.jwt",
-            ] {
-                let mode = std::fs::metadata(out.join(secret))
-                    .unwrap()
-                    .permissions()
-                    .mode()
-                    & 0o777;
-                assert_eq!(mode, 0o600, "{secret}");
-            }
-        }
+        secrets_are_owner_only(&out);
         // A signed SoR event is produced with the dev SoR key.
         let event = sor_event(&out, "evt-1", SUBJECT, "collections-agent", Utc::now())
             .await
@@ -571,6 +603,7 @@ mod tests {
             kavach_mount: "/etc/kavach".into(),
             provider_endpoint: "http://mock-provider:8095".into(),
             provider_hosts: vec![],
+            database_hosts: vec!["postgres".into()],
             token_hours: 1,
         })
         .await;

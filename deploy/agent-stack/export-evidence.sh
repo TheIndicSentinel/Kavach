@@ -8,9 +8,6 @@
 set -eu
 
 KEYS=/auditor/trusted-keys.json
-# This stack's Postgres serves no TLS yet: its URL says sslmode=disable, and
-# the commands must be told to accept that (development stacks only).
-PLAINTEXT=--allow-plaintext-database
 WORK=$(mktemp -d)
 attempt=0
 
@@ -20,7 +17,7 @@ while :; do
   kept="$WORK/kept-$attempt.jsonl"
 
   # The checkpoint an operator would keep off-host, taken before the export.
-  kavach-evidence checkpoints --latest $PLAINTEXT > "$kept"
+  kavach-evidence checkpoints --latest > "$kept"
   if [ ! -s "$kept" ]; then
     if [ "$attempt" -ge 20 ]; then
       echo "FAIL: the running API wrote no checkpoint"
@@ -31,7 +28,7 @@ while :; do
     continue
   fi
 
-  kavach-evidence export --out "$out" --key-dir /auditor --key-id dev-export-1 $PLAINTEXT
+  kavach-evidence export --out "$out" --key-dir /auditor --key-id dev-export-1
 
   status=0
   kavach-evidence verify-bundle "$out" --keys "$KEYS" --dev \

@@ -16,6 +16,7 @@ console/*.tsbuildinfo
 scripts/jose-crosscheck/node_modules/
 *.cdx.json
 deploy/agent-stack/bundle/
+/deploy/pilot-db-tls/
 
 # Local session/cost log appended by the development harness; not project content.
 docs/COST_LOG.md

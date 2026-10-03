@@ -73,6 +73,7 @@ mkdir -p deploy/pilot-config
 # deploy/pilot-config/jwks.json      — your IdP's JWKS
 # deploy/pilot-config/entities.json  — Cedar users/groups (start from
 #                                      crates/kavach-auth/policies/entities.example.json)
+scripts/pilot-db-tls.sh                   # Postgres TLS (or use your bank's PKI, below)
 docker compose -f deploy/docker-compose.pilot.yml up --build -d
 
 # Health (Cedar + OIDC in the pilot stack)
@@ -84,6 +85,8 @@ open http://localhost:8080/
 # One-shot batch shadow
 docker compose -f deploy/docker-compose.pilot.yml --profile batch run --rm batch-shadow
 ```
+
+**Database TLS.** The stack's Postgres serves TLS only and refuses plaintext; Kavach connects with `sslmode=verify-full` and the CA in `deploy/pilot-db-tls/ca.pem`. `scripts/pilot-db-tls.sh` creates a private CA, a certificate for the name `postgres` and its key, and deletes the CA key once the certificate is signed. With your bank's PKI instead, put `server.crt` (naming `postgres`), `server.key` and your CA certificate as `ca.pem` in `deploy/pilot-db-tls/`. Only the Postgres container receives the key.
 
 ## Quick start (source build, no Docker)
 
