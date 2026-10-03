@@ -32,7 +32,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::authorize::ToolCall;
-use crate::detect::raw_identifier;
+use crate::detect::{raw_identifier, reference_identifier};
 
 const REGISTRY_VERSION: u32 = 1;
 /// Longest accepted string parameter (bytes).
@@ -339,6 +339,11 @@ fn bind(
             if !is_capability_ref(text) {
                 call.violations
                     .push(format!("reference_only_violation:{name}"));
+            } else if let Some(kind) = reference_identifier(text) {
+                // A well-formed reference that carries an identifier: more
+                // than 8 digits however spread, or a PAN.
+                call.violations
+                    .push(format!("raw_identifier:{name}:{kind}"));
             }
             if name == "subject_ref" {
                 call.subject_ref = text.to_string();
@@ -619,6 +624,21 @@ mod tests {
             violations("send_reminder", raw),
             vec!["reference_only_violation:subject_ref"]
         );
+        // Well-formed references that carry an identifier.
+        for (subject, kind) in [
+            ("ref:borrower:ABCPE1234F", "pan"),
+            ("ref:borrower:2345a6789b0129", "aadhaar"),
+            ("ref:borrower:9a8b7c6d5e4f3g2h1i0", "phone"),
+            ("ref:loan:LN2024000123", "long_number"),
+        ] {
+            let mut carried = reminder();
+            carried["subject_ref"] = json!(subject);
+            assert_eq!(
+                violations("send_reminder", carried),
+                vec![format!("raw_identifier:subject_ref:{kind}")],
+                "{subject}"
+            );
+        }
         let mut channel = reminder();
         channel["channel"] = json!("email");
         assert_eq!(

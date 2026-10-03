@@ -33,7 +33,7 @@ use kavach_ports::{ErrorClass, PortError, TimeSource, TrustedNow};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::detect::raw_identifier;
+use crate::detect::{raw_identifier, reference_identifier};
 use crate::tools::ToolRegistry;
 
 /// Loads and verifies a mandate (and its whole chain) by id.
@@ -415,7 +415,13 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
         );
         strings.extend(call.extra.iter().map(|(k, v)| (k.as_str(), v.as_str())));
         for (field, value) in strings {
-            if let Some(kind) = raw_identifier(value) {
+            // The subject is reference-only: held to the stricter rule.
+            let found = if field == "subject_ref" {
+                reference_identifier(value)
+            } else {
+                raw_identifier(value)
+            };
+            if let Some(kind) = found {
                 let reason = format!("raw_identifier:{field}:{kind}");
                 if !violations.contains(&reason) {
                     violations.push(reason);
