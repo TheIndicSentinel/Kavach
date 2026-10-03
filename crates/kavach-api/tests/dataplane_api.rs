@@ -295,11 +295,17 @@ async fn precheck_uses_the_tool_registry() {
     wrong_type["params"]["channel"] = json!(9_876_543_210_u64);
     let mut old_shape = reminder("whatsapp");
     old_shape["action"] = json!("send_reminder");
+    // serde_json would read this key's value as a string of JSON: the
+    // subject below would become the string inside it.
+    let mut raw_value_key = reminder("whatsapp");
+    raw_value_key["params"]["subject_ref"] =
+        json!({ "$serde_json::private::RawValue": format!("{:?}", SUBJECT) });
     for bad in [
         timestamp,
         free_text,
         wrong_type,
         old_shape,
+        raw_value_key,
         json!({ "tool": "update_status", "mandate_id": mandate, "request_id": "r", "params": {} }),
     ] {
         let (status, body) = post(bad.clone()).await;

@@ -24,6 +24,7 @@ pub mod proto;
 pub mod registry;
 pub mod retention;
 pub mod state;
+pub mod strict_json;
 pub mod tls;
 
 pub use config::{

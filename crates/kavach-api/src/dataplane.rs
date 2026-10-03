@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use axum::extract::rejection::JsonRejection;
+use crate::strict_json::{StrictJson, StrictJsonRejection};
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
@@ -974,13 +974,13 @@ pub struct AuthorizeResponse {
 pub async fn authorize(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    body: Result<Json<AuthorizeBody>, JsonRejection>,
+    body: Result<StrictJson<AuthorizeBody>, StrictJsonRejection>,
 ) -> Result<Json<AuthorizeResponse>, Refusal> {
     let dp = dataplane(&state)?;
     let agent = authenticate_agent(dp, &headers)?;
     // Malformed or unknown fields: 400, nothing recorded (H5b item 5).
     // The parser's message can quote values, so it is not echoed.
-    let Json(body) = body.map_err(|_| {
+    let StrictJson(body) = body.map_err(|_| {
         refuse(
             StatusCode::BAD_REQUEST,
             "malformed body: expected JSON with exactly tool, mandate_id, request_id, params",
@@ -1082,7 +1082,7 @@ pub async fn tool_call(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(tool): axum::extract::Path<String>,
     headers: HeaderMap,
-    body: Result<Json<ToolRequest>, JsonRejection>,
+    body: Result<StrictJson<ToolRequest>, StrictJsonRejection>,
 ) -> Result<Json<GatewayReply>, Refusal> {
     let dp = dataplane(&state)?;
     let agent = authenticate_agent(dp, &headers)?;
@@ -1092,7 +1092,7 @@ pub async fn tool_call(
         refuse(StatusCode::BAD_REQUEST, message)
     };
     // The parser's message can quote values, so it is not echoed.
-    let Json(request) = body.map_err(|_| {
+    let StrictJson(request) = body.map_err(|_| {
         malformed(
             "malformed body: expected JSON with exactly mandate_id, request_id, params".into(),
         )
