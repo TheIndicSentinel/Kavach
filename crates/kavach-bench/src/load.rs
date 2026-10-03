@@ -3,6 +3,7 @@
 //! request from send to complete response; requests that start during the
 //! warm-up are not counted.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,15 +29,42 @@ pub enum Scenario {
     /// `send_reminder` on one subject only: every call contends for the
     /// same contact-counter row.
     HotSubject,
+    /// Micro: the evidence commit alone (`AgentEvidenceStore::commit`),
+    /// no HTTP. Postgres only.
+    Commit,
+    /// Micro: the outcome write alone, as it is today (no lock). Each
+    /// operation first commits an allow, which is not timed.
+    Outcome,
+    /// Micro: the outcome write as E5 would make it: in a transaction that
+    /// locks and advances a per-partition outcome head. Timed like
+    /// `Outcome`.
+    OutcomeLocked,
 }
 
 impl Scenario {
-    pub const ALL: [Self; 4] = [
+    /// The gateway scenarios, over HTTP.
+    pub const GATEWAY: [Self; 4] = [
         Self::Delivered,
         Self::Blocked,
         Self::Precheck,
         Self::HotSubject,
     ];
+    /// The storage micro-benchmarks (Postgres only).
+    pub const MICRO: [Self; 3] = [Self::Commit, Self::Outcome, Self::OutcomeLocked];
+    pub const ALL: [Self; 7] = [
+        Self::Delivered,
+        Self::Blocked,
+        Self::Precheck,
+        Self::HotSubject,
+        Self::Commit,
+        Self::Outcome,
+        Self::OutcomeLocked,
+    ];
+
+    #[must_use]
+    pub fn is_micro(self) -> bool {
+        Self::MICRO.contains(&self)
+    }
 
     #[must_use]
     pub fn name(self) -> &'static str {
@@ -45,6 +73,9 @@ impl Scenario {
             Self::Blocked => "blocked",
             Self::Precheck => "precheck",
             Self::HotSubject => "hot-subject",
+            Self::Commit => "commit",
+            Self::Outcome => "outcome",
+            Self::OutcomeLocked => "outcome-locked",
         }
     }
 
@@ -58,6 +89,8 @@ impl Scenario {
 pub struct RunResult {
     pub scenario: Scenario,
     pub concurrency: usize,
+    /// Connections in the Postgres pool (absent for the memory store).
+    pub database_pool: Option<u32>,
     pub duration_seconds: f64,
     pub requests: u64,
     pub errors: u64,
@@ -129,11 +162,105 @@ fn expected(scenario: Scenario, status: u16, body: &Value) -> bool {
             Scenario::Delivered | Scenario::HotSubject => body["outcome"] == "delivered",
             Scenario::Blocked => body["decision"] == "BLOCK",
             Scenario::Precheck => body["decision"] == "PASS",
+            _ => false,
         }
 }
 
-/// One run: `concurrency` workers for `warmup + duration`. A hot-subject
-/// run sends every call to subject `hot`.
+/// What a run produced: one sample per counted operation (µs), and the
+/// operations that went wrong.
+#[derive(Debug, Default)]
+pub struct Measured {
+    pub samples: Vec<u64>,
+    pub errors: u64,
+    pub first_error: Option<String>,
+}
+
+/// Runs `op` from `concurrency` workers, back to back, for `warmup +
+/// duration`. `op(n)` gets a sequence number unique across the run and
+/// returns the time to count for it (so it can leave its own set-up out).
+/// Operations that start during the warm-up are not counted.
+pub async fn measure<F, Fut>(
+    concurrency: usize,
+    warmup: Duration,
+    duration: Duration,
+    sequence: &Arc<AtomicU64>,
+    op: F,
+) -> Measured
+where
+    F: Fn(u64) -> Fut + Clone + Send + 'static,
+    Fut: Future<Output = Result<Duration, String>> + Send,
+{
+    let start = Instant::now();
+    let measure_from = start + warmup;
+    let end = measure_from + duration;
+    let workers: Vec<_> = (0..concurrency.max(1))
+        .map(|_| {
+            let (sequence, op) = (Arc::clone(sequence), op.clone());
+            tokio::spawn(async move {
+                let mut measured = Measured::default();
+                while Instant::now() < end {
+                    let n = sequence.fetch_add(1, Ordering::Relaxed);
+                    let started = Instant::now();
+                    let result = op(n).await;
+                    if started < measure_from {
+                        continue;
+                    }
+                    match result {
+                        Ok(took) => measured
+                            .samples
+                            .push(u64::try_from(took.as_micros()).unwrap_or(u64::MAX)),
+                        Err(reason) => {
+                            measured.errors += 1;
+                            measured.first_error.get_or_insert(reason);
+                        }
+                    }
+                }
+                measured
+            })
+        })
+        .collect();
+    let mut all = Measured::default();
+    for worker in workers {
+        let measured = worker.await.unwrap_or_default();
+        all.samples.extend(measured.samples);
+        all.errors += measured.errors;
+        if all.first_error.is_none() {
+            all.first_error = measured.first_error;
+        }
+    }
+    all.samples.sort_unstable();
+    all
+}
+
+/// Turns what a run measured into its figures.
+#[must_use]
+pub fn summarise(
+    scenario: Scenario,
+    concurrency: usize,
+    database_pool: Option<u32>,
+    duration: Duration,
+    measured: Measured,
+) -> RunResult {
+    let samples = &measured.samples;
+    let seconds = duration.as_secs_f64();
+    RunResult {
+        scenario,
+        concurrency,
+        database_pool,
+        duration_seconds: seconds,
+        requests: samples.len() as u64,
+        errors: measured.errors,
+        requests_per_second: rate(samples.len(), seconds),
+        p50_ms: quantile_ms(samples, 500),
+        p95_ms: quantile_ms(samples, 950),
+        p99_ms: quantile_ms(samples, 990),
+        max_ms: samples.last().map_or(0.0, |us| ms(*us)),
+        first_error: measured.first_error,
+    }
+}
+
+/// One gateway run over HTTP: `concurrency` workers for `warmup +
+/// duration`. A hot-subject run sends every call to subject `hot`.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     stack: &Arc<Stack>,
@@ -145,78 +272,35 @@ pub async fn run(
     duration: Duration,
     sequence: &Arc<AtomicU64>,
 ) -> RunResult {
-    let start = Instant::now();
-    let measure_from = start + warmup;
-    let end = measure_from + duration;
-    let workers: Vec<_> = (0..concurrency.max(1))
-        .map(|_| {
-            let (stack, client, sequence) =
-                (Arc::clone(stack), client.clone(), Arc::clone(sequence));
-            tokio::spawn(async move {
-                let mut samples = Vec::new();
-                let (mut errors, mut first_error) = (0u64, None);
-                while Instant::now() < end {
-                    let n = sequence.fetch_add(1, Ordering::Relaxed);
-                    let (url, body) = request(&stack, scenario, hot, n);
-                    let sent = Instant::now();
-                    let reply = client
-                        .post(url)
-                        .bearer_auth(&stack.agent_token)
-                        .json(&body)
-                        .send()
-                        .await;
-                    let outcome = match reply {
-                        Ok(response) => {
-                            let status = response.status().as_u16();
-                            let body: Value = response.json().await.unwrap_or(Value::Null);
-                            if expected(scenario, status, &body) {
-                                Ok(())
-                            } else {
-                                Err(format!("{status} {body}"))
-                            }
-                        }
-                        Err(e) => Err(e.to_string()),
-                    };
-                    if sent < measure_from {
-                        continue;
-                    }
-                    let elapsed = u64::try_from(sent.elapsed().as_micros()).unwrap_or(u64::MAX);
-                    match outcome {
-                        Ok(()) => samples.push(elapsed),
-                        Err(reason) => {
-                            errors += 1;
-                            first_error.get_or_insert(reason);
-                        }
-                    }
-                }
-                (samples, errors, first_error)
-            })
-        })
-        .collect();
-
-    let mut samples = Vec::new();
-    let (mut errors, mut first_error) = (0, None);
-    for worker in workers {
-        let (worker_samples, worker_errors, worker_error) = worker.await.unwrap_or_default();
-        samples.extend(worker_samples);
-        errors += worker_errors;
-        if first_error.is_none() {
-            first_error = worker_error;
+    let (stack_op, client) = (Arc::clone(stack), client.clone());
+    let measured = measure(concurrency, warmup, duration, sequence, move |n| {
+        let (stack, client) = (Arc::clone(&stack_op), client.clone());
+        async move {
+            let (url, body) = request(&stack, scenario, hot, n);
+            let sent = Instant::now();
+            let response = client
+                .post(url)
+                .bearer_auth(&stack.agent_token)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            let status = response.status().as_u16();
+            let body: Value = response.json().await.unwrap_or(Value::Null);
+            let took = sent.elapsed();
+            if expected(scenario, status, &body) {
+                Ok(took)
+            } else {
+                Err(format!("{status} {body}"))
+            }
         }
-    }
-    samples.sort_unstable();
-    let seconds = duration.as_secs_f64();
-    RunResult {
+    })
+    .await;
+    summarise(
         scenario,
         concurrency,
-        duration_seconds: seconds,
-        requests: samples.len() as u64,
-        errors,
-        requests_per_second: rate(samples.len(), seconds),
-        p50_ms: quantile_ms(&samples, 500),
-        p95_ms: quantile_ms(&samples, 950),
-        p99_ms: quantile_ms(&samples, 990),
-        max_ms: samples.last().map_or(0.0, |us| ms(*us)),
-        first_error,
-    }
+        stack.database_pool(),
+        duration,
+        measured,
+    )
 }

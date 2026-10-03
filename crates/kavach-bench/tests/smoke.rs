@@ -21,6 +21,7 @@ async fn every_scenario_runs_with_only_expected_replies() {
             store: Store::Memory,
             subjects: 5,
             provider_delay: Duration::from_millis(1),
+            pool_size: 5,
             work: work.clone(),
         })
         .await
@@ -29,7 +30,7 @@ async fn every_scenario_runs_with_only_expected_replies() {
     assert_eq!(stack.subjects.len(), 5);
     let client = reqwest::Client::new();
     let sequence = Arc::new(AtomicU64::new(0));
-    for (index, scenario) in Scenario::ALL.into_iter().enumerate() {
+    for (index, scenario) in Scenario::GATEWAY.into_iter().enumerate() {
         let result = run(
             &stack,
             &client,
@@ -45,5 +46,17 @@ async fn every_scenario_runs_with_only_expected_replies() {
         assert_eq!(result.errors, 0, "{result:?}");
         assert!(result.p50_ms <= result.p99_ms && result.p99_ms <= result.max_ms);
     }
+    // The storage micro-benchmarks need Postgres, and say so.
+    let refused = kavach_bench::micro::run_micro(
+        &stack,
+        Scenario::Commit,
+        1,
+        Duration::ZERO,
+        Duration::from_millis(100),
+        &sequence,
+    )
+    .await
+    .unwrap_err();
+    assert!(refused.contains("need Postgres"), "{refused}");
     std::fs::remove_dir_all(&work).unwrap();
 }

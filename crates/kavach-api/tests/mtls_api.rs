@@ -145,6 +145,7 @@ fn config(pki: &Pki) -> ApiConfig {
         change_ttl_seconds: 3600,
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
+        database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
         dataplane: None,
     }
 }

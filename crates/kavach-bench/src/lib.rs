@@ -8,5 +8,6 @@
 //! that produced them. See `docs/PERFORMANCE.md`.
 
 pub mod load;
+pub mod micro;
 pub mod report;
 pub mod stack;

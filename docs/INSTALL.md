@@ -92,6 +92,7 @@ Paths default via env vars; CLI flags override.
 | `KAVACH_MODEL_PATH` / `--model` | yes | Model record YAML (governance mode is authoritative) |
 | `KAVACH_DATABASE_URL` / `--database-url` | prod | Postgres URL when `--evidence-store postgres` — the least-privilege `kavach_runtime` role in production |
 | `KAVACH_MIGRATION_DATABASE_URL` / `--migration-database-url` | prod | Owner role that runs migrations; when set, the runtime URL never migrates |
+| `KAVACH_DATABASE_POOL_SIZE` / `--database-pool-size` | optional | Connections in the API's runtime Postgres pool (default 5; 1–256) |
 | `KAVACH_DATABASE_CA` / `--database-ca` | optional | CA certificates (PEM) trusted for the Postgres server certificate, besides the system roots. Connections always use `sslmode=verify-full`; a weaker `sslmode` in a URL refuses startup outside `--insecure-dev` |
 | `KAVACH_HMAC_SECRET` | optional | When set, HTTP evaluate requires `X-Kavach-Signature: sha256=<hex>` over raw body |
 | `KAVACH_TLS_CERT`, `KAVACH_TLS_KEY` | prod | Server TLS for HTTP and gRPC |

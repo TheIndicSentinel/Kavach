@@ -13,14 +13,26 @@ pub async fn connect_pool(
     connect_runtime(database_url, tls).await
 }
 
+/// Connections in a runtime pool unless configured otherwise.
+pub const DEFAULT_POOL_SIZE: u32 = 5;
+
 /// Connects without migrating (the runtime role, ADR-005 §1).
 pub async fn connect_runtime(
     database_url: &str,
     tls: &DatabaseTls,
 ) -> Result<StoragePool, kavach_evidence::EvidenceError> {
+    connect_runtime_sized(database_url, tls, DEFAULT_POOL_SIZE).await
+}
+
+/// [`connect_runtime`] with `pool_size` connections (at least one).
+pub async fn connect_runtime_sized(
+    database_url: &str,
+    tls: &DatabaseTls,
+    pool_size: u32,
+) -> Result<StoragePool, kavach_evidence::EvidenceError> {
     let options = connect_options(database_url, tls).map_err(|err| tls_err(&err))?;
     let pool = PgPoolOptions::new()
-        .max_connections(5)
+        .max_connections(pool_size.max(1))
         .connect_with(options)
         .await
         .map_err(|err| io_err(&err))?;

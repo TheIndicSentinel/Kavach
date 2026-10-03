@@ -5,7 +5,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use kavach_bench::load::{run, Scenario};
-use kavach_bench::report::{Environment, Report, DATABASE_POOL};
+use kavach_bench::micro::run_micro;
+use kavach_bench::report::{Environment, Report};
 use kavach_bench::stack::{Stack, StackOptions, Store};
 use kavach_storage::DatabaseTls;
 
@@ -26,13 +27,19 @@ struct Cli {
     /// Concurrency levels, comma separated.
     #[arg(long, value_delimiter = ',', default_value = "1,8,32,64")]
     concurrency: Vec<usize>,
-    /// Scenarios, comma separated: delivered, blocked, precheck, hot-subject.
+    /// Scenarios, comma separated. Gateway (HTTP): delivered, blocked,
+    /// precheck, hot-subject. Storage micro-benchmarks (Postgres only):
+    /// commit, outcome, outcome-locked.
     #[arg(
         long,
         value_delimiter = ',',
-        default_value = "delivered,blocked,precheck,hot-subject"
+        default_value = "delivered,blocked,precheck,hot-subject,commit,outcome,outcome-locked"
     )]
     scenarios: Vec<String>,
+    /// Postgres pool sizes to compare, comma separated: each gets its own
+    /// stack and fresh schema.
+    #[arg(long, value_delimiter = ',', default_value = "5")]
+    pool_sizes: Vec<u32>,
     #[arg(long, default_value_t = 30)]
     duration_seconds: u64,
     #[arg(long, default_value_t = 5)]
@@ -64,6 +71,25 @@ fn cpu_model() -> Option<String> {
         .filter(|m| !m.is_empty())
 }
 
+/// Where and how the figures were measured.
+fn environment(cli: &Cli, database: Option<&kavach_bench::stack::DatabaseInfo>) -> Environment {
+    Environment {
+        kavach_version: env!("CARGO_PKG_VERSION").into(),
+        git_commit: std::env::var("GITHUB_SHA").ok(),
+        measured_at: chrono::Utc::now().to_rfc3339(),
+        os: std::env::consts::OS.into(),
+        arch: std::env::consts::ARCH.into(),
+        cpu: cpu_model(),
+        logical_cpus: std::thread::available_parallelism().map_or(1, usize::from),
+        evidence_store: database.map_or_else(|| "memory".into(), |d| d.version.clone()),
+        database_sslmode: database.map(|d| d.sslmode.clone()),
+        provider_delay_ms: cli.provider_delay_ms,
+        subjects: cli.subjects,
+        warmup_seconds: cli.warmup_seconds,
+        duration_seconds: cli.duration_seconds,
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<(), String> {
     let cli = Cli::parse();
@@ -84,59 +110,67 @@ async fn main() -> Result<(), String> {
         },
         None => Store::Memory,
     };
-    eprintln!("setting up {} subjects…", cli.subjects);
-    let stack = Arc::new(
-        Stack::start(&StackOptions {
-            store,
-            subjects: cli.subjects.max(1),
-            provider_delay: Duration::from_millis(cli.provider_delay_ms),
-            work: work.clone(),
-        })
-        .await?,
-    );
     let client = reqwest::Client::builder()
         .pool_max_idle_per_host(256)
         .build()
         .map_err(|e| e.to_string())?;
-    let sequence = Arc::new(AtomicU64::new(0));
+    let (warmup, duration) = (
+        Duration::from_secs(cli.warmup_seconds),
+        Duration::from_secs(cli.duration_seconds.max(1)),
+    );
     let mut runs = Vec::new();
-    for scenario in &scenarios {
-        for (index, &concurrency) in cli.concurrency.iter().enumerate() {
-            eprintln!("{} at concurrency {concurrency}…", scenario.name());
-            runs.push(
-                run(
-                    &stack,
-                    &client,
-                    *scenario,
-                    index,
-                    concurrency,
-                    Duration::from_secs(cli.warmup_seconds),
-                    Duration::from_secs(cli.duration_seconds.max(1)),
-                    &sequence,
-                )
-                .await,
-            );
+    let mut database = None;
+    let mut skipped = false;
+    for &pool_size in &cli.pool_sizes {
+        eprintln!("pool {pool_size}: setting up {} subjects…", cli.subjects);
+        let stack = Arc::new(
+            Stack::start(&StackOptions {
+                store: store.clone(),
+                subjects: cli.subjects.max(1),
+                provider_delay: Duration::from_millis(cli.provider_delay_ms),
+                pool_size: pool_size.max(1),
+                work: work.join(format!("pool-{pool_size}")),
+            })
+            .await?,
+        );
+        database.clone_from(&stack.database);
+        let sequence = Arc::new(AtomicU64::new(0));
+        for scenario in &scenarios {
+            if scenario.is_micro() && stack.storage.is_none() {
+                skipped = true;
+                continue;
+            }
+            for (index, &concurrency) in cli.concurrency.iter().enumerate() {
+                eprintln!(
+                    "pool {pool_size}: {} at concurrency {concurrency}…",
+                    scenario.name()
+                );
+                let result = if scenario.is_micro() {
+                    run_micro(&stack, *scenario, concurrency, warmup, duration, &sequence).await?
+                } else {
+                    run(
+                        &stack,
+                        &client,
+                        *scenario,
+                        index,
+                        concurrency,
+                        warmup,
+                        duration,
+                        &sequence,
+                    )
+                    .await
+                };
+                runs.push(result);
+            }
+        }
+        if let Ok(stack) = Arc::try_unwrap(stack) {
+            stack.finish().await;
         }
     }
-    let environment = Environment {
-        kavach_version: env!("CARGO_PKG_VERSION").into(),
-        git_commit: std::env::var("GITHUB_SHA").ok(),
-        measured_at: chrono::Utc::now().to_rfc3339(),
-        os: std::env::consts::OS.into(),
-        arch: std::env::consts::ARCH.into(),
-        cpu: cpu_model(),
-        logical_cpus: std::thread::available_parallelism().map_or(1, usize::from),
-        evidence_store: stack
-            .database
-            .as_ref()
-            .map_or_else(|| "memory".into(), |d| d.version.clone()),
-        database_sslmode: stack.database.as_ref().map(|d| d.sslmode.clone()),
-        database_pool: stack.database.as_ref().map(|_| DATABASE_POOL),
-        provider_delay_ms: cli.provider_delay_ms,
-        subjects: cli.subjects,
-        warmup_seconds: cli.warmup_seconds,
-        duration_seconds: cli.duration_seconds,
-    };
+    if skipped {
+        eprintln!("the storage micro-benchmarks need Postgres: skipped on the memory store");
+    }
+    let environment = environment(&cli, database.as_ref());
     let report = Report::new(environment, runs);
     print!("{}", report.markdown());
     if let Some(out) = &cli.out {
@@ -144,9 +178,6 @@ async fn main() -> Result<(), String> {
         std::fs::write(out, json + "\n").map_err(|e| format!("{}: {e}", out.display()))?;
     }
     let errors: u64 = report.runs.iter().map(|r| r.errors).sum();
-    if let Ok(stack) = Arc::try_unwrap(stack) {
-        stack.finish().await;
-    }
     let _ = std::fs::remove_dir_all(&work);
     if errors > 0 {
         return Err(format!("{errors} unexpected replies (see the report)"));

@@ -23,8 +23,6 @@ pub struct Environment {
     /// The `sslmode` of the database connections (`VerifyFull`, `Disable`);
     /// absent for the memory store.
     pub database_sslmode: Option<String>,
-    /// Connections in the API's Postgres pool.
-    pub database_pool: Option<u32>,
     pub provider_delay_ms: u64,
     pub subjects: usize,
     pub warmup_seconds: u64,
@@ -38,9 +36,6 @@ pub struct Report {
     pub notes: Vec<String>,
     pub runs: Vec<RunResult>,
 }
-
-/// The pool size `kavach_storage::connect_runtime` uses.
-pub const DATABASE_POOL: u32 = 5;
 
 impl Report {
     #[must_use]
@@ -104,14 +99,11 @@ impl Report {
         );
         let _ = writeln!(
             out,
-            "Evidence: {}{}{}; provider delay {} ms; {} subjects; {} s warm-up, {} s per run\n",
+            "Evidence: {}{}; provider delay {} ms; {} subjects; {} s warm-up, {} s per run\n",
             e.evidence_store,
             e.database_sslmode
                 .as_deref()
                 .map(|m| format!(", sslmode {m}"))
-                .unwrap_or_default(),
-            e.database_pool
-                .map(|p| format!(", pool {p}"))
                 .unwrap_or_default(),
             e.provider_delay_ms,
             e.subjects,
@@ -122,14 +114,16 @@ impl Report {
             let _ = writeln!(out, "> {note}");
         }
         out.push_str(
-            "\n| Scenario | Concurrency | Requests | Errors | Req/s | p50 ms | p95 ms | p99 ms | max ms |\n\
-             |---|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+            "\n| Scenario | Pool | Concurrency | Requests | Errors | Req/s | p50 ms | p95 ms | p99 ms | max ms |\n\
+             |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
         );
         for r in &self.runs {
             let _ = writeln!(
                 out,
-                "| {} | {} | {} | {} | {:.1} | {:.2} | {:.2} | {:.2} | {:.2} |",
+                "| {} | {} | {} | {} | {} | {:.1} | {:.2} | {:.2} | {:.2} | {:.2} |",
                 r.scenario.name(),
+                r.database_pool
+                    .map_or_else(|| "-".to_string(), |p| p.to_string()),
                 r.concurrency,
                 r.requests,
                 r.errors,
@@ -144,9 +138,11 @@ impl Report {
         for r in failed {
             let _ = writeln!(
                 out,
-                "\n{} at {}: {} unexpected replies, first: {}",
+                "\n{} at {} (pool {}): {} unexpected replies, first: {}",
                 r.scenario.name(),
                 r.concurrency,
+                r.database_pool
+                    .map_or_else(|| "-".to_string(), |p| p.to_string()),
                 r.errors,
                 r.first_error.as_deref().unwrap_or("?")
             );
@@ -171,7 +167,6 @@ mod tests {
             logical_cpus: 4,
             evidence_store: store.into(),
             database_sslmode: sslmode.map(Into::into),
-            database_pool: sslmode.map(|_| DATABASE_POOL),
             provider_delay_ms: delay,
             subjects: 10,
             warmup_seconds: 1,
@@ -183,6 +178,7 @@ mod tests {
         RunResult {
             scenario: Scenario::HotSubject,
             concurrency: 8,
+            database_pool: Some(16),
             duration_seconds: 2.0,
             requests: 100,
             errors,
@@ -242,15 +238,15 @@ mod tests {
             "{text}"
         );
         assert!(
-            text.contains("sslmode VerifyFull, pool 5; provider delay 0 ms"),
+            text.contains("sslmode VerifyFull; provider delay 0 ms"),
             "{text}"
         );
         assert!(
-            text.contains("|---:|\n| hot-subject | 8 | 100 | 0 | 50.0 | 1.00 |"),
+            text.contains("|---:|\n| hot-subject | 16 | 8 | 100 | 0 | 50.0 | 1.00 |"),
             "{text}"
         );
         assert!(
-            text.contains("hot-subject at 8: 3 unexpected replies, first: 409 {}"),
+            text.contains("hot-subject at 8 (pool 16): 3 unexpected replies, first: 409 {}"),
             "{text}"
         );
         // And the JSON carries the same.

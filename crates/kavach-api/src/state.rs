@@ -180,6 +180,7 @@ impl AppState {
             change_ttl_seconds: DEFAULT_CHANGE_TTL_HOURS * 3600,
             migration_database_url: None,
             database_tls: kavach_storage::DatabaseTls::default(),
+            database_pool_size: kavach_storage::DEFAULT_POOL_SIZE,
             dataplane: None,
         };
         Self::from_config(&config).await
@@ -480,10 +481,11 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
             )
         }
         EvidenceStoreKind::Postgres { database_url } => {
-            let pool = StoragePool::connect_with_roles(
+            let pool = StoragePool::connect_with_roles_sized(
                 database_url,
                 config.migration_database_url.as_deref(),
                 &config.database_tls,
+                config.database_pool_size,
             )
             .await
             .map_err(|e| ApiError::Internal(format!("postgres storage: {e}")))?;
