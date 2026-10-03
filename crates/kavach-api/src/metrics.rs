@@ -18,7 +18,27 @@ pub struct Metrics {
     gateway_malformed: prometheus::IntCounter,
     gateway_jti_conflicts: prometheus::IntCounter,
     gateway_outcome_write_failures: prometheus::IntCounter,
+    gateway_stage_seconds: HistogramVec,
     checkpoints: CheckpointMetrics,
+}
+
+/// How long each stage of a gateway call takes (`stage` is the fixed list
+/// in `kavach_dataplane::Stage`), so a slow call can be located.
+fn gateway_stage_histogram(registry: &Registry) -> Result<HistogramVec, prometheus::Error> {
+    let histogram = HistogramVec::new(
+        HistogramOpts::new(
+            "kavach_gateway_stage_seconds",
+            "Duration of each stage of a gateway call: decide, commit, resolve, credential, \
+             forward, outcome",
+        )
+        .buckets(vec![
+            0.000_25, 0.000_5, 0.001, 0.002_5, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5,
+            5.0,
+        ]),
+        &["stage"],
+    )?;
+    registry.register(Box::new(histogram.clone()))?;
+    Ok(histogram)
 }
 
 /// Evidence checkpoints (ADR-005 §13). `reason` is a fixed vocabulary.
@@ -132,6 +152,7 @@ impl Metrics {
         registry.register(Box::new(gateway_jti_conflicts.clone()))?;
         registry.register(Box::new(gateway_outcome_write_failures.clone()))?;
         let checkpoints = CheckpointMetrics::register(&registry)?;
+        let gateway_stage_seconds = gateway_stage_histogram(&registry)?;
         Ok(Self {
             registry: Arc::new(registry),
             evaluate_total,
@@ -142,6 +163,7 @@ impl Metrics {
             gateway_malformed,
             gateway_jti_conflicts,
             gateway_outcome_write_failures,
+            gateway_stage_seconds,
             checkpoints,
         })
     }
@@ -243,6 +265,12 @@ impl kavach_dataplane::GatewayObserver for Metrics {
     fn outcome_write_failed(&self) {
         self.gateway_outcome_write_failures.inc();
     }
+
+    fn stage(&self, stage: kavach_dataplane::Stage, elapsed: std::time::Duration) {
+        self.gateway_stage_seconds
+            .with_label_values(&[stage.as_str()])
+            .observe(elapsed.as_secs_f64());
+    }
 }
 
 #[cfg(test)]
@@ -256,5 +284,26 @@ mod tests {
         let text = metrics.gather_text().expect("gather");
         assert!(text.contains(METRIC_EVALUATE_TOTAL));
         assert!(text.contains(METRIC_EVALUATE_LATENCY));
+    }
+
+    #[test]
+    fn gateway_stages_are_a_histogram_labelled_by_stage_only() {
+        use kavach_dataplane::GatewayObserver;
+        let metrics = Metrics::new().expect("metrics");
+        for stage in kavach_dataplane::Stage::ALL {
+            metrics.stage(stage, std::time::Duration::from_millis(3));
+        }
+        let text = metrics.gather_text().expect("gather");
+        for stage in kavach_dataplane::Stage::ALL {
+            let count = format!(
+                "kavach_gateway_stage_seconds_count{{stage=\"{}\"}} 1",
+                stage.as_str()
+            );
+            assert!(text.contains(&count), "{text}");
+        }
+        assert!(
+            text.contains("kavach_gateway_stage_seconds_bucket{stage=\"commit\",le=\"0.005\"} 1"),
+            "{text}"
+        );
     }
 }

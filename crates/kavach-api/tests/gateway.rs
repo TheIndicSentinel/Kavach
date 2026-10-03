@@ -242,6 +242,73 @@ async fn outcomes_follow_the_provider_and_unknown_is_never_retried() {
 }
 
 /// Refusals and malformed calls never reach the provider.
+/// The count recorded for one stage in `kavach_gateway_stage_seconds`.
+fn stage_count(metrics: &str, stage: &str) -> u64 {
+    let series = format!("kavach_gateway_stage_seconds_count{{stage=\"{stage}\"}} ");
+    metrics
+        .lines()
+        .find_map(|line| line.strip_prefix(&series))
+        .map_or(0, |n| n.parse().unwrap())
+}
+
+#[tokio::test]
+async fn each_stage_of_a_call_is_timed_and_only_the_stages_it_ran() {
+    let gw = gateway(Some(NUMBER), true).await;
+    let (status, reply) = gw.remind("stages-1").await;
+    assert_eq!(
+        (status, &reply["outcome"]),
+        (StatusCode::OK, &json!("delivered"))
+    );
+    let metrics = gw.state.metrics().gather_text().unwrap();
+    for stage in [
+        "decide",
+        "commit",
+        "resolve",
+        "credential",
+        "forward",
+        "outcome",
+    ] {
+        assert_eq!(stage_count(&metrics, stage), 1, "{stage}: {metrics}");
+    }
+
+    // A refusal is decided and recorded, and goes no further.
+    let mut other = reminder(&gw.mandate, "stages-2");
+    other["params"]["subject_ref"] = json!("ref:borrower:B-5511");
+    let (_, reply) = gw.call("send_reminder", other).await;
+    assert_eq!(reply["decision"], "BLOCK");
+    let metrics = gw.state.metrics().gather_text().unwrap();
+    assert_eq!(stage_count(&metrics, "decide"), 2);
+    assert_eq!(stage_count(&metrics, "commit"), 2);
+    for stage in ["resolve", "credential", "forward", "outcome"] {
+        assert_eq!(stage_count(&metrics, stage), 1, "{stage}");
+    }
+    // Only the fixed stage names appear as labels.
+    for line in metrics
+        .lines()
+        .filter(|l| l.starts_with("kavach_gateway_stage_seconds"))
+    {
+        let stage = line
+            .split("stage=\"")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        assert!(
+            [
+                "decide",
+                "commit",
+                "resolve",
+                "credential",
+                "forward",
+                "outcome"
+            ]
+            .contains(&stage),
+            "{line}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn refusals_and_malformed_calls_never_reach_the_provider() {
     let gw = gateway(Some(NUMBER), true).await;

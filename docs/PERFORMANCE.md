@@ -34,6 +34,8 @@ ADR-003 named `criterion` and `oha` for these. The gateway is measured with `kav
 | `precheck` | `POST /v1/authorize`: decide only, nothing recorded. |
 | `hot-subject` | As `delivered`, every call on one borrower: all calls contend for one contact-counter row. |
 
+**Where the time goes.** For every gateway run the report also gives the mean time per call in each stage (`decide`, `commit`, `resolve`, `credential`, `forward`, `outcome`), from the API's `kavach_gateway_stage_seconds` histogram, and "other": the rest of the mean, which is HTTP, token verification and request parsing. Stage means include the warm-up calls.
+
 **Storage micro-benchmarks** (Postgres only, no HTTP), for two open questions: is the bottleneck the pool or the evidence partition lock, and what would E5's extra lock cost?
 
 | Scenario | What one operation does |
