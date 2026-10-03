@@ -64,6 +64,13 @@ jobs:
           cache-from: type=gha,scope=kavach-e2e
           cache-to: type=gha,mode=max,scope=kavach-e2e
 
+      # The pilot stack shares the TLS-only Postgres set-up exercised below;
+      # make sure its compose file still parses (it is not started here).
+      - name: Validate the pilot compose file
+        run: |
+          POSTGRES_PASSWORD=x KAVACH_RUNTIME_DB_PASSWORD=x KAVACH_OIDC_ISSUER=x \
+            KAVACH_OIDC_AUDIENCE=x docker compose -f deploy/docker-compose.pilot.yml config -q
+
       - name: Bring up the stack and run the isolation probe
         working-directory: deploy/agent-stack
         run: |
@@ -72,6 +79,13 @@ jobs:
           docker compose up -d --no-build --wait --wait-timeout 180 postgres kavach mock-provider
           docker compose run --rm issue-mandate
           docker compose run --rm test-agent
+
+      # Postgres serves TLS only: a plaintext client is refused, and the
+      # certificate verifies only with the dev CA and for its own names.
+      # (Kavach itself connects with sslmode=verify-full above.)
+      - name: Check that Postgres refuses plaintext and verifies its name
+        working-directory: deploy/agent-stack
+        run: docker compose run --rm database-tls-probe
 
       # The deployed-stack test of evidence checkpoints: the running API
       # (production image, Postgres) must have checkpointed the probe's
