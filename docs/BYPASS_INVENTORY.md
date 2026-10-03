@@ -78,6 +78,7 @@ These sit below Kavach. Kavach can make their actions detectable, but cannot pre
 | A system of record with a valid issuer key | Issues mandates within its templates | Templates, passports and consent records bound the scope. Freshness and the replay guard bound reuse |
 | An agent token stolen before it expires | Acts as that agent until `exp` | Short token lifetimes at the IdP. No revocation before expiry (certificate-bound tokens, RFC 8705, planned) |
 | A client certificate that was not revoked | Connects until it expires | No CRL or OCSP checking. Issue short-lived certificates |
+| An identifier the detectors do not see, in a tool parameter | It reaches the decision record and the provider. Detected today: mobile numbers, Aadhaar, PAN and runs of 9 or more digits, in any supported script and through separators. Reference-only fields also refuse more than 8 digits in total. **Not detected:** identifiers spelt out in words ("nine eight seven…"), encoded (base64, hex of the digits, a cipher), split across several parameters, and UPI IDs, IFSC codes and account-number formats (detectors planned, PRD FR-5) | Parameters are allowlists, integers or reference-only, never free text, which leaves little room to encode. The registry is signed, so a tool cannot add a free-text field without a `tool`-role signature |
 
 ## Keeping this list honest
 

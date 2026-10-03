@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Changed
 
+- **Agents: references are held to a published format.** A reference-only parameter (`ref:<type>:<id>`) may hold at most 8 digits in total, however spread, and nothing that reads as a PAN (ADR-004 §7). Anything else is a recorded BLOCK (`raw_identifier:<field>:<kind>`). Systems of record should issue short counters or random letters, not hex or numeric ids. PANs and Aadhaar numbers are now detected in every string parameter.
 - **Breaking (configuration): connections to Postgres require verified TLS.** `kavach-api`, `kavach-batch` and `kavach-evidence export` / `checkpoints` now connect with `sslmode=verify-full`: TLS, a certificate that chains to a trusted root, and a matching host name. A deployment whose Postgres serves no TLS, or whose database URL names a weaker `sslmode`, no longer starts.
   - **Postgres:** enable TLS (`ssl = on`, `ssl_cert_file`, `ssl_key_file`) with a certificate that names the host in your database URLs. Prefer a DNS name; an IP address works only if the certificate lists it. Use `hostssl` lines in `pg_hba.conf` so the server refuses plaintext too.
   - **Kavach:** if the certificate comes from a private CA, set `--database-ca <pem>` / `KAVACH_DATABASE_CA` (API and batch; also `kavach-evidence export`). Remove any `sslmode=` weaker than `verify-full` from `KAVACH_DATABASE_URL`, `KAVACH_MIGRATION_DATABASE_URL` and `KAVACH_AUDITOR_DATABASE_URL`. `PGSSLMODE` in the environment is ignored.
