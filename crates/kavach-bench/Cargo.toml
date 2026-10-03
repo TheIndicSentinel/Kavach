@@ -13,7 +13,9 @@ path = "src/main.rs"
 
 [dependencies]
 kavach-api = { workspace = true }
+kavach-authz = { workspace = true }
 kavach-credential = { workspace = true }
+kavach-dataplane = { workspace = true }
 kavach-devkit = { workspace = true }
 kavach-domain = { workspace = true }
 kavach-jws = { workspace = true }
