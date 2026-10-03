@@ -12,8 +12,11 @@ Ordered by exposure: who can send the input.
 | `jws_signed` | `header\npayload`, signed with a trusted key so parsing after the signature check is reached | The same, past the signature | A verified token has exactly one encoding: its header and payload are the JCS form of what was parsed, and re-signing gives the same token |
 | `sor_event` | An SoR event payload, signed by the registered `lms` issuer, through the whole issuance path | Systems of record | An issued mandate verifies as active; a retry finds the same mandate; issuing from the same event again is refused |
 | `agent_token` | First byte `0`: any string as an agent token. Otherwise `header\nclaims`, signed with the JWKS key | Agents | An accepted token was signed with EdDSA and names a 1–256 character principal |
+| `tool_params` | First byte picks a registry tool; the rest is its parameters as JSON | Agents | A call extracted without violations holds no raw identifier in a reference-only field. The oracle is independent of the detector: at most 8 digits, no PAN |
+| `hmac_v2` | Method, path, body and the three HMAC headers. Fixed server time, fresh nonce store per input | Service callers of `/v1/evaluate` | Accepted only with the right MAC, a timestamp within 300 s and a well-formed nonce; a nonce is never accepted twice |
+| `jcs_differential` | Any JSON | Everything signed | `kavach_ports::jcs` and a small reference serialiser written from RFC 8785 refuse the same values and otherwise produce the same bytes; canonicalising twice changes nothing. The Node `canonicalize` cross-check in CI is the authority (`crates/kavach-ports/tests/vectors/jcs-v1.json`) |
 
-Planned next, in this order: tool-parameter extraction, HMAC v2 headers, JWE (provider side), bundle and checkpoint parsers, a JCS differential test, CEL.
+Planned next, in this order: JWE (provider side), bundle and checkpoint parsers, CEL.
 
 ## Limits
 

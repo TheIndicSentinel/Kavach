@@ -25,6 +25,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- Fuzz targets for agent tool parameters (no raw identifier in a reference-only field), HMAC v2 headers (fixed clock, fresh nonce store) and canonical JSON (a differential against a reference serialiser), plus RFC 8785 vectors that CI checks independently with the `canonicalize` package.
 - `docs/BYPASS_INVENTORY.md`: every known way around a guarantee, who can use it and how it would be noticed. Every guarantee in `docs/SECURITY_PROPERTIES.md` now carries a status (Enforced, Conditional, Reference, Dev stack).
 - Fuzzing (`fuzz/`, cargo-fuzz): targets for JWS of every Kavach type, signed and unsigned, system-of-record events through mandate issuance, and agent access tokens, each with invariants beyond "no crash". A nightly *Fuzz* workflow with memory, time and size limits per target, not a required check.
 - `kavach-bench` scenario `authorize`: the decision alone, in process, for the NFR-2 `authorize` p99 target. It leaves out HTTP and token verification, which `precheck` includes.

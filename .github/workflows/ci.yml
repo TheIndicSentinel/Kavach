@@ -143,6 +143,10 @@ jobs:
           npm ci --ignore-scripts --no-audit --no-fund
           node check.mjs ../../crates/kavach-credential/tests/vectors/credential-v1.json
 
+      - name: Canonicalise the JCS vectors with canonicalize (RFC 8785)
+        working-directory: scripts/jose-crosscheck
+        run: node jcs.mjs ../../crates/kavach-ports/tests/vectors/jcs-v1.json
+
   cedar-analysis:
     name: Agent policy analysis (Cedar + cvc5)
     runs-on: ubuntu-latest

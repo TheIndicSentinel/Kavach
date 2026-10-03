@@ -47,6 +47,12 @@ jobs:
             max_len: 20000
           - target: agent_token # agent access tokens (OIDC JWT)
             max_len: 20000
+          - target: tool_params # agent tool parameters (gateway extraction)
+            max_len: 20000
+          - target: hmac_v2 # HMAC v2 headers on /v1/evaluate
+            max_len: 20000
+          - target: jcs_differential # canonical JSON behind every signature
+            max_len: 20000
     defaults:
       run:
         shell: bash

@@ -18,6 +18,7 @@ members = ["."]
 libfuzzer-sys = "0.4"
 kavach-api = { path = "../crates/kavach-api" }
 kavach-credential = { path = "../crates/kavach-credential" }
+kavach-dataplane = { path = "../crates/kavach-dataplane" }
 kavach-domain = { path = "../crates/kavach-domain" }
 kavach-jws = { path = "../crates/kavach-jws" }
 kavach-keys = { path = "../crates/kavach-keys" }
@@ -27,6 +28,7 @@ kavach-ports-testkit = { path = "../crates/kavach-ports-testkit" }
 base64 = "0.22.1"
 chrono = { version = "0.4.45", features = ["serde"] }
 ed25519-dalek = "2.2.0"
+http = "1.5.0"
 jsonwebtoken = { version = "9.3.1", default-features = false }
 serde_json = "1.0.151"
 serde_json_canonicalizer = "0.3.2"
@@ -59,6 +61,27 @@ bench = false
 [[bin]]
 name = "agent_token"
 path = "fuzz_targets/agent_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tool_params"
+path = "fuzz_targets/tool_params.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "hmac_v2"
+path = "fuzz_targets/hmac_v2.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "jcs_differential"
+path = "fuzz_targets/jcs_differential.rs"
 test = false
 doc = false
 bench = false

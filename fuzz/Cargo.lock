@@ -1881,7 +1881,6 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "serde_json_canonicalizer",
  "sha2",
  "x25519-dalek",
  "zeroize",
@@ -1899,7 +1898,6 @@ dependencies = [
  "kavach-ports",
  "serde",
  "serde_json",
- "serde_json_canonicalizer",
  "serde_yaml",
  "sha2",
  "uuid",
@@ -1953,9 +1951,11 @@ dependencies = [
  "base64",
  "chrono",
  "ed25519-dalek",
+ "http",
  "jsonwebtoken",
  "kavach-api",
  "kavach-credential",
+ "kavach-dataplane",
  "kavach-domain",
  "kavach-jws",
  "kavach-keys",
@@ -1976,7 +1976,6 @@ dependencies = [
  "kavach-ports",
  "serde",
  "serde_json",
- "serde_json_canonicalizer",
 ]
 
 [[package]]
@@ -2035,6 +2034,7 @@ dependencies = [
  "kavach-evidence",
  "kavach-policy",
  "serde",
+ "serde_json",
  "serde_json_canonicalizer",
  "sha2",
  "thiserror 2.0.21",
