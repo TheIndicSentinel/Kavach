@@ -57,6 +57,8 @@ jobs:
             max_len: 20000
           - target: bundle_verify # evidence bundles as verify-bundle reads them
             max_len: 65536
+          - target: cel_policy # CEL rules (operator-signed packs; least exposed)
+            max_len: 4096
     defaults:
       run:
         shell: bash

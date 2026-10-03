@@ -24,6 +24,7 @@ kavach-evidence-cli = { path = "../crates/kavach-evidence-cli", default-features
 kavach-jws = { path = "../crates/kavach-jws" }
 kavach-keys = { path = "../crates/kavach-keys" }
 kavach-mandate = { path = "../crates/kavach-mandate" }
+kavach-policy = { path = "../crates/kavach-policy" }
 kavach-ports = { path = "../crates/kavach-ports" }
 kavach-ports-testkit = { path = "../crates/kavach-ports-testkit" }
 base64 = "0.22.1"
@@ -97,6 +98,13 @@ bench = false
 [[bin]]
 name = "bundle_verify"
 path = "fuzz_targets/bundle_verify.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cel_policy"
+path = "fuzz_targets/cel_policy.rs"
 test = false
 doc = false
 bench = false
