@@ -23,6 +23,7 @@ members = [
     "crates/kavach-auth",
     "crates/kavach-api",
     "crates/kavach-batch",
+    "crates/kavach-bench",
 ]
 default-members = [
     "crates/kavach-authz",
@@ -72,6 +73,8 @@ kavach-dataplane = { path = "crates/kavach-dataplane", version = "0.1.0" }
 kavach-jws = { path = "crates/kavach-jws", version = "0.1.0" }
 kavach-credential = { path = "crates/kavach-credential", version = "0.1.0" }
 kavach-mock-provider = { path = "crates/kavach-mock-provider", version = "0.1.0" }
+kavach-devkit = { path = "crates/kavach-devkit", version = "0.1.0" }
+kavach-api = { path = "crates/kavach-api", version = "0.1.0" }
 kavach-telemetry = { path = "crates/kavach-telemetry", version = "0.1.0" }
 kavach-clocksync = { path = "crates/kavach-clocksync", version = "0.1.0" }
 kavach-auth = { path = "crates/kavach-auth", version = "0.1.0" }

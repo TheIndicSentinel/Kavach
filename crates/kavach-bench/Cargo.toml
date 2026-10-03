@@ -1,0 +1,38 @@
+[package]
+name = "kavach-bench"
+description = "Benchmark harness for the Kavach gateway path (not shipped)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "kavach-bench"
+path = "src/main.rs"
+
+[dependencies]
+kavach-api = { workspace = true }
+kavach-credential = { workspace = true }
+kavach-devkit = { workspace = true }
+kavach-domain = { workspace = true }
+kavach-jws = { workspace = true }
+kavach-keys = { workspace = true }
+kavach-mandate = { workspace = true }
+kavach-mock-provider = { workspace = true }
+kavach-ports = { workspace = true }
+kavach-ports-testkit = { workspace = true }
+kavach-storage = { workspace = true }
+axum.workspace = true
+chrono.workspace = true
+clap.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["time"] }
+uuid.workspace = true
+
+[lints]
+workspace = true
