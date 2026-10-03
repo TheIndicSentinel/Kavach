@@ -114,6 +114,9 @@ async fn evaluate(
         )?;
     }
     authorize_credentials(state.as_ref(), &credentials, KavachAction::Evaluate)?;
+    if crate::strict_json::uses_raw_value_key(&body) {
+        return Err(ApiError::BadRequest(crate::strict_json::refusal_message()));
+    }
     let request: EvaluateRequest = serde_json::from_slice(&body)
         .map_err(|e| ApiError::BadRequest(format!("invalid JSON body: {e}")))?;
     let response = state.evaluate("http", &request)?;

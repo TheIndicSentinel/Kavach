@@ -1,5 +1,6 @@
 //! `/v1/change-requests`: maker-checker governance changes (ADR-009).
 
+use crate::strict_json::StrictJson;
 use std::sync::Arc;
 
 use axum::{
@@ -54,7 +55,7 @@ fn with_display_status(mut request: ChangeRequest) -> ChangeRequest {
 pub async fn propose(
     State(state): State<Arc<AppState>>,
     credentials: Credentials,
-    Json(proposal): Json<ChangeProposal>,
+    StrictJson(proposal): StrictJson<ChangeProposal>,
 ) -> Result<(StatusCode, Json<ChangeRequest>), ApiError> {
     let proposer = authorized_principal(&state, &credentials, propose_action(proposal.kind))?;
     let request = state.propose_change(&proposer, proposal).await?;

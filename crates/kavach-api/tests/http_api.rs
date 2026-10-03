@@ -84,6 +84,50 @@ async fn evaluate_golden_clean_request() {
     assert!(parsed["evidence_id"].as_str().is_some());
 }
 
+/// serde_json would read the raw-value key's value as a string of JSON
+/// inside `input`; the body is refused instead, and nothing is evaluated.
+#[tokio::test]
+async fn evaluate_refuses_the_serde_raw_value_key() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let body = include_str!("../../../golden/finance/v0/credit_clean.json");
+    let request_json: serde_json::Value = serde_json::from_str(body).unwrap();
+    let mut request: EvaluateRequest =
+        serde_json::from_value(request_json["request"].clone()).unwrap();
+    let now = Utc::now();
+    request.decision_time = now;
+    request.consent.timestamp = now;
+    let mut value = serde_json::to_value(&request).unwrap();
+    value["input"] = serde_json::json!({
+        "$serde_json::private::RawValue": "{\"debt_ratio\":0.1}"
+    });
+    let response = router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/evaluate")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&value).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let parsed: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert!(
+        parsed["error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("is not accepted"),
+        "{parsed}"
+    );
+}
+
 #[tokio::test]
 async fn metrics_endpoint_exposes_prometheus_text() {
     let (pack, model) = fixture_paths();
