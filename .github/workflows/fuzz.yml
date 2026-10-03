@@ -55,6 +55,8 @@ jobs:
             max_len: 20000
           - target: credential_open # provider side: credential JWE and JWS
             max_len: 20000
+          - target: bundle_verify # evidence bundles as verify-bundle reads them
+            max_len: 65536
     defaults:
       run:
         shell: bash

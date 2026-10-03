@@ -20,6 +20,7 @@ kavach-api = { path = "../crates/kavach-api" }
 kavach-credential = { path = "../crates/kavach-credential" }
 kavach-dataplane = { path = "../crates/kavach-dataplane" }
 kavach-domain = { path = "../crates/kavach-domain" }
+kavach-evidence-cli = { path = "../crates/kavach-evidence-cli", default-features = false }
 kavach-jws = { path = "../crates/kavach-jws" }
 kavach-keys = { path = "../crates/kavach-keys" }
 kavach-mandate = { path = "../crates/kavach-mandate" }
@@ -89,6 +90,13 @@ bench = false
 [[bin]]
 name = "credential_open"
 path = "fuzz_targets/credential_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bundle_verify"
+path = "fuzz_targets/bundle_verify.rs"
 test = false
 doc = false
 bench = false

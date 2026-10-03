@@ -1790,6 +1790,7 @@ version = "0.1.0"
 dependencies = [
  "axum 0.8.9",
  "axum-server",
+ "base64",
  "chrono",
  "clap",
  "hex",
@@ -1945,6 +1946,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kavach-evidence-cli"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "hex",
+ "kavach-evidence",
+ "kavach-ports",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "kavach-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -1957,6 +1973,7 @@ dependencies = [
  "kavach-credential",
  "kavach-dataplane",
  "kavach-domain",
+ "kavach-evidence-cli",
  "kavach-jws",
  "kavach-keys",
  "kavach-mandate",
