@@ -134,6 +134,39 @@ impl Report {
                 r.max_ms
             );
         }
+        let staged: Vec<_> = self.runs.iter().filter(|r| !r.stages.is_empty()).collect();
+        if !staged.is_empty() {
+            out.push_str(
+                "\nWhere a gateway call's time goes (mean ms per call; \"other\" is the rest of \
+                 the mean: HTTP, authentication, request parsing):\n\n\
+                 | Scenario | Pool | Concurrency | Mean | decide | commit | resolve | credential | forward | outcome | other |\n\
+                 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n",
+            );
+            for r in staged {
+                let stage = |name: &str| r.stages.get(name).copied().unwrap_or(0.0);
+                let names = [
+                    "decide",
+                    "commit",
+                    "resolve",
+                    "credential",
+                    "forward",
+                    "outcome",
+                ];
+                let known: f64 = names.iter().map(|n| stage(n)).sum();
+                let cells: Vec<String> = names.iter().map(|n| format!("{:.2}", stage(n))).collect();
+                let _ = writeln!(
+                    out,
+                    "| {} | {} | {} | {:.2} | {} | {:.2} |",
+                    r.scenario.name(),
+                    r.database_pool
+                        .map_or_else(|| "-".to_string(), |p| p.to_string()),
+                    r.concurrency,
+                    r.mean_ms,
+                    cells.join(" | "),
+                    (r.mean_ms - known).max(0.0),
+                );
+            }
+        }
         let failed: Vec<_> = self.runs.iter().filter(|r| r.errors > 0).collect();
         for r in failed {
             let _ = writeln!(
@@ -188,6 +221,8 @@ mod tests {
             p99_ms: 3.0,
             max_ms: 4.0,
             first_error: (errors > 0).then(|| "409 {}".into()),
+            mean_ms: 1.5,
+            stages: [("commit".to_string(), 0.75), ("decide".to_string(), 0.25)].into(),
         }
     }
 
@@ -243,6 +278,12 @@ mod tests {
         );
         assert!(
             text.contains("|---:|\n| hot-subject | 16 | 8 | 100 | 0 | 50.0 | 1.00 |"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "| hot-subject | 16 | 8 | 1.50 | 0.25 | 0.75 | 0.00 | 0.00 | 0.00 | 0.00 | 0.50 |"
+            ),
             "{text}"
         );
         assert!(

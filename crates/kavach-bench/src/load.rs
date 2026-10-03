@@ -95,12 +95,18 @@ pub struct RunResult {
     pub requests: u64,
     pub errors: u64,
     pub requests_per_second: f64,
+    pub mean_ms: f64,
     pub p50_ms: f64,
     pub p95_ms: f64,
     pub p99_ms: f64,
     pub max_ms: f64,
     /// The first unexpected reply, if any (for the report).
     pub first_error: Option<String>,
+    /// Gateway runs: mean milliseconds per call in each stage (decide,
+    /// commit, resolve, credential, forward, outcome), from the API's
+    /// `kavach_gateway_stage_seconds`. Includes the warm-up calls.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub stages: std::collections::BTreeMap<String, f64>,
 }
 
 /// Microseconds as milliseconds. (Exact below 2^52 µs, about 140 years.)
@@ -251,12 +257,27 @@ pub fn summarise(
         requests: samples.len() as u64,
         errors: measured.errors,
         requests_per_second: rate(samples.len(), seconds),
+        mean_ms: mean_ms(samples),
         p50_ms: quantile_ms(samples, 500),
         p95_ms: quantile_ms(samples, 950),
         p99_ms: quantile_ms(samples, 990),
         max_ms: samples.last().map_or(0.0, |us| ms(*us)),
         first_error: measured.first_error,
+        stages: std::collections::BTreeMap::new(),
     }
+}
+
+/// Mean of microsecond samples, in milliseconds.
+fn mean_ms(samples: &[u64]) -> f64 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    ms(samples.iter().sum::<u64>()) / as_f64(samples.len() as u64)
+}
+
+#[allow(clippy::cast_precision_loss)]
+fn as_f64(n: u64) -> f64 {
+    n as f64
 }
 
 /// One gateway run over HTTP: `concurrency` workers for `warmup +
@@ -272,6 +293,7 @@ pub async fn run(
     duration: Duration,
     sequence: &Arc<AtomicU64>,
 ) -> RunResult {
+    let before = stack.stage_totals();
     let (stack_op, client) = (Arc::clone(stack), client.clone());
     let measured = measure(concurrency, warmup, duration, sequence, move |n| {
         let (stack, client) = (Arc::clone(&stack_op), client.clone());
@@ -296,11 +318,21 @@ pub async fn run(
         }
     })
     .await;
-    summarise(
+    let mut result = summarise(
         scenario,
         concurrency,
         stack.database_pool(),
         duration,
         measured,
-    )
+    );
+    for (stage, (sum, calls)) in stack.stage_totals() {
+        let (sum_before, calls_before) = before.get(&stage).copied().unwrap_or_default();
+        let calls = calls.saturating_sub(calls_before);
+        if calls > 0 {
+            result
+                .stages
+                .insert(stage, (sum - sum_before) * 1000.0 / as_f64(calls));
+        }
+    }
+    result
 }

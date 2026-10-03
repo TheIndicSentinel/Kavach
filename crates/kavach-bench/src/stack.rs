@@ -449,6 +449,40 @@ impl Stack {
         })
     }
 
+    /// Per gateway stage: total seconds and number of calls so far, read
+    /// from the API's `kavach_gateway_stage_seconds` histogram.
+    #[must_use]
+    pub fn stage_totals(&self) -> std::collections::BTreeMap<String, (f64, u64)> {
+        let mut totals = std::collections::BTreeMap::<String, (f64, u64)>::new();
+        let text = self.state.metrics().gather_text().unwrap_or_default();
+        for line in text.lines() {
+            let Some((series, value)) = line.split_once(' ') else {
+                continue;
+            };
+            let (is_sum, rest) = if let Some(rest) =
+                series.strip_prefix("kavach_gateway_stage_seconds_sum{stage=\"")
+            {
+                (true, rest)
+            } else if let Some(rest) =
+                series.strip_prefix("kavach_gateway_stage_seconds_count{stage=\"")
+            {
+                (false, rest)
+            } else {
+                continue;
+            };
+            let Some(stage) = rest.strip_suffix("\"}") else {
+                continue;
+            };
+            let entry = totals.entry(stage.to_string()).or_default();
+            if is_sum {
+                entry.0 = value.parse().unwrap_or(0.0);
+            } else {
+                entry.1 = value.parse().unwrap_or(0);
+            }
+        }
+        totals
+    }
+
     /// The Postgres pool size, when there is a database.
     #[must_use]
     pub fn database_pool(&self) -> Option<u32> {
