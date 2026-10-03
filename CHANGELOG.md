@@ -44,3 +44,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 - Truncation and rewrites are detected only by verifying an export against a checkpoint the operator copied off-host; the live database is not checked continuously, and nothing is anchored outside the operator's own storage.
 - A deleted outcome row is detected only against an earlier signed bundle that contains it.
+
+### Fixed
+
+- HMAC v2: the timestamp skew check no longer overflows on an extreme `X-Kavach-Timestamp`. Builds with overflow checks panicked before the signature was checked; release builds wrapped, so one timestamp value passed the skew check (the signature was still required).

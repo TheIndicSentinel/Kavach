@@ -104,7 +104,8 @@ pub fn verify(
     let timestamp = header(headers, "x-kavach-timestamp").ok_or(ApiError::Unauthorized)?;
     let nonce = header(headers, "x-kavach-nonce").ok_or(ApiError::Unauthorized)?;
     let ts: i64 = timestamp.parse().map_err(|_| ApiError::Unauthorized)?;
-    if (now_unix - ts).abs() > MAX_SKEW_SECONDS || !valid_nonce(nonce) {
+    // `abs_diff`: the caller chooses `ts`, and a subtraction could overflow.
+    if now_unix.abs_diff(ts) > MAX_SKEW_SECONDS.unsigned_abs() || !valid_nonce(nonce) {
         return Err(ApiError::Unauthorized);
     }
     let expected = sign(
@@ -234,5 +235,32 @@ mod tests {
             now
         )
         .is_err());
+    }
+
+    /// The skew check must not overflow on an extreme timestamp. Before
+    /// `abs_diff`, `now - ts` panicked with overflow checks on and, without
+    /// them, wrapped so that one timestamp passed the skew check.
+    #[test]
+    fn extreme_timestamps_are_refused_without_overflow() {
+        let (secret, nonce, body, now) = ("s", "nonce-0123456789abcdef", b"{}", 1_790_000_000_i64);
+        for ts in [i64::MIN, i64::MAX, now.wrapping_add(i64::MIN), -1] {
+            let sig = sign(
+                secret,
+                &string_to_sign(&ts.to_string(), nonce, "POST", "/v1/evaluate", body),
+            );
+            assert!(
+                verify(
+                    secret,
+                    &NonceCache::default(),
+                    &headers(&sig, ts, nonce),
+                    "POST",
+                    "/v1/evaluate",
+                    body,
+                    now
+                )
+                .is_err(),
+                "{ts}"
+            );
+        }
     }
 }
