@@ -122,6 +122,48 @@ pub mod conformance {
             provider.public_key(missing).await.unwrap_err().class,
             ErrorClass::Rejected
         );
+
+        // Empty and large messages: an HSM signs the whole message
+        // (PureEdDSA), not a digest of it.
+        for message in [Vec::new(), vec![0xA5; 65_536]] {
+            let signature = provider.sign(kid, &message).await.expect("sign");
+            assert_eq!(signature.len(), 64, "an Ed25519 signature is 64 bytes");
+            verify_ed25519(&public, &message, &signature).expect("verifies");
+        }
+
+        concurrent_signing(provider, kid, &public);
+    }
+
+    /// Eight threads sign at once, each on its own runtime, sharing the
+    /// provider as the API shares it between requests (an HSM provider
+    /// shares a pool of sessions).
+    fn concurrent_signing<K: KeyProvider>(
+        provider: &K,
+        kid: &str,
+        public: &kavach_ports::PublicKey,
+    ) {
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8u8)
+                .map(|i| {
+                    scope.spawn(move || {
+                        let runtime = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .expect("runtime");
+                        for j in 0..8u8 {
+                            let message = [i, j, 7, 7];
+                            let signature = runtime
+                                .block_on(provider.sign(kid, &message))
+                                .expect("concurrent sign");
+                            verify_ed25519(public, &message, &signature).expect("verifies");
+                        }
+                    })
+                })
+                .collect();
+            for worker in workers {
+                worker.join().expect("worker");
+            }
+        });
     }
 
     /// Replays are rejected per tenant until expiry.

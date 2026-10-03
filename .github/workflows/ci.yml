@@ -78,10 +78,31 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # SoftHSM2 for the PKCS#11 key provider's tests (crates/kavach-keys-pkcs11).
+      # Its EdDSA support is proven by scripts/softhsm-eddsa-probe.sh.
+      - name: Install SoftHSM2
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq softhsm2
+          dpkg -s softhsm2 | grep -E "^Version"
+
+      # Before the tests start: they must not change their own environment.
+      - name: Prepare a SoftHSM token
+        run: scripts/softhsm-test-token.sh "$RUNNER_TEMP/softhsm" >>"$GITHUB_ENV"
+
       - name: cargo test
         env:
           KAVACH_TEST_DATABASE_URL: postgres://kavach:kavach-ci@localhost:5432/kavach_test
+          KAVACH_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
         run: cargo test --workspace --verbose
+
+      # A trend for the KMS decision on which keys go to an HSM: sign latency
+      # against SoftHSM and in-process Ed25519 on this runner. Not a figure
+      # to quote; asserts nothing about the numbers.
+      - name: HSM sign latency (trend)
+        env:
+          KAVACH_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
+        run: cargo test -p kavach-keys-pkcs11 --test softhsm -- --ignored --nocapture sign_latency
 
       - name: Partner pilot batch smoke
         run: SKIP_VERIFY=1 ./scripts/pilot-smoke.sh
