@@ -78,18 +78,36 @@ cd scripts/jose-crosscheck && npm ci --ignore-scripts && \
   node check.mjs ../../crates/kavach-credential/tests/vectors/credential-v1.json
 ```
 
-## 8. Disk use
+## 8. Benchmarks (`kavach-bench`)
+
+`kavach-bench` runs the real API in-process and drives the gateway path at fixed concurrency: decision, evidence commit, reference resolution, credential, forward to the mock provider, outcome. It reports p50/p95/p99/max latency and requests per second for each scenario and concurrency level, with the environment that produced them.
+
+```sh
+# A smoke run on the memory store (the figures mean nothing):
+cargo run --release -p kavach-bench -- --subjects 100 --duration-seconds 5
+
+# Against Postgres (a fresh schema per run, dropped afterwards):
+KAVACH_BENCH_DATABASE_URL='postgres://kavach:…@db.internal/kavach' \
+  cargo run --release -p kavach-bench -- --out bench.json
+```
+
+- **Scenarios:** `delivered` (spread over all subjects), `blocked` (decided and recorded, never forwarded), `precheck` (`/v1/authorize`, nothing recorded) and `hot-subject` (every call on one borrower: contention on one contact-counter row).
+- **Defaults:** concurrency 1, 8, 32 and 64; 5 s warm-up and 30 s per run; 1,000 subjects; no provider delay. `--provider-delay-ms 50` stands in for a real provider. With no delay the figures measure Kavach's own cost only, and the report says so.
+- **Database:** a URL without `sslmode` connects with `verify-full` (pass `--database-ca` for a private CA); `sslmode=disable` gives the plaintext baseline. The report records which.
+- It runs with a fixed trusted clock and development keys, so it is a measuring tool, never a deployment. Numbers worth quoting come from a dedicated machine, not a laptop or a shared CI runner.
+
+## 9. Disk use
 
 - Local builds skip debug info for dependencies (`[profile.dev]` in `Cargo.toml`), so `target/` stays around 4–6 GB.
 - `scripts/disk-guard.sh` removes superseded test binaries when `target/` grows past 6 GB (`--check-size`), and runs `cargo clean` if free space drops below 8 GB. `verify.sh` runs it first. Limits: `KAVACH_MIN_FREE_GB`, `KAVACH_MAX_TARGET_GB`.
 - It only ever touches `target/`, which cargo rebuilds.
 
-## 9. Supply chain
+## 10. Supply chain
 
 - CI actions are pinned by commit SHA, CI tools by version, image bases by digest; `Cargo.lock` is committed and the image builds with `--locked`.
 - The *Supply chain* workflow (weekly, on demand and on every push to `main`) re-runs `cargo audit` and `cargo deny` and uploads one CycloneDX 1.5 SBOM per shipped binary. Locally: `cargo install cargo-cyclonedx --locked --version 0.5.9`, then `cargo cyclonedx --format json --spec-version 1.5 --describe binaries`.
-- `main` is protected: changes land through PRs with the six CI checks green on an up-to-date branch.
+- `main` is protected: changes land through PRs with the seven required checks (the six CI jobs and Network isolation) green on an up-to-date branch.
 
-## 10. Before opening a PR
+## 11. Before opening a PR
 
 Run `./scripts/verify.sh`, sign off your commits (`git commit -s`), and update `docs/SECURITY_PROPERTIES.md` in the same PR if you change a guarantee. See [CONTRIBUTING.md](../CONTRIBUTING.md).
