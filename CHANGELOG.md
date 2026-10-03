@@ -51,6 +51,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Fixed
 
+- A CEL rule that makes the third-party CEL parser or interpreter panic no longer crashes Kavach: the pack is refused at load (`CelCompile`), and a panic during evaluation is an evaluation error, recorded as a BLOCK. A trailing `&&` was enough to make the parser panic. Found by the `cel_policy` fuzz target.
 - Canonical JSON (everything signed or hashed as evidence) refuses objects with the key `$serde_json::private::RawValue`. serde_json, with the `raw_value` feature that axum and sqlx switch on, parses an object whose first key is that token as a string of JSON, so its canonical form (which sorts `$` first) would not parse back to itself. Found by the `jcs_differential` fuzz target. No signed type can carry such a key today.
 - Bearer tokens (API callers and agents) whose JOSE header is not a UTF-8 JSON object are refused (RFC 7515 §4). Before, the JWT library skipped unknown header members without checking their bytes. Found by the `agent_token` fuzz target; only a key the identity provider holds could sign such a token.
 - HMAC v2: the timestamp skew check no longer overflows on an extreme `X-Kavach-Timestamp`. Builds with overflow checks panicked before the signature was checked; release builds wrapped, so one timestamp value passed the skew check (the signature was still required).
