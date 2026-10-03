@@ -32,24 +32,16 @@ grep -q "always sensitive" "$work/priv" || { echo "FAIL: key is not always sensi
 echo "--- sign with CKM_EDDSA, verify outside the HSM"
 printf 'kavach softhsm probe' >"$work/msg"
 p11 --sign --mechanism EDDSA --id 01 --input-file "$work/msg" --output-file "$work/sig"
-p11 --read-object --type pubkey --id 01 --output-file "$work/pub.der"
+p11 --read-object --type pubkey --id 01 --output-file "$work/pub.pem"
 python3 - "$work" <<'PY'
 import sys
 from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-from cryptography.hazmat.primitives.serialization import load_der_public_key
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
 w = Path(sys.argv[1])
-raw = (w / "pub.der").read_bytes()
-print("public key object:", len(raw), "bytes:", raw.hex())
-# pkcs11-tool writes an Edwards key as its CKA_EC_POINT: the 32-byte point
-# inside one or more DER OCTET STRINGs. Fall back to SubjectPublicKeyInfo.
-point = raw
-while len(point) > 32 and point[0] == 0x04 and point[1] == len(point) - 2:
-    point = point[2:]
-if len(point) == 32:
-    key = Ed25519PublicKey.from_public_bytes(point)
-else:
-    key = load_der_public_key(raw)
+# pkcs11-tool writes the public key as PEM (SubjectPublicKeyInfo).
+key = load_pem_public_key((w / "pub.pem").read_bytes())
+assert isinstance(key, Ed25519PublicKey), type(key)
 key.verify((w / "sig").read_bytes(), (w / "msg").read_bytes())  # raises if invalid
 print("verified outside the HSM:", len((w / "sig").read_bytes()), "byte signature")
 PY
