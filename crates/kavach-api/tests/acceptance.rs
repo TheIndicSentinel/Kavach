@@ -549,6 +549,7 @@ async fn scenario10_a_full_run_verifies_offline_from_public_keys(store: Store) {
             tenant_id: "default".into(),
             partition_id: 0,
             allow_write_role: false,
+            tls: kavach_storage::DatabaseTls::development(),
         };
         let signing = Signing::Key {
             key_dir: work.join("export-keys"),

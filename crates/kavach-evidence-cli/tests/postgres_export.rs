@@ -67,9 +67,13 @@ impl World {
     /// Five records; outcomes for records 1 and 3; checkpoints at 2 and 4.
     async fn new() -> Option<Self> {
         let (owner, runtime) = isolated_database_urls().await?;
-        let pool = StoragePool::connect_with_roles(&runtime, Some(&owner))
-            .await
-            .expect("migrate and connect");
+        let pool = StoragePool::connect_with_roles(
+            &runtime,
+            Some(&owner),
+            &kavach_storage::DatabaseTls::development(),
+        )
+        .await
+        .expect("migrate and connect");
         let key_dir = common::scratch("export-keys");
         let export_public = LocalFileKeyProvider::new(&key_dir)
             .create_key(EXPORT_KID)
@@ -160,6 +164,8 @@ fn target(url: &str) -> Target {
         tenant_id: TENANT.into(),
         partition_id: 0,
         allow_write_role: false,
+        // The test database is plaintext, and its URL says so.
+        tls: kavach_storage::DatabaseTls::development(),
     }
 }
 
@@ -262,9 +268,14 @@ async fn an_export_is_one_snapshot_whatever_is_written_meanwhile() {
     let Some(mut world) = World::new().await else {
         return;
     };
-    let mut snapshot = EvidenceSnapshot::open(&world.auditor, TENANT, 0)
-        .await
-        .expect("open as kavach_auditor");
+    let mut snapshot = EvidenceSnapshot::open(
+        &world.auditor,
+        &kavach_storage::DatabaseTls::development(),
+        TENANT,
+        0,
+    )
+    .await
+    .expect("open as kavach_auditor");
     assert!(!snapshot.can_write());
 
     // The deployment keeps working while the export runs.
@@ -391,6 +402,7 @@ async fn checkpoints_are_listed_for_copying_off_host() {
 fn cli(world: &World, args: &[&str]) -> (Option<i32>, String, String) {
     let output = Command::new(env!("CARGO_BIN_EXE_kavach-evidence"))
         .args(args)
+        .arg("--allow-plaintext-database")
         .env("KAVACH_AUDITOR_DATABASE_URL", &world.auditor)
         .output()
         .expect("run kavach-evidence");

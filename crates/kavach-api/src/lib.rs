@@ -33,6 +33,7 @@ pub use config::{
 pub use error::ApiError;
 pub use grpc::{status_from_api, GrpcEvaluateService};
 pub use http::router;
+pub use kavach_storage::DatabaseTls;
 pub use metrics::Metrics;
 pub use mtls::{MtlsSanKind, PeerCertificate};
 pub use oidc::{JwksSource, OidcConfig, OidcVerifier};

@@ -26,9 +26,13 @@ async fn reminders_on_postgres_as_the_runtime_role() {
     let Some((owner, runtime)) = isolated_database_urls().await else {
         return;
     };
-    let pool = StoragePool::connect_with_roles(&runtime, Some(&owner))
-        .await
-        .unwrap();
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .unwrap();
     let clock = Arc::new(FakeClock::synced_at(ist(11, 0, 0)));
     let Setup {
         kavach,

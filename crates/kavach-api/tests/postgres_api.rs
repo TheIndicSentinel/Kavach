@@ -63,6 +63,7 @@ fn config(root: &Path, database_url: &str, pack: &str, bootstrap_pack: bool) -> 
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
         migration_database_url: None,
+        database_tls: kavach_api::DatabaseTls::development(),
         dataplane: None,
     }
 }
@@ -289,7 +290,10 @@ async fn retention_applies_exactly_the_approved_set() {
     let root = registry();
     let state = start(&root, &url, "v0.yaml").await.expect("start");
     let app = router(state.clone());
-    let pool = kavach_storage::StoragePool::connect(&url).await.unwrap();
+    let pool =
+        kavach_storage::StoragePool::connect(&url, &kavach_storage::DatabaseTls::development())
+            .await
+            .unwrap();
     let mut evidence = pool.evidence_store();
     let old = |id: &str| old_event(id);
     evidence.append(old("old-1")).unwrap();

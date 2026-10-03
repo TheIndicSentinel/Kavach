@@ -348,6 +348,7 @@ pub fn config(store: EvidenceStoreKind, insecure_dev: bool, rate: u32) -> ApiCon
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
         migration_database_url: None,
+        database_tls: kavach_api::DatabaseTls::development(),
         dataplane: Some(dataplane),
     }
 }

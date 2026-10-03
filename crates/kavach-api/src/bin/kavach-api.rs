@@ -277,6 +277,14 @@ struct Cli {
     #[arg(long, env = "KAVACH_MIGRATION_DATABASE_URL")]
     migration_database_url: Option<String>,
 
+    /// Extra CA certificates (PEM) trusted for the Postgres server's
+    /// certificate, besides the system roots (e.g. a private CA).
+    /// Connections always use TLS with a verified certificate and host
+    /// name (`sslmode=verify-full`); a weaker `sslmode` in a database URL
+    /// is refused outside `--insecure-dev`.
+    #[arg(long, env = "KAVACH_DATABASE_CA")]
+    database_ca: Option<PathBuf>,
+
     /// Access control for API principals. Defaults to Cedar (secure by default).
     #[arg(
         long,
@@ -391,6 +399,7 @@ impl Cli {
             mtls_principal_san: self.mtls_principal_san,
             change_ttl_seconds: self.change_request_ttl_hours * 3600,
             migration_database_url: self.migration_database_url,
+            database_tls: kavach_api::DatabaseTls::new(self.insecure_dev, self.database_ca),
             dataplane,
         };
         validate_principal_sources(&config)?;

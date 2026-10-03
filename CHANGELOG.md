@@ -6,6 +6,11 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Changed
 
+- **Breaking (configuration): connections to Postgres require verified TLS.** `kavach-api`, `kavach-batch` and `kavach-evidence export` / `checkpoints` now connect with `sslmode=verify-full`: TLS, a certificate that chains to a trusted root, and a matching host name. A deployment whose Postgres serves no TLS, or whose database URL names a weaker `sslmode`, no longer starts.
+  - **Postgres:** enable TLS (`ssl = on`, `ssl_cert_file`, `ssl_key_file`) with a certificate that names the host in your database URLs. Prefer a DNS name; an IP address works only if the certificate lists it. Use `hostssl` lines in `pg_hba.conf` so the server refuses plaintext too.
+  - **Kavach:** if the certificate comes from a private CA, set `--database-ca <pem>` / `KAVACH_DATABASE_CA` (API and batch; also `kavach-evidence export`). Remove any `sslmode=` weaker than `verify-full` from `KAVACH_DATABASE_URL`, `KAVACH_MIGRATION_DATABASE_URL` and `KAVACH_AUDITOR_DATABASE_URL`. `PGSSLMODE` in the environment is ignored.
+  - **Pilot compose stack (`deploy/docker-compose.pilot.yml`):** its bundled Postgres serves no TLS, so the stack does not start with this change. TLS for that stack, generated at first start, is the next change; until it lands, point the stack at a Postgres with TLS as above.
+  - **Development:** plaintext needs both `--insecure-dev` (export commands: `--allow-plaintext-database`) and `sslmode=disable` in the URL. `kavach-batch` gains `--insecure-dev` for this. The flag alone downgrades nothing.
 - **Breaking (configuration):** the agent data plane now requires a checkpoint signing key. Startup fails without `--checkpoint-keys-dir` (`KAVACH_CHECKPOINT_KEYS_DIR`); the key id defaults to `kavach-checkpoint-1` (`--checkpoint-key-id`).
   - Create it with `kavach-keys generate` in a key directory, as for the other keys.
   - It must not share an id with the mandate, evidence or credential key, or key material with the evidence key.

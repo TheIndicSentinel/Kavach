@@ -179,6 +179,7 @@ impl AppState {
             mtls_principal_san: None,
             change_ttl_seconds: DEFAULT_CHANGE_TTL_HOURS * 3600,
             migration_database_url: None,
+            database_tls: kavach_storage::DatabaseTls::default(),
             dataplane: None,
         };
         Self::from_config(&config).await
@@ -482,6 +483,7 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
             let pool = StoragePool::connect_with_roles(
                 database_url,
                 config.migration_database_url.as_deref(),
+                &config.database_tls,
             )
             .await
             .map_err(|e| ApiError::Internal(format!("postgres storage: {e}")))?;

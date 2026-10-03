@@ -73,6 +73,16 @@ enum Command {
         /// migrates (kavach-api owns the schema).
         #[arg(long, env = "KAVACH_MIGRATION_DATABASE_URL")]
         migration_database_url: Option<String>,
+
+        /// Extra CA certificates (PEM) trusted for the Postgres server's
+        /// certificate, besides the system roots.
+        #[arg(long, env = "KAVACH_DATABASE_CA")]
+        database_ca: Option<PathBuf>,
+
+        /// Development only: accept a database URL that asks for a weaker
+        /// `sslmode` than `verify-full`. Without it such a URL is refused.
+        #[arg(long)]
+        insecure_dev: bool,
     },
     /// Generate a fairness batch report from paired NDJSON request/result files.
     Fairness {
@@ -102,6 +112,19 @@ enum Command {
     },
 }
 
+/// Connects to Postgres. Batch never migrates on its own (kavach-api owns
+/// the schema) unless it is given the owner's URL.
+async fn connect(
+    database_url: &str,
+    migration_database_url: Option<&str>,
+    tls: &kavach_storage::DatabaseTls,
+) -> Result<StoragePool, Box<dyn std::error::Error>> {
+    Ok(match migration_database_url {
+        Some(owner) => StoragePool::connect_with_roles(database_url, Some(owner), tls).await?,
+        None => kavach_storage::connect_runtime(database_url, tls).await?,
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -121,7 +144,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             evidence_store,
             database_url,
             migration_database_url,
+            database_ca,
+            insecure_dev,
         } => {
+            let database_tls = kavach_storage::DatabaseTls::new(insecure_dev, database_ca);
             verify_signature_if_configured(&pack, &model, pack_signers.as_deref())?;
             let input_file = File::open(&input)?;
             let mut writer = BufWriter::new(File::create(&output)?);
@@ -154,14 +180,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let database_url = database_url.ok_or(
                         "postgres evidence store requires --database-url or KAVACH_DATABASE_URL",
                     )?;
-                    // Batch never migrates on its own: kavach-api owns the
-                    // schema (and batch refuses an ungoverned database).
-                    let pool = match migration_database_url.as_deref() {
-                        Some(owner) => {
-                            StoragePool::connect_with_roles(&database_url, Some(owner)).await?
-                        }
-                        None => kavach_storage::connect_runtime(&database_url).await?,
-                    };
+                    // (Batch refuses an ungoverned database.)
+                    let owner = migration_database_url.as_deref();
+                    let pool = connect(&database_url, owner, &database_tls).await?;
                     check_governed_pack(&pool, &config.pack_path).await?;
                     let config = BatchConfig {
                         governed_model: Some(governed_model(&pool, &config.model_path).await?),

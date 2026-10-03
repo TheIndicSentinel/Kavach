@@ -63,6 +63,12 @@ export KAVACH_MIGRATION_DATABASE_URL="postgres://kavach:owner-secret@db.internal
 export KAVACH_DATABASE_URL="postgres://kavach_runtime:runtime-secret@db.internal:5432/kavach"
 ```
 
+- **TLS to Postgres is required.** Every connection (`kavach-api`, `kavach-batch`, `kavach-evidence export` and `checkpoints`) uses TLS, verifies the server's certificate chain and checks its host name: `sslmode=verify-full`, which is also what a URL without `sslmode` gets.
+  - The server certificate must name the host you connect to. Prefer a DNS name in the URL and in the certificate; an IP address works only if the certificate lists that address.
+  - A private CA: `--database-ca /etc/kavach/db-ca.pem` (`KAVACH_DATABASE_CA`), trusted in addition to the system roots. `sslrootcert=` in the URL also works.
+  - A URL that asks for a weaker mode (`disable`, `allow`, `prefer`, `require`, `verify-ca`) **refuses startup**. `PGSSLMODE` in the environment cannot weaken a connection: the mode is always set from the URL or the default.
+  - **Development only:** plaintext needs both `--insecure-dev` (for the export commands: `--allow-plaintext-database`) **and** `sslmode=disable` in the URL. The flag alone downgrades nothing, and a warning is logged.
+  - On the server: `ssl = on` with a certificate and key, and `hostssl` (not `host`) lines in `pg_hba.conf`, so Postgres itself refuses plaintext clients.
 - On start, `kavach-api` applies pending migrations as the owner, then serves as `kavach_runtime` and never migrates with it. Applied migrations are tracked with checksums (`_sqlx_migrations`), so each runs once and an edited migration is refused. A database created by an earlier release adopts tracking on its first start.
 - Migrations grant `kavach_runtime` only what the application uses. Evidence and audit tables (`decision_events`, `admin_audit_log`, `evaluate_incidents`, `evidence_tombstones`) are insert-only. Nothing gets `TRUNCATE`, and the runtime role cannot alter tables or drop the immutability triggers.
 - If you create `kavach_runtime` **after** migrations already ran, grant it: `psql -U kavach -d kavach -c 'SELECT kavach_grant_runtime();'`.
@@ -86,6 +92,7 @@ Paths default via env vars; CLI flags override.
 | `KAVACH_MODEL_PATH` / `--model` | yes | Model record YAML (governance mode is authoritative) |
 | `KAVACH_DATABASE_URL` / `--database-url` | prod | Postgres URL when `--evidence-store postgres` — the least-privilege `kavach_runtime` role in production |
 | `KAVACH_MIGRATION_DATABASE_URL` / `--migration-database-url` | prod | Owner role that runs migrations; when set, the runtime URL never migrates |
+| `KAVACH_DATABASE_CA` / `--database-ca` | optional | CA certificates (PEM) trusted for the Postgres server certificate, besides the system roots. Connections always use `sslmode=verify-full`; a weaker `sslmode` in a URL refuses startup outside `--insecure-dev` |
 | `KAVACH_HMAC_SECRET` | optional | When set, HTTP evaluate requires `X-Kavach-Signature: sha256=<hex>` over raw body |
 | `KAVACH_TLS_CERT`, `KAVACH_TLS_KEY` | prod | Server TLS for HTTP and gRPC |
 | `KAVACH_TLS_CLIENT_CA` | optional | When set with cert/key, enables mTLS (client cert required) |
