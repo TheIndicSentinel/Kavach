@@ -17,6 +17,7 @@
 #   docker compose up -d --wait postgres kavach mock-provider
 #   docker compose run --rm issue-mandate               # SoR event -> mandate
 #   docker compose run --rm test-agent                  # the probe; exit status = result
+#   docker compose run --rm database-tls-probe          # Postgres refuses plaintext
 #   docker compose run --rm export-evidence             # export as the auditor, verify offline
 #   docker compose down -v
 
@@ -64,6 +65,12 @@ services:
       - 172.30.20.30
       - --provider-host
       - mock-provider
+      # Postgres's certificate: its compose name first (URLs use it), and its
+      # address for tools that connect by IP.
+      - --database-host
+      - postgres
+      - --database-host
+      - 172.30.20.20
 
   postgres:
     image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
@@ -74,8 +81,24 @@ services:
       KAVACH_RUNTIME_DB_PASSWORD: kavach-isolation-runtime
       # Creates the read-only kavach_auditor role (evidence export).
       KAVACH_AUDITOR_DB_PASSWORD: kavach-isolation-auditor
+    # TLS only: the dev CA's certificate for "postgres", and a pg_hba.conf
+    # that refuses plaintext connections.
+    entrypoint: ["sh", "/usr/local/bin/kavach-pg-tls.sh"]
+    command:
+      - postgres
+      - -c
+      - ssl=on
+      - -c
+      - ssl_cert_file=/etc/postgresql-tls/server.crt
+      - -c
+      - ssl_key_file=/etc/postgresql-tls/server.key
+      - -c
+      - hba_file=/etc/kavach-pg/pg_hba.conf
     volumes:
       - ../postgres/init:/docker-entrypoint-initdb.d:ro
+      - ../postgres/tls-entrypoint.sh:/usr/local/bin/kavach-pg-tls.sh:ro
+      - ../postgres/pg_hba.conf:/etc/kavach-pg/pg_hba.conf:ro
+      - ./bundle/postgres:/run/kavach-tls-src:ro
     networks:
       backend_net:
         ipv4_address: 172.30.20.20
@@ -99,11 +122,10 @@ services:
       - path: ./bundle/kavach/kavach.env
         required: false
     environment:
-      # This stack's Postgres serves no TLS yet, so the URLs ask for
-      # plaintext, which only --insecure-dev accepts. (TLS-only Postgres
-      # here is the next change.)
-      KAVACH_MIGRATION_DATABASE_URL: postgres://kavach:kavach-isolation-owner@172.30.20.20:5432/kavach?sslmode=disable
-      KAVACH_DATABASE_URL: postgres://kavach_runtime:kavach-isolation-runtime@172.30.20.20:5432/kavach?sslmode=disable
+      # sslmode=verify-full (the default): TLS, the dev CA
+      # (KAVACH_DATABASE_CA in kavach.env), and the name "postgres".
+      KAVACH_MIGRATION_DATABASE_URL: postgres://kavach:kavach-isolation-owner@postgres:5432/kavach
+      KAVACH_DATABASE_URL: postgres://kavach_runtime:kavach-isolation-runtime@postgres:5432/kavach
       KAVACH_CEDAR_POLICY: crates/kavach-auth/policies/kavach.cedar
       KAVACH_CEDAR_ENTITIES: crates/kavach-auth/policies/entities.example.json
       KAVACH_LOG_FORMAT: json
@@ -200,7 +222,8 @@ services:
     profiles: ["run"]
     user: "10001:10001"
     environment:
-      KAVACH_AUDITOR_DATABASE_URL: postgres://kavach_auditor:kavach-isolation-auditor@172.30.20.20:5432/kavach?sslmode=disable
+      KAVACH_AUDITOR_DATABASE_URL: postgres://kavach_auditor:kavach-isolation-auditor@postgres:5432/kavach
+      KAVACH_DATABASE_CA: /auditor/database-ca.pem
     volumes:
       - ./bundle/auditor:/auditor:ro
       - ./export-evidence.sh:/usr/local/bin/export-evidence.sh:ro
@@ -208,6 +231,22 @@ services:
     networks:
       backend_net:
         ipv4_address: 172.30.20.42
+
+  # One-shot: Postgres must refuse plaintext, and its certificate must
+  # verify only with the dev CA and only for its own names. Uses psql from
+  # the same Postgres image.
+  database-tls-probe:
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    profiles: ["run"]
+    entrypoint: ["sh", "/usr/local/bin/database-tls-probe.sh"]
+    extra_hosts:
+      - "db-wrong-name:172.30.20.20"
+    volumes:
+      - ./database-tls-probe.sh:/usr/local/bin/database-tls-probe.sh:ro
+      - ./bundle/auditor/database-ca.pem:/run/database-ca.pem:ro
+    networks:
+      backend_net:
+        ipv4_address: 172.30.20.43
 
   # The agent: agent network only; holds its token and mandate id, nothing
   # else. Its exit status is the test result.
