@@ -1,0 +1,132 @@
+name: Benchmarks
+
+# Gateway benchmark trends (docs/PERFORMANCE.md). Nightly and on demand; not
+# a required check, and no pass/fail threshold yet: shared runners are too
+# noisy for that. These figures are TRENDS. Published numbers come only from
+# the fixed reference-machine run described in docs/PERFORMANCE.md.
+#
+# Two runs of the same build: Postgres with TLS (verify-full; the figure to
+# quote) and plaintext Postgres (the baseline). Both use the official
+# Postgres 16 image; the TLS one is set up exactly like the compose stacks.
+#
+# On a pull request that changes the harness or this workflow, a short run
+# (5 s, concurrency 1 and 8) checks that both set-ups still work.
+on:
+  pull_request:
+    paths:
+      - "crates/kavach-bench/**"
+      - "crates/kavach-mock-provider/**"
+      - "deploy/postgres/**"
+      - ".github/workflows/bench.yml"
+  schedule:
+    - cron: "30 22 * * *" # 04:00 IST, after the acceptance gate
+  workflow_dispatch:
+    inputs:
+      duration_seconds:
+        description: Seconds per run (after a 5 s warm-up)
+        default: "30"
+      provider_delay_ms:
+        description: Delay the mock provider adds (0 = Kavach's own cost only)
+        default: "0"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    name: Gateway benchmark (trend)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      CARGO_INCREMENTAL: "0"
+      DURATION: ${{ github.event.inputs.duration_seconds || (github.event_name == 'pull_request' && '5') || '30' }}
+      CONCURRENCY: ${{ (github.event_name == 'pull_request' && '1,8') || '1,8,32,64' }}
+      PROVIDER_DELAY_MS: ${{ github.event.inputs.provider_delay_ms || '0' }}
+      POSTGRES_IMAGE: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-10-01)
+        with:
+          toolchain: "1.98.0"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      - name: Build the harness (release)
+        run: cargo build --release --locked -p kavach-bench
+
+      - name: Start Postgres, with TLS and without
+        run: |
+          scripts/pilot-db-tls.sh "$RUNNER_TEMP/db-tls"
+          # The certificate names "postgres".
+          echo "127.0.0.1 postgres" | sudo tee -a /etc/hosts
+          docker run -d --name pg-tls -p 5433:5432 \
+            -e POSTGRES_USER=kavach -e POSTGRES_PASSWORD=bench -e POSTGRES_DB=kavach \
+            -v "$PWD/deploy/postgres/tls-entrypoint.sh:/usr/local/bin/kavach-pg-tls.sh:ro" \
+            -v "$PWD/deploy/postgres/pg_hba.conf:/etc/kavach-pg/pg_hba.conf:ro" \
+            -v "$RUNNER_TEMP/db-tls:/run/kavach-tls-src:ro" \
+            --entrypoint sh "$POSTGRES_IMAGE" /usr/local/bin/kavach-pg-tls.sh \
+            postgres -c ssl=on \
+              -c ssl_cert_file=/etc/postgresql-tls/server.crt \
+              -c ssl_key_file=/etc/postgresql-tls/server.key \
+              -c hba_file=/etc/kavach-pg/pg_hba.conf
+          docker run -d --name pg-plain -p 5434:5432 \
+            -e POSTGRES_USER=kavach -e POSTGRES_PASSWORD=bench -e POSTGRES_DB=kavach \
+            "$POSTGRES_IMAGE"
+          for db in pg-tls pg-plain; do
+            for _ in $(seq 1 60); do
+              docker exec "$db" pg_isready -U kavach -d kavach && break
+              sleep 1
+            done
+          done
+
+      - name: Benchmark with TLS (verify-full)
+        run: |
+          target/release/kavach-bench \
+            --database-url "postgres://kavach:bench@postgres:5433/kavach" \
+            --database-ca "$RUNNER_TEMP/db-tls/ca.pem" --concurrency "$CONCURRENCY" \
+            --duration-seconds "$DURATION" --provider-delay-ms "$PROVIDER_DELAY_MS" \
+            --out bench-tls.json | tee bench-tls.md
+
+      - name: Benchmark without TLS (baseline)
+        run: |
+          target/release/kavach-bench \
+            --database-url "postgres://kavach:bench@127.0.0.1:5434/kavach?sslmode=disable" \
+            --concurrency "$CONCURRENCY" \
+            --duration-seconds "$DURATION" --provider-delay-ms "$PROVIDER_DELAY_MS" \
+            --out bench-plaintext.json | tee bench-plaintext.md
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Gateway benchmark: TRENDS ONLY"
+            echo
+            echo "Shared CI runner: compare runs over time, do not quote these figures."
+            echo "Published numbers come only from the reference-machine run (docs/PERFORMANCE.md)."
+            echo
+            echo "### Postgres with TLS (verify-full)"
+            cat bench-tls.md 2>/dev/null || echo "(no result)"
+            echo
+            echo "### Postgres without TLS (baseline)"
+            cat bench-plaintext.md 2>/dev/null || echo "(no result)"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Keep the reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-${{ github.run_number }}
+          path: |
+            bench-tls.json
+            bench-tls.md
+            bench-plaintext.json
+            bench-plaintext.md
+          retention-days: 90
+          if-no-files-found: warn
+
+      - name: Stop Postgres
+        if: always()
+        run: docker rm -f pg-tls pg-plain || true

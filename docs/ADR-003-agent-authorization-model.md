@@ -128,6 +128,8 @@ TrustedNow { utc: DateTime<Utc>, sync: Synced { max_error_ms } | Unsynced | Unkn
 
 Reference hardware for PRD NFR-2: 4 CPU cores, 16 GB RAM, local PostgreSQL 16. `authorize` is benchmarked with `criterion` (in-process p99 < 5 ms); gateway overhead with `oha` (MIT) load tests (p99 < 15 ms including the minimal critical evidence write; 1,000 requests/s single-node baseline). Benchmarks run in CI on every release branch.
 
+*Amended (benchmarks, B2):* the gateway is measured with `kavach-bench` rather than `oha`, because every request needs its own `request_id` and a mandate per subject. CI runs it nightly as a trend only; published figures come from a fixed run on a 4-vCPU / 16 GB VM, recorded with their environment in [PERFORMANCE.md](PERFORMANCE.md). The in-process `authorize` measurement is still to come.
+
 ### 11. Implementation notes (M1.5a)
 
 - **Crate.** Agent authorization lives in `kavach-authz`; `kavach-auth` keeps API RBAC only. Schema `policies/agent.cedarschema`, policies `policies/agent.cedar`.
