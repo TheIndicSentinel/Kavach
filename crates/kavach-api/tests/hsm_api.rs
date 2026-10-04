@@ -182,10 +182,14 @@ async fn a_delivered_call_is_signed_in_the_hsm_end_to_end() {
     assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(reply["outcome"], "delivered", "{reply}");
 
+    // The writer notices uncovered records on one tick and writes the
+    // checkpoint on a later one, once the interval has passed.
     let dp = gw.state.dataplane().unwrap();
+    let start = Instant::now();
+    dp.checkpointer().tick(start).await;
     let written = dp
         .checkpointer()
-        .tick(Instant::now() + Duration::from_secs(3600))
+        .tick(start + Duration::from_secs(3600))
         .await;
     assert!(
         matches!(written.tick, Tick::Written { .. }),
