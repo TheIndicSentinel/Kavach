@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Changed
 
+- **Breaking (dev evidence): evidence written under `kavach dev up --at` now says `time_sync: dev_fixed` instead of `synced`.** Every hand-set clock is marked, and the offline verifiers (`verify-bundle`, the agent chain verifier) refuse `dev_fixed` records and checkpoints unless told they are verifying a development stack (`--dev`). This is a second refusal next to the one for `dev-` keys.
 - **Breaking (dev stack): `kavach dev up`'s operator API needs the project's operator token** (`.kavach/operator.jwt`), checked by Cedar with the bundled policies. Before, any local process, or a web page using DNS rebinding, could call it. Every `dev up` listener now refuses a Host header other than `localhost`, `127.0.0.1` or `[::1]` (421) and the self-asserted `X-Kavach-Principal` header (401). `kavach` commands send the token. Projects made earlier get their access-control files (`.kavach/kavach/cedar/`) on the next `dev up`. The attack catalog is now version 2, with the agent-token and no-token attacks on the operator route.
 - **Breaking for anyone recomputing evaluate evidence hashes: `DecisionEvent` schema 1.1.0 hashes `decision_time` and `evaluated_at` at microsecond precision.** They used to be hashed with nanoseconds, but Postgres keeps microseconds, so an event read back from the database did not hash to its stored hash and could not be re-checked. Both stores now truncate the two timestamps before hashing, so what is stored is what was hashed.
   - **The hash rule is unchanged** (same fields, same canonical order); the canonical form of the two values changed, hence the minor version.
@@ -38,6 +39,12 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- `kavach dev up --clock <time>` gives a fixed development clock (`HH:MM` = IST on 2026-10-01, or RFC 3339), and `kavach dev clock <time>` moves it **forward only** (`HH:MM` = its next occurrence), so one stack can show "PASS at 11:00, BLOCK at 20:30" at any hour.
+  - **API-side guards:** `kavach-api` refuses a dev clock unless `--insecure-dev` is on and every signing key (mandate, evidence, checkpoint, credential) is a `dev-` key, and never with an HSM.
+  - **Endpoint:** `POST /v1/dev/clock` exists only on a stack with a fixed dev clock, needs the operator token (new Cedar action `set_dev_clock`, admins) and audits every move (`dev_clock_set`).
+  - **Shown:** the clock appears in the `dev up` banner and in `/v1/runtime` (`dev_clock`).
+  - **Marked:** records and checkpoints written under it carry `time_sync: dev_fixed` (new `SyncStatus::DevFixed`).
+  - `dev up` now refreshes the bundled Cedar policies on every start.
 - `kavach attack` (CLI milestone C4) runs the attack catalog against the running dev stack. The catalog (`kavach-attacks`, version 1, 18 attacks) is shared with the acceptance suite, so the CLI runs exactly what CI runs.
   - **The attacks:** raw identifiers, another borrower, a forged mandate, another agent's token, a replayed SoR event, policy limits, request shape, authentication (none, operator, principal header, tampered, unsigned), and the provider without a credential.
   - **Judged on ground truth:** a minted credential or a delivered message means the attack succeeded, whatever the reply said.

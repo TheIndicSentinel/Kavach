@@ -62,6 +62,8 @@ kavach init            # kavach.toml, plus the bundle in .kavach/ (git-ignored)
 kavach doctor          # checks the bundle, key permissions, ports, disk, database, clock
 kavach dev up          # Kavach and a mock provider in one process, loopback only
 kavach dev up --at 11:00   # contact is allowed 08:00–19:00 IST; this starts the clock at 11:00 IST
+kavach dev up --clock 11:00   # a fixed clock at 11:00 IST on 2026-10-01; it stays put
+kavach dev clock 20:30        # move it forward (to its next 20:30): the same calls now BLOCK
 ```
 
 `kavach authorize` asks what the gateway would decide, offline: the authorization core runs in pre-check mode in the command's own process, with the project's mandate configuration, agent policies and signed tool registry. The mandate is issued in memory from a synthetic event and dropped on exit. Nothing is recorded and no contact is reserved, so you can vary the time, the contacts already made and the parameters. It exits 0 if the call would be allowed and 1 if not.
@@ -166,6 +168,12 @@ kavach call send_reminder --issue-mandate         # sends the event first, and s
 `dev up` writes `.kavach/run.json`, readable by its owner only. It holds the process id, the listener addresses and the clock offset from `--at`, and never a token. Events are stamped on the stack's clock. The file is removed on Ctrl-C or SIGTERM. If a killed stack leaves it behind, `call` notices that nothing answers there.
 
 Every command takes `--json` and prints one document (schema `kavach.cli/v1`). Exit codes: 0 ok, 1 failed, 2 warnings, 64 usage error. Output passes through the same redaction as the logs. The one exception is known digest fields (`input_digest`, and the Cedar and registry digests): they are printed whole when they are well-formed digests. This is decided by field, never by pattern, so the same hex anywhere else is still masked. `kavach.toml` keeps everything in memory unless you uncomment its `[database]` section. Nothing is sent anywhere.
+
+**Development clocks.** `--at HH:MM` starts the clock at an IST time today and lets it run. `--clock <time>` fixes it: `HH:MM` means IST on 2026-10-01, or give RFC 3339. It stays put until `kavach dev clock <time>` moves it, **only forward**: `HH:MM` means its next occurrence, so "back to 11:00" is 11:00 the next day. That keeps evidence timestamps and checkpoints in order.
+- **Dev only:** both run only on a dev stack with `dev-` keys, and the API refuses them otherwise, even when `kavach-api` is started directly.
+- **Shown:** both appear in the banner and in `/v1/runtime` (`dev_clock`).
+- **Marked in evidence:** everything recorded under a dev clock, records and checkpoints, carries `time_sync: dev_fixed`. The offline verifiers refuse it unless told they are verifying a development stack.
+- **Audited:** every move is recorded in the audit log (`dev_clock_set`).
 
 **`dev up` is locked to you.** The operator API needs the project's operator token (`.kavach/operator.jwt`, made by `init`), checked by Cedar with the bundled policies. Every `dev up` listener (operator, agent, SoR, provider, inbox) refuses a Host header that isn't `localhost`, `127.0.0.1` or `[::1]`, which is what a web page attempting DNS rebinding sends, with 421. Every listener also refuses the self-asserted `X-Kavach-Principal` header, which `--insecure-dev` would otherwise accept, with 401. The `kavach` commands send the token for you. Projects made before this get their access-control files on the next `dev up`.
 

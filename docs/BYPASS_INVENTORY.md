@@ -32,6 +32,7 @@ The bypasses fall into four groups:
 | Cedar access control may run with no authenticated principal source | Refused at startup |
 | Memory stores for mandates, replay and agent evidence | Agent surfaces refuse to start without Postgres |
 | The system clock is declared synced for agent decisions; a test clock is allowed | Trusted time comes from the kernel's sync status, and startup fails if that is unreadable |
+| A development clock (`kavach dev up --at` / `--clock`, the `dev_clock` setting), and with `--clock` the endpoint `POST /v1/dev/clock` that moves it forward. Refused unless every signing key is a `dev-` key; the endpoint needs the operator token and every move is audited (`dev_clock_set`) | Trusted time comes from the kernel; there is no way to set it. Evidence written under a dev clock says `time_sync: dev_fixed`, and the verifiers refuse it without `--dev` |
 | The agent tool registry may be unsigned | A `tool`-role signature is required |
 | Development keys (`dev-…`) for mandates, evidence, checkpoints, credentials and SoR issuers | Refused at startup |
 | A test-double credential broker | Refused at startup |
