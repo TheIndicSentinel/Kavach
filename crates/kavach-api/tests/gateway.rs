@@ -472,3 +472,108 @@ async fn logs_carry_correlation_and_never_the_destination_or_credential() {
         assert!(!text.contains(secret), "{secret} in logs:\n{text}");
     }
 }
+
+/// `GET /v1/agent-decisions/{id}` (`kavach why`): admins only, every read
+/// audited (found or not), and the record carries no raw reference,
+/// destination, token or credential.
+#[tokio::test]
+async fn evidence_reads_are_admin_only_audited_and_hold_no_secrets() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let gw = gateway(Some("+910000000001"), true).await;
+    let (status, reply) = gw.remind("why-1").await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    let record_id = reply["record_id"].as_str().unwrap().to_string();
+
+    let read = |id: String, token: Option<String>| {
+        let app = kavach_api::router(gw.state.clone());
+        async move {
+            let mut request = Request::get(format!("/v1/agent-decisions/{id}"));
+            if let Some(t) = token {
+                request = request.header("authorization", format!("Bearer {t}"));
+            }
+            let response = app
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+
+    let (status, body) = read(record_id.clone(), Some(operator_token())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let doc: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(doc["record"]["record_id"], record_id.as_str());
+    assert!(
+        doc["outcome"].is_object(),
+        "the allow's outcome is included"
+    );
+    for secret in [
+        "+91",
+        "910000000001",
+        "eyJ",
+        "Kavach-Credential",
+        SUBJECT,
+        "B-9382",
+    ] {
+        assert!(!body.contains(secret), "{secret} in {body}");
+    }
+
+    // Not an admin, not an operator at all, or no token: refused.
+    let viewer = token(
+        "kavach-api",
+        json!({ "sub": "viewer-1", "groups": ["viewers"] }),
+    );
+    assert_eq!(
+        read(record_id.clone(), Some(viewer)).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        read(record_id.clone(), Some(agent_token("collections-agent")))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        read(record_id.clone(), None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        read("not-a-record".into(), Some(operator_token())).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        read("adr:default:0:999".into(), Some(operator_token()))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Both reads by the admin are audited: who, which record, found or not.
+    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    let reads: Vec<_> = audit
+        .iter()
+        .filter(|e| e.action == "read_evidence")
+        .map(|e| {
+            (
+                e.resource_id.as_str(),
+                e.actor_principal.as_str(),
+                e.payload["found"].clone(),
+            )
+        })
+        .collect();
+    assert!(
+        reads.contains(&(record_id.as_str(), "ops-1", json!(true))),
+        "{reads:?}"
+    );
+    assert!(
+        reads.contains(&("adr:default:0:999", "ops-1", json!(false))),
+        "{reads:?}"
+    );
+    assert_eq!(reads.len(), 2, "refused requests read nothing: {reads:?}");
+}

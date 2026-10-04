@@ -32,6 +32,8 @@ pub enum KavachAction {
     ReadMetrics,
     ReadGovernance,
     ReadAudit,
+    /// Read one agent decision record (`kavach why`); audited.
+    ReadEvidence,
     ReadRetention,
     ReadTombstones,
     ReadIncidents,
@@ -61,6 +63,7 @@ impl KavachAction {
             Self::ReadMetrics => "read_metrics",
             Self::ReadGovernance => "read_governance",
             Self::ReadAudit => "read_audit",
+            Self::ReadEvidence => "read_evidence",
             Self::ReadRetention => "read_retention",
             Self::ReadTombstones => "read_tombstones",
             Self::ReadIncidents => "read_incidents",

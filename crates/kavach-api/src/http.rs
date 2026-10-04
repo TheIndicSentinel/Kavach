@@ -53,6 +53,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(change_requests::cancel),
         )
         .route("/v1/admin/audit", get(list_audit_log))
+        .route(
+            "/v1/agent-decisions/{record_id}",
+            get(crate::evidence_read::read_agent_decision),
+        )
         .route("/v1/admin/retention", get(get_retention_settings))
         .route("/v1/admin/tombstones", get(list_tombstones))
         .route("/v1/admin/incidents", get(list_incidents))

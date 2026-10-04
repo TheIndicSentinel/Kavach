@@ -321,6 +321,16 @@ impl AgentEvidenceStore for EvidenceBackend {
             Self::Postgres(s) => s.records(tenant_id, partition_id).await,
         }
     }
+    async fn record(
+        &self,
+        tenant_id: &str,
+        record_id: &str,
+    ) -> Result<Option<AgentDecisionRecord>, PortError> {
+        match self {
+            Self::Memory(s) => s.record(tenant_id, record_id).await,
+            Self::Postgres(s) => s.record(tenant_id, record_id).await,
+        }
+    }
     async fn contacts_on(
         &self,
         tenant_id: &str,

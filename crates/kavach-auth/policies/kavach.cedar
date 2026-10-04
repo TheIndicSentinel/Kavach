@@ -33,6 +33,14 @@ permit (
   resource == Kavach::System::"api"
 );
 
+// One agent decision record by id (`kavach why`). Every read is audited.
+@id("admins-may-read-evidence")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"read_evidence",
+  resource == Kavach::System::"api"
+);
+
 @id("viewers-may-read-health")
 permit (
   principal in Kavach::Group::"viewers",
