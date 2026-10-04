@@ -62,6 +62,7 @@ tonic-build.workspace = true
 protoc-bin-vendored = "3.2.0"
 
 [dev-dependencies]
+kavach-attacks = { workspace = true }
 cryptoki.workspace = true
 kavach-mock-provider = { workspace = true }
 kavach-evidence-cli = { workspace = true }

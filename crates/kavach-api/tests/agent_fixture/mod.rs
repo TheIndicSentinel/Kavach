@@ -471,6 +471,8 @@ pub struct Gw {
     pub clock: Arc<FakeClock>,
     pub provider: Arc<MockProvider>,
     pub mandate: String,
+    /// Where the mock provider listens (a closed port when it is down).
+    pub provider_url: String,
 }
 
 /// A production-shaped data plane (memory stores, `--insecure-dev` for the
@@ -525,6 +527,7 @@ pub async fn gateway_with(
     let dp = api.dataplane.as_mut().unwrap();
     dp.test_clock = Some(TestClock(clock.clone()));
     write_providers(&dp.providers, &endpoint, CLOSED_PORT);
+    let provider_url = endpoint.clone();
     let destinations = match destination {
         Some(d) => json!({ "whatsapp": d, "sms": d }),
         None => json!({ "voice": "+910000000002" }),
@@ -543,6 +546,7 @@ pub async fn gateway_with(
         clock,
         provider,
         mandate,
+        provider_url,
     }
 }
 

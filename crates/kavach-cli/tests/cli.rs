@@ -47,7 +47,7 @@ fn free_port() -> u16 {
 fn use_free_ports(dir: &Path) {
     let path = dir.join("kavach.toml");
     let mut text = std::fs::read_to_string(&path).unwrap();
-    for port in ["8080", "8091", "8090", "8443"] {
+    for port in ["8080", "8091", "8090", "8443", "8444"] {
         text = text.replace(
             &format!("127.0.0.1:{port}\""),
             &format!("127.0.0.1:{}\"", free_port()),
@@ -710,4 +710,81 @@ fn chrono_now() -> String {
         .output()
         .unwrap();
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// Starts `kavach dev up` in `dir` with extra arguments; waits for run.json.
+fn dev_up(dir: &Path, extra: &[&str]) -> Stack {
+    let run = dir.join(".kavach/run.json");
+    let _ = std::fs::remove_file(&run);
+    let mut args = vec!["dev", "up"];
+    args.extend_from_slice(extra);
+    let mut stack = Stack(
+        Command::new(env!("CARGO_BIN_EXE_kavach"))
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    for _ in 0..120 {
+        if run.is_file() {
+            break;
+        }
+        assert!(stack.0.try_wait().unwrap().is_none(), "dev up exited");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    stack
+}
+
+/// `kavach attack`: the shared catalog against a real dev stack. Every
+/// attack is refused as expected and ground truth agrees. Part of the 20×
+/// acceptance gate.
+#[test]
+fn attack_catalog_is_refused_against_a_dev_stack() {
+    let dir = scratch("attack");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    use_free_ports(&dir);
+
+    // The scope first, without a stack and without running anything.
+    let listed = kavach(&dir, &["--json", "attack", "--list"]);
+    let doc = json(&listed);
+    assert_eq!(listed.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["ran"], false);
+    let count = doc["attacks"].as_array().unwrap().len();
+    assert!(count >= 18, "{doc}");
+    assert!(doc["attacks"][0]["security_property"].is_string());
+
+    // No stack: an error, nothing attacked.
+    assert_eq!(kavach(&dir, &["attack"]).status.code(), Some(1));
+
+    let stack = dev_up(&dir, &["--at", "11:00"]);
+    let out = kavach(&dir, &["--json", "attack"]);
+    let doc = json(&out);
+    assert_eq!(out.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["ran"], true);
+    assert_eq!(doc["breached"], false);
+    assert_eq!(doc["credentials_minted"], 0);
+    assert_eq!(doc["messages_delivered"], 0);
+    let outcomes = doc["outcomes"].as_array().unwrap();
+    assert_eq!(outcomes.len(), count);
+    for o in outcomes {
+        assert_eq!(o["verdict"], "refused", "{o}");
+    }
+    drop(stack);
+
+    // Outside contact hours: inconclusive (2), and it says why.
+    let _stack = dev_up(&dir, &["--at", "20:30"]);
+    let out = kavach(&dir, &["--json", "attack"]);
+    let doc = json(&out);
+    assert_eq!(out.status.code(), Some(2), "{doc}");
+    assert_eq!(doc["ran"], false);
+    assert!(
+        doc["inconclusive"]
+            .as_str()
+            .unwrap()
+            .contains("contact hours"),
+        "{doc}"
+    );
 }

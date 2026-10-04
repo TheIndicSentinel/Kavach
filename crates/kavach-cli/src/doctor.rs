@@ -167,11 +167,12 @@ fn tokens(project: &Project, now: DateTime<Utc>) -> Check {
 
 fn ports(project: &Project) -> Check {
     let l = &project.file.listen;
-    let all: [(&str, SocketAddr); 4] = [
+    let all: [(&str, SocketAddr); 5] = [
         ("operator", l.operator),
         ("agent", l.agent),
         ("sor", l.sor),
         ("provider", l.provider),
+        ("inspect", l.inspect),
     ];
     let not_loopback: Vec<_> = all
         .iter()
@@ -192,7 +193,7 @@ fn ports(project: &Project) -> Check {
         .map(|(n, a)| format!("{n} {a}"))
         .collect();
     if busy.is_empty() {
-        check("ports", Status::Ok, "all four loopback ports are free")
+        check("ports", Status::Ok, "all five loopback ports are free")
     } else {
         check(
             "ports",

@@ -38,6 +38,14 @@ pub struct Listen {
     pub sor: SocketAddr,
     /// The mock resource provider (HTTPS, dev CA).
     pub provider: SocketAddr,
+    /// The mock provider's inbox, for `kavach attack` to check that nothing
+    /// was delivered (loopback only; projects made before it get the default).
+    #[serde(default = "default_inspect")]
+    pub inspect: SocketAddr,
+}
+
+fn default_inspect() -> SocketAddr {
+    SocketAddr::from(([127, 0, 0, 1], 8444))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -59,6 +67,7 @@ impl Default for ProjectFile {
                 agent: at(8091),
                 sor: at(8090),
                 provider: at(8443),
+                inspect: default_inspect(),
             },
             database: None,
         }
@@ -157,6 +166,7 @@ mod tests {
             back.listen.agent,
             back.listen.sor,
             back.listen.provider,
+            back.listen.inspect,
         ] {
             assert!(addr.ip().is_loopback(), "{addr}");
         }

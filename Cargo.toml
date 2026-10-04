@@ -21,6 +21,7 @@ members = [
     "crates/kavach-evidence-cli",
     "crates/kavach-evaluate",
     "crates/kavach-storage",
+    "crates/kavach-attacks",
     "crates/kavach-auth",
     "crates/kavach-api",
     "crates/kavach-batch",
@@ -45,6 +46,7 @@ default-members = [
     "crates/kavach-evidence-cli",
     "crates/kavach-evaluate",
     "crates/kavach-storage",
+    "crates/kavach-attacks",
     "crates/kavach-auth",
     "crates/kavach-api",
     "crates/kavach-cli",
@@ -73,6 +75,7 @@ kavach-evidence = { path = "crates/kavach-evidence", version = "0.1.0" }
 kavach-evidence-cli = { path = "crates/kavach-evidence-cli", version = "0.1.0" }
 kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0" }
 kavach-storage = { path = "crates/kavach-storage", version = "0.1.0" }
+kavach-attacks = { path = "crates/kavach-attacks", version = "0.1.0" }
 kavach-dataplane = { path = "crates/kavach-dataplane", version = "0.1.0" }
 kavach-jws = { path = "crates/kavach-jws", version = "0.1.0" }
 kavach-credential = { path = "crates/kavach-credential", version = "0.1.0" }

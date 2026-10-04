@@ -1,9 +1,11 @@
 name: Acceptance gate
 
 # PRD: all acceptance scenarios pass "20 consecutive runs without flakiness".
-# Runs the acceptance suite and the gateway end-to-end tests 20 times on
-# Postgres, nightly and on demand (run it before tagging a release). Not a
-# required PR check (too slow per PR); a failure here is a flake to fix.
+# Runs the acceptance suite (including the attack catalog, in process, on
+# memory and Postgres), the gateway end-to-end tests and `kavach attack`
+# against a real dev stack (the same catalog over HTTP) 20 times, nightly
+# and on demand (run it before tagging a release). Not a required PR check
+# (too slow per PR); a failure here is a flake to fix.
 on:
   schedule:
     - cron: "30 21 * * *" # 03:00 IST
@@ -18,7 +20,7 @@ permissions:
 
 jobs:
   repeat:
-    name: Acceptance suite, 20 consecutive runs (Postgres)
+    name: Acceptance suite and kavach attack, 20 consecutive runs
     runs-on: ubuntu-latest
     timeout-minutes: 90
     services:
@@ -51,7 +53,9 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Build the suites once
-        run: cargo test -p kavach-api --test acceptance --test gateway --no-run
+        run: |
+          cargo test -p kavach-api --test acceptance --test gateway --no-run
+          cargo test -p kavach-cli --test cli --no-run
 
       - name: Run them back to back; any failure fails the gate
         env:
@@ -61,6 +65,8 @@ jobs:
             echo "::group::run $i of $RUNS"
             cargo test -q -p kavach-api --test acceptance --test gateway || {
               echo "::error::flaky or failing on run $i of $RUNS"; exit 1; }
+            cargo test -q -p kavach-cli --test cli attack_catalog_is_refused_against_a_dev_stack || {
+              echo "::error::kavach attack flaky or failing on run $i of $RUNS"; exit 1; }
             echo "::endgroup::"
           done
           echo "$RUNS consecutive clean runs"

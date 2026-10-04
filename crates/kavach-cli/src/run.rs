@@ -27,6 +27,9 @@ pub struct RunFile {
     pub operator: SocketAddr,
     pub agent: SocketAddr,
     pub sor: SocketAddr,
+    /// The mock provider (HTTPS) and its inbox.
+    pub provider: SocketAddr,
+    pub inspect: SocketAddr,
 }
 
 #[must_use]
@@ -94,6 +97,8 @@ mod tests {
             operator: at(1),
             agent: at(2),
             sor: at(3),
+            provider: at(4),
+            inspect: at(5),
         };
         run.write(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
