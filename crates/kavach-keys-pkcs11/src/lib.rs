@@ -82,7 +82,9 @@ struct Key {
 
 struct Inner {
     pkcs11: Pkcs11,
-    slot: Slot,
+    token_label: String,
+    /// Found again by label on every reconnect: an HSM may renumber slots.
+    slot: RwLock<Slot>,
     pin: AuthPin,
     key_ids: Vec<String>,
     max_sessions: usize,
@@ -124,7 +126,9 @@ fn is_reconnectable(err: &CkError) -> bool {
                 | RvError::UserNotLoggedIn
                 | RvError::CryptokiNotInitialized
                 | RvError::ObjectHandleInvalid
-                | RvError::KeyHandleInvalid,
+                | RvError::KeyHandleInvalid
+                | RvError::SlotIdInvalid
+                | RvError::TokenNotRecognized,
             _
         )
     )
@@ -241,7 +245,13 @@ impl Inner {
     /// A fresh session, logged in as the user (once per application; later
     /// sessions share the login).
     fn open_session(&self) -> Result<Session, CkError> {
-        let session = self.pkcs11.open_ro_session(self.slot)?;
+        let slot = *self.slot.read().map_err(|_| {
+            CkError::Pkcs11(
+                RvError::GeneralError,
+                cryptoki::context::Function::OpenSession,
+            )
+        })?;
+        let session = self.pkcs11.open_ro_session(slot)?;
         match session.login(UserType::User, Some(&self.pin)) {
             Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => Ok(session),
             Err(e) => Err(e),
@@ -336,7 +346,22 @@ impl Inner {
         Ok(())
     }
 
+    /// Initialises the module if needed, finds the token by label, logs in
+    /// and finds the keys.
+    fn start(&self) -> Result<(), PortError> {
+        initialize(&self.pkcs11)?;
+        let slot = find_slot(&self.pkcs11, &self.token_label)?;
+        *self
+            .slot
+            .write()
+            .map_err(|_| PortError::unavailable("HSM slot lock poisoned"))? = slot;
+        self.load_keys()
+    }
+
     /// Drops every pooled session, logs in again and finds the keys again.
+    /// If that fails, the module's own state may be stale (an HSM that went
+    /// away and came back), so it is shut down and started once more. Each
+    /// failed call tries again; nothing needs a restart.
     fn reconnect(&self) -> Result<(), PortError> {
         let _one_at_a_time = self
             .reconnecting
@@ -345,9 +370,14 @@ impl Inner {
         if let Ok(mut pool) = self.sessions.lock() {
             pool.clear();
         }
-        initialize(&self.pkcs11)?;
         tracing::warn!("HSM: reconnecting after a session or device error");
-        self.load_keys()
+        if self.start().is_ok() {
+            return Ok(());
+        }
+        if let Err(e) = self.pkcs11.clone().finalize() {
+            tracing::debug!("HSM: finalize before restarting the module: {e}");
+        }
+        self.start()
     }
 
     fn private_handle(&self, kid: &str) -> Result<ObjectHandle, PortError> {
@@ -432,7 +462,8 @@ impl Pkcs11KeyProvider {
         let slot = find_slot(&pkcs11, &config.token_label)?;
         let inner = Inner {
             pkcs11,
-            slot,
+            token_label: config.token_label,
+            slot: RwLock::new(slot),
             pin: config.pin,
             key_ids: config.key_ids,
             max_sessions: config.max_sessions.max(1),
