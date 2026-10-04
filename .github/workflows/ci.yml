@@ -96,6 +96,17 @@ jobs:
           KAVACH_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
         run: cargo test --workspace --verbose
 
+      # The HSM goes away mid-run and comes back (calls BLOCK, /v1/runtime
+      # unhealthy, recovery without a restart). It rewrites its token's
+      # configuration, so it gets a token of its own.
+      - name: HSM outage and recovery (its own token)
+        env:
+          KAVACH_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
+          KAVACH_TEST_HSM_OUTAGE: "1"
+        run: |
+          export "$(scripts/softhsm-test-token.sh "$RUNNER_TEMP/softhsm-outage")"
+          cargo test -p kavach-api --test hsm_outage -- --nocapture
+
       # A trend for the KMS decision on which keys go to an HSM: sign latency
       # against SoftHSM and in-process Ed25519 on this runner. Not a figure
       # to quote; asserts nothing about the numbers.
