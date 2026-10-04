@@ -55,8 +55,9 @@ fn pack(expression: &str) -> PolicyPack {
     }
 }
 
-/// Crates whose panics Kavach contains.
-const CONTAINED: [&str; 3] = ["antlr4rust", "cel-parser", "cel-interpreter"];
+/// Crates whose panics Kavach contains (the `cel` crate and its parser
+/// runtime), matched on the source path of the panic.
+const CONTAINED: [&str; 2] = ["antlr4rust", "/cel-"];
 
 fn let_contained_panics_pass() {
     static ONCE: Once = Once::new();

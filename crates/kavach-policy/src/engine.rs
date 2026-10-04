@@ -48,7 +48,7 @@ impl PolicyEngine {
 
     fn run(
         loaded: &LoadedPolicyPack,
-        context: &cel_interpreter::Context<'_>,
+        context: &cel::Context<'_>,
     ) -> Result<PolicyEvaluation, PolicyError> {
         let timeout_ms = loaded
             .pack
@@ -94,9 +94,9 @@ impl PolicyEngine {
     }
 }
 
-fn cel_bool(value: &cel_interpreter::objects::Value) -> Result<bool, PolicyError> {
+fn cel_bool(value: &cel::objects::Value) -> Result<bool, PolicyError> {
     match value {
-        cel_interpreter::objects::Value::Bool(b) => Ok(*b),
+        cel::objects::Value::Bool(b) => Ok(*b),
         other => Err(PolicyError::CelExecute {
             rule_id: "coerce".into(),
             message: format!("expected bool, got {other:?}"),

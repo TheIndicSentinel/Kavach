@@ -1,5 +1,5 @@
-use cel_interpreter::objects::Value;
-use cel_interpreter::{to_value, Context};
+use cel::objects::Value;
+use cel::{to_value, Context};
 use chrono::{DateTime, Utc};
 use kavach_domain::EvaluateRequest;
 use serde::Serialize;
@@ -41,7 +41,7 @@ pub fn build_context(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cel_interpreter::objects::Value;
+    use cel::objects::Value;
     use chrono::Utc;
     use kavach_domain::Consent;
 
@@ -65,7 +65,7 @@ mod tests {
             idempotency_key: None,
         };
         let ctx = build_context(&request, Utc::now()).expect("context");
-        let program = cel_interpreter::Program::compile("request.input.debt_ratio < 0.40").unwrap();
+        let program = cel::Program::compile("request.input.debt_ratio < 0.40").unwrap();
         let result = program.execute(&ctx).unwrap();
         assert_eq!(result, Value::Bool(true));
     }

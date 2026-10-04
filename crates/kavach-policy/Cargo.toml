@@ -8,7 +8,7 @@ authors.workspace = true
 
 [dependencies]
 kavach-domain.workspace = true
-cel-interpreter.workspace = true
+cel.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml = { workspace = true }

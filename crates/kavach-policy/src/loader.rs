@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use cel_interpreter::Program;
+use cel::Program;
 use kavach_domain::PolicyPack;
 use sha2::{Digest, Sha256};
 
