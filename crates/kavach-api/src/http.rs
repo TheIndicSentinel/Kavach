@@ -57,6 +57,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/agent-decisions/{record_id}",
             get(crate::evidence_read::read_agent_decision),
         )
+        .route(
+            "/v1/decision-events/{evidence_id}",
+            get(crate::evidence_read::read_decision_event),
+        )
         .route("/v1/admin/retention", get(get_retention_settings))
         .route("/v1/admin/tombstones", get(list_tombstones))
         .route("/v1/admin/incidents", get(list_incidents))
