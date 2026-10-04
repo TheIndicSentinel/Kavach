@@ -21,6 +21,7 @@ Changes that need a second reviewer before v0.1 is tagged. One person wrote and 
 | #103 | Keys, evidence | Canonical JSON refuses the serde raw-value key anywhere |
 | #105 | Keys | PKCS#11 provider: key-attribute checks (generated in the HSM), startup proof, session pool and reconnect, fail-closed paths, `block_in_place` in the evidence commit |
 | #106 | Data plane (policy) | `contained` around the CEL parser and interpreter; that a contained panic becomes a refused pack or a recorded BLOCK |
+| K2 (this PR) | Keys | Per-role HSM wiring (`signing.rs`): that a listed role never falls back to a file; key-separation checks on HSM public keys; strictness tied to `--insecure-dev` only; PIN file handling; fail-closed signing; `/v1/runtime` health |
 | #107 | Authentication (request parsing) | The strict-JSON walk; that every route with free-form JSON uses it; that error responses are unchanged |
 
 ## Done

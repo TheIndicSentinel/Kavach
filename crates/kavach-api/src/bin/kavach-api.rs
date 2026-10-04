@@ -1,3 +1,4 @@
+use kavach_api::signing::{HsmConfig, HsmRole};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -124,6 +125,25 @@ struct AgentArgs {
     /// Listener for `POST /v1/sor/events` (bind to the backend network only).
     #[arg(long, env = "KAVACH_SOR_LISTEN", default_value = "127.0.0.1:8090")]
     sor_listen: SocketAddr,
+    /// Signing roles whose keys live in the HSM, comma separated: mandate,
+    /// evidence, checkpoint, credential. Each key's id is its HSM label;
+    /// the other roles keep their key directories. Measure signing latency
+    /// on the target HSM before listing evidence or credential.
+    #[arg(long, env = "KAVACH_HSM_KEYS", value_delimiter = ',')]
+    hsm_keys: Vec<String>,
+    /// The HSM vendor's PKCS#11 module (`.so`).
+    #[arg(long, env = "KAVACH_HSM_MODULE")]
+    hsm_module: Option<PathBuf>,
+    /// Label of the token that holds the keys.
+    #[arg(long, env = "KAVACH_HSM_TOKEN_LABEL")]
+    hsm_token_label: Option<String>,
+    /// Owner-only file holding the token's user PIN (never a flag value or
+    /// an environment variable).
+    #[arg(long, env = "KAVACH_HSM_PIN_FILE")]
+    hsm_pin_file: Option<PathBuf>,
+    /// HSM sessions kept open for reuse.
+    #[arg(long, env = "KAVACH_HSM_SESSIONS", default_value_t = 8)]
+    hsm_sessions: usize,
 }
 
 impl AgentArgs {
@@ -131,14 +151,22 @@ impl AgentArgs {
         self,
         operator: Option<&OidcConfig>,
     ) -> Result<Option<kavach_api::dataplane::DataplaneConfig>, String> {
+        let hsm = self.hsm_config()?;
         let Some(audience) = self.agent_oidc_audience else {
             return Ok(None);
         };
         let operator = operator.ok_or(
             "agent surfaces use the operator IdP: configure --oidc-issuer and a JWKS source",
         )?;
+        let in_hsm = |role: HsmRole| hsm.as_ref().is_some_and(|h| h.roles.contains(&role));
         let need = |value: Option<PathBuf>, flag: &str| {
             value.ok_or_else(|| format!("agent surfaces need {flag}"))
+        };
+        // A role whose key is in the HSM needs no key directory.
+        let key_dir = |value: Option<PathBuf>, flag: &str, role: HsmRole| match value {
+            Some(dir) => Ok(dir),
+            None if in_hsm(role) => Ok(PathBuf::new()),
+            None => Err(format!("agent surfaces need {flag} (or --hsm-keys {role})")),
         };
         Ok(Some(kavach_api::dataplane::DataplaneConfig {
             agent_oidc: OidcConfig {
@@ -147,10 +175,22 @@ impl AgentArgs {
                 ..operator.clone()
             },
             mandate_config: need(self.mandate_config, "--mandate-config")?,
-            mandate_keys_dir: need(self.mandate_keys_dir, "--mandate-keys-dir")?,
-            evidence_keys_dir: need(self.evidence_keys_dir, "--evidence-keys-dir")?,
+            mandate_keys_dir: key_dir(
+                self.mandate_keys_dir,
+                "--mandate-keys-dir",
+                HsmRole::Mandate,
+            )?,
+            evidence_keys_dir: key_dir(
+                self.evidence_keys_dir,
+                "--evidence-keys-dir",
+                HsmRole::Evidence,
+            )?,
             evidence_key_id: self.evidence_key_id,
-            checkpoint_keys_dir: need(self.checkpoint_keys_dir, "--checkpoint-keys-dir")?,
+            checkpoint_keys_dir: key_dir(
+                self.checkpoint_keys_dir,
+                "--checkpoint-keys-dir",
+                HsmRole::Checkpoint,
+            )?,
             checkpoint_key_id: self.checkpoint_key_id,
             checkpoint_interval_seconds: self.checkpoint_interval_seconds,
             checkpoint_stall_seconds: self.checkpoint_stall_seconds,
@@ -161,7 +201,11 @@ impl AgentArgs {
             tool_registry: need(self.tool_registry, "--tool-registry")?,
             tool_registry_sha256: self.tool_registry_sha256,
             tool_signers: self.tool_signers,
-            credential_keys_dir: need(self.credential_keys_dir, "--credential-keys-dir")?,
+            credential_keys_dir: key_dir(
+                self.credential_keys_dir,
+                "--credential-keys-dir",
+                HsmRole::Credential,
+            )?,
             credential_key_id: self.credential_key_id,
             providers: need(self.providers, "--providers")?,
             references: need(self.references, "--references")?,
@@ -169,6 +213,45 @@ impl AgentArgs {
             provider_timeout_ms: self.provider_timeout_ms,
             provider_ca: self.provider_ca,
             test_clock: None,
+            hsm,
+        }))
+    }
+}
+
+impl AgentArgs {
+    /// The HSM settings, when `--hsm-keys` lists roles; all four settings
+    /// are then required.
+    fn hsm_config(&self) -> Result<Option<HsmConfig>, String> {
+        if self.hsm_keys.is_empty() {
+            if self.hsm_module.is_some()
+                || self.hsm_token_label.is_some()
+                || self.hsm_pin_file.is_some()
+            {
+                return Err(
+                    "--hsm-module, --hsm-token-label and --hsm-pin-file need --hsm-keys".into(),
+                );
+            }
+            return Ok(None);
+        }
+        let roles = self
+            .hsm_keys
+            .iter()
+            .map(|r| r.parse::<HsmRole>())
+            .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+        let need = |value: Option<&PathBuf>, flag: &str| {
+            value
+                .cloned()
+                .ok_or_else(|| format!("--hsm-keys needs {flag}"))
+        };
+        Ok(Some(HsmConfig {
+            module: need(self.hsm_module.as_ref(), "--hsm-module")?,
+            token_label: self
+                .hsm_token_label
+                .clone()
+                .ok_or("--hsm-keys needs --hsm-token-label")?,
+            pin_file: need(self.hsm_pin_file.as_ref(), "--hsm-pin-file")?,
+            roles,
+            max_sessions: self.hsm_sessions.max(1),
         }))
     }
 }

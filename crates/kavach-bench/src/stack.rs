@@ -218,6 +218,7 @@ fn api_config(
             provider_timeout_ms: 5_000,
             provider_ca: None,
             test_clock: Some(clock),
+            hsm: None,
         }),
     }
 }

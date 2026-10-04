@@ -23,6 +23,7 @@ pub mod oidc;
 pub mod proto;
 pub mod registry;
 pub mod retention;
+pub mod signing;
 pub mod state;
 pub mod strict_json;
 pub mod tls;
