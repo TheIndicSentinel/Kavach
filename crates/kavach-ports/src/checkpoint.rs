@@ -318,6 +318,11 @@ pub enum CheckpointError {
          accepted only when verifying a development stack"
     )]
     DevKey { seq: i64, key_id: String },
+    #[error(
+        "checkpoint {seq}: written under a development clock (time_sync dev_fixed); accepted \
+         only when verifying a development stack"
+    )]
+    DevClock { seq: i64 },
     #[error("checkpoint {seq}: hash does not match its content")]
     Hash { seq: i64 },
     #[error("checkpoint {seq}: signature invalid ({reason})")]
@@ -394,6 +399,9 @@ pub fn check_one(
             seq,
             key_id: p.key_id.clone(),
         });
+    }
+    if dev_keys == DevKeys::Refuse && p.time_sync.is_dev_fixed() {
+        return Err(CheckpointError::DevClock { seq });
     }
     if checkpoint_hash(p).ok().as_deref() != Some(checkpoint.hash.as_str()) {
         return Err(CheckpointError::Hash { seq });
@@ -858,6 +866,34 @@ mod tests {
             check_kept(&third, SCOPE, &all, &segment, &keys(&key), DevKeys::Refuse),
             Ok(())
         );
+    }
+
+    /// A checkpoint written under a development clock is refused unless
+    /// verifying a development stack, even with a production key.
+    #[test]
+    fn dev_clock_checkpoints_are_refused_unless_verifying_a_dev_stack() {
+        let key = key();
+        let chain = hashes(3);
+        let head = Head {
+            scope: SCOPE,
+            seq: 2,
+            hash: &chain[1],
+        };
+        let dev_time = TimeSync::from(crate::SyncStatus::DevFixed);
+        let signed = sign_checkpoint(head, None, at(2), dev_time, &key).unwrap();
+        let segment = segment(&chain);
+        assert_eq!(
+            verify(std::slice::from_ref(&signed), &segment, &key),
+            Err(CheckpointError::DevClock { seq: 2 })
+        );
+        verify_checkpoints(
+            std::slice::from_ref(&signed),
+            SCOPE,
+            &segment,
+            &keys(&key),
+            DevKeys::Accept,
+        )
+        .unwrap();
     }
 
     #[test]

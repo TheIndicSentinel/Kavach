@@ -58,6 +58,17 @@ pub struct TimeSync {
     pub max_error_ms: Option<u64>,
 }
 
+/// `time_sync.status` of evidence written under a development clock.
+pub const DEV_FIXED: &str = "dev_fixed";
+
+impl TimeSync {
+    /// Written under a development clock (`kavach dev up --at` / `--clock`).
+    #[must_use]
+    pub fn is_dev_fixed(&self) -> bool {
+        self.status == DEV_FIXED
+    }
+}
+
 impl From<SyncStatus> for TimeSync {
     fn from(sync: SyncStatus) -> Self {
         match sync {
@@ -71,6 +82,10 @@ impl From<SyncStatus> for TimeSync {
             },
             SyncStatus::Unknown => Self {
                 status: "unknown".into(),
+                max_error_ms: None,
+            },
+            SyncStatus::DevFixed => Self {
+                status: DEV_FIXED.into(),
                 max_error_ms: None,
             },
         }
@@ -481,6 +496,11 @@ pub enum ChainError {
          accepted (use verify_dev_chain for development stacks)"
     )]
     DevKey { seq: i64, key_id: String },
+    #[error(
+        "record {seq}: written under a development clock (time_sync dev_fixed); development \
+         evidence is not accepted (use verify_dev_chain for development stacks)"
+    )]
+    DevClock { seq: i64 },
     #[error("record {seq}: expected seq {expected}")]
     Gap { seq: i64, expected: i64 },
     #[error("record {seq}: prev_hash does not link to the previous record")]
@@ -615,6 +635,9 @@ pub fn check_record(
             seq: p.seq,
             key_id: p.key_id.clone(),
         });
+    }
+    if !allow_dev_keys && p.time_sync.is_dev_fixed() {
+        return Err(ChainError::DevClock { seq: p.seq });
     }
     if p.seq != expected_seq {
         return Err(ChainError::Gap {
@@ -935,6 +958,34 @@ mod tests {
             verify_chain(&records, &keys(&key), None, &[upgraded], now),
             invalid("c-1")
         );
+    }
+
+    /// Evidence written under a development clock (`time_sync: dev_fixed`)
+    /// is refused unless verifying a development stack, even when signed
+    /// with a production key; the status maps from `SyncStatus::DevFixed`.
+    #[test]
+    fn dev_clock_evidence_is_refused_unless_verifying_a_dev_stack() {
+        let dev_time = TimeSync::from(SyncStatus::DevFixed);
+        assert!(dev_time.is_dev_fixed());
+        assert_eq!(dev_time.status, DEV_FIXED);
+        let key = Key(SigningKey::from_bytes(&[4u8; 32]));
+        let now = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let mut prev = GENESIS.to_string();
+        let records: Vec<_> = (1..=2)
+            .map(|seq| {
+                let mut p = payload(seq, &prev);
+                p.time_sync = dev_time.clone();
+                let record = seal(p, &key).unwrap();
+                prev.clone_from(&record.hash);
+                record
+            })
+            .collect();
+        assert!(matches!(
+            verify_chain(&records, &keys(&key), None, &[], now),
+            Err(ChainError::DevClock { seq: 1 })
+        ));
+        assert!(check_record_signature(&records[0], &keys(&key), false).is_err());
+        verify_dev_chain(&records, &keys(&key), None, &[], now).expect("a dev stack");
     }
 
     #[test]

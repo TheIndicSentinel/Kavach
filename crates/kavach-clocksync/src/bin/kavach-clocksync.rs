@@ -9,6 +9,7 @@ fn main() {
         }
         kavach_ports::SyncStatus::Unsynced => serde_json::json!({ "status": "unsynced" }),
         kavach_ports::SyncStatus::Unknown => serde_json::json!({ "status": "unknown" }),
+        kavach_ports::SyncStatus::DevFixed => serde_json::json!({ "status": "dev_fixed" }),
     };
     println!(
         "{}",

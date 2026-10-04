@@ -5,9 +5,16 @@ use crate::error::PortError;
 /// Clock synchronisation status as reported by the time source (ADR-003 §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncStatus {
-    Synced { max_error_ms: u64 },
+    Synced {
+        max_error_ms: u64,
+    },
     Unsynced,
     Unknown,
+    /// A development clock set by hand (`kavach dev up --at` or `--clock`):
+    /// decisions proceed as if synced with no error, and evidence says
+    /// `dev_fixed`, which the verifiers refuse unless told it is a
+    /// development stack. Never produced outside `--insecure-dev`.
+    DevFixed,
 }
 
 /// A timestamp from the authoritative server-side clock plus its sync status.
@@ -23,6 +30,7 @@ impl TrustedNow {
     pub fn require_synced(&self, max_error_ms: u64) -> Result<DateTime<Utc>, PortError> {
         match self.sync {
             SyncStatus::Synced { max_error_ms: err } if err <= max_error_ms => Ok(self.utc),
+            SyncStatus::DevFixed => Ok(self.utc),
             SyncStatus::Synced { max_error_ms: err } => Err(PortError::unavailable(format!(
                 "clock max error {err}ms exceeds {max_error_ms}ms"
             ))),
@@ -56,6 +64,15 @@ impl TimeSource for SystemClock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_dev_clock_lets_decisions_proceed() {
+        let now = TrustedNow {
+            utc: DateTime::from_timestamp(1_790_000_000, 0).unwrap(),
+            sync: SyncStatus::DevFixed,
+        };
+        assert_eq!(now.require_synced(0).unwrap(), now.utc);
+    }
 
     #[test]
     fn require_synced_enforces_threshold_and_status() {
