@@ -137,6 +137,38 @@ fn from_bundle(
     ))
 }
 
+/// For a decision blocked by business constraints only, the offline
+/// `kavach authorize` command to explore it with. Placeholders only: the
+/// record holds no raw values, and none are printed.
+fn explore(
+    dir: &Path,
+    action: &str,
+    decision: kavach_domain::Decision,
+    signals: &[String],
+) -> Option<String> {
+    if kavach_ports::agent_evidence::is_allow(decision)
+        || crate::counterfactual::withheld(signals).is_some()
+    {
+        return None;
+    }
+    let params: Vec<String> = Project::find(dir)
+        .ok()
+        .and_then(|project| crate::live::registry(&project).ok())
+        .and_then(|registry| {
+            registry.for_action(action).map(|spec| {
+                spec.params
+                    .keys()
+                    .map(|name| format!("-p {name}=<value>"))
+                    .collect()
+            })
+        })
+        .unwrap_or_else(|| vec!["-p <name>=<value>".into()]);
+    Some(format!(
+        "kavach authorize {action} {} --at <HH:MM> --contacts-today <n>",
+        params.join(" ")
+    ))
+}
+
 fn ist(t: DateTime<Utc>) -> String {
     FixedOffset::east_opt(5 * 3600 + 1800)
         .map(|o| {
@@ -229,6 +261,7 @@ pub async fn run(
         "send_by": p.send_by,
         "credential_id": p.credential_id,
         "outcome": outcome.as_ref().map(|o| json!({ "outcome": o.outcome.as_str(), "reason": o.reason, "signature_verified": outcome_ok })),
+        "explore": explore(dir, &p.action, p.returned_decision, &p.signals),
         "verification": {
             "record_signature": if signature.is_ok() { "verified" } else { "failed" },
             "against": against,
@@ -348,6 +381,13 @@ fn human(ui: Ui, data: &Value, record: &AgentDecisionRecord) -> String {
         p.policy_versions.cedar,
         p.policy_versions.tools.as_deref().unwrap_or("-")
     );
+    if let Some(command) = data["explore"].as_str() {
+        let _ = writeln!(
+            out,
+            "  explore   {command}  {}",
+            ui.paint(Style::Dim, &format!("({})", crate::counterfactual::LABEL))
+        );
+    }
     if let Some(o) = data["outcome"].as_object() {
         let _ = writeln!(
             out,

@@ -74,6 +74,8 @@ kavach authorize propose_plan -p waiver_bps=2500         # HUMAN_REVIEW: above t
 kavach authorize send_reminder -p subject_ref=ref:borrower:9876543210   # BLOCK: raw identifier
 ```
 
+When the call would be blocked by **business constraints only** (contact window, daily cap, channel, waiver ceiling), `authorize` also lists the smallest single change that would pass, labelled "what-if under current policies". It changes one thing at a time, in a fixed order (time, then contacts, then channel, then waiver), and each answer is a real re-run of the authorization core. For example, at 20:30 it suggests "at 08:00 IST tomorrow", and for a waiver of 2500 it suggests "waiver_bps=1000". A call blocked for a **safety** reason (a raw identifier, the mandate, the subject, the agent, trusted time) gets no suggestions, so nothing here is a bypass hint. Counterfactuals exist only in this offline command: the agent API never returns them.
+
 ### Explaining a decision (`kavach why`)
 
 `kavach why <record-id>` explains a decision `kavach call` recorded: each reason in words, with the usual fix, plus the mandate, the time and its sync state, and the policy and registry digests. The subject appears only as its pseudonym.
@@ -84,6 +86,7 @@ kavach why adr:default:0:1 --bundle ./export      # offline, from an evidence bu
 ```
 
 - **Live:** reads the record from the operator API (`read_evidence`; every read is audited). It checks the record's own hash and signature against **local** trusted keys (`--keys`, default `.kavach/auditor/trusted-keys.json`), never a key from the server. Dev records say "verified against dev keys". A single record proves nothing about the chain, and the output says so.
+- **Explore:** for a decision blocked by business constraints only, `why` prints the `kavach authorize` command to explore it offline. The command has placeholders (`-p channel=<value>`), never the record's values, which the record does not hold anyway.
 - **`--bundle`:** verifies the whole bundle first, as `kavach-evidence verify-bundle` does (files, chain, checkpoints), then explains the record from it. No network. It exits 2 if the bundle verifies but something is not protected.
 
 ### Policy tests (`kavach policy test`)
