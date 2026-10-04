@@ -8,6 +8,7 @@ pub mod error;
 pub mod golden;
 pub mod mandate;
 pub mod path;
+pub mod reasons;
 pub mod request;
 pub mod response;
 pub mod types;

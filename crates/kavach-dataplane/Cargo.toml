@@ -24,6 +24,7 @@ hex.workspace = true
 kavach-credential = { workspace = true }
 kavach-ports-testkit = { workspace = true }
 kavach-storage = { workspace = true, features = ["test-support"] }
+regex.workspace = true
 tokio.workspace = true
 
 [lints]
