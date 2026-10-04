@@ -212,6 +212,7 @@ pub(crate) fn dataplane_config(project: &Project, clock: Option<TestClock>) -> D
 async fn provider(
     project: &Project,
     listener: TcpListener,
+    inspect: TcpListener,
     clock: Arc<dyn TimeSource + Send + Sync>,
 ) -> Result<tokio::task::JoinHandle<()>, CliError> {
     let dir = project.bundle().join("provider");
@@ -255,6 +256,13 @@ async fn provider(
     .await
     .map_err(|e| CliError::new("cannot load the provider's TLS certificate", e))?;
     let server = axum_server::from_tcp_rustls(listener, tls);
+    // The inbox, on its own loopback listener (never on the provider's).
+    let inspect = tokio::net::TcpListener::from_std(inspect)
+        .map_err(|e| CliError::new("cannot start the provider inbox listener", e))?;
+    let inbox = kavach_mock_provider::inspect_router(Arc::clone(&mock));
+    tokio::spawn(async move {
+        let _ = axum::serve(inspect, inbox).await;
+    });
     Ok(tokio::spawn(async move {
         let _ = server
             .serve(kavach_mock_provider::router(mock).into_make_service())
@@ -263,7 +271,7 @@ async fn provider(
 }
 
 /// Binds every port first, so a busy one is reported before anything starts.
-fn bind_all(project: &Project) -> Result<[TcpListener; 4], CliError> {
+fn bind_all(project: &Project) -> Result<[TcpListener; 5], CliError> {
     let l = &project.file.listen;
     let bind = |name: &str, addr: SocketAddr| {
         if !addr.ip().is_loopback() {
@@ -287,6 +295,7 @@ fn bind_all(project: &Project) -> Result<[TcpListener; 4], CliError> {
         bind("agent", l.agent)?,
         bind("sor", l.sor)?,
         bind("provider", l.provider)?,
+        bind("inspect", l.inspect)?,
     ])
 }
 
@@ -297,14 +306,15 @@ pub async fn up(
     exit_when_ready: bool,
 ) -> Result<i32, CliError> {
     let project = Project::find(dir)?;
-    let [operator, agent, sor, provider_listener] = bind_all(&project)?;
+    let [operator, agent, sor, provider_listener, inspect_listener] = bind_all(&project)?;
     let started_at = at.map(parse_at).transpose()?;
     let clock: Arc<dyn TimeSource + Send + Sync> = match started_at {
         Some(at) => Arc::new(StartedAt::new(at)),
         None => Arc::new(kavach_ports::SystemClock),
     };
     point_providers(&project)?;
-    let provider_task = provider(&project, provider_listener, clock.clone()).await?;
+    let provider_task =
+        provider(&project, provider_listener, inspect_listener, clock.clone()).await?;
     let config = api_config(&project, started_at.map(|_| TestClock(clock.clone())));
     let state = Arc::new(
         AppState::from_config(&config)
@@ -362,6 +372,8 @@ pub async fn up(
             operator: l.operator,
             agent: l.agent,
             sor: l.sor,
+            provider: l.provider,
+            inspect: l.inspect,
         },
     )?;
     let code = ui.finish("dev up", Status::Ok, &data, &human);

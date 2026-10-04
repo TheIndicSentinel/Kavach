@@ -6,6 +6,7 @@
 //! 2 warnings, 64 usage), colour only on a terminal and never with
 //! `NO_COLOR`, no prompts. Nothing is sent anywhere: no telemetry.
 
+mod attack;
 mod authorize;
 mod counterfactual;
 mod dev;
@@ -134,6 +135,15 @@ enum Command {
     /// Policy suites.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Run the attack catalog (the same one CI runs) against the running
+    /// dev stack: loopback and dev keys only, rate-limited, nothing aimed at
+    /// an allow. Exit 0 all refused as expected, 1 an attack succeeded or
+    /// was refused for an unexpected reason, 2 inconclusive.
+    Attack {
+        /// Print the attacks without running anything.
+        #[arg(long)]
+        list: bool,
+    },
     /// Explain a recorded decision: its reasons in words, the mandate, the
     /// time and the policy versions, with the record's signature checked
     /// against local trusted keys. Exit 0 if it verifies, 1 if not.
@@ -284,6 +294,7 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             )
             .await,
         ),
+        Command::Attack { list } => ("attack", attack_command(ui, cli, *list).await),
         Command::Policy(PolicyCommand::Test { path }) => (
             "policy test",
             policy_test::run(&ui, &cli.project, path.as_deref()).await,
@@ -328,6 +339,15 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             "dev up",
             dev::up(&ui, &cli.project, at.as_deref(), *exit_when_ready).await,
         ),
+    }
+}
+
+/// `kavach attack`: the scope (`--list`) or a run.
+async fn attack_command(ui: Ui, cli: &Cli, list: bool) -> Result<i32, CliError> {
+    if list {
+        Ok(attack::list(ui))
+    } else {
+        attack::run(&ui, &cli.project).await
     }
 }
 

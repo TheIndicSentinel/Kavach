@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 kavach-api = { workspace = true }
+kavach-attacks = { workspace = true }
 kavach-clocksync = { workspace = true }
 kavach-credential = { workspace = true }
 kavach-dataplane = { workspace = true }
