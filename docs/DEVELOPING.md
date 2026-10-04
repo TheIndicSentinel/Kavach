@@ -96,6 +96,27 @@ kavach why adr:default:0:1 --bundle ./export      # offline, from an evidence bu
 
 This evidence is hash-chained but **not signed** (v1). Anyone with write access to the database could rewrite a record and rehash the chain, so the output says "hash matches the content; not signed, so this does not prove the record wasn't rewritten". `--export <file>` checks the whole chain of a decision event export first, and reports a break before showing anything. There are no counterfactuals for credit decisions. A record written before schema 1.1.0 and read back from Postgres may fail only because storage dropped its nanoseconds. `why` then says it **cannot be re-checked (legacy precision)** and exits 2: never "verified", and not called tampered either. Re-baseline such chains (export, then start a fresh one).
 
+### Known attacks (`kavach attack`)
+
+`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 1, 18 attacks) is the same one the acceptance suite runs in CI.
+
+```bash
+kavach attack --list            # the scope: every attack, nothing run
+kavach dev up --at 11:00        # in another terminal (inside contact hours)
+kavach attack                   # exit 0 all refused, 1 an attack succeeded or drifted, 2 inconclusive
+```
+
+- **Ground truth:** an attack **succeeded** if a credential was minted (an allowed gateway call, read from `/metrics`) or the mock provider's inbox changed, whatever the reply said.
+- **Drift:** an attack refused for a reason the catalog doesn't expect fails the run too. The catalog no longer matches the policies.
+- **Inconclusive (exit 2):** the stack is unhealthy, its trusted time is unsynced, or its clock is outside contact hours. The output says which.
+- **Safety:**
+  - loopback only, and only bundles with `dev-` keys;
+  - at most ten requests a second;
+  - every attack aims at a refusal, so it consumes no contact and sends nothing;
+  - request ids start with `attack-`, so the BLOCK records are easy to tell apart in evidence.
+- **Not a security assessment:** passing means these known attacks fail. `--list --json` maps each attack to its `SECURITY_PROPERTIES.md` row and, where one applies, its `BYPASS_INVENTORY.md` row.
+- **The inbox listener:** `dev up` now serves the mock provider's inbox on a fifth loopback listener (`[listen] inspect`, default `127.0.0.1:8444`), which the attack run reads.
+
 ### Policy tests (`kavach policy test`)
 
 `kavach init` writes two starter suites to `policy-tests/`; commit them with your project. `kavach policy test [PATH]` runs every `.yaml` file in `policy-tests/`, or the file or directory you name. Each case gets an `ok` or `FAIL` line. A failing case shows what it expected and what it got, and the command exits 1; an invalid suite exits 64. `--json` gives the per-case results.
