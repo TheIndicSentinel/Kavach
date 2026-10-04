@@ -157,6 +157,18 @@ The operator gives the verifier a JSON file of public keys, kept apart from any 
 
 It lists the evidence key, the checkpoint key and the export key (and earlier ones after a rotation).
 
+**Limits on a key.** Each entry may also carry limits, for a retired or compromised key:
+
+```json
+{ "kid": "kavach-evidence-1", "alg": "Ed25519", "public_key": "<64 hex>",
+  "valid_until_seq": 1840, "not_before": "2026-01-01T00:00:00Z", "not_after": "2026-10-04T06:00:00Z" }
+```
+
+- `valid_until_seq`: nothing this key signed for a record after this one is trusted, unless the checkpoint kept by the operator (`--expect-checkpoint`) covers it. **This is the limit that stops forgery:** take it from a checkpoint kept off-host before the compromise. It applies to records and outcomes (the record's `seq`), checkpoints (their `seq`) and manifests (the bundle's last record).
+- `not_before`, `not_after`: signatures dated outside this window are refused. Whoever holds a stolen key can backdate a timestamp, so a time window alone does not stop forgery; it retires a key in time.
+
+A signature beyond a limit fails verification (exit 1).
+
 ### Verifying a bundle
 
 ```sh

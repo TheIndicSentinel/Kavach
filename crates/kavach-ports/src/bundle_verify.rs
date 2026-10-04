@@ -38,9 +38,55 @@ use crate::keys::PublicKey;
 /// At most this many ids or notes are kept per finding; the count is exact.
 pub const SAMPLE: usize = 20;
 
+/// Limits on what a trusted key may have signed (for a retired or
+/// compromised key). A signature beyond them fails verification.
+///
+/// `valid_until_seq` is the strong limit: anything the key signed for a
+/// record after that sequence number is refused, unless a checkpoint the
+/// operator kept covers it. Take it from a checkpoint kept before the key
+/// was compromised. Timestamps alone cannot stop forgery, because whoever
+/// holds the key can backdate them; `not_before` and `not_after` retire a
+/// key in time as well.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct KeyValidity {
+    pub valid_until_seq: Option<i64>,
+    pub not_before: Option<DateTime<Utc>>,
+    pub not_after: Option<DateTime<Utc>>,
+}
+
+impl KeyValidity {
+    /// Why something signed by `kid` for record `seq` at `ts` is refused,
+    /// if it is. `kept_seq` is the operator's kept checkpoint, which covers
+    /// records up to it.
+    fn refuses(
+        &self,
+        kid: &str,
+        seq: i64,
+        ts: DateTime<Utc>,
+        kept_seq: Option<i64>,
+    ) -> Option<String> {
+        if let Some(limit) = self.valid_until_seq {
+            if seq > limit && kept_seq.is_none_or(|kept| seq > kept) {
+                return Some(format!(
+                    "key {kid} signed for record {seq}, after its limit (record {limit}), and no \
+                     kept checkpoint covers it"
+                ));
+            }
+        }
+        if self.not_before.is_some_and(|t| ts < t) || self.not_after.is_some_and(|t| ts >= t) {
+            return Some(format!(
+                "key {kid} signed at {ts}, outside its validity period"
+            ));
+        }
+        None
+    }
+}
+
 pub struct VerifyOptions<'a> {
     /// Trusted keys, from the operator.
     pub keys: &'a BTreeMap<String, PublicKey>,
+    /// Limits per key id, from the operator; keys absent here are unlimited.
+    pub validity: &'a BTreeMap<String, KeyValidity>,
     pub dev_keys: DevKeys,
     /// The reference time for "this allow's credential has expired".
     pub now: DateTime<Utc>,
@@ -88,6 +134,33 @@ pub enum BundleFailure {
          kept by the operator) vouches for that record's hash"
     )]
     UnvouchedStart { after_seq: i64 },
+    /// Signed by a trusted key beyond the limits the operator set for it.
+    #[error("{what}: {reason}")]
+    KeyNotValid { what: String, reason: String },
+}
+
+impl VerifyOptions<'_> {
+    /// Fails when `kid`'s limits refuse what it signed for record `seq`.
+    fn within_validity(
+        &self,
+        what: impl FnOnce() -> String,
+        kid: &str,
+        seq: i64,
+        ts: DateTime<Utc>,
+    ) -> Result<(), BundleFailure> {
+        let kept_seq = self.kept.map(|kept| kept.payload.seq);
+        match self
+            .validity
+            .get(kid)
+            .and_then(|v| v.refuses(kid, seq, ts, kept_seq))
+        {
+            Some(reason) => Err(BundleFailure::KeyNotValid {
+                what: what(),
+                reason,
+            }),
+            None => Ok(()),
+        }
+    }
 }
 
 /// What was verified. See [`BundleReport::not_protected`] for what was not.
@@ -315,6 +388,8 @@ impl<C: Iterator<Item = Result<Checkpoint, String>>> Run<'_, C> {
     fn link(&mut self, checkpoint: &Checkpoint) -> Result<(), BundleFailure> {
         check_one(checkpoint, self.scope, self.opts.keys, self.opts.dev_keys)?;
         let p = &checkpoint.payload;
+        self.opts
+            .within_validity(|| format!("checkpoint {}", p.seq), &p.key_id, p.seq, p.ts)?;
         if let Some((previous_seq, previous_hash, previous_ts)) = &self.seen.previous {
             if p.seq <= *previous_seq {
                 return Err(CheckpointError::Order {
@@ -444,6 +519,12 @@ fn take_outcome<O: Lines<OutcomeRecord>>(
     if !outcome_verifies(&outcome, opts.keys) {
         return Err(invalid("does not verify"));
     }
+    opts.within_validity(
+        || format!("the outcome of {credential_id}"),
+        &outcome.key_id,
+        record.payload.seq,
+        outcome.ts,
+    )?;
     Ok(Some(outcome.outcome))
 }
 
@@ -469,6 +550,15 @@ where
 {
     let signature = verify_manifest(manifest, opts.keys, opts.dev_keys)?;
     let p = &manifest.payload;
+    if let Some(kid) = &p.key_id {
+        // The export key vouches for the bundle up to its last record.
+        opts.within_validity(
+            || "the manifest".into(),
+            kid,
+            p.segment.last_seq,
+            p.exported_at,
+        )?;
+    }
     let segment = &p.segment;
     let scope = Scope {
         tenant_id: &p.tenant_id,
@@ -503,6 +593,7 @@ where
             )));
         }
         check_record(&record, last_seq + 1, &prev, opts.keys, allow_dev_keys)?;
+        opts.within_validity(|| format!("record {}", rp.seq), &rp.key_id, rp.seq, rp.ts)?;
         match take_outcome(&mut outcomes, &record, opts)? {
             Some(Outcome::Unknown) => {
                 unknown.add(|| rp.credential_id.clone().unwrap_or_default());
