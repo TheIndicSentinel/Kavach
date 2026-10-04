@@ -99,6 +99,7 @@ on_both_stores!(
     scenario10_a_full_run_verifies_offline_from_public_keys,
     scenario11_partial_bypass_attempts_fail,
     scenario12_partial_unavailable_dependencies_fail_safe,
+    catalog_attacks_are_refused,
 );
 
 fn at(gw: &Gw, ist_hour: i64, minutes: i64, seconds: i64) {
@@ -667,4 +668,112 @@ async fn scenario12_partial_unavailable_dependencies_fail_safe(store: Store) {
         (reply["outcome"].as_str(), reply["outcome_reason"].as_str()),
         (Some("failed"), Some("connect_failed"))
     );
+}
+
+/// The attack catalog `kavach attack` runs (`kavach-attacks`), in process:
+/// every attack is refused as the catalog expects, and ground truth agrees
+/// (no credential minted, nothing delivered). Covered by the 20× gate.
+async fn catalog_attacks_are_refused(store: Store) {
+    let Some(gw) = world(store, Some(NUMBER), true).await else {
+        return;
+    };
+    let report = kavach_attacks::run(&InProcess(&gw), &kavach_attacks::CATALOG).await;
+    for outcome in &report.outcomes {
+        assert_eq!(
+            outcome.verdict,
+            kavach_attacks::Verdict::Refused,
+            "{}: {}",
+            outcome.id,
+            outcome.observed
+        );
+    }
+    assert_eq!(report.credentials_minted, 0);
+    assert_eq!(report.messages_delivered, 0);
+    assert!(report.all_refused_as_expected());
+    assert!(gw.provider.inbox().is_empty());
+}
+
+/// The acceptance world as an attack target.
+struct InProcess<'a>(&'a Gw);
+
+impl kavach_attacks::Target for InProcess<'_> {
+    fn agent_token(&self) -> String {
+        agent_token("collections-agent")
+    }
+
+    fn other_agent_token(&self) -> String {
+        agent_token("translation-agent")
+    }
+
+    fn operator_token(&self) -> String {
+        operator_token()
+    }
+
+    fn mandate(&self) -> String {
+        self.0.mandate.clone()
+    }
+
+    async fn post_agent(
+        &self,
+        path: &str,
+        headers: Vec<(String, String)>,
+        body: Value,
+    ) -> Result<(u16, Value), String> {
+        let headers: Vec<(&str, String)> = headers
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.clone()))
+            .collect();
+        let (status, reply) = send(agent_router(self.0.state.clone()), path, &headers, body).await;
+        Ok((status.as_u16(), reply))
+    }
+
+    async fn replay_sor_event(&self) -> Result<(u16, Value), String> {
+        // The issuing event, identical (the test clock has not moved).
+        let event = event_at("evt-gw", "lms:loan/L-1", self.0.clock.now().utc).await;
+        let (status, reply) = send(
+            kavach_api::dataplane::sor_router(self.0.state.clone()),
+            "/v1/sor/events",
+            &[],
+            json!({ "event": event }),
+        )
+        .await;
+        Ok((status.as_u16(), reply))
+    }
+
+    async fn post_provider(&self) -> Result<u16, String> {
+        let response = reqwest::Client::new()
+            .post(format!("{}/v1/messages", self.0.provider_url))
+            .json(&json!({ "to": "ref:borrower:B-9382", "template_id": "emi_reminder_v1" }))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(response.status().as_u16())
+    }
+
+    fn delivered(&self) -> impl std::future::Future<Output = Result<usize, String>> {
+        std::future::ready(Ok(self.0.provider.inbox().len()))
+    }
+
+    async fn allowed(&self) -> Result<u64, String> {
+        let response = tower::ServiceExt::oneshot(
+            kavach_api::router(self.0.state.clone()),
+            axum::http::Request::get("/metrics")
+                .header("authorization", format!("Bearer {}", operator_token()))
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .map_err(|e| e.to_string())?
+            .to_bytes();
+        Ok(kavach_attacks::allowed_calls(&String::from_utf8_lossy(
+            &bytes,
+        )))
+    }
+
+    fn pause(&self) -> impl std::future::Future<Output = ()> {
+        std::future::ready(())
+    }
 }
