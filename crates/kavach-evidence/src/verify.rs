@@ -92,6 +92,27 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
+    /// Stores keep microseconds (Postgres `TIMESTAMPTZ`): an event is
+    /// hashed over what is stored, so a copy at that precision verifies.
+    #[test]
+    fn events_are_hashed_at_storage_precision() {
+        use chrono::{TimeZone, Timelike};
+        let nanos = Utc.with_ymd_and_hms(2026, 10, 4, 10, 0, 0).unwrap()
+            + chrono::Duration::nanoseconds(123_456_789);
+        let mut chain = MemoryChain::new();
+        let mut input = sample_append("precision-1");
+        input.decision_time = nanos;
+        input.evaluated_at = nanos;
+        let event = chain.append(input).unwrap();
+        assert_eq!(event.evaluated_at.nanosecond(), 123_456_000);
+        assert_eq!(event.decision_time.nanosecond(), 123_456_000);
+        // As a store would give it back.
+        let mut stored = event.clone();
+        stored.evaluated_at = crate::at_storage_precision(stored.evaluated_at);
+        stored.decision_time = crate::at_storage_precision(stored.decision_time);
+        crate::verify_event_hash(&stored).expect("verifies at storage precision");
+    }
+
     fn sample_append(correlation_id: &str) -> AppendDecisionEvent {
         AppendDecisionEvent {
             pack_id: "finance-v0".into(),

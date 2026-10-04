@@ -8,7 +8,7 @@ mod tombstone;
 mod verify;
 
 pub use canonical::GENESIS_HASH;
-pub use chain::{compute_event_hash, verify_event_hash};
+pub use chain::{at_storage_precision, compute_event_hash, verify_event_hash};
 pub use error::EvidenceError;
 pub use store::{check_idempotent_replay, AppendDecisionEvent, IdempotencyKey, MemoryChain};
 pub use tombstone::{

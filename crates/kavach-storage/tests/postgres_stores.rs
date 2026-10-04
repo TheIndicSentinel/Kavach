@@ -360,3 +360,29 @@ async fn batch_never_baselines_and_refuses_a_changed_model_file() {
         "{err}"
     );
 }
+
+/// An event read back from Postgres (which keeps microseconds) still
+/// hashes to its stored hash, even if it was evaluated with nanoseconds.
+#[tokio::test(flavor = "multi_thread")]
+async fn events_read_back_from_postgres_verify() {
+    use chrono::Timelike;
+    let Some(pool) = pool().await else { return };
+    let mut store = pool.evidence_store();
+    let mut input = event("precision-1", &"b".repeat(64), 0);
+    input.decision_time +=
+        Duration::nanoseconds(123_456_789 - i64::from(input.decision_time.nanosecond()));
+    input.evaluated_at = input.decision_time;
+    let appended = store.append(input).expect("append");
+    let read = store
+        .event(&appended.evidence_id)
+        .await
+        .expect("read")
+        .expect("stored");
+    assert_eq!(read, appended, "the stored event is the hashed event");
+    kavach_evidence::verify_event_hash(&read).expect("hash matches the stored content");
+    assert!(store
+        .event("00000000-0000-4000-8000-000000000000")
+        .await
+        .unwrap()
+        .is_none());
+}
