@@ -15,4 +15,6 @@ pub use tombstone::{
     redact_tombstoned_event, TOMBSTONE_CORRELATION_ID, TOMBSTONE_INPUT_DIGEST,
     TOMBSTONE_SERVICE_IDENTITY,
 };
-pub use verify::{mixed_chain, verify_chain, verify_export_file, VerifyReport};
+pub use verify::{
+    check_event, mixed_chain, verify_chain, verify_export_file, EventCheck, VerifyReport,
+};

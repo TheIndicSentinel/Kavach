@@ -34,6 +34,14 @@ pub enum EvidenceError {
         reason: String,
     },
 
+    /// A record older than the schema of a record before it: a 1.1.0 chain
+    /// never goes back to an earlier schema, so this is tampering.
+    #[error("event {event_id} has schema {schema_version} after a later-schema event")]
+    SchemaRegression {
+        event_id: String,
+        schema_version: String,
+    },
+
     #[error("empty evidence chain")]
     EmptyChain,
 
