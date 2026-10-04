@@ -22,7 +22,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 /// Bumped whenever an attack is added, removed or its expectation changes.
-pub const CATALOG_VERSION: &str = "1";
+pub const CATALOG_VERSION: &str = "2";
 
 /// The borrower the dev mandate covers, and one it does not.
 pub const SUBJECT: &str = "ref:borrower:B-9382";
@@ -59,6 +59,8 @@ pub enum Probe {
         real_mandate: bool,
         params: fn() -> Value,
     },
+    /// `GET /v1/runtime` on the operator listener.
+    OperatorRead { auth: Auth },
     /// `POST /v1/authorize` (the agent pre-check, which records nothing),
     /// for tools the gateway does not execute (proposals).
     Precheck {
@@ -110,6 +112,7 @@ fn reminder(subject: &'static str, channel: &'static str) -> Value {
 const CORE: &str = "Agent authorization core (library):";
 const REGISTRY: &str = "Agent tool registry:";
 const SURFACES: &str = "Agent surfaces:";
+const OPERATORS: &str = "With OIDC configured";
 const BACKENDS: &str = "Credential-accepting backends";
 const UNSEEN_IDENTIFIER: &str = "An identifier the detectors do not see, in a tool parameter";
 const STOLEN_TOKEN: &str = "An agent token stolen before it expires";
@@ -117,7 +120,7 @@ const SOR_KEY: &str = "A system of record with a valid issuer key";
 const AROUND: &str = "A resource the agent reaches without the gateway";
 
 /// The catalog, in the order it runs.
-pub const CATALOG: [Attack; 18] = [
+pub const CATALOG: [Attack; 20] = [
     Attack {
         id: "raw-phone-number",
         group: "identifiers",
@@ -381,6 +384,24 @@ pub const CATALOG: [Attack; 18] = [
         bypass: None,
     },
     Attack {
+        id: "agent-token-on-operator-route",
+        group: "authentication",
+        tries: "an agent's token on the operator API",
+        probe: Probe::OperatorRead { auth: Auth::Agent },
+        expect: Expect::Status { status: 401 },
+        security_property: OPERATORS,
+        bypass: Some(STOLEN_TOKEN),
+    },
+    Attack {
+        id: "no-token-on-operator-route",
+        group: "authentication",
+        tries: "the operator API with no credential",
+        probe: Probe::OperatorRead { auth: Auth::None },
+        expect: Expect::Status { status: 401 },
+        security_property: OPERATORS,
+        bypass: None,
+    },
+    Attack {
         id: "provider-without-credential",
         group: "around the gateway",
         tries: "sending a message straight to the provider, with no gateway credential",
@@ -463,6 +484,12 @@ pub trait Target {
         headers: Vec<(String, String)>,
         body: Value,
     ) -> impl Future<Output = Result<(u16, Value), String>>;
+    /// `GET` on the operator listener: status.
+    fn get_operator(
+        &self,
+        path: &str,
+        headers: Vec<(String, String)>,
+    ) -> impl Future<Output = Result<u16, String>>;
     /// The event that issued [`mandate`](Self::mandate), sent again:
     /// status and body.
     fn replay_sor_event(&self) -> impl Future<Output = Result<(u16, Value), String>>;
@@ -623,6 +650,22 @@ pub async fn run<T: Target>(target: &T, attacks: &[Attack]) -> Report {
     }
 }
 
+fn auth_headers<T: Target>(target: &T, auth: Auth) -> Vec<(String, String)> {
+    headers(
+        auth,
+        &target.agent_token(),
+        &target.other_agent_token(),
+        &target.operator_token(),
+    )
+}
+
+fn decision_reply(expect: Expect, status: u16, reply: &Value) -> (Verdict, Value) {
+    (
+        judge(expect, status, reply),
+        json!({ "status": status, "decision": reply["decision"], "reasons": reply["reasons"] }),
+    )
+}
+
 async fn probe<T: Target>(target: &T, attack: &Attack, n: usize) -> (Verdict, Value) {
     let request_id = format!("attack-{}-{n}", attack.id);
     match attack.probe {
@@ -632,12 +675,7 @@ async fn probe<T: Target>(target: &T, attack: &Attack, n: usize) -> (Verdict, Va
             real_mandate,
             params,
         } => {
-            let headers = headers(
-                auth,
-                &target.agent_token(),
-                &target.other_agent_token(),
-                &target.operator_token(),
-            );
+            let headers = auth_headers(target, auth);
             let mandate = if real_mandate {
                 target.mandate()
             } else {
@@ -649,20 +687,22 @@ async fn probe<T: Target>(target: &T, attack: &Attack, n: usize) -> (Verdict, Va
                 .post_agent(&format!("/v1/tools/{tool}"), headers, body)
                 .await
             {
-                Ok((status, reply)) => (
-                    judge(attack.expect, status, &reply),
-                    json!({ "status": status, "decision": reply["decision"], "reasons": reply["reasons"] }),
+                Ok((status, reply)) => decision_reply(attack.expect, status, &reply),
+                Err(e) => (Verdict::Error, json!({ "error": e })),
+            }
+        }
+        Probe::OperatorRead { auth } => {
+            let headers = auth_headers(target, auth);
+            match target.get_operator("/v1/runtime", headers).await {
+                Ok(status) => (
+                    judge(attack.expect, status, &Value::Null),
+                    json!({ "status": status }),
                 ),
                 Err(e) => (Verdict::Error, json!({ "error": e })),
             }
         }
         Probe::Precheck { tool, params } => {
-            let headers = headers(
-                Auth::Agent,
-                &target.agent_token(),
-                &target.other_agent_token(),
-                &target.operator_token(),
-            );
+            let headers = auth_headers(target, Auth::Agent);
             let body = json!({
                 "tool": tool,
                 "mandate_id": target.mandate(),
@@ -670,10 +710,7 @@ async fn probe<T: Target>(target: &T, attack: &Attack, n: usize) -> (Verdict, Va
                 "params": params(),
             });
             match target.post_agent("/v1/authorize", headers, body).await {
-                Ok((status, reply)) => (
-                    judge(attack.expect, status, &reply),
-                    json!({ "status": status, "decision": reply["decision"], "reasons": reply["reasons"] }),
-                ),
+                Ok((status, reply)) => decision_reply(attack.expect, status, &reply),
                 Err(e) => (Verdict::Error, json!({ "error": e })),
             }
         }
