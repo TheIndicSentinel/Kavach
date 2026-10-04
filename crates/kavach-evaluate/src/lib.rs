@@ -12,7 +12,8 @@ pub use ports::{
     VecIncidentRecorder,
 };
 pub use service::{
-    DecisionTimeCheck, EvaluateConfig, EvaluateResult, EvaluateService, POLICY_EVALUATION_ERROR,
+    DecisionTimeCheck, EvaluateConfig, EvaluateResult, EvaluateService, CONSENT_MISMATCH,
+    POLICY_EVALUATION_ERROR,
 };
 pub use validation::{
     compile_input_validator, validate_input, validate_model_binding, validate_supplier_controls,

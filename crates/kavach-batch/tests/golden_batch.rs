@@ -42,9 +42,6 @@ fn golden_v0_batch_shadow_matches_policy_decision() {
             .expect("service");
 
     for fixture in fixtures {
-        if fixture.name == "credit_missing_consent" {
-            continue;
-        }
         let Some(expected_policy) = fixture.expect.policy_decision else {
             continue;
         };
@@ -117,10 +114,12 @@ fn run_batch_writes_ndjson_results_for_clean_fixture() {
 
 #[test]
 fn run_batch_marks_validation_errors_without_evidence() {
-    let fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../golden/finance/v0/credit_missing_consent.json");
-    let fixture: serde_json::Value =
+    let fixture_path =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../golden/finance/v0/credit_clean.json");
+    let mut fixture: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(fixture_path).unwrap()).unwrap();
+    // Input the model's schema refuses: a request error, not a decision.
+    fixture["request"]["input"]["credit_score"] = "not a number".into();
     let input = format!("{}\n", fixture["request"]);
 
     let mut output = Vec::new();

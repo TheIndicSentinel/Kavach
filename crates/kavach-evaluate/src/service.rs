@@ -30,6 +30,9 @@ impl Default for EvaluateConfig {
     }
 }
 
+/// Reason code for a consent whose purpose differs from the request's.
+pub const CONSENT_MISMATCH: &str = "CONSENT_MISMATCH";
+
 /// Reason code for a CEL/runtime policy evaluation failure.
 pub const POLICY_EVALUATION_ERROR: &str = "POLICY_EVALUATION_ERROR";
 
@@ -138,7 +141,7 @@ where
         // A CEL/runtime failure is a policy outcome, not a transport error:
         // BLOCK with a reason code, recorded as evidence, plus an incident.
         // The ADR-001 §5 matrix then maps it (enforce BLOCK, sync shadow PASS).
-        let (evaluation, policy_error) =
+        let (mut evaluation, policy_error) =
             match PolicyEngine::evaluate_at(&self.pack, request, server_now) {
                 Ok(evaluation) => (evaluation, None),
                 Err(err) => (
@@ -150,6 +153,19 @@ where
                     Some(err),
                 ),
             };
+        // Consent is a decision step (ADR-001 §7 step 4, §9), not request
+        // validation: a purpose mismatch is a recorded BLOCK with
+        // CONSENT_MISMATCH, whatever rules the pack carries.
+        if request.validate_consent().is_err() {
+            evaluation.policy_decision = Decision::Block;
+            if !evaluation
+                .reason_codes
+                .iter()
+                .any(|c| c == CONSENT_MISMATCH)
+            {
+                evaluation.reason_codes.push(CONSENT_MISMATCH.to_string());
+            }
+        }
         let mut incidents = IncidentOutcome::default();
         if let Some(err) = &policy_error {
             self.record_incident(
@@ -236,9 +252,7 @@ where
                 }
             }
         }
-        request
-            .validate_consent()
-            .map_err(EvaluateError::from_domain)
+        Ok(())
     }
 
     fn append_input(
