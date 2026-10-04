@@ -10,9 +10,6 @@ use crate::proto::kavach::v1::{
 };
 
 pub fn proto_to_domain(request: ProtoEvaluateRequest) -> Result<EvaluateRequest, ApiError> {
-    let consent = request
-        .consent
-        .ok_or_else(|| ApiError::BadRequest("missing consent".into()))?;
     let input = request
         .input
         .ok_or_else(|| ApiError::BadRequest("missing input".into()))?;
@@ -24,15 +21,20 @@ pub fn proto_to_domain(request: ProtoEvaluateRequest) -> Result<EvaluateRequest,
         model_id: request.model_id,
         model_version: request.model_version,
         purpose: request.purpose,
-        consent: Consent {
-            purpose_id: consent.purpose_id,
-            timestamp: timestamp_to_datetime(
-                consent
-                    .timestamp
-                    .ok_or_else(|| ApiError::BadRequest("missing consent.timestamp".into()))?,
-            )?,
-            valid: consent.valid,
-        },
+        // Absent consent is a decision (BLOCK), not a bad request; a consent
+        // without its timestamp is malformed.
+        consent: request
+            .consent
+            .map(|consent| {
+                Ok::<_, ApiError>(Consent {
+                    purpose_id: consent.purpose_id,
+                    timestamp: timestamp_to_datetime(consent.timestamp.ok_or_else(|| {
+                        ApiError::BadRequest("missing consent.timestamp".into())
+                    })?)?,
+                    valid: consent.valid,
+                })
+            })
+            .transpose()?,
         input: struct_to_json(&input),
         output: request.output.as_ref().map(struct_to_json),
         score: request.score,

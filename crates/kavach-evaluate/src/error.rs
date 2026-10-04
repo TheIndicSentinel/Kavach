@@ -33,9 +33,9 @@ impl EvaluateError {
 
     pub fn from_domain(err: DomainError) -> Self {
         match err {
-            DomainError::ClockSkew { .. } | DomainError::ConsentPurposeMismatch { .. } => {
-                Self::Validation(err.to_string())
-            }
+            DomainError::ClockSkew { .. }
+            | DomainError::ConsentMissing
+            | DomainError::ConsentPurposeMismatch { .. } => Self::Validation(err.to_string()),
             other => Self::Domain(other),
         }
     }

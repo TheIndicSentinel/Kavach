@@ -61,7 +61,7 @@ async fn evaluate_golden_clean_request() {
         serde_json::from_value(request_json["request"].clone()).unwrap();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
     let payload = serde_json::to_vec(&request).unwrap();
 
     let response = app
@@ -84,6 +84,67 @@ async fn evaluate_golden_clean_request() {
     assert!(parsed["evidence_id"].as_str().is_some());
 }
 
+/// ADR-001 §9: consent presence is an engine check. A request with no
+/// consent gets a recorded BLOCK; a consent without its timestamp is
+/// malformed and refused.
+#[tokio::test]
+async fn evaluate_blocks_a_missing_consent_and_refuses_a_malformed_one() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state"),
+    );
+    let body = include_str!("../../../golden/finance/v0/credit_clean.json");
+    let request_json: serde_json::Value = serde_json::from_str(body).unwrap();
+    let mut request = request_json["request"].clone();
+    request["decision_time"] = Utc::now().to_rfc3339().into();
+    let post = |payload: serde_json::Value| {
+        let app = router(Arc::clone(&state));
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/v1/evaluate")
+                        .header("content-type", "application/json")
+                        .body(Body::from(serde_json::to_vec(&payload).unwrap()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_default(),
+            )
+        }
+    };
+
+    let mut missing = request.clone();
+    missing.as_object_mut().unwrap().remove("consent");
+    missing["correlation_id"] = "no-consent-1".into();
+    let (status, parsed) = post(missing).await;
+    assert_eq!(status, StatusCode::OK, "{parsed}");
+    assert_eq!(parsed["policy_decision"], "BLOCK");
+    // The reference model runs in shadow mode: the sync reply is PASS.
+    assert_eq!(parsed["returned_decision"], "PASS");
+    assert!(parsed["reason_codes"]
+        .to_string()
+        .contains("CONSENT_MISMATCH"));
+    assert!(parsed["evidence_id"].as_str().is_some(), "recorded");
+
+    let mut malformed = request.clone();
+    malformed["consent"]
+        .as_object_mut()
+        .unwrap()
+        .remove("timestamp");
+    malformed["correlation_id"] = "bad-consent-1".into();
+    let (status, _) = post(malformed).await;
+    assert!(status.is_client_error(), "{status}");
+}
+
 /// serde_json would read the raw-value key's value as a string of JSON
 /// inside `input`; the body is refused instead, and nothing is evaluated.
 #[tokio::test]
@@ -100,7 +161,7 @@ async fn evaluate_refuses_the_serde_raw_value_key() {
         serde_json::from_value(request_json["request"].clone()).unwrap();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
     let mut value = serde_json::to_value(&request).unwrap();
     value["input"] = serde_json::json!({
         "$serde_json::private::RawValue": "{\"debt_ratio\":0.1}"
@@ -144,7 +205,7 @@ async fn metrics_endpoint_exposes_prometheus_text() {
         serde_json::from_value(request_json["request"].clone()).unwrap();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
     let payload = serde_json::to_vec(&request).unwrap();
 
     let evaluate_response = app
@@ -251,7 +312,7 @@ async fn cedar_requires_principal_header_for_evaluate() {
         serde_json::from_value(request_json["request"].clone()).unwrap();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
     let payload = serde_json::to_vec(&request).unwrap();
 
     let response = app
@@ -279,7 +340,7 @@ async fn cedar_operator_may_evaluate() {
         serde_json::from_value(request_json["request"].clone()).unwrap();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
     let payload = serde_json::to_vec(&request).unwrap();
 
     let response = app
@@ -308,7 +369,7 @@ async fn cedar_viewer_cannot_evaluate() {
         serde_json::from_value(request_json["request"].clone()).unwrap();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
     let payload = serde_json::to_vec(&request).unwrap();
 
     let response = app
@@ -803,7 +864,7 @@ async fn vendor_enforce_draft_rejected_on_evaluate() {
     request.model_version = "1.0.0".into();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
     let payload = serde_json::to_vec(&request).unwrap();
 
     let response = app
@@ -912,7 +973,7 @@ async fn erase_evidence_tombstones_memory_chain_row() {
         serde_json::from_value(request_json["request"].clone()).unwrap();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
     let payload = serde_json::to_vec(&request).unwrap();
 
     let evaluate = app
@@ -1219,7 +1280,7 @@ async fn evaluate_idempotency_conflict_returns_409() {
         serde_json::from_value(request_json["request"].clone()).unwrap();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
 
     let post = |payload: Vec<u8>| {
         router(state.clone()).oneshot(
@@ -1258,7 +1319,7 @@ async fn hmac_v2_accepts_once_and_rejects_replay_and_v1() {
         serde_json::from_value(request_json["request"].clone()).unwrap();
     let now = Utc::now();
     request.decision_time = now;
-    request.consent.timestamp = now;
+    request.consent.as_mut().expect("consent").timestamp = now;
     let payload = serde_json::to_vec(&request).unwrap();
 
     let ts = now.timestamp().to_string();

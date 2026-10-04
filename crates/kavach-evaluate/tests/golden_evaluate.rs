@@ -197,6 +197,53 @@ fn consent_mismatch_is_a_recorded_block() {
     }
 }
 
+/// An absent consent is the same decision as a mismatched one, and the
+/// record holds the input's digest only, never the input.
+#[test]
+fn missing_consent_is_a_recorded_block_with_only_the_input_digest() {
+    let fixtures = load_fixtures(&workspace_golden_v0_dir()).expect("fixtures");
+    let mut request = fixtures
+        .into_iter()
+        .find(|f| f.name == "credit_clean")
+        .expect("fixture")
+        .request;
+    request.consent = None;
+    let mut service = EvaluateService::new(
+        finance_pack(),
+        finance_model_record(GovernanceMode::Enforce),
+        MemoryChain::new(),
+        VecIncidentRecorder::default(),
+        EvaluateConfig::default(),
+    )
+    .expect("service");
+    let result = service
+        .evaluate(
+            EvaluatePath::Sync,
+            &request,
+            server_now_for(request.decision_time),
+        )
+        .expect("a decision, not an error");
+    assert_eq!(result.response.policy_decision, Decision::Block);
+    assert!(result
+        .response
+        .reason_codes
+        .iter()
+        .any(|c| c == kavach_evaluate::CONSENT_MISMATCH));
+
+    let events = service.evidence_store().events();
+    assert_eq!(events.len(), 1);
+    let event = &events[0];
+    assert_eq!(
+        event.input_digest,
+        kavach_domain::golden::canonical_input_digest(&request.input)
+    );
+    assert!(event.pii_tokens.is_empty());
+    let stored = serde_json::to_string(event).unwrap();
+    for key in ["credit_score", "income", "debt_ratio", "loan_amount"] {
+        assert!(!stored.contains(key), "raw input key {key} in evidence");
+    }
+}
+
 /// The engine checks consent itself (ADR-001 §9): a pack with no consent
 /// rule still blocks a mismatch.
 #[test]
