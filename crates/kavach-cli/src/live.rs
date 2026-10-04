@@ -125,7 +125,7 @@ pub struct CallAsk<'a> {
     pub request_id: Option<&'a str>,
 }
 
-fn registry(project: &Project) -> Result<ToolRegistry, CliError> {
+pub(crate) fn registry(project: &Project) -> Result<ToolRegistry, CliError> {
     let kavach = project.kavach_dir();
     let signers = TrustedSigners::from_file(&kavach.join("tool-signers.json"))
         .map_err(|e| CliError::new("cannot read the tool signers", e.message))?;

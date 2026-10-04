@@ -13,13 +13,15 @@ use std::path::Path;
 use std::sync::Arc;
 
 use chrono::{DateTime, FixedOffset, Utc};
-use kavach_api::dataplane::{TestClock, WhatIf};
+use kavach_api::dataplane::WhatIf;
 use kavach_dataplane::tools::{ParamKind, ToolSpec};
 use kavach_dataplane::ToolRequest;
 use kavach_ports::agent_evidence::is_allow;
+use kavach_ports::TimeSource;
 use serde_json::{json, Map, Value};
 
-use crate::dev::{dataplane_config, parse_at, StartedAt};
+use crate::counterfactual::{self, Movable};
+use crate::dev::{dataplane_config, parse_at};
 use crate::output::{CliError, Status, Style, Ui, EXIT_USAGE};
 use crate::project::Project;
 
@@ -177,6 +179,28 @@ fn human(ui: Ui, data: &Value) -> String {
         show(&mandate["assigned_to"])
     );
     let _ = writeln!(out, "  contacts  {} today", data["contacts_today"]);
+    let cf = &data["counterfactuals"];
+    if cf.is_object() {
+        let _ = writeln!(out, "\n  {} (one change at a time):", counterfactual::LABEL);
+        if let Some(why) = cf["withheld"].as_str() {
+            let _ = writeln!(out, "    none: {why}");
+        } else {
+            let changes = cf["changes"].as_array().cloned().unwrap_or_default();
+            if changes.is_empty() {
+                let _ = writeln!(out, "    no single change passes");
+            }
+            for c in changes {
+                let change = match c["change"].as_str() {
+                    Some("at") => format!("at {}", show(&c["value"])),
+                    Some("contacts_today") => {
+                        format!("with {} contacts already today", show(&c["value"]))
+                    }
+                    _ => format!("{}={}", show(&c["change"]), show(&c["value"])),
+                };
+                let _ = writeln!(out, "    {change:<32} → {}", show(&c["decision"]));
+            }
+        }
+    }
     let _ = write!(
         out,
         "\n{}",
@@ -188,28 +212,21 @@ fn human(ui: Ui, data: &Value) -> String {
     out
 }
 
-pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
-    let project = Project::find(dir)?;
-    let at = match ask.at {
-        Some(text) => parse_at(text)?,
-        None => Utc::now(),
-    };
-    let clock = TestClock(Arc::new(StartedAt::new(at)));
-    let what_if = WhatIf::build(&dataplane_config(&project, None), clock, ask.contacts_today)
-        .await
-        .map_err(|e| {
-            CliError::new("cannot load the project's bundle", e).fix("run `kavach doctor`")
-        })?;
-
-    let Some(spec) = what_if.tools().tool(ask.tool) else {
-        let known: Vec<_> = what_if.tools().tools().map(|t| t.name.as_str()).collect();
-        return Err(usage(
-            format!("no tool named {}", ask.tool),
-            format!("the registry has {}", known.join(", ")),
-        ));
-    };
-    let (params, defaulted) = build_params(spec, ask.subject, ask.params)?;
-
+/// A what-if world at `at` with `contacts` made today, and a mandate in it.
+async fn world(
+    project: &Project,
+    ask: &Ask<'_>,
+    clock: &Arc<Movable>,
+    contacts: u32,
+) -> Result<(WhatIf, String), CliError> {
+    let what_if = WhatIf::build(
+        &dataplane_config(project, None),
+        counterfactual::test_clock(clock),
+        contacts,
+    )
+    .await
+    .map_err(|e| CliError::new("cannot load the project's bundle", e).fix("run `kavach doctor`"))?;
+    let at = clock.now().utc;
     let event = kavach_devkit::sor_event(
         &project.bundle(),
         "what-if-1",
@@ -224,13 +241,33 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
             "the dev template assigns borrowers to {DEFAULT_AGENT}"
         ))
     })?;
+    Ok((what_if, mandate_id))
+}
+
+pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
+    let project = Project::find(dir)?;
+    let at = match ask.at {
+        Some(text) => parse_at(text)?,
+        None => Utc::now(),
+    };
+    let clock = Movable::new(at);
+    let (what_if, mandate_id) = world(&project, ask, &clock, ask.contacts_today).await?;
+
+    let Some(spec) = what_if.tools().tool(ask.tool) else {
+        let known: Vec<_> = what_if.tools().tools().map(|t| t.name.as_str()).collect();
+        return Err(usage(
+            format!("no tool named {}", ask.tool),
+            format!("the registry has {}", known.join(", ")),
+        ));
+    };
+    let (params, defaulted) = build_params(spec, ask.subject, ask.params)?;
 
     let decided = what_if
         .precheck(
             ask.agent,
             ask.tool,
             ToolRequest {
-                mandate_id,
+                mandate_id: mandate_id.clone(),
                 request_id: "what-if-1".into(),
                 params: params.clone(),
             },
@@ -243,6 +280,53 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
+
+    // Which single change would pass (business blocks only, never safety).
+    let counterfactuals = if allowed {
+        Value::Null
+    } else if let Some(why) = counterfactual::withheld(&decided.reasons) {
+        json!({ "label": counterfactual::LABEL, "withheld": why, "changes": [] })
+    } else {
+        let trial = counterfactual::Trial {
+            what_if: &what_if,
+            clock: &clock,
+            agent: ask.agent,
+            tool: ask.tool,
+            spec,
+            mandate_id: &mandate_id,
+            at,
+            params: &params,
+        };
+        let contacts = |n: u32| {
+            let (project, params) = (&project, &params);
+            async move {
+                let clock = Movable::new(at);
+                let (what_if, mandate_id) = world(project, ask, &clock, n).await.ok()?;
+                let decided = what_if
+                    .precheck(
+                        ask.agent,
+                        ask.tool,
+                        ToolRequest {
+                            mandate_id,
+                            request_id: "what-if-cf".into(),
+                            params: params.clone(),
+                        },
+                    )
+                    .await
+                    .ok()?;
+                is_allow(decided.decision).then(|| {
+                    serde_json::to_value(decided.decision)
+                        .ok()
+                        .and_then(|v| v.as_str().map(str::to_string))
+                        .unwrap_or_default()
+                })
+            }
+        };
+        let changes =
+            counterfactual::search(&trial, &decided.reasons, ask.contacts_today, contacts).await;
+        json!({ "label": counterfactual::LABEL, "withheld": null, "changes": changes })
+    };
+
     let status = if allowed { Status::Ok } else { Status::Failed };
     let data = json!({
         "decision": decision,
@@ -259,6 +343,7 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
             "subject": ask.subject,
             "assigned_to": ask.mandate_for,
         },
+        "counterfactuals": counterfactuals,
         "recorded": false,
     });
 

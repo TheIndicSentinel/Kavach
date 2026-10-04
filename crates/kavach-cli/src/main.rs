@@ -7,6 +7,7 @@
 //! `NO_COLOR`, no prompts. Nothing is sent anywhere: no telemetry.
 
 mod authorize;
+mod counterfactual;
 mod dev;
 mod doctor;
 mod init;

@@ -376,6 +376,9 @@ fn the_live_path_issues_mandates_and_records_calls() {
         "says it issued one"
     );
 
+    // A business block: `why` points to offline exploration.
+    why_explores_with_placeholders(&dir, doc["reply"]["record_id"].as_str().unwrap());
+
     // Killed without cleaning up: the stale file is detected.
     let _ = stack.0.kill();
     let _ = stack.0.wait();
@@ -489,4 +492,88 @@ fn why_explains_a_record_from_a_verified_bundle() {
     let out = run(&copy, &inside);
     assert_eq!(out.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&out.stdout).contains("keys"));
+}
+
+#[test]
+fn authorize_suggests_the_smallest_single_change_for_business_blocks_only() {
+    let dir = scratch("counterfactual");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    let ask = |args: &[&str]| {
+        let mut all = vec!["--json", "authorize"];
+        all.extend_from_slice(args);
+        json(&kavach(&dir, &all))
+    };
+    let first = |doc: &Value| doc["counterfactuals"]["changes"][0].clone();
+
+    let late = ask(&["send_reminder", "--at", "20:30"]);
+    assert_eq!(
+        late["counterfactuals"]["label"],
+        "what-if under current policies"
+    );
+    assert_eq!(
+        first(&late),
+        serde_json::json!({ "change": "at", "value": "08:00 IST tomorrow", "decision": "PASS" })
+    );
+    let capped = ask(&["send_reminder", "--at", "11:00", "--contacts-today", "5"]);
+    assert_eq!(first(&capped)["change"], "contacts_today");
+    assert_eq!(first(&capped)["value"], "2");
+    let sms = ask(&["send_reminder", "--at", "11:00", "-p", "channel=sms"]);
+    assert_eq!(first(&sms)["value"], "whatsapp");
+    let waiver = ask(&["propose_plan", "--at", "11:00", "-p", "waiver_bps=2500"]);
+    assert_eq!(first(&waiver)["change"], "waiver_bps");
+    assert_eq!(first(&waiver)["value"], "1000");
+
+    // Safety blocks get no suggestions.
+    for args in [
+        &[
+            "send_reminder",
+            "--at",
+            "11:00",
+            "-p",
+            "subject_ref=ref:borrower:9876543210",
+        ][..],
+        &[
+            "send_reminder",
+            "--at",
+            "20:30",
+            "-p",
+            "subject_ref=ref:borrower:B-1",
+        ],
+        &[
+            "send_reminder",
+            "--at",
+            "11:00",
+            "--agent",
+            "translation-agent",
+        ],
+    ] {
+        let doc = ask(args);
+        assert!(
+            doc["counterfactuals"]["withheld"].is_string(),
+            "{args:?}: {doc}"
+        );
+        assert_eq!(
+            doc["counterfactuals"]["changes"],
+            serde_json::json!([]),
+            "{args:?}"
+        );
+    }
+    // An allowed call has none.
+    assert!(ask(&["send_reminder", "--at", "11:00"])["counterfactuals"].is_null());
+}
+
+/// `why` on a business block points to offline exploration, with
+/// placeholders only.
+fn why_explores_with_placeholders(dir: &Path, record_id: &str) {
+    let why = json(&kavach(dir, &["--json", "why", record_id]));
+    let explore = why["explore"].as_str().unwrap_or_default();
+    assert!(
+        explore.starts_with("kavach authorize send_reminder"),
+        "{why}"
+    );
+    assert!(explore.contains("-p channel=<value>"), "{explore}");
+    assert!(
+        !explore.contains("sms") && !explore.contains("ref:"),
+        "{explore}"
+    );
 }
