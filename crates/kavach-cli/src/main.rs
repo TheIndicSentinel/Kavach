@@ -206,9 +206,20 @@ enum DevCommand {
         /// allowed 08:00–19:00 IST, so demos outside those hours need it.
         #[arg(long, value_name = "HH:MM", value_parser = dev::parse_hhmm)]
         at: Option<String>,
+        /// A fixed clock for development (HH:MM = IST on 2026-10-01, or
+        /// RFC 3339): stays put until moved forward with `kavach dev clock`.
+        /// Evidence written under it is marked dev_fixed.
+        #[arg(long, value_name = "TIME", conflicts_with = "at")]
+        clock: Option<String>,
         /// Start, print where everything is, and exit (for scripts and CI).
         #[arg(long, hide = true)]
         exit_when_ready: bool,
+    },
+    /// Move the running stack's fixed clock forward (`dev up --clock` only).
+    /// HH:MM is its next occurrence after the stack's time; RFC 3339 as given.
+    Clock {
+        /// HH:MM (IST) or RFC 3339; never earlier than the stack's time.
+        time: String,
     },
 }
 
@@ -332,13 +343,33 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             )
             .await,
         ),
-        Command::Dev(DevCommand::Up {
+        Command::Dev(command) => dev_command(ui, cli, command).await,
+    }
+}
+
+/// `kavach dev up` and `kavach dev clock`.
+async fn dev_command(
+    ui: Ui,
+    cli: &Cli,
+    command: &DevCommand,
+) -> (&'static str, Result<i32, CliError>) {
+    match command {
+        DevCommand::Up {
             at,
+            clock,
             exit_when_ready,
-        }) => (
+        } => (
             "dev up",
-            dev::up(&ui, &cli.project, at.as_deref(), *exit_when_ready).await,
+            dev::up(
+                &ui,
+                &cli.project,
+                at.as_deref(),
+                clock.as_deref(),
+                *exit_when_ready,
+            )
+            .await,
         ),
+        DevCommand::Clock { time } => ("dev clock", dev::move_clock(&ui, &cli.project, time).await),
     }
 }
 

@@ -179,7 +179,8 @@ fn dev_up_starts_and_reports_its_endpoints() {
     let doc = json(&out);
     assert_eq!(doc["command"], "dev up");
     assert_eq!(doc["store"], "memory");
-    assert_eq!(doc["clock"], "11:00 IST");
+    assert_eq!(doc["clock"]["kind"], "started_at");
+    assert_eq!(doc["clock"]["development_only"], true);
     let operator = doc["endpoints"]["operator"].as_str().unwrap();
     assert!(operator.starts_with("http://127.0.0.1:"), "{operator}");
 
@@ -882,4 +883,75 @@ fn dev_up_requires_the_operator_token_and_a_local_host() {
             "{name}"
         );
     }
+}
+
+/// `dev up --clock`: a fixed dev clock, moved only forward, that marks
+/// evidence `dev_fixed`. The same stack allows at 11:00 and blocks at 20:30.
+#[test]
+fn a_fixed_dev_clock_moves_forward_and_marks_evidence() {
+    let dir = scratch("clock");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    use_free_ports(&dir);
+
+    let banner = kavach(
+        &dir,
+        &[
+            "--json",
+            "dev",
+            "up",
+            "--clock",
+            "11:00",
+            "--exit-when-ready",
+        ],
+    );
+    let doc = json(&banner);
+    assert_eq!(banner.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["clock"]["kind"], "fixed");
+    assert_eq!(doc["clock"]["at"], "2026-10-01T05:30:00Z");
+
+    let stack = dev_up(&dir, &["--clock", "11:00"]);
+    let call = |args: &[&str]| {
+        let mut all = vec!["--json", "call", "send_reminder", "--issue-mandate"];
+        all.extend_from_slice(args);
+        json(&kavach(&dir, &all))
+    };
+    let allowed = call(&[]);
+    assert_eq!(allowed["decision"], "PASS", "{allowed}");
+    let record = allowed["reply"]["record_id"].as_str().unwrap().to_string();
+
+    assert_eq!(
+        kavach(&dir, &["dev", "clock", "20:30"]).status.code(),
+        Some(0)
+    );
+    let late = call(&[]);
+    assert_eq!(late["decision"], "BLOCK", "{late}");
+    assert!(late["reply"]["reasons"]
+        .to_string()
+        .contains("contact-window"));
+
+    // Only forward.
+    assert_eq!(
+        kavach(&dir, &["dev", "clock", "2026-10-01T05:00:00Z"])
+            .status
+            .code(),
+        Some(64)
+    );
+    // HH:MM is the next occurrence: 11:00 tomorrow.
+    let moved = json(&kavach(&dir, &["--json", "dev", "clock", "11:00"]));
+    assert_eq!(moved["to"], "2026-10-02T05:30:00Z", "{moved}");
+
+    let why = json(&kavach(&dir, &["--json", "why", &record]));
+    assert_eq!(why["time_sync"]["status"], "dev_fixed", "{why}");
+    drop(stack);
+
+    // A started-at clock (--at) is marked too, and cannot be moved.
+    let _stack = dev_up(&dir, &["--at", "11:00"]);
+    let ran = call(&[]);
+    let record = ran["reply"]["record_id"].as_str().unwrap().to_string();
+    let why = json(&kavach(&dir, &["--json", "why", &record]));
+    assert_eq!(why["time_sync"]["status"], "dev_fixed", "{why}");
+    assert_eq!(
+        kavach(&dir, &["dev", "clock", "12:00"]).status.code(),
+        Some(1)
+    );
 }

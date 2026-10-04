@@ -275,10 +275,15 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
     }
     let agent = read(&bundle.join("agents/collections-agent.jwt"))?;
     let event_id = format!("attack-evt-{}", uuid::Uuid::new_v4().simple());
-    let event =
-        kavach_devkit::sor_event(&bundle, &event_id, SUBJECT, "collections-agent", run.now())
-            .await
-            .map_err(|e| CliError::new("cannot sign the system-of-record event", e))?;
+    let event = kavach_devkit::sor_event(
+        &bundle,
+        &event_id,
+        SUBJECT,
+        "collections-agent",
+        run.stack_now(&project).await?,
+    )
+    .await
+    .map_err(|e| CliError::new("cannot sign the system-of-record event", e))?;
     let issued: Value = http
         .post(format!("http://{}/v1/sor/events", run.sor))
         .json(&json!({ "event": event }))

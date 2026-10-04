@@ -54,9 +54,15 @@ async fn issue(
     event_id: Option<&str>,
 ) -> Result<Issued, CliError> {
     let event_id = event_id.map_or_else(|| fresh_id("evt"), str::to_string);
-    let event = kavach_devkit::sor_event(&project.bundle(), &event_id, subject, agent, run.now())
-        .await
-        .map_err(|e| CliError::new("cannot sign the event", e))?;
+    let event = kavach_devkit::sor_event(
+        &project.bundle(),
+        &event_id,
+        subject,
+        agent,
+        run.stack_now(project).await?,
+    )
+    .await
+    .map_err(|e| CliError::new("cannot sign the event", e))?;
     let response = client()?
         .post(format!("http://{}/v1/sor/events", run.sor))
         .json(&json!({ "event": event }))
