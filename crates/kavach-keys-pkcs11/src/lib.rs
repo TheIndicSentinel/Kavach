@@ -407,7 +407,10 @@ pub fn read_pin_file(path: &std::path::Path) -> Result<AuthPin, PortError> {
         .map_err(|e| PortError::unavailable(format!("HSM PIN file {}: {e}", path.display())))?;
     let pin = text.trim();
     if pin.is_empty() {
-        return Err(PortError::invalid(format!("HSM PIN file {} is empty", path.display())));
+        return Err(PortError::invalid(format!(
+            "HSM PIN file {} is empty",
+            path.display()
+        )));
     }
     Ok(AuthPin::new(pin.into()))
 }
