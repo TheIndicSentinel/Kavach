@@ -51,11 +51,11 @@ mod tests {
             model_id: "m".into(),
             model_version: "1".into(),
             purpose: "credit_decision".into(),
-            consent: Consent {
+            consent: Some(Consent {
                 purpose_id: "credit_decision".into(),
                 timestamp: Utc::now(),
                 valid: None,
-            },
+            }),
             input: serde_json::json!({ "debt_ratio": 0.32 }),
             output: None,
             score: None,

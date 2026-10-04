@@ -11,6 +11,9 @@ pub enum DomainError {
     #[error("clock skew exceeded: {skew_seconds}s > max {max_seconds}s")]
     ClockSkew { skew_seconds: i64, max_seconds: i64 },
 
+    #[error("consent missing")]
+    ConsentMissing,
+
     #[error("consent purpose mismatch: expected {expected}, got {actual}")]
     ConsentPurposeMismatch { expected: String, actual: String },
 

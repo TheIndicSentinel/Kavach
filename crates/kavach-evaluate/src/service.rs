@@ -154,8 +154,9 @@ where
                 ),
             };
         // Consent is a decision step (ADR-001 §7 step 4, §9), not request
-        // validation: a purpose mismatch is a recorded BLOCK with
-        // CONSENT_MISMATCH, whatever rules the pack carries.
+        // validation: an absent consent or a purpose mismatch is a recorded
+        // BLOCK with CONSENT_MISMATCH (the pack's code for both), whatever
+        // rules the pack carries.
         if request.validate_consent().is_err() {
             evaluation.policy_decision = Decision::Block;
             if !evaluation

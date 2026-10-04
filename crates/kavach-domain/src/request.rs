@@ -10,7 +10,10 @@ pub struct EvaluateRequest {
     pub model_id: String,
     pub model_version: String,
     pub purpose: String,
-    pub consent: Consent,
+    /// Absent consent is a decision (BLOCK), not malformed input (ADR-001
+    /// §9); a consent object that is present must be well formed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consent: Option<Consent>,
     pub input: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output: Option<Value>,
@@ -36,10 +39,13 @@ pub struct Consent {
 impl EvaluateRequest {
     /// Consent presence + purpose match only (ADR-001 §9).
     pub fn validate_consent(&self) -> Result<(), DomainError> {
-        if self.consent.purpose_id != self.purpose {
+        let Some(consent) = &self.consent else {
+            return Err(DomainError::ConsentMissing);
+        };
+        if consent.purpose_id != self.purpose {
             return Err(DomainError::ConsentPurposeMismatch {
                 expected: self.purpose.clone(),
-                actual: self.consent.purpose_id.clone(),
+                actual: consent.purpose_id.clone(),
             });
         }
         Ok(())
