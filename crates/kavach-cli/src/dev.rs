@@ -107,7 +107,12 @@ fn api_config(project: &Project, clock: Option<TestClock>) -> ApiConfig {
         model_path: project.bundle().join(MODEL_FILE),
         hmac_secret: None,
         evidence_store,
-        access_control: AccessControlKind::None,
+        // The operator API needs the project's operator token (Cedar, the
+        // bundled policies); nothing on this machine reaches it without.
+        access_control: AccessControlKind::Cedar {
+            policy_path: project.kavach_dir().join(CEDAR_POLICIES),
+            entities_path: project.kavach_dir().join(CEDAR_ENTITIES),
+        },
         tls: None,
         pack_sha256: None,
         // With Postgres, re-pin the bundled pack and model at each start (an
@@ -208,6 +213,93 @@ pub(crate) fn dataplane_config(project: &Project, clock: Option<TestClock>) -> D
     }
 }
 
+/// The operator API's Cedar policies and entities, in the bundle.
+pub(crate) const CEDAR_POLICIES: &str = "cedar/kavach.cedar";
+pub(crate) const CEDAR_ENTITIES: &str = "cedar/entities.json";
+
+/// Writes the operator API's access control files if they are missing
+/// (projects made before `dev up` required the operator token).
+pub(crate) fn ensure_cedar(kavach_dir: &Path) -> Result<(), CliError> {
+    let entities = json!([
+        { "uid": { "type": "Kavach::System", "id": "api" }, "attrs": {}, "parents": [] },
+        { "uid": { "type": "Kavach::Group", "id": "admins" }, "attrs": {}, "parents": [] },
+        { "uid": { "type": "Kavach::Group", "id": "operators" }, "attrs": {}, "parents": [] },
+        { "uid": { "type": "Kavach::Group", "id": "viewers" }, "attrs": {}, "parents": [] },
+        { "uid": { "type": "Kavach::Group", "id": "change-approvers" }, "attrs": {}, "parents": [] }
+    ]);
+    for (file, text) in [
+        (CEDAR_POLICIES, kavach_auth::API_POLICIES.to_string()),
+        (
+            CEDAR_ENTITIES,
+            serde_json::to_string_pretty(&entities).unwrap_or_default() + "\n",
+        ),
+    ] {
+        let path = kavach_dir.join(file);
+        if path.exists() {
+            continue;
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CliError::new(format!("cannot create {}", parent.display()), e))?;
+        }
+        std::fs::write(&path, text)
+            .map_err(|e| CliError::new(format!("cannot write {}", path.display()), e))?;
+    }
+    Ok(())
+}
+
+/// Whether `host` (a Host header) names this machine: `localhost`,
+/// `127.0.0.1` or `[::1]`, with or without a port. Anything else, as a web
+/// page using DNS rebinding would send, is refused.
+fn local_host(host: &str) -> bool {
+    let name = if let Some(rest) = host.strip_prefix('[') {
+        rest.split(']').next().map(|h| format!("[{h}]"))
+    } else {
+        host.split(':').next().map(str::to_string)
+    };
+    matches!(
+        name.as_deref().map(str::to_ascii_lowercase).as_deref(),
+        Some("localhost" | "127.0.0.1" | "[::1]")
+    )
+}
+
+/// Every `dev up` listener: refuses a foreign Host header (421) and the
+/// self-asserted `X-Kavach-Principal` header (401), which `--insecure-dev`
+/// would otherwise accept as an identity.
+async fn dev_guard(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    let host = request
+        .headers()
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default();
+    if !local_host(host) {
+        return (
+            StatusCode::MISDIRECTED_REQUEST,
+            axum::Json(json!({ "error": "kavach dev up answers only to localhost and 127.0.0.1" })),
+        )
+            .into_response();
+    }
+    if request.headers().contains_key("x-kavach-principal") {
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(
+                json!({ "error": "X-Kavach-Principal is not accepted: send a bearer token" }),
+            ),
+        )
+            .into_response();
+    }
+    next.run(request).await
+}
+
+fn guarded(router: axum::Router) -> axum::Router {
+    router.layer(axum::middleware::from_fn(dev_guard))
+}
+
 /// The mock provider: trusts the bundle's credential key, serves HTTPS.
 async fn provider(
     project: &Project,
@@ -259,13 +351,13 @@ async fn provider(
     // The inbox, on its own loopback listener (never on the provider's).
     let inspect = tokio::net::TcpListener::from_std(inspect)
         .map_err(|e| CliError::new("cannot start the provider inbox listener", e))?;
-    let inbox = kavach_mock_provider::inspect_router(Arc::clone(&mock));
+    let inbox = guarded(kavach_mock_provider::inspect_router(Arc::clone(&mock)));
     tokio::spawn(async move {
         let _ = axum::serve(inspect, inbox).await;
     });
     Ok(tokio::spawn(async move {
         let _ = server
-            .serve(kavach_mock_provider::router(mock).into_make_service())
+            .serve(guarded(kavach_mock_provider::router(mock)).into_make_service())
             .await;
     }))
 }
@@ -313,6 +405,7 @@ pub async fn up(
         None => Arc::new(kavach_ports::SystemClock),
     };
     point_providers(&project)?;
+    ensure_cedar(&project.kavach_dir())?;
     let provider_task =
         provider(&project, provider_listener, inspect_listener, clock.clone()).await?;
     let config = api_config(&project, started_at.map(|_| TestClock(clock.clone())));
@@ -354,7 +447,7 @@ pub async fn up(
         bundle.display(),
         ui.paint(
             Style::Warn,
-            "DEVELOPMENT ONLY: --insecure-dev, dev- keys, open operator API on loopback."
+            "DEVELOPMENT ONLY: --insecure-dev, dev- keys, loopback. The operator API needs .kavach/operator.jwt."
         ),
     );
     if exit_when_ready {
@@ -384,9 +477,9 @@ pub async fn up(
             .map_err(|e| e.to_string())
     };
     tokio::select! {
-        r = serve(router(state.clone()), operator) => r.map_err(|e| CliError::new("the operator listener stopped", e))?,
-        r = serve(agent_router(state.clone()), agent) => r.map_err(|e| CliError::new("the agent listener stopped", e))?,
-        r = serve(sor_router(state.clone()), sor) => r.map_err(|e| CliError::new("the sor listener stopped", e))?,
+        r = serve(guarded(router(state.clone())), operator) => r.map_err(|e| CliError::new("the operator listener stopped", e))?,
+        r = serve(guarded(agent_router(state.clone())), agent) => r.map_err(|e| CliError::new("the agent listener stopped", e))?,
+        r = serve(guarded(sor_router(state.clone())), sor) => r.map_err(|e| CliError::new("the sor listener stopped", e))?,
         () = stop_signal() => {}
     }
     provider_task.abort();
@@ -394,4 +487,34 @@ pub async fn up(
         crate::output::print_redacted("Stopped.");
     }
     Ok(code)
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::local_host;
+
+    #[test]
+    fn only_this_machine_is_a_local_host() {
+        for ok in [
+            "localhost",
+            "localhost:8080",
+            "127.0.0.1",
+            "127.0.0.1:8091",
+            "[::1]:8080",
+            "LOCALHOST:1",
+        ] {
+            assert!(local_host(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "evil.example",
+            "evil.example:8080",
+            "127.0.0.1.evil.example",
+            "localhost.evil.example:80",
+            "[::2]:8080",
+            "10.0.0.1",
+        ] {
+            assert!(!local_host(bad), "{bad}");
+        }
+    }
 }

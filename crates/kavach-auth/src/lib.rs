@@ -17,6 +17,8 @@ const SYSTEM_RESOURCE: &str = r#"Kavach::System::"api""#;
 /// Cedar schema for API RBAC. It is part of the API contract, so it is
 /// compiled in; deployments supply policies and entities.
 pub const API_SCHEMA: &str = include_str!("../policies/schema.cedarschema");
+/// The bundled operator API policies (`kavach dev up` runs with them).
+pub const API_POLICIES: &str = include_str!("../policies/kavach.cedar");
 
 fn api_schema() -> Result<Schema, AuthError> {
     Schema::from_cedarschema_str(API_SCHEMA)
