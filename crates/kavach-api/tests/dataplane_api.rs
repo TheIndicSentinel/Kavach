@@ -130,6 +130,11 @@ async fn authorize_is_an_agent_only_precheck() {
         (status, body["decision"].clone()),
         (StatusCode::OK, json!("BLOCK"))
     );
+    // A blocked agent gets the decision and reasons, nothing on how to
+    // pass: counterfactuals are offline and CLI-only (no probing oracle).
+    let mut keys: Vec<_> = body.as_object().unwrap().keys().cloned().collect();
+    keys.sort();
+    assert_eq!(keys, ["decision", "precheck", "reasons"], "{body}");
 }
 
 #[tokio::test]
