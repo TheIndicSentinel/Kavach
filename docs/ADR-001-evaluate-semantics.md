@@ -100,6 +100,7 @@ Per request, in order:
 
 - `input` is **RAM-only** for CEL evaluation.
 - Evidence stores `input_digest` (SHA-256 of canonical JSON) and `pii_tokens[]` only.
+- *Amendment (2026-10):* evidence timestamps (`decision_time`, `evaluated_at`) are kept at microsecond precision and hashed at that precision, so an event read back from Postgres hashes to its stored hash. The hash rule is unchanged; see `DECISION_EVENT_COMPAT.md`.
 - Never persist raw `input` in Postgres for debug.
 
 ### 9. Consent
