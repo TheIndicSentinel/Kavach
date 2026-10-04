@@ -344,6 +344,8 @@ fn the_live_path_issues_mandates_and_records_calls() {
     assert_eq!(doc["verification"]["against"], "dev keys");
     assert_eq!(doc["verification"]["chain"]["checked"], false);
     assert!(doc["reasons"][0]["meaning"].is_string(), "{doc}");
+    let cedar = doc["policy_versions"]["cedar"].as_str().unwrap();
+    assert_eq!(cedar.len(), "sha256:".len() + 64, "printed whole: {cedar}");
     let human = kavach(&dir, &["why", &record_id]);
     let text = String::from_utf8_lossy(&human.stdout);
     assert!(
@@ -686,6 +688,10 @@ fn why_explains_a_credit_decision_without_claiming_a_signature() {
     assert_eq!(doc["integrity"]["signed"], false);
     assert_eq!(doc["reasons"][0]["code"], "CONSENT_MISMATCH");
     assert!(doc["counterfactuals"].is_null() && doc["explore"].is_null());
+    // The digest is a known digest field: printed whole, never masked.
+    let digest = doc["input_digest"].as_str().unwrap();
+    assert_eq!(digest.len(), 64, "{digest}");
+    assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()), "{digest}");
 
     let text = String::from_utf8_lossy(&kavach(&dir, &["why", &id]).stdout).into_owned();
     assert!(

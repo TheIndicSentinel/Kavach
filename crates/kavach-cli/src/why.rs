@@ -28,7 +28,7 @@ use kavach_ports::bundle::RECORDS_FILE;
 use serde_json::{json, Value};
 
 use crate::authorize::usage;
-use crate::output::{CliError, Status, Style, Ui};
+use crate::output::{CliError, Digest, Status, Style, Ui};
 use crate::project::Project;
 use crate::run::RunFile;
 
@@ -378,8 +378,8 @@ fn human(ui: Ui, data: &Value, record: &AgentDecisionRecord) -> String {
     let _ = writeln!(
         out,
         "  policies  cedar {}  tools {}",
-        p.policy_versions.cedar,
-        p.policy_versions.tools.as_deref().unwrap_or("-")
+        Digest(&p.policy_versions.cedar),
+        Digest(p.policy_versions.tools.as_deref().unwrap_or("-"))
     );
     if let Some(command) = data["explore"].as_str() {
         let _ = writeln!(

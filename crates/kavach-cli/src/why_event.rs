@@ -23,7 +23,7 @@ use kavach_evidence::{check_event, parse_export, verify_chain, EventCheck};
 use serde_json::{json, Value};
 
 use crate::authorize::usage;
-use crate::output::{CliError, Status, Style, Ui};
+use crate::output::{CliError, Digest, Status, Style, Ui};
 use crate::project::Project;
 use crate::run::RunFile;
 
@@ -330,7 +330,7 @@ fn human(ui: Ui, data: &Value) -> String {
     let _ = writeln!(
         out,
         "  input     digest {} (the input itself is never stored)",
-        s(&data["input_digest"])
+        Digest(&s(&data["input_digest"]))
     );
     let _ = write!(
         out,
