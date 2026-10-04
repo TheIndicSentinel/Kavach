@@ -89,6 +89,13 @@ kavach why adr:default:0:1 --bundle ./export      # offline, from an evidence bu
 - **Explore:** for a decision blocked by business constraints only, `why` prints the `kavach authorize` command to explore it offline. The command has placeholders (`-p channel=<value>`), never the record's values, which the record does not hold anyway.
 - **`--bundle`:** verifies the whole bundle first, as `kavach-evidence verify-bundle` does (files, chain, checkpoints), then explains the record from it. No network. It exits 2 if the bundle verifies but something is not protected.
 
+**Credit (evaluate) decisions.** `kavach why <evidence-id>` (a UUID, as `/v1/evaluate` returns it) explains a credit decision:
+- both decisions and the governance mode. In shadow mode a PASS return can hide a would-be BLOCK, and the output says so;
+- the reasons, the pack and model versions, and the decision time;
+- the input, only as its digest.
+
+This evidence is hash-chained but **not signed** (v1). Anyone with write access to the database could rewrite a record and rehash the chain, so the output says "hash matches the content; not signed, so this does not prove the record wasn't rewritten". `--export <file>` checks the whole chain of a decision event export first, and reports a break before showing anything. There are no counterfactuals for credit decisions.
+
 ### Policy tests (`kavach policy test`)
 
 `kavach init` writes two starter suites to `policy-tests/`; commit them with your project. `kavach policy test [PATH]` runs every `.yaml` file in `policy-tests/`, or the file or directory you name. Each case gets an `ok` or `FAIL` line. A failing case shows what it expected and what it got, and the command exits 1; an invalid suite exits 64. `--json` gives the per-case results.
