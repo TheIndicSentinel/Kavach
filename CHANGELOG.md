@@ -6,10 +6,13 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Changed
 
-- **Breaking for anyone recomputing evaluate evidence hashes: `decision_time` and `evaluated_at` are now hashed at microsecond precision.** They used to be hashed with nanoseconds, but Postgres keeps microseconds, so an event read back from the database did not hash to its stored hash and could not be re-checked. Both stores now truncate the two timestamps to microseconds **before** hashing, so what is stored is what was hashed.
-  - **The hash rule is unchanged** (same fields, same canonical order). Earlier events still verify wherever their nanoseconds survive, and mixed chains verify; nothing is re-fingerprinted.
+- **Breaking for anyone recomputing evaluate evidence hashes: `DecisionEvent` schema 1.1.0 hashes `decision_time` and `evaluated_at` at microsecond precision.** They used to be hashed with nanoseconds, but Postgres keeps microseconds, so an event read back from the database did not hash to its stored hash and could not be re-checked. Both stores now truncate the two timestamps before hashing, so what is stored is what was hashed.
+  - **The hash rule is unchanged** (same fields, same canonical order); the canonical form of the two values changed, hence the minor version.
+  - **Records at 1.1.0 or later must re-verify exactly.**
+  - **Pre-1.1.0 records** still verify wherever their nanoseconds survive, and mixed chains verify; nothing is re-fingerprinted. Read back from Postgres, a pre-1.1.0 record that fails only as lost precision explains is reported as **legacy: cannot be re-checked**. `kavach-evidence verify` exits 2 with a warning: never "verified", and not called tampered.
+  - **No downgrade:** a pre-1.1.0 record after a 1.1.0 one is refused.
+  - **Pilots should re-baseline:** export, then start a fresh chain.
   - **Independent verifiers** must truncate the two timestamps first.
-  - **Earlier events in Postgres** cannot be re-verified: their nanoseconds were never stored.
   - See `docs/DECISION_EVENT_COMPAT.md`.
 - **Breaking (evaluate API): a consent whose purpose differs from the request's is now a recorded BLOCK with `CONSENT_MISMATCH`, as ADR-001 §7 step 4 and §9 specify.** Until now, `POST /v1/evaluate`, gRPC and batch refused such a request as a validation error (400 / `INVALID_ARGUMENT` / a `validation_error` row) before any decision, and wrote no evidence. Now it gets a decision and an evidence row. In shadow mode the returned decision is PASS, with `policy_decision` BLOCK. The engine applies the check itself, so a pack without a consent rule still blocks a mismatch. Callers that treated the 400 as "consent refused" should read the BLOCK instead.
 - **Breaking (evaluate API): a request with no `consent` object is also a recorded BLOCK with `CONSENT_MISMATCH`** (the pack's code for an absent consent), because ADR-001 §9 makes presence an engine check. `consent` is now optional in the request: HTTP and batch used to refuse a missing field as malformed, and gRPC refused it with `missing consent`. A consent object that is present but malformed, for example without `timestamp`, is still refused. The decision's evidence holds `input_digest` only, never the raw input.
