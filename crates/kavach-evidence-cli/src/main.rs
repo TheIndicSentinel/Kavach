@@ -89,12 +89,28 @@ enum Commands {
         #[arg(long)]
         after_checkpoint: Option<i64>,
         /// Directory holding the export key (`<key-id>.ed25519`, owner-only).
-        #[arg(long, requires = "key_id", conflicts_with = "unsigned")]
+        #[arg(long, requires = "key_id", conflicts_with_all = ["unsigned", "hsm_module"])]
         key_dir: Option<PathBuf>,
         /// The export key: an id starting with `export-`. It belongs to
-        /// whoever exports and is never a key of the API.
-        #[arg(long, requires = "key_dir")]
+        /// whoever exports and is never a key of the API. In a key file
+        /// (`--key-dir`) or an HSM (`--hsm-module`, its label).
+        #[arg(long)]
         key_id: Option<String>,
+        /// The export key is in an HSM: the vendor's PKCS#11 module. The key
+        /// must have been generated in the HSM.
+        #[arg(
+            long,
+            env = "KAVACH_HSM_MODULE",
+            requires_all = ["key_id", "hsm_token_label", "hsm_pin_file"],
+            conflicts_with = "unsigned"
+        )]
+        hsm_module: Option<PathBuf>,
+        /// Label of the token holding the export key.
+        #[arg(long, env = "KAVACH_HSM_TOKEN_LABEL", requires = "hsm_module")]
+        hsm_token_label: Option<String>,
+        /// Owner-only file holding the token's user PIN.
+        #[arg(long, env = "KAVACH_HSM_PIN_FILE", requires = "hsm_module")]
+        hsm_pin_file: Option<PathBuf>,
         /// Write the bundle without a signature. Nothing then vouches for
         /// the set of outcomes, and the verifier says so.
         #[arg(long)]
@@ -248,19 +264,29 @@ fn run(command: Commands) -> Result<(), String> {
             after_checkpoint,
             key_dir,
             key_id,
+            hsm_module,
+            hsm_token_label,
+            hsm_pin_file,
             unsigned,
         } => {
             use kavach_evidence_cli::postgres::Signing;
-            let signing =
-                match (key_dir, key_id, unsigned) {
-                    (Some(key_dir), Some(key_id), false) => Signing::Key { key_dir, key_id },
-                    (None, None, true) => Signing::Unsigned,
-                    _ => return Err(
-                        "sign the bundle with --key-dir and --key-id (an export- key), or pass \
-                         --unsigned to write it without a signature"
+            let signing = match (key_dir, hsm_module, key_id, unsigned) {
+                (Some(key_dir), None, Some(key_id), false) => Signing::Key { key_dir, key_id },
+                (None, Some(module), Some(key_id), false) => Signing::Hsm {
+                    module,
+                    token_label: hsm_token_label.unwrap_or_default(),
+                    pin_file: hsm_pin_file.unwrap_or_default(),
+                    key_id,
+                },
+                (None, None, None, true) => Signing::Unsigned,
+                _ => {
+                    return Err(
+                        "sign the bundle with --key-id (an export- key) and --key-dir or \
+                         --hsm-module, or pass --unsigned to write it without a signature"
                             .into(),
-                    ),
-                };
+                    )
+                }
+            };
             database::export(target, &out, after_checkpoint, &signing)
         }
         #[cfg(feature = "export")]

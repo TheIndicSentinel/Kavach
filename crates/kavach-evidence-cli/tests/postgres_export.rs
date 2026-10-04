@@ -516,3 +516,139 @@ async fn an_unsigned_export_must_be_asked_for_and_says_so() {
     fs::remove_dir_all(&out).unwrap();
     fs::remove_dir_all(&world.key_dir).unwrap();
 }
+
+/// The export key in an HSM (SoftHSM2): generated there, used through
+/// `--hsm-module`, and the bundle verifies with its public half. Needs both
+/// the Postgres test database and a prepared token
+/// (`KAVACH_TEST_PKCS11_MODULE`, `SOFTHSM2_CONF`); skipped otherwise.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_export_signed_with_a_key_in_the_hsm_verifies() {
+    use kavach_ports::KeyAlgorithm;
+
+    let (Some(module), Some(_)) = (
+        std::env::var_os("KAVACH_TEST_PKCS11_MODULE").map(PathBuf::from),
+        std::env::var_os("SOFTHSM2_CONF"),
+    ) else {
+        eprintln!("skipped: set KAVACH_TEST_PKCS11_MODULE and SOFTHSM2_CONF");
+        return;
+    };
+    let Some(mut world) = World::new().await else {
+        return;
+    };
+    let kid = format!(
+        "export-hsm-{}",
+        &uuid::Uuid::new_v4().simple().to_string()[..8]
+    );
+
+    let bytes = hsm_export_key(&module, &kid);
+    world.keys.insert(
+        kid.clone(),
+        PublicKey {
+            kid: kid.clone(),
+            algorithm: KeyAlgorithm::Ed25519,
+            bytes,
+        },
+    );
+    let pin_file = common::scratch("hsm-pin").join("pin");
+    fs::write(&pin_file, "1234").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&pin_file, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let out = common::scratch("pg-export-hsm");
+    let signing = Signing::Hsm {
+        module,
+        token_label: "kavach-test".into(),
+        pin_file,
+        key_id: kid.clone(),
+    };
+    let summary = run_export(&target(&world.auditor), None, &out, &signing)
+        .await
+        .expect("export signed in the HSM");
+    let manifest = verify_bundle(&out, &world.keys);
+    assert_eq!(manifest, summary.manifest);
+    assert_eq!(manifest.payload.key_id.as_deref(), Some(kid.as_str()));
+
+    // Only an export key signs a bundle, also from an HSM: refused before
+    // the HSM is touched.
+    let wrong = Signing::Hsm {
+        module: PathBuf::from("/nonexistent/module.so"),
+        token_label: "kavach-test".into(),
+        pin_file: PathBuf::from("/nonexistent/pin"),
+        key_id: "kavach-evidence-1".into(),
+    };
+    let err = run_export(
+        &target(&world.auditor),
+        None,
+        &common::scratch("pg-export-hsm-wrong"),
+        &wrong,
+    )
+    .await
+    .unwrap_err();
+    assert!(err.to_string().contains("not an export key"), "{err}");
+    fs::remove_dir_all(&out).unwrap();
+}
+
+/// Generates an Ed25519 export key in the prepared SoftHSM token and returns
+/// its public point.
+fn hsm_export_key(module: &Path, kid: &str) -> [u8; 32] {
+    use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
+    use cryptoki::error::{Error as CkError, RvError};
+    use cryptoki::mechanism::Mechanism;
+    use cryptoki::object::{Attribute, AttributeType};
+    use cryptoki::session::UserType;
+    use cryptoki::types::AuthPin;
+
+    let pkcs11 = Pkcs11::new(module).unwrap();
+    match pkcs11.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK)) {
+        Ok(()) | Err(CkError::Pkcs11(RvError::CryptokiAlreadyInitialized, _)) => {}
+        Err(e) => panic!("initialise: {e}"),
+    }
+    let slot = pkcs11
+        .get_slots_with_token()
+        .unwrap()
+        .into_iter()
+        .find(|s| pkcs11.get_token_info(*s).unwrap().label().trim_end() == "kavach-test")
+        .expect("prepared token");
+    let session = pkcs11.open_rw_session(slot).unwrap();
+    match session.login(UserType::User, Some(&AuthPin::new("1234".into()))) {
+        Ok(()) | Err(CkError::Pkcs11(RvError::UserAlreadyLoggedIn, _)) => {}
+        Err(e) => panic!("login: {e}"),
+    }
+    let oid = vec![0x06, 0x03, 0x2B, 0x65, 0x70];
+    let (public, _) = session
+        .generate_key_pair(
+            &Mechanism::EccEdwardsKeyPairGen,
+            &[
+                Attribute::Token(true),
+                Attribute::Label(kid.as_bytes().to_vec()),
+                Attribute::EcParams(oid),
+                Attribute::Verify(true),
+            ],
+            &[
+                Attribute::Token(true),
+                Attribute::Private(true),
+                Attribute::Label(kid.as_bytes().to_vec()),
+                Attribute::Sign(true),
+                Attribute::Sensitive(true),
+                Attribute::Extractable(false),
+            ],
+        )
+        .unwrap();
+    let point = session
+        .get_attributes(public, &[AttributeType::EcPoint])
+        .unwrap()
+        .into_iter()
+        .find_map(|a| match a {
+            Attribute::EcPoint(p) => Some(p),
+            _ => None,
+        })
+        .unwrap();
+    let bytes: [u8; 32] = match point.as_slice() {
+        [0x04, 0x20, rest @ ..] => rest.try_into().unwrap(),
+        raw => raw.try_into().unwrap(),
+    };
+    bytes
+}

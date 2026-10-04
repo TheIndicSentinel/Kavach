@@ -2325,11 +2325,13 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "clap",
+ "cryptoki",
  "ed25519-dalek",
  "hex",
  "kavach-domain",
  "kavach-evidence",
  "kavach-keys",
+ "kavach-keys-pkcs11",
  "kavach-ports",
  "kavach-ports-testkit",
  "kavach-storage",

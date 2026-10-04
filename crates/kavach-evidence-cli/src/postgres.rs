@@ -61,6 +61,15 @@ pub struct Target {
 pub enum Signing {
     /// With the export key `<key_dir>/<key_id>.ed25519`.
     Key { key_dir: PathBuf, key_id: String },
+    /// With the export key `key_id` held in an HSM (its label), through the
+    /// HSM's PKCS#11 module. The key must have been generated in the HSM.
+    Hsm {
+        module: PathBuf,
+        token_label: String,
+        /// Owner-only file holding the token's user PIN.
+        pin_file: PathBuf,
+        key_id: String,
+    },
     /// Not at all: asked for explicitly, and reported by the verifier.
     Unsigned,
 }
@@ -95,18 +104,51 @@ async fn open(target: &Target) -> Result<EvidenceSnapshot, CommandError> {
     Ok(snapshot)
 }
 
-fn export_key(signing: &Signing) -> Result<Option<Ed25519EvidenceSigner>, CommandError> {
+fn require_export_key(key_id: &str) -> Result<(), CommandError> {
+    if is_export_key(key_id) {
+        Ok(())
+    } else {
+        Err(CommandError::Key(format!(
+            "{key_id} is not an export key: its id must start with {EXPORT_KEY_PREFIX}"
+        )))
+    }
+}
+
+fn export_key(signing: &Signing) -> Result<Option<Box<dyn EvidenceSigner>>, CommandError> {
     match signing {
         Signing::Unsigned => Ok(None),
         Signing::Key { key_dir, key_id } => {
             // Before the key file is touched: only an export key signs a bundle.
-            if !is_export_key(key_id) {
-                return Err(CommandError::Key(format!(
-                    "{key_id} is not an export key: its id must start with {EXPORT_KEY_PREFIX}"
-                )));
-            }
+            require_export_key(key_id)?;
             Ed25519EvidenceSigner::from_key_dir(key_dir, key_id)
-                .map(Some)
+                .map(|s| Some(Box::new(s) as Box<dyn EvidenceSigner>))
+                .map_err(|e| CommandError::Key(e.message))
+        }
+        Signing::Hsm {
+            module,
+            token_label,
+            pin_file,
+            key_id,
+        } => {
+            // Before the HSM is touched, as for a key file.
+            require_export_key(key_id)?;
+            let pin = kavach_keys_pkcs11::read_pin_file(pin_file)
+                .map_err(|e| CommandError::Key(e.message))?;
+            let provider =
+                kavach_keys_pkcs11::Pkcs11KeyProvider::open(kavach_keys_pkcs11::Pkcs11Config {
+                    module: module.clone(),
+                    token_label: token_label.clone(),
+                    pin,
+                    key_ids: vec![key_id.clone()],
+                    max_sessions: 1,
+                    // The export key is the exporter's own: no development
+                    // relaxation.
+                    require_hsm_generated: true,
+                })
+                .map_err(|e| CommandError::Key(e.message))?;
+            provider
+                .evidence_signer(key_id)
+                .map(|s| Some(Box::new(s) as Box<dyn EvidenceSigner>))
                 .map_err(|e| CommandError::Key(e.message))
         }
     }
@@ -130,7 +172,7 @@ pub async fn run_export(
         },
         after_checkpoint,
         out,
-        signer: signer.as_ref().map(|s| s as &dyn EvidenceSigner),
+        signer: signer.as_deref(),
         exported_at: Utc::now(),
         exporter: Exporter {
             tool: "kavach-evidence".into(),
