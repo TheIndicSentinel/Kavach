@@ -17,6 +17,7 @@ mod policy_test;
 mod project;
 mod run;
 mod why;
+mod why_event;
 
 use std::path::PathBuf;
 
@@ -150,6 +151,10 @@ enum Command {
         /// taken from the server or the bundle.
         #[arg(long, value_name = "FILE")]
         keys: Option<PathBuf>,
+        /// For an evaluate (credit) decision: read it from this decision
+        /// event export, after checking the whole chain.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["bundle", "keys"])]
+        export: Option<PathBuf>,
     },
 }
 
@@ -266,14 +271,16 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             record_id,
             bundle,
             keys,
+            export,
         } => (
             "why",
-            why::run(
-                &ui,
-                &cli.project,
+            why_dispatch(
+                ui,
+                cli,
                 record_id,
                 bundle.as_deref(),
                 keys.as_deref(),
+                export.as_deref(),
             )
             .await,
         ),
@@ -322,6 +329,36 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             dev::up(&ui, &cli.project, at.as_deref(), *exit_when_ready).await,
         ),
     }
+}
+
+/// `kavach why`: an evidence id (UUID) is an evaluate decision; anything
+/// else is an agent decision record.
+async fn why_dispatch(
+    ui: Ui,
+    cli: &Cli,
+    id: &str,
+    bundle: Option<&std::path::Path>,
+    keys: Option<&std::path::Path>,
+    export: Option<&std::path::Path>,
+) -> Result<i32, CliError> {
+    if why_event::is_evidence_id(id) {
+        if bundle.is_some() {
+            return Err(authorize::usage(
+                "--bundle is for agent decision records",
+                "an evidence id names an evaluate decision",
+            )
+            .fix("use --export <decision event export> for evaluate decisions"));
+        }
+        return why_event::run(&ui, &cli.project, id, export).await;
+    }
+    if export.is_some() {
+        return Err(authorize::usage(
+            "--export is for evaluate decisions",
+            format!("{id} is an agent decision record id"),
+        )
+        .fix("use --bundle <evidence bundle> for agent decision records"));
+    }
+    why::run(&ui, &cli.project, id, bundle, keys).await
 }
 
 /// The command tree, for tests that check help and conventions.

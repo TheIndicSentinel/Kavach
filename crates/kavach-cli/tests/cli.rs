@@ -609,3 +609,99 @@ fn why_explores_with_placeholders(dir: &Path, record_id: &str) {
         "{explore}"
     );
 }
+
+/// A minimal HTTP/1.1 POST over loopback (the tests have no HTTP client).
+fn post_json(addr: &str, path: &str, token: &str, body: &str) -> String {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    write!(
+        stream,
+        "POST {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n\
+         Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+        .split_once("\r\n\r\n")
+        .map(|(_, b)| b.to_string())
+        .unwrap_or_default()
+}
+
+#[test]
+fn why_explains_a_credit_decision_without_claiming_a_signature() {
+    let dir = scratch("why-credit");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    use_free_ports(&dir);
+    let _stack = Stack(
+        Command::new(env!("CARGO_BIN_EXE_kavach"))
+            .arg("-C")
+            .arg(&dir)
+            .args(["dev", "up"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let run = dir.join(".kavach/run.json");
+    for _ in 0..120 {
+        if run.is_file() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let run: Value = serde_json::from_str(&std::fs::read_to_string(&run).unwrap()).unwrap();
+    let operator = run["operator"].as_str().unwrap().to_string();
+    let token = std::fs::read_to_string(dir.join(".kavach/operator.jwt")).unwrap();
+
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../golden/finance/v0/credit_missing_consent.json"),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let mut request = fixture["request"].clone();
+    let now = chrono_now();
+    request["decision_time"] = now.clone().into();
+    request["consent"]["timestamp"] = now.into();
+    let reply = post_json(
+        &operator,
+        "/v1/evaluate",
+        token.trim(),
+        &request.to_string(),
+    );
+    let reply: Value = serde_json::from_str(&reply).unwrap_or_else(|_| panic!("{reply}"));
+    let id = reply["evidence_id"].as_str().unwrap().to_string();
+
+    let out = kavach(&dir, &["--json", "why", &id]);
+    let doc = json(&out);
+    assert_eq!(out.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["policy_decision"], "BLOCK");
+    assert_eq!(doc["returned_decision"], "PASS");
+    assert_eq!(doc["governance_mode"], "shadow");
+    assert_eq!(doc["shadow_hides_decision"], true);
+    assert_eq!(doc["integrity"]["signed"], false);
+    assert_eq!(doc["reasons"][0]["code"], "CONSENT_MISMATCH");
+    assert!(doc["counterfactuals"].is_null() && doc["explore"].is_null());
+
+    let text = String::from_utf8_lossy(&kavach(&dir, &["why", &id]).stdout).into_owned();
+    assert!(
+        text.contains("not signed, so this does not prove the record wasn't rewritten"),
+        "{text}"
+    );
+    assert!(text.contains("hides a would-be BLOCK"), "{text}");
+    assert!(!text.to_lowercase().contains("verified"), "{text}");
+    assert!(!text.contains("signature"), "{text}");
+}
+
+/// Now as RFC 3339, without a chrono dependency in the tests.
+fn chrono_now() -> String {
+    let out = Command::new("date")
+        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
