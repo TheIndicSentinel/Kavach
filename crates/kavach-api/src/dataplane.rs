@@ -671,6 +671,12 @@ impl WhatIf {
         self.core.tools()
     }
 
+    /// The in-memory mandate service (as [`Dataplane::mandates`]), e.g. to
+    /// delegate a what-if mandate through the real delegation rules.
+    pub fn mandates(&self) -> &Arc<Mandates> {
+        &self.mandates
+    }
+
     /// The decision the gateway would make for `agent_id` calling `tool`
     /// now. `Err` for a request the gateway would refuse with 400 or 403.
     pub async fn precheck(
