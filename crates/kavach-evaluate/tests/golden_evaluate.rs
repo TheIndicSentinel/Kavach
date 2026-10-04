@@ -3,7 +3,7 @@
 use chrono::{TimeZone, Utc};
 use kavach_domain::{
     golden::{load_fixtures, workspace_golden_v0_dir},
-    GovernanceMode, ModelRecord,
+    Decision, GovernanceMode, ModelRecord,
 };
 use kavach_evaluate::{
     EvaluateConfig, EvaluateError, EvaluatePath, EvaluateService, VecIncidentRecorder,
@@ -46,10 +46,6 @@ fn golden_v0_enforce_evaluate_matches_expectations() {
     let mut evaluated = 0usize;
 
     for fixture in fixtures {
-        if fixture.name == "credit_missing_consent" {
-            continue;
-        }
-
         let Some(expected_policy) = fixture.expect.policy_decision else {
             continue;
         };
@@ -91,8 +87,8 @@ fn golden_v0_enforce_evaluate_matches_expectations() {
         evaluated += 1;
     }
 
-    assert_eq!(evaluated, 3);
-    assert_eq!(service.evidence_store().events().len(), 3);
+    assert_eq!(evaluated, 4);
+    assert_eq!(service.evidence_store().events().len(), 4);
 }
 
 #[test]
@@ -107,10 +103,6 @@ fn golden_v0_shadow_sync_masks_non_pass_returned_decision() {
             .expect("service");
 
     for fixture in fixtures {
-        if fixture.name == "credit_missing_consent" {
-            continue;
-        }
-
         let Some(expected_returned) = fixture.expect.returned_decision_sync_shadow else {
             continue;
         };
@@ -143,9 +135,6 @@ fn golden_v0_batch_shadow_matches_policy_decision() {
             .expect("service");
 
     for fixture in fixtures {
-        if fixture.name == "credit_missing_consent" {
-            continue;
-        }
         let Some(expected_policy) = fixture.expect.policy_decision else {
             continue;
         };
@@ -166,35 +155,79 @@ fn golden_v0_batch_shadow_matches_policy_decision() {
     }
 }
 
+/// ADR-001 §7 step 4 and §9: consent presence + purpose match is a
+/// decision step. A mismatch is a recorded BLOCK with CONSENT_MISMATCH,
+/// never a request error.
 #[test]
-fn consent_mismatch_is_validation_error_not_rpc_decision() {
-    let pack = finance_pack();
+fn consent_mismatch_is_a_recorded_block() {
     let fixtures = load_fixtures(&workspace_golden_v0_dir()).expect("fixtures");
     let fixture = fixtures
         .into_iter()
         .find(|f| f.name == "credit_missing_consent")
         .expect("fixture");
 
-    let model = finance_model_record(GovernanceMode::Enforce);
-    let chain = MemoryChain::new();
-    let incidents = VecIncidentRecorder::default();
-    let mut service =
-        EvaluateService::new(pack, model, chain, incidents, EvaluateConfig::default())
-            .expect("service");
+    for (mode, returned) in [
+        (GovernanceMode::Enforce, Decision::Block),
+        (GovernanceMode::Shadow, Decision::Pass),
+    ] {
+        let mut service = EvaluateService::new(
+            finance_pack(),
+            finance_model_record(mode),
+            MemoryChain::new(),
+            VecIncidentRecorder::default(),
+            EvaluateConfig::default(),
+        )
+        .expect("service");
+        let result = service
+            .evaluate(
+                EvaluatePath::Sync,
+                &fixture.request,
+                server_now_for(fixture.request.decision_time),
+            )
+            .expect("a decision, not an error");
+        assert_eq!(result.response.policy_decision, Decision::Block, "{mode:?}");
+        assert_eq!(result.response.returned_decision, returned, "{mode:?}");
+        assert!(result
+            .response
+            .reason_codes
+            .iter()
+            .any(|c| c == kavach_evaluate::CONSENT_MISMATCH));
+        assert!(result.response.evidence_id.is_some(), "recorded");
+        assert_eq!(service.evidence_store().events().len(), 1);
+    }
+}
 
-    let err = service
+/// The engine checks consent itself (ADR-001 §9): a pack with no consent
+/// rule still blocks a mismatch.
+#[test]
+fn consent_mismatch_blocks_without_a_pack_rule() {
+    let fixtures = load_fixtures(&workspace_golden_v0_dir()).expect("fixtures");
+    let fixture = fixtures
+        .into_iter()
+        .find(|f| f.name == "credit_missing_consent")
+        .expect("fixture");
+    let mut source = finance_pack().pack;
+    source.rules.retain(|r| !r.id.contains("consent"));
+    let pack = PackLoader::load_from_pack(source).expect("pack without consent rules");
+    let mut service = EvaluateService::new(
+        pack,
+        finance_model_record(GovernanceMode::Enforce),
+        MemoryChain::new(),
+        VecIncidentRecorder::default(),
+        EvaluateConfig::default(),
+    )
+    .expect("service");
+    let result = service
         .evaluate(
             EvaluatePath::Sync,
             &fixture.request,
             server_now_for(fixture.request.decision_time),
         )
-        .expect_err("consent mismatch");
-
-    assert!(matches!(err, EvaluateError::Validation(_)));
+        .expect("decision");
+    assert_eq!(result.response.policy_decision, Decision::Block);
     assert_eq!(
-        service.evidence_store().events().len(),
-        0,
-        "no evidence written"
+        result.response.reason_codes,
+        vec![kavach_evaluate::CONSENT_MISMATCH.to_string()]
     );
 }
 
