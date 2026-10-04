@@ -47,6 +47,10 @@ pub struct RuntimeView {
     /// Evidence checkpoint health; present when the agent surfaces are on.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub checkpoints: Option<crate::checkpoints::CheckpointView>,
+    /// Signing roles held in an HSM and whether it answers now; present
+    /// when an HSM is configured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hsm: Option<crate::signing::HsmStatus>,
 }
 
 pub async fn runtime(
@@ -68,6 +72,10 @@ pub async fn runtime(
         checkpoints: state
             .dataplane()
             .map(|dp| crate::checkpoints::CheckpointView::of(dp.checkpointer())),
+        hsm: match state.dataplane() {
+            Some(dp) => dp.hsm_status().await,
+            None => None,
+        },
     }))
 }
 

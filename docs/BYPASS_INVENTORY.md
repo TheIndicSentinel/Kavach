@@ -63,7 +63,7 @@ These sit below Kavach. Kavach can make their actions detectable, but cannot pre
 | Role | Can | Detected by |
 |---|---|---|
 | Database owner or superuser | Rewrite or delete evidence, audit, change-request and pointer rows; drop the triggers that make them append-only | Agent evidence: an export verified against a checkpoint kept off-host. v1 evidence, audit, change requests and the pointer row: **nothing yet** (signed governance events are planned, P1) |
-| Holder of the signing keys | Sign mandates, credentials, evidence and checkpoints that verify | Only a checkpoint or bundle kept off-host from before the key was misused. Keys are owner-only files, not in an HSM yet (KMS/HSM provider planned) |
+| Holder of the signing keys | Sign mandates, credentials, evidence and checkpoints that verify | Only a checkpoint or bundle kept off-host from before the key was misused. Keys in files (the default) can be copied by whoever can read them; keys listed in `--hsm-keys` cannot leave the HSM, but anyone who can log in to the token (the PIN file) can still have it sign. Keep the PIN file as protected as a key file |
 | Identity-provider administrator | Create identities, put them in groups (including `change-approvers`), give one person two accounts | The IdP's own audit. Kavach records the authenticated identity of every proposer and approver |
 | Root on the API host | Read keys, change memory, change the kernel clock, replace the binary | Nothing inside Kavach. Host hardening and a KMS/HSM are the controls |
 | Root on the Docker host or cluster | Change networks so that an agent reaches more than the gateway | The isolation probe, which runs in CI on the development stack only, not continuously in a deployment |

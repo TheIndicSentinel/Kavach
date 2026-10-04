@@ -323,6 +323,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         provider_timeout_ms: 1500,
         provider_ca: None,
         test_clock: None,
+        hsm: None,
     };
     (dataplane, operator)
 }
@@ -480,22 +481,33 @@ pub async fn gateway(destination: Option<&str>, provider_up: bool) -> Gw {
 }
 
 pub async fn gateway_on(
-    mut api: kavach_api::ApiConfig,
+    api: kavach_api::ApiConfig,
     destination: Option<&str>,
     provider_up: bool,
 ) -> Gw {
+    gateway_with(api, destination, provider_up, None).await
+}
+
+/// As [`gateway_on`]; the provider trusts `credential_key` (default: the
+/// fixture's file credential key).
+pub async fn gateway_with(
+    mut api: kavach_api::ApiConfig,
+    destination: Option<&str>,
+    provider_up: bool,
+    credential_key: Option<PublicKey>,
+) -> Gw {
     let clock = Arc::new(FakeClock::synced_at(ist_today(11)));
-    let credential_public = ed25519_dalek::SigningKey::from_bytes(&[5u8; 32])
-        .verifying_key()
-        .to_bytes();
+    let credential_key = credential_key.unwrap_or_else(|| PublicKey {
+        kid: "kavach-credential-1".into(),
+        algorithm: KeyAlgorithm::Ed25519,
+        bytes: ed25519_dalek::SigningKey::from_bytes(&[5u8; 32])
+            .verifying_key()
+            .to_bytes(),
+    });
     let mut config = ProviderConfig::new(
         "mock-messaging",
         messaging_key(),
-        KeySet::new([PublicKey {
-            kid: "kavach-credential-1".into(),
-            algorithm: KeyAlgorithm::Ed25519,
-            bytes: credential_public,
-        }]),
+        KeySet::new([credential_key]),
     );
     config.hang = StdDuration::from_secs(4);
     let read = Arc::clone(&clock);

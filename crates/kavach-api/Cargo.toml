@@ -20,6 +20,7 @@ kavach-policy = { workspace = true }
 kavach-auth = { workspace = true }
 kavach-storage = { workspace = true }
 kavach-keys = { workspace = true }
+kavach-keys-pkcs11 = { workspace = true }
 kavach-dataplane = { workspace = true }
 kavach-credential = { workspace = true }
 kavach-telemetry = { workspace = true }
@@ -61,6 +62,7 @@ tonic-build.workspace = true
 protoc-bin-vendored = "3.2.0"
 
 [dev-dependencies]
+cryptoki.workspace = true
 kavach-mock-provider = { workspace = true }
 kavach-evidence-cli = { workspace = true }
 kavach-ports-testkit = { workspace = true }

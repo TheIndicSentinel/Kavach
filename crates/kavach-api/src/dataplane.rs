@@ -29,7 +29,9 @@ use kavach_dataplane::{
 };
 use kavach_domain::mandate::{AgentPassport, ConsentRecord, MandateTemplate, RevocationReason};
 use kavach_domain::Decision;
-use kavach_keys::{Ed25519EvidenceSigner, LocalFileKeyProvider, SubjectKeys, TrustedSigners};
+use kavach_keys::{SubjectKeys, TrustedSigners};
+
+use crate::signing::{HsmConfig, HsmRole, HsmStatus, KeySources, SigningKeys};
 use kavach_mandate::jws::KeySet;
 use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus, InMemoryMandateStore};
 use kavach_mandate::{MandateConfig, MandateDeps, MandateService, SorIssuer};
@@ -106,6 +108,9 @@ pub struct DataplaneConfig {
     /// CA certificates (PEM) trusted for provider TLS, besides the system
     /// roots (e.g. a private CA for internal providers).
     pub provider_ca: Option<PathBuf>,
+    /// Signing keys held in an HSM, per role (`--hsm-*`); the other roles
+    /// use their key directories.
+    pub hsm: Option<HsmConfig>,
     /// Tests only (no CLI flag): a controllable trusted clock. Refused
     /// outside `--insecure-dev`.
     pub test_clock: Option<TestClock>,
@@ -131,7 +136,7 @@ struct ProviderEntry {
     endpoint: String,
 }
 
-pub type Broker = JoseCredentialBroker<LocalFileKeyProvider>;
+pub type Broker = JoseCredentialBroker<SigningKeys>;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -392,7 +397,7 @@ impl TimeSource for ClockBackend {
 }
 
 pub type Mandates = MandateService<
-    LocalFileKeyProvider,
+    SigningKeys,
     ReplayBackend,
     InMemoryConsentSource,
     MandateStoreBackend,
@@ -432,6 +437,7 @@ pub struct Dataplane {
     broker: Broker,
     resolver: FixtureResolver,
     forwarder: crate::forward::HttpForwarder,
+    keys: KeySources,
 }
 
 impl Dataplane {
@@ -461,7 +467,8 @@ impl Dataplane {
         };
         let (store, replay, evidence) = select_stores(pool, insecure_dev)?;
 
-        let keys = LocalFileKeyProvider::new(&config.mandate_keys_dir);
+        let sources = open_key_sources(config, insecure_dev)?;
+        let keys = sources.keys(HsmRole::Mandate, &config.mandate_keys_dir);
         let (mandate_config, passports) =
             load_mandate_config(&config.mandate_config, &keys).await?;
         let mandate_kid = mandate_config.signing_kid.clone();
@@ -484,13 +491,15 @@ impl Dataplane {
             )
             .map_err(|e| format!("mandate config: {e}"))?,
         );
-        let signer =
-            Ed25519EvidenceSigner::from_key_dir(&config.evidence_keys_dir, &config.evidence_key_id)
-                .map_err(|e| format!("evidence key: {e}"))?;
+        let signer = sources.evidence_signer(
+            HsmRole::Evidence,
+            &config.evidence_keys_dir,
+            &config.evidence_key_id,
+        )?;
         let resolver = FixtureResolver::from_file(&config.references)
             .map_err(|e| format!("references: {}", e.message))?;
         let forwarder = build_forwarder(config, &tools)?;
-        let broker = build_broker(config, &tools, &mandate_kid, insecure_dev).await?;
+        let broker = build_broker(config, &tools, &mandate_kid, insecure_dev, &sources).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
             .map_err(|e| format!("subject pseudonym key: {e}"))?;
         let evidence = Arc::new(evidence);
@@ -498,26 +507,19 @@ impl Dataplane {
             tenant_id: config.tenant_id.clone(),
             ..AuthorizeConfig::default()
         };
-        let checkpointer = Arc::new(Checkpointer::new(
-            Arc::clone(&evidence),
-            Box::new(checkpoint_signer(config, &mandate_kid, &signer)?),
-            Box::new(clock.clone()),
-            &authorize.tenant_id,
-            authorize.partition_id,
-            CheckpointPolicy {
-                every: std::time::Duration::from_secs(config.checkpoint_interval_seconds),
-                stall_after: std::time::Duration::from_secs(config.checkpoint_stall_seconds),
-                max_clock_error_ms: authorize.max_clock_error_ms,
-                ..CheckpointPolicy::default()
-            },
-            Instant::now(),
+        let checkpointer = Arc::new(build_checkpointer(
+            config,
+            &evidence,
+            checkpoint_signer(config, &mandate_kid, &sources).await?,
+            &clock,
+            &authorize,
         ));
         let core = AuthorizeCore::new(
             Arc::clone(&mandates),
             evidence,
             tools,
             subject_keys,
-            Box::new(signer),
+            signer,
             Box::new(clock),
             authorize,
         )
@@ -542,7 +544,14 @@ impl Dataplane {
             broker,
             resolver,
             forwarder,
+            keys: sources,
         })
+    }
+
+    /// Which signing roles use the HSM and whether it answers now; `None`
+    /// when every key is a key file.
+    pub async fn hsm_status(&self) -> Option<HsmStatus> {
+        self.keys.status().await
     }
 
     pub fn forwarder(&self) -> &crate::forward::HttpForwarder {
@@ -629,11 +638,11 @@ fn refuse_dev_key(what: &str, kid: &str, insecure_dev: bool) -> Result<(), Strin
 /// The checkpoint signer: a key of its own. The same id or the same key
 /// material as the mandate, evidence or credential key is refused, so a
 /// checkpoint signature can never be produced by a key with another job.
-fn checkpoint_signer(
+async fn checkpoint_signer(
     config: &DataplaneConfig,
     mandate_kid: &str,
-    evidence: &Ed25519EvidenceSigner,
-) -> Result<Ed25519EvidenceSigner, String> {
+    sources: &KeySources,
+) -> Result<Box<dyn EvidenceSigner>, String> {
     if !(1..=3600).contains(&config.checkpoint_interval_seconds)
         || config.checkpoint_stall_seconds <= config.checkpoint_interval_seconds
     {
@@ -650,14 +659,79 @@ fn checkpoint_signer(
              credential keys"
         ));
     }
-    let signer = Ed25519EvidenceSigner::from_key_dir(&config.checkpoint_keys_dir, kid)
-        .map_err(|e| format!("checkpoint key: {e}"))?;
-    if signer.public_key().bytes == evidence.public_key().bytes {
+    let signer = sources.evidence_signer(HsmRole::Checkpoint, &config.checkpoint_keys_dir, kid)?;
+    let checkpoint = sources
+        .public_key(HsmRole::Checkpoint, &config.checkpoint_keys_dir, kid)
+        .await?;
+    let evidence = sources
+        .public_key(
+            HsmRole::Evidence,
+            &config.evidence_keys_dir,
+            &config.evidence_key_id,
+        )
+        .await?;
+    if checkpoint.bytes == evidence.bytes {
         return Err(format!(
             "the checkpoint key {kid} has the same key material as the evidence key"
         ));
     }
     Ok(signer)
+}
+
+/// The checkpoint writer over the evidence store, signing with its own key.
+fn build_checkpointer(
+    config: &DataplaneConfig,
+    evidence: &Arc<EvidenceBackend>,
+    signer: Box<dyn EvidenceSigner>,
+    clock: &ClockBackend,
+    authorize: &AuthorizeConfig,
+) -> Checkpointer<EvidenceBackend> {
+    Checkpointer::new(
+        Arc::clone(evidence),
+        signer,
+        Box::new(clock.clone()),
+        &authorize.tenant_id,
+        authorize.partition_id,
+        CheckpointPolicy {
+            every: std::time::Duration::from_secs(config.checkpoint_interval_seconds),
+            stall_after: std::time::Duration::from_secs(config.checkpoint_stall_seconds),
+            max_clock_error_ms: authorize.max_clock_error_ms,
+            ..CheckpointPolicy::default()
+        },
+        Instant::now(),
+    )
+}
+
+/// The mandate configuration's signing key id, read before the rest.
+#[derive(Deserialize)]
+struct SigningKid {
+    signing_kid: String,
+}
+
+/// The HSM for the roles `config.hsm` lists, or key files only. The
+/// mandate key id comes from the mandate configuration.
+fn open_key_sources(config: &DataplaneConfig, insecure_dev: bool) -> Result<KeySources, String> {
+    let Some(hsm) = &config.hsm else {
+        return Ok(KeySources::files());
+    };
+    let mandate: SigningKid = {
+        let text = std::fs::read_to_string(&config.mandate_config)
+            .map_err(|e| format!("mandate config {}: {e}", config.mandate_config.display()))?;
+        serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .ok_or("mandate config: no signing_kid")?
+    };
+    let kid_of = |role| match role {
+        HsmRole::Mandate => mandate.signing_kid.clone(),
+        HsmRole::Evidence => config.evidence_key_id.clone(),
+        HsmRole::Checkpoint => config.checkpoint_key_id.clone(),
+        HsmRole::Credential => config.credential_key_id.clone(),
+    };
+    let sources = KeySources::open(hsm, kid_of, insecure_dev)?;
+    let roles: Vec<_> = hsm.roles.iter().map(|r| r.as_str()).collect();
+    tracing::info!(roles = ?roles, "signing keys in the HSM");
+    Ok(sources)
 }
 
 /// The gateway's forwarder: every provider the registry forwards to needs
@@ -723,6 +797,7 @@ async fn build_broker(
     tools: &ToolRegistry,
     mandate_kid: &str,
     insecure_dev: bool,
+    sources: &KeySources,
 ) -> Result<Broker, String> {
     let kid = &config.credential_key_id;
     if kid == mandate_kid || kid == &config.evidence_key_id {
@@ -730,17 +805,21 @@ async fn build_broker(
             "the credential key {kid} must be a separate key from the mandate and evidence keys"
         ));
     }
-    let keys = LocalFileKeyProvider::new(&config.credential_keys_dir);
+    let keys = sources.keys(HsmRole::Credential, &config.credential_keys_dir);
     let credential = keys
         .public_key(kid)
         .await
         .map_err(|e| format!("credential signing key: {e}"))?;
     let others = [
-        LocalFileKeyProvider::new(&config.mandate_keys_dir)
-            .public_key(mandate_kid)
+        sources
+            .public_key(HsmRole::Mandate, &config.mandate_keys_dir, mandate_kid)
             .await,
-        LocalFileKeyProvider::new(&config.evidence_keys_dir)
-            .public_key(&config.evidence_key_id)
+        sources
+            .public_key(
+                HsmRole::Evidence,
+                &config.evidence_keys_dir,
+                &config.evidence_key_id,
+            )
             .await,
     ];
     if others
@@ -844,7 +923,7 @@ fn select_stores(
 
 async fn load_mandate_config(
     path: &Path,
-    keys: &LocalFileKeyProvider,
+    keys: &SigningKeys,
 ) -> Result<(MandateConfig, BTreeSet<(String, String)>), String> {
     let file: MandateConfigFile = read_json(path, "mandate config")?;
     let mandate_public = keys

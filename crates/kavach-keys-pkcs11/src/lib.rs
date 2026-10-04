@@ -385,6 +385,33 @@ fn eddsa() -> Mechanism<'static> {
     Mechanism::Eddsa(EddsaParams::new(EddsaSignatureScheme::Pure))
 }
 
+/// Reads a token PIN from a file only its owner can read (as key files
+/// are): one line, surrounding whitespace ignored. The PIN is never logged.
+pub fn read_pin_file(path: &std::path::Path) -> Result<AuthPin, PortError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(path)
+            .map_err(|e| PortError::unavailable(format!("HSM PIN file {}: {e}", path.display())))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(PortError::rejected(format!(
+                "HSM PIN file {} must not be accessible by group or others (mode {:o})",
+                path.display(),
+                mode & 0o777
+            )));
+        }
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| PortError::unavailable(format!("HSM PIN file {}: {e}", path.display())))?;
+    let pin = text.trim();
+    if pin.is_empty() {
+        return Err(PortError::invalid(format!("HSM PIN file {} is empty", path.display())));
+    }
+    Ok(AuthPin::new(pin.into()))
+}
+
 impl Pkcs11KeyProvider {
     /// Loads the module, logs in to the token and loads, checks and proves
     /// every configured key. Fails if any key is missing or refused.
@@ -561,6 +588,23 @@ mod tests {
         assert!(private_key_problems(&named, true).is_empty());
         // A missing attribute counts as not satisfied.
         assert!(!private_key_problems(&attrs(true)[..2], true).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_pin_file_must_be_owner_only_and_not_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("kavach-pin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("pin");
+        std::fs::write(&path, "1234\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(read_pin_file(&path).is_err(), "group-readable");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(read_pin_file(&path).is_ok());
+        std::fs::write(&path, "  \n").unwrap();
+        assert!(read_pin_file(&path).is_err(), "empty");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
