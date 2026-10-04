@@ -549,7 +549,9 @@ async fn an_export_signed_with_a_key_in_the_hsm_verifies() {
             bytes,
         },
     );
-    let pin_file = common::scratch("hsm-pin").join("pin");
+    let pin_dir = common::scratch("hsm-pin");
+    fs::create_dir_all(&pin_dir).unwrap();
+    let pin_file = pin_dir.join("pin");
     fs::write(&pin_file, "1234").unwrap();
     #[cfg(unix)]
     {
