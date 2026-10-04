@@ -114,6 +114,10 @@ pub struct DataplaneConfig {
     /// Tests only (no CLI flag): a controllable trusted clock. Refused
     /// outside `--insecure-dev`.
     pub test_clock: Option<TestClock>,
+    /// A development clock (`kavach dev up --at` / `--clock`). Refused
+    /// unless `--insecure-dev` is on and every signing key is a `dev-` key;
+    /// what it times is marked `dev_fixed`.
+    pub dev_clock: Option<Arc<crate::dev_clock::DevClock>>,
 }
 
 #[derive(Deserialize)]
@@ -384,6 +388,8 @@ pub enum ClockBackend {
     InsecureDev,
     /// A clock a test controls (only with `--insecure-dev`; no CLI flag).
     Test(TestClock),
+    /// A development clock (`kavach dev up --at` / `--clock`): `dev_fixed`.
+    Dev(Arc<crate::dev_clock::DevClock>),
 }
 
 /// A clock injected by an embedding test (`DataplaneConfig::test_clock`).
@@ -402,6 +408,7 @@ impl TimeSource for ClockBackend {
         match self {
             Self::Kernel(clock) => clock.now(),
             Self::Test(clock) => clock.0.now(),
+            Self::Dev(clock) => clock.now(),
             Self::InsecureDev => TrustedNow {
                 utc: Utc::now(),
                 sync: SyncStatus::Synced { max_error_ms: 0 },
@@ -441,6 +448,7 @@ impl TokenBucket {
 }
 
 pub struct Dataplane {
+    dev_clock: Option<Arc<crate::dev_clock::DevClock>>,
     mandates: Arc<Mandates>,
     core: AuthorizeCore<Arc<Mandates>, EvidenceBackend>,
     checkpointer: Arc<Checkpointer<EvidenceBackend>>,
@@ -472,13 +480,7 @@ impl Dataplane {
         refuse_dev_key("checkpoint", &config.checkpoint_key_id, insecure_dev)?;
         refuse_dev_key("credential", &config.credential_key_id, insecure_dev)?;
         let tools = Arc::new(load_tools(config, pack_signers, insecure_dev)?);
-        let clock = match &config.test_clock {
-            Some(_) if !insecure_dev => {
-                return Err("a test clock is refused outside --insecure-dev".into())
-            }
-            Some(test) => ClockBackend::Test(test.clone()),
-            None => select_clock(insecure_dev)?,
-        };
+        let clock = dataplane_clock(config, insecure_dev)?;
         let (store, replay, evidence) = select_stores(pool, insecure_dev)?;
 
         let sources = open_key_sources(config, insecure_dev)?;
@@ -487,6 +489,9 @@ impl Dataplane {
             load_mandate_config(&config.mandate_config, &keys, insecure_dev).await?;
         let mandate_kid = mandate_config.signing_kid.clone();
         refuse_dev_key("mandate signing", &mandate_kid, insecure_dev)?;
+        if config.dev_clock.is_some() {
+            crate::dev_clock::refuse_unless_dev_keys(&[("mandate signing", &mandate_kid)])?;
+        }
         for issuer in &mandate_config.sor_issuers {
             refuse_dev_key("system-of-record issuer", &issuer.key.kid, insecure_dev)?;
         }
@@ -544,6 +549,7 @@ impl Dataplane {
         agents.spawn_refresher();
         let rate = f64::from(config.sor_rate_per_second.max(1));
         Ok(Self {
+            dev_clock: config.dev_clock.clone(),
             mandates,
             core,
             checkpointer,
@@ -593,6 +599,11 @@ impl Dataplane {
 
     pub fn mandates(&self) -> &Arc<Mandates> {
         &self.mandates
+    }
+
+    /// The development clock, when the stack runs with one.
+    pub fn dev_clock(&self) -> Option<&Arc<crate::dev_clock::DevClock>> {
+        self.dev_clock.as_ref()
     }
 }
 
@@ -716,6 +727,36 @@ impl WhatIf {
             .await
             .map_err(|e| e.message)
     }
+}
+
+/// The data plane's trusted clock: the kernel's, or (`--insecure-dev`
+/// only) a test clock or a development clock. A development clock also
+/// needs development signing keys and no HSM.
+fn dataplane_clock(config: &DataplaneConfig, insecure_dev: bool) -> Result<ClockBackend, String> {
+    Ok(match (&config.dev_clock, &config.test_clock) {
+        (Some(_), Some(_)) => {
+            return Err("a development clock and a test clock cannot both be set".into())
+        }
+        (Some(_), None) if !insecure_dev => {
+            return Err("a development clock is refused outside --insecure-dev".into())
+        }
+        (Some(dev), None) => {
+            crate::dev_clock::refuse_unless_dev_keys(&[
+                ("evidence", &config.evidence_key_id),
+                ("checkpoint", &config.checkpoint_key_id),
+                ("credential", &config.credential_key_id),
+            ])?;
+            if config.hsm.is_some() {
+                return Err("a development clock runs with key files only, not an HSM".into());
+            }
+            ClockBackend::Dev(Arc::clone(dev))
+        }
+        (None, Some(_)) if !insecure_dev => {
+            return Err("a test clock is refused outside --insecure-dev".into())
+        }
+        (None, Some(test)) => ClockBackend::Test(test.clone()),
+        (None, None) => select_clock(insecure_dev)?,
+    })
 }
 
 /// The tool registry, vouched for: signed by a `tool` signer (required

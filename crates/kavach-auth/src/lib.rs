@@ -36,6 +36,8 @@ pub enum KavachAction {
     ReadAudit,
     /// Read one agent decision record (`kavach why`); audited.
     ReadEvidence,
+    /// Move a development clock forward (`kavach dev clock`; dev stacks only).
+    SetDevClock,
     ReadRetention,
     ReadTombstones,
     ReadIncidents,
@@ -66,6 +68,7 @@ impl KavachAction {
             Self::ReadGovernance => "read_governance",
             Self::ReadAudit => "read_audit",
             Self::ReadEvidence => "read_evidence",
+            Self::SetDevClock => "set_dev_clock",
             Self::ReadRetention => "read_retention",
             Self::ReadTombstones => "read_tombstones",
             Self::ReadIncidents => "read_incidents",

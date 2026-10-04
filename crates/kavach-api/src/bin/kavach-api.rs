@@ -213,6 +213,7 @@ impl AgentArgs {
             provider_timeout_ms: self.provider_timeout_ms,
             provider_ca: self.provider_ca,
             test_clock: None,
+            dev_clock: None,
             hsm,
         }))
     }

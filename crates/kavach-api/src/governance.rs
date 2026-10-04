@@ -47,6 +47,10 @@ pub struct RuntimeView {
     /// Evidence checkpoint health; present when the agent surfaces are on.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub checkpoints: Option<crate::checkpoints::CheckpointView>,
+    /// The development clock (`kavach dev up --at` / `--clock`), when the
+    /// stack runs with one: its kind and time. Never present in production.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dev_clock: Option<serde_json::Value>,
     /// Signing roles held in an HSM and whether it answers now; present
     /// when an HSM is configured.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -72,6 +76,10 @@ pub async fn runtime(
         checkpoints: state
             .dataplane()
             .map(|dp| crate::checkpoints::CheckpointView::of(dp.checkpointer())),
+        dev_clock: state
+            .dataplane()
+            .and_then(|dp| dp.dev_clock())
+            .map(|c| c.view()),
         hsm: match state.dataplane() {
             Some(dp) => dp.hsm_status().await,
             None => None,
