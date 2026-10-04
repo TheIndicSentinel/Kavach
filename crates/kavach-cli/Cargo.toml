@@ -1,0 +1,37 @@
+[package]
+name = "kavach-cli"
+description = "kavach: the developer command line (init, doctor, dev up)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kavach"
+path = "src/main.rs"
+
+[dependencies]
+kavach-api = { workspace = true }
+kavach-clocksync = { workspace = true }
+kavach-credential = { workspace = true }
+kavach-devkit = { workspace = true }
+kavach-jws = { workspace = true }
+kavach-mock-provider = { workspace = true }
+kavach-ports = { workspace = true }
+kavach-storage = { workspace = true }
+kavach-telemetry = { workspace = true }
+axum.workspace = true
+axum-server.workspace = true
+base64.workspace = true
+chrono.workspace = true
+clap.workspace = true
+hex.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["signal", "time"] }
+toml.workspace = true
+
+[lints]
+workspace = true

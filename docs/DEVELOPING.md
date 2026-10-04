@@ -52,7 +52,19 @@ cargo run -q -p kavach-devkit --bin kavach-dev -- sor-event --bundle /tmp/kavach
   --url http://127.0.0.1:8090/v1/sor/events --event-id evt-1   # issues a mandate
 ```
 
-`dev-` keys run only with `--insecure-dev`; production startup and the offline verifier refuse them. This is the core of the future `kavach init`.
+`dev-` keys run only with `--insecure-dev`; production startup and the offline verifier refuse them.
+
+The `kavach` command line wraps this into a project (pre-alpha; the commands may change before v0.1):
+
+```bash
+cargo install --path crates/kavach-cli   # or: cargo run -q -p kavach-cli --
+kavach init            # kavach.toml, plus the bundle in .kavach/ (git-ignored)
+kavach doctor          # checks the bundle, key permissions, ports, disk, database, clock
+kavach dev up          # Kavach and a mock provider in one process, loopback only
+kavach dev up --at 11:00   # contact is allowed 08:00–19:00 IST; this starts the clock at 11:00 IST
+```
+
+Every command takes `--json` and prints one document (schema `kavach.cli/v1`). Exit codes: 0 ok, 1 failed, 2 warnings, 64 usage error. Output passes through the same redaction as the logs. `kavach.toml` keeps everything in memory unless you uncomment its `[database]` section. Nothing is sent anywhere.
 
 ## 5. Running the API
 
