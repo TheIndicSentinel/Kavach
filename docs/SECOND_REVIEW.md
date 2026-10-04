@@ -27,7 +27,7 @@ Changes that need a second reviewer before v0.1 is tagged. One person wrote and 
 | #114 (key limits) | Evidence verification | `KeyValidity::refuses`: the kept-checkpoint exception, the seq used for each kind (record, outcome, checkpoint, manifest), that a violation is a hard failure |
 | #113 (export key in an HSM) | Keys | `Signing::Hsm` in the export command: the `export-` check before the HSM is opened, strict key attributes with no relaxation, PIN file handling |
 | #107 | Authentication (request parsing) | The strict-JSON walk; that every route with free-form JSON uses it; that error responses are unchanged |
-| C3a (`why`, evidence read) | Data plane, authentication | `GET /v1/agent-decisions/{id}`: `read_evidence` granted to admins only; every read audited before the record is returned, and refused if the audit write fails; rate limit; no raw reference, destination, token or credential in the response. Sequential ids mean by-id is **not** an enumeration control. `kavach why` takes trusted keys from local files only |
+| C3a, C3c (`why`, evidence reads) | Data plane, authentication | `GET /v1/agent-decisions/{id}` and `GET /v1/decision-events/{id}` (the latter applies tombstone redaction and never holds the evaluate lock across an await): `read_evidence` granted to admins only; every read audited before the record is returned, and refused if the audit write fails; rate limit; no raw reference, destination, token or credential in the response. Sequential ids mean by-id is **not** an enumeration control. `kavach why` takes trusted keys from local files only |
 
 ## Done
 

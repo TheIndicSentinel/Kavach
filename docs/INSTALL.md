@@ -138,6 +138,7 @@ Paths default via env vars; CLI flags override.
 | `/v1/change-requests/{id}/cancel` | POST | `propose_<kind>` | Proposer withdraws |
 | `/v1/admin/audit` | GET | `read_audit` | Admin audit log |
 | `/v1/agent-decisions/{record_id}` | GET | `read_evidence` | One agent decision record and its outcome (`kavach why`). Record ids are sequential, so the protection is the role, a rate limit (5/s, burst 20) and an audit entry for every read, found or not; a read that cannot be audited is refused |
+| `/v1/decision-events/{evidence_id}` | GET | `read_evidence` | One evaluate decision event (`kavach why`), as export views show it: the input only as `input_digest`, a tombstoned event redacted and marked. Same rate limit and per-read audit as agent records |
 | `/v1/admin/retention` | GET | `read_retention` | Retention policy |
 | `/v1/admin/tombstones` | GET | `read_tombstones` | Tombstone list |
 | `/v1/admin/incidents` | GET | `read_incidents` | Evaluate incident log |

@@ -16,5 +16,6 @@ pub use tombstone::{
     TOMBSTONE_SERVICE_IDENTITY,
 };
 pub use verify::{
-    check_event, mixed_chain, verify_chain, verify_export_file, EventCheck, VerifyReport,
+    check_event, mixed_chain, parse_export, verify_chain, verify_export_file, EventCheck,
+    VerifyReport,
 };

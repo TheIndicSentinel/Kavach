@@ -179,6 +179,18 @@ async fn evaluate_writes_postgres_evidence_and_replays() {
         ids.push(json["evidence_id"].as_str().unwrap().to_string());
     }
     assert_eq!(ids[0], ids[1], "retry replays the stored decision");
+
+    // Read back by evidence id (`kavach why`): the stored event, hashing
+    // to its content; nothing for an unknown id.
+    let (event, tombstoned) = state.decision_event(&ids[0]).await.unwrap().unwrap();
+    assert_eq!(event.evidence_id, ids[0]);
+    assert!(!tombstoned);
+    kavach_evidence::verify_event_hash(&event).expect("hash matches the content");
+    assert!(state
+        .decision_event("00000000-0000-4000-8000-000000000000")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

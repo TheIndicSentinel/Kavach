@@ -653,3 +653,127 @@ async fn startup_refuses_development_keys_outside_insecure_dev() {
     cfg.insecure_dev = true;
     AppState::from_config(&cfg).await.expect("dev stack starts");
 }
+
+/// `GET /v1/decision-events/{evidence_id}` (`kavach why` for evaluate
+/// decisions): admins only, every read audited, the input only as its
+/// digest, and a tombstoned event redacted as export views show it.
+#[tokio::test]
+async fn decision_event_reads_are_admin_only_audited_and_hold_no_input() {
+    use http_body_util::BodyExt;
+
+    let s = state(50).await;
+    let request = fresh_credit_request();
+    let call = |method: &str, uri: String, token: Option<String>, body: Option<Value>| {
+        let app = router(s.clone());
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(t) = token {
+            builder = builder.header("authorization", format!("Bearer {t}"));
+        }
+        let body = body.map_or_else(Body::empty, |b| Body::from(b.to_string()));
+        async move {
+            let response = app.oneshot(builder.body(body).unwrap()).await.unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+    let (status, body) = call(
+        "POST",
+        "/v1/evaluate".into(),
+        Some(operator_token()),
+        Some(request),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let id = serde_json::from_str::<Value>(&body).unwrap()["evidence_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let uri = |id: &str| format!("/v1/decision-events/{id}");
+
+    let (status, body) = call("GET", uri(&id), Some(operator_token()), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let doc: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(doc["tombstoned"], false);
+    assert_eq!(doc["event"]["evidence_id"], id.as_str());
+    assert!(doc["event"]["input_digest"].is_string());
+    for raw in [
+        "credit_score",
+        "income",
+        "debt_ratio",
+        "loan_amount",
+        "85000",
+        "740",
+    ] {
+        assert!(!body.contains(raw), "raw input {raw} in {body}");
+    }
+
+    let viewer = token(
+        "kavach-api",
+        json!({ "sub": "viewer-1", "groups": ["viewers"] }),
+    );
+    assert_eq!(
+        call("GET", uri(&id), Some(viewer), None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        call("GET", uri(&id), None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call("GET", uri("NOT-A-UUID"), Some(operator_token()), None)
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let unknown = "00000000-0000-4000-8000-000000000000";
+    assert_eq!(
+        call("GET", uri(unknown), Some(operator_token()), None)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+
+    // Tombstoned: redacted as export views show it, and marked.
+    s.retention()
+        .tombstone(
+            &id,
+            kavach_storage::TombstoneReason::DpdpErasure,
+            "ops-1",
+            "ops-2",
+        )
+        .await
+        .unwrap();
+    let (status, body) = call("GET", uri(&id), Some(operator_token()), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let doc: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(doc["tombstoned"], true);
+    assert_eq!(doc["event"]["reason_codes"], json!([]));
+
+    let audit = s.admin().list_audit(50).await.unwrap();
+    let reads: Vec<_> = audit
+        .iter()
+        .filter(|e| e.action == "read_evidence" && e.resource_type == "decision_event")
+        .map(|e| (e.resource_id.clone(), e.payload["found"].clone()))
+        .collect();
+    assert_eq!(
+        reads.len(),
+        3,
+        "two reads of the event and one unknown: {reads:?}"
+    );
+    assert!(reads.contains(&(unknown.to_string(), json!(false))));
+}
+
+/// The golden clean credit request, timed now.
+fn fresh_credit_request() -> Value {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../golden/finance/v0/credit_clean.json")).unwrap();
+    let mut request = fixture["request"].clone();
+    let now = chrono::Utc::now().to_rfc3339();
+    request["decision_time"] = now.clone().into();
+    request["consent"]["timestamp"] = now.into();
+    request
+}

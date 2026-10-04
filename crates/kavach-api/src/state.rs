@@ -257,6 +257,54 @@ impl AppState {
             .map_err(|e| ApiError::Internal(format!("model states: {e}")))
     }
 
+    /// One decision event by evidence id, as export views show it: a
+    /// tombstoned event comes back redacted (and says so).
+    pub async fn decision_event(
+        &self,
+        evidence_id: &str,
+    ) -> Result<Option<(kavach_domain::DecisionEvent, bool)>, ApiError> {
+        // Never hold the evaluate lock across an await.
+        let source = {
+            let service = self
+                .service
+                .lock()
+                .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
+            match service.evidence_store() {
+                EvidenceBackend::Memory(chain) => Err(chain
+                    .events()
+                    .iter()
+                    .find(|e| e.evidence_id == evidence_id)
+                    .cloned()),
+                EvidenceBackend::Postgres(store) => Ok(store.clone()),
+            }
+        };
+        let found = match source {
+            Err(in_memory) => in_memory,
+            Ok(postgres) => postgres
+                .event(evidence_id)
+                .await
+                .map_err(|e| ApiError::Internal(format!("evidence read: {e}")))?,
+        };
+        self.tombstone_view(found).await
+    }
+
+    async fn tombstone_view(
+        &self,
+        event: Option<kavach_domain::DecisionEvent>,
+    ) -> Result<Option<(kavach_domain::DecisionEvent, bool)>, ApiError> {
+        let Some(event) = event else { return Ok(None) };
+        let tombstoned = self
+            .retention
+            .is_tombstoned(&event.evidence_id)
+            .await
+            .map_err(|e| ApiError::Internal(format!("tombstone check: {e}")))?;
+        Ok(Some(if tombstoned {
+            (kavach_evidence::redact_tombstoned_event(&event), true)
+        } else {
+            (event, false)
+        }))
+    }
+
     fn memory_events_snapshot(
         &self,
     ) -> Result<Option<Vec<kavach_domain::DecisionEvent>>, ApiError> {
