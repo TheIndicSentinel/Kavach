@@ -2210,16 +2210,20 @@ dependencies = [
  "kavach-dataplane",
  "kavach-devkit",
  "kavach-jws",
+ "kavach-keys",
  "kavach-mock-provider",
  "kavach-ports",
  "kavach-storage",
  "kavach-telemetry",
+ "regex",
+ "reqwest",
  "rustls",
  "serde",
  "serde_json",
  "sqlx",
  "tokio",
  "toml",
+ "uuid",
 ]
 
 [[package]]

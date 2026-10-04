@@ -42,7 +42,7 @@ pub struct Ask<'a> {
     pub contacts_today: u32,
 }
 
-fn usage(what: impl Into<String>, why: impl std::fmt::Display) -> CliError {
+pub(crate) fn usage(what: impl Into<String>, why: impl std::fmt::Display) -> CliError {
     let mut error = CliError::new(what, why);
     error.code = EXIT_USAGE;
     error
@@ -58,7 +58,7 @@ pub fn parse_param(text: &str) -> Result<(String, String), String> {
 
 /// The tool's parameters: those given, typed by the registry, and a
 /// default for each required one left out. Returns the names defaulted.
-fn build_params(
+pub(crate) fn build_params(
     spec: &ToolSpec,
     subject: &str,
     given: &[(String, String)],
@@ -119,7 +119,7 @@ fn ist(t: DateTime<Utc>) -> String {
         .unwrap_or_default()
 }
 
-fn show(value: &Value) -> String {
+pub(crate) fn show(value: &Value) -> String {
     match value {
         Value::String(s) => s.clone(),
         Value::Array(items) => items.iter().map(show).collect::<Vec<_>>().join(","),
