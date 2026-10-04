@@ -66,6 +66,51 @@ pub fn parse_export(content: &str) -> Result<Vec<DecisionEvent>, EvidenceError> 
     Ok(events)
 }
 
+/// A chain of two records: one written before evidence timestamps were
+/// kept at storage precision (its hash covers nanoseconds, under the same
+/// rule) and one written after. For compatibility tests.
+#[doc(hidden)]
+#[must_use]
+pub fn mixed_chain() -> Vec<DecisionEvent> {
+    use crate::{compute_event_hash, AppendDecisionEvent, MemoryChain};
+    use kavach_domain::{Decision, GovernanceMode, ModelOrigin};
+    let input = |correlation_id: &str| AppendDecisionEvent {
+        pack_id: "finance-v0".into(),
+        pack_version: "0.1.0".into(),
+        sector: "finance".into(),
+        model_id: "credit-underwriting-v1".into(),
+        model_version: "1.0.0".into(),
+        model_origin: ModelOrigin::InHouse,
+        governance_mode: GovernanceMode::Enforce,
+        policy_decision: Decision::Pass,
+        returned_decision: Decision::Pass,
+        reason_codes: vec!["CONSENT_OK".into()],
+        policy_hits: vec![],
+        pii_tokens: vec![],
+        input_digest: "c".repeat(64),
+        latency_ms: 2,
+        decision_time: chrono::DateTime::from_timestamp(1_790_000_000, 123_456_789)
+            .unwrap_or_default(),
+        evaluated_at: chrono::DateTime::from_timestamp(1_790_000_001, 123_456_789)
+            .unwrap_or_default(),
+        service_identity_id: "svc".into(),
+        correlation_id: correlation_id.into(),
+        idempotency_key: None,
+    };
+    // The old record: what an append produced before, nanoseconds kept.
+    let mut old = MemoryChain::new().append(input("old-1")).expect("append");
+    old.decision_time =
+        chrono::DateTime::from_timestamp(1_790_000_000, 123_456_789).unwrap_or_default();
+    old.evaluated_at =
+        chrono::DateTime::from_timestamp(1_790_000_001, 123_456_789).unwrap_or_default();
+    old.hash = compute_event_hash(&old.prev_hash, &old).expect("hash");
+    // The new record follows it.
+    let mut new = MemoryChain::new().append(input("new-1")).expect("append");
+    new.prev_hash.clone_from(&old.hash);
+    new.hash = compute_event_hash(&new.prev_hash, &new).expect("hash");
+    vec![old, new]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +156,35 @@ mod tests {
         stored.evaluated_at = crate::at_storage_precision(stored.evaluated_at);
         stored.decision_time = crate::at_storage_precision(stored.decision_time);
         crate::verify_event_hash(&stored).expect("verifies at storage precision");
+    }
+
+    /// A record from before the change (hashed over nanoseconds, the same
+    /// rule) followed by one from after it (microseconds): the chain
+    /// verifies as it is, nothing is re-fingerprinted.
+    #[test]
+    fn a_chain_mixing_old_and_new_records_verifies() {
+        use chrono::Timelike;
+        let events = mixed_chain();
+        assert_eq!(
+            events[0].evaluated_at.nanosecond() % 1_000,
+            789,
+            "old: nanoseconds"
+        );
+        assert_eq!(
+            events[1].evaluated_at.nanosecond() % 1_000,
+            0,
+            "new: microseconds"
+        );
+        assert_eq!(verify_chain(&events).unwrap().events_checked, 2);
+
+        let path = std::env::temp_dir().join(format!("kavach-mixed-{}.jsonl", std::process::id()));
+        let lines: Vec<_> = events
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        assert_eq!(verify_export_file(&path).unwrap().events_checked, 2);
+        let _ = std::fs::remove_file(path);
     }
 
     fn sample_append(correlation_id: &str) -> AppendDecisionEvent {
