@@ -98,7 +98,7 @@ This evidence is hash-chained but **not signed** (v1). Anyone with write access 
 
 ### Known attacks (`kavach attack`)
 
-`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 1, 18 attacks) is the same one the acceptance suite runs in CI.
+`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 2, 20 attacks) is the same one the acceptance suite runs in CI.
 
 ```bash
 kavach attack --list            # the scope: every attack, nothing run
@@ -166,6 +166,8 @@ kavach call send_reminder --issue-mandate         # sends the event first, and s
 `dev up` writes `.kavach/run.json`, readable by its owner only. It holds the process id, the listener addresses and the clock offset from `--at`, and never a token. Events are stamped on the stack's clock. The file is removed on Ctrl-C or SIGTERM. If a killed stack leaves it behind, `call` notices that nothing answers there.
 
 Every command takes `--json` and prints one document (schema `kavach.cli/v1`). Exit codes: 0 ok, 1 failed, 2 warnings, 64 usage error. Output passes through the same redaction as the logs. The one exception is known digest fields (`input_digest`, and the Cedar and registry digests): they are printed whole when they are well-formed digests. This is decided by field, never by pattern, so the same hex anywhere else is still masked. `kavach.toml` keeps everything in memory unless you uncomment its `[database]` section. Nothing is sent anywhere.
+
+**`dev up` is locked to you.** The operator API needs the project's operator token (`.kavach/operator.jwt`, made by `init`), checked by Cedar with the bundled policies. Every `dev up` listener (operator, agent, SoR, provider, inbox) refuses a Host header that isn't `localhost`, `127.0.0.1` or `[::1]`, which is what a web page attempting DNS rebinding sends, with 421. Every listener also refuses the self-asserted `X-Kavach-Principal` header, which `--insecure-dev` would otherwise accept, with 401. The `kavach` commands send the token for you. Projects made before this get their access-control files on the next `dev up`.
 
 ## 5. Running the API
 
