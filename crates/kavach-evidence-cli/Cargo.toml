@@ -22,6 +22,7 @@ sha2.workspace = true
 thiserror.workspace = true
 # Only for `export` and `checkpoints` (feature `export`).
 kavach-keys = { workspace = true, optional = true }
+kavach-keys-pkcs11 = { workspace = true, optional = true }
 kavach-storage = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
@@ -36,9 +37,10 @@ harness = false
 default = ["export"]
 # The commands that read a database: `export` and `checkpoints`. Without
 # it (`--no-default-features`) the binary has no database or network code.
-export = ["dep:kavach-keys", "dep:kavach-storage", "dep:tokio"]
+export = ["dep:kavach-keys", "dep:kavach-keys-pkcs11", "dep:kavach-storage", "dep:tokio"]
 
 [dev-dependencies]
+cryptoki.workspace = true
 kavach-domain = { workspace = true }
 kavach-ports-testkit = { workspace = true }
 kavach-storage = { workspace = true, features = ["test-support"] }

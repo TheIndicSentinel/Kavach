@@ -24,7 +24,8 @@ Changes that need a second reviewer before v0.1 is tagged. One person wrote and 
 | #110 (K2) | Keys | Per-role HSM wiring (`signing.rs`): that a listed role never falls back to a file; key-separation checks on HSM public keys; strictness tied to `--insecure-dev` only; PIN file handling; fail-closed signing; `/v1/runtime` health |
 | #111 (HSM recovery) | Keys | `reconnect`: restarting the module after a failed reconnect, re-finding the slot by label, which errors count as recoverable; that an outage never lets a call through unsigned |
 | #112 (K3, key rotation) | Keys | `previous_mandate_keys`: verify-only, never a signing key; refusal of the current key by id or material; that removing an entry ends the old mandates' authority; the runbook's compromise steps |
-| Key limits (this PR) | Evidence verification | `KeyValidity::refuses`: the kept-checkpoint exception, the seq used for each kind (record, outcome, checkpoint, manifest), that a violation is a hard failure |
+| #114 (key limits) | Evidence verification | `KeyValidity::refuses`: the kept-checkpoint exception, the seq used for each kind (record, outcome, checkpoint, manifest), that a violation is a hard failure |
+| #113 (export key in an HSM) | Keys | `Signing::Hsm` in the export command: the `export-` check before the HSM is opened, strict key attributes with no relaxation, PIN file handling |
 | #107 | Authentication (request parsing) | The strict-JSON walk; that every route with free-form JSON uses it; that error responses are unchanged |
 
 ## Done

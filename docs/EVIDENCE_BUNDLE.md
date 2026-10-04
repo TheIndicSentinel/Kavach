@@ -139,7 +139,7 @@ sig = hex( Ed25519_sign( "kavach-evidence-bundle-v1:" || hash_as_ASCII ) )
 
 Records and checkpoints carry their own signatures, so an unsigned manifest cannot hide a forged record. Outcomes are different: each row is signed, but nothing signs them as a set, so a missing outcome cannot be seen from the rows. The manifest signature closes that gap for the bundle: it states "this is what the exporter saw", including how many outcomes there were and the digest of the file that holds them.
 
-- The **export key** belongs to whoever runs the export (an auditor or operator) and lives with them, **not on the API host**.
+- The **export key** belongs to whoever runs the export (an auditor or operator) and lives with them, **not on the API host**. It can be a key file (`--key-dir`) or a key in an HSM (`--hsm-module`, `--hsm-token-label`, an owner-only `--hsm-pin-file`; `--key-id` is its label). A key in an HSM must have been generated there and never been extractable.
 - Its key id must start with `export-` (`dev-export-` for a development key). A manifest signed under any other key id is refused, even if the operator's key list contains it. The API refuses to start with a mandate, evidence, checkpoint or credential key whose id starts with `export-`. So one key can never do both jobs.
 - Signing is the default. A bundle is unsigned only when the exporter asks for it explicitly, and a verifier must report an unsigned bundle as such.
 
