@@ -83,14 +83,14 @@ First, everywhere: record when the compromise began (or the earliest time it cou
 | Key | What an attacker can do | Do now |
 |---|---|---|
 | **Mandate** | Issue mandates that verify, for any template and agent | Switch to a new key with no `previous_mandate_keys` entry for the old one and restart. Every mandate signed with the old key stops verifying: agents are blocked until the system of record issues new mandates (fail closed). Destroy the old key |
-| **Evidence** | Forge records and outcomes that verify | Switch the key and restart. Export now and verify against checkpoints kept off-host from **before** the compromise: what they cover is trustworthy. Treat records signed with the old key after the compromise time as untrusted |
-| **Checkpoint** | Forge checkpoints, hiding a rewrite of the chain | Switch the key and restart. Copies kept off-host from before the compromise stay trustworthy; verify the chain against them. Copy a new checkpoint off-host as soon as one is written |
+| **Evidence** | Forge records and outcomes that verify | Switch the key and restart. In the verifiers' trusted keys file, set `valid_until_seq` on the old key to the record of the last checkpoint kept off-host before the compromise. Export now and verify against those kept checkpoints |
+| **Checkpoint** | Forge checkpoints, hiding a rewrite of the chain | Switch the key and restart. Set `valid_until_seq` on the old key, as for the evidence key. Copies kept off-host from before the compromise stay trustworthy; verify the chain against them. Copy a new checkpoint off-host as soon as one is written |
 | **Credential** | Mint credentials that providers accept, for 15 seconds each | Have every provider drop the old key at once, switch, restart. Check provider logs for credentials Kavach has no evidence record for |
 | **Export** | Sign bundles that look like yours | Tell every verifier to drop the old key; export again with a new one |
 | **System of record** | Issue events, and so mandates within the templates | Remove its entry from `sor_issuers`, restart; revoke mandates issued from it since the compromise |
 | **HSM PIN** | Make the HSM sign with any key on the token, but not read the keys | Change the PIN with the vendor's tool, update the PIN file, restart. Review what was signed while it was exposed, as above |
 
-**What Kavach cannot do yet.** The verifiers' trusted keys file has no validity window: a key in it is trusted for whatever it signed, whenever. After an evidence or checkpoint key is compromised, the cut-off at the compromise time is applied by the people verifying, against kept checkpoints. It is not enforced by the verifier. A validity window per key is planned.
+**Limits on a compromised key.** Set `valid_until_seq` on the key in the verifiers' trusted keys file, taken from a checkpoint kept off-host before the compromise ([EVIDENCE_BUNDLE.md](EVIDENCE_BUNDLE.md#trusted-keys)). The verifier then refuses whatever the key signed for any later record, including backdated forgeries, unless a kept checkpoint covers it. `not_after` set to the compromise time retires the key in time too, but a stolen key can backdate its signatures, so do not rely on it alone.
 
 ## Backups
 
