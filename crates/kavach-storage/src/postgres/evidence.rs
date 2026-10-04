@@ -1,6 +1,8 @@
 use kavach_domain::{Decision, DecisionEvent, GovernanceMode, ModelOrigin, SCHEMA_VERSION};
 use kavach_evaluate::EvidenceStore;
-use kavach_evidence::{compute_event_hash, verify_event_hash, AppendDecisionEvent, EvidenceError};
+use kavach_evidence::{
+    at_storage_precision, compute_event_hash, verify_event_hash, AppendDecisionEvent, EvidenceError,
+};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
@@ -79,8 +81,9 @@ impl PostgresEvidenceStore {
             pii_tokens: input.pii_tokens,
             input_digest: input.input_digest,
             latency_ms: input.latency_ms,
-            decision_time: input.decision_time,
-            evaluated_at: input.evaluated_at,
+            // Postgres keeps microseconds: hash what is stored.
+            decision_time: at_storage_precision(input.decision_time),
+            evaluated_at: at_storage_precision(input.evaluated_at),
             service_identity_id: input.service_identity_id,
             correlation_id: input.correlation_id,
             idempotency_key: input.idempotency_key,
@@ -155,6 +158,18 @@ async fn insert_event(
     .await
     .map_err(|err| io_err(&err))?;
     Ok(())
+}
+
+impl PostgresEvidenceStore {
+    /// One decision event by its evidence id (operator reads; `kavach why`).
+    pub async fn event(&self, evidence_id: &str) -> Result<Option<DecisionEvent>, EvidenceError> {
+        let row = sqlx::query("SELECT * FROM decision_events WHERE evidence_id = $1")
+            .bind(evidence_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|err| io_err(&err))?;
+        row.as_ref().map(row_to_event).transpose()
+    }
 }
 
 async fn fetch_by_idempotency<'e>(

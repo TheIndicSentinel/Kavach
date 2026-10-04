@@ -8,11 +8,13 @@ mod tombstone;
 mod verify;
 
 pub use canonical::GENESIS_HASH;
-pub use chain::{compute_event_hash, verify_event_hash};
+pub use chain::{at_storage_precision, compute_event_hash, verify_event_hash};
 pub use error::EvidenceError;
 pub use store::{check_idempotent_replay, AppendDecisionEvent, IdempotencyKey, MemoryChain};
 pub use tombstone::{
     redact_tombstoned_event, TOMBSTONE_CORRELATION_ID, TOMBSTONE_INPUT_DIGEST,
     TOMBSTONE_SERVICE_IDENTITY,
 };
-pub use verify::{verify_chain, verify_export_file, VerifyReport};
+pub use verify::{
+    check_event, mixed_chain, verify_chain, verify_export_file, EventCheck, VerifyReport,
+};

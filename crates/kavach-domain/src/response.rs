@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::decision::Decision;
 
-pub const SCHEMA_VERSION: &str = "1.0.0";
+/// 1.1.0: `decision_time` and `evaluated_at` are hashed at microsecond
+/// precision (what stores keep), so every 1.1.0 record re-verifies exactly.
+pub const SCHEMA_VERSION: &str = "1.1.0";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -1,8 +1,17 @@
+use chrono::{DateTime, SubsecRound, Utc};
 use kavach_domain::DecisionEvent;
 use sha2::{Digest, Sha256};
 
 use crate::canonical::canonical_payload_bytes;
 use crate::error::EvidenceError;
+
+/// A timestamp as evidence stores keep it: whole microseconds (Postgres
+/// `TIMESTAMPTZ`). Events are hashed over this, so an event read back from
+/// any store still hashes to its stored hash.
+#[must_use]
+pub fn at_storage_precision(t: DateTime<Utc>) -> DateTime<Utc> {
+    t.trunc_subsecs(6)
+}
 
 /// `hash = SHA256(prev_hash || canonical_payload)` per ADR-001 evidence design.
 pub fn compute_event_hash(

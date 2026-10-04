@@ -42,7 +42,9 @@ struct TargetArgs {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Verify an exported evidence file (NDJSON or JSON array).
+    /// Verify an exported evidence file (NDJSON or JSON array). Exit status:
+    /// 0 verified, 1 failed, 2 verified except legacy (pre-1.1.0) events whose
+    /// hash cannot be re-checked.
     Verify {
         /// Path to export file.
         #[arg(short, long)]
@@ -251,10 +253,24 @@ fn run(command: Commands) -> Result<(), String> {
         },
         Commands::Verify { file } => {
             let report = verify_export_file(&file).map_err(|e| e.to_string())?;
+            let legacy = report.legacy_unchecked.len();
             println!(
-                "OK: verified {} event(s); head_hash={}",
-                report.events_checked, report.head_hash
+                "OK: verified {} of {} event(s); head_hash={}",
+                report.events_checked - legacy,
+                report.events_checked,
+                report.head_hash
             );
+            if legacy > 0 {
+                // Never a silent pass: these could not be re-checked.
+                println!(
+                    "WARNING: {legacy} event(s) written before schema 1.1.0 cannot be \
+                     re-checked: storage kept their timestamps at lower precision than \
+                     they were hashed at. This is not proof of tampering, and not a \
+                     pass. Re-baseline: export, then start a fresh chain. Events: {}",
+                    report.legacy_unchecked.join(", ")
+                );
+                process::exit(2);
+            }
             Ok(())
         }
         #[cfg(feature = "export")]

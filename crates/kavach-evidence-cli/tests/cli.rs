@@ -61,7 +61,7 @@ fn kavach_evidence_verify_still_checks_a_v1_export() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success(), "{output:?}");
     assert!(
-        stdout.starts_with("OK: verified 3 event(s); head_hash="),
+        stdout.starts_with("OK: verified 3 of 3 event(s); head_hash="),
         "{stdout}"
     );
 
@@ -86,4 +86,31 @@ fn the_binary_is_named_kavach_evidence() {
     let output = Command::new(path).arg("--help").output().unwrap();
     let help = String::from_utf8_lossy(&output.stdout);
     assert!(output.status.success() && help.contains("verify"), "{help}");
+}
+
+/// A pre-1.1.0 record as Postgres gives it back (nanoseconds lost): reported
+/// as legacy, exit 2 with a warning, never as verified or as tampered.
+#[test]
+fn kavach_evidence_verify_reports_legacy_precision_as_a_warning() {
+    let mut events = kavach_evidence::mixed_chain();
+    events[0].decision_time = kavach_evidence::at_storage_precision(events[0].decision_time);
+    events[0].evaluated_at = kavach_evidence::at_storage_precision(events[0].evaluated_at);
+    let file = common::scratch("v1-legacy.ndjson");
+    let text: String = events
+        .iter()
+        .map(|e| serde_json::to_string(e).unwrap() + "\n")
+        .collect();
+    std::fs::write(&file, text).unwrap();
+    let output = verify(&file);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(
+        stdout.starts_with("OK: verified 1 of 2 event(s)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("WARNING: 1 event(s) written before schema 1.1.0 cannot be re-checked"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("not a pass"), "{stdout}");
 }
