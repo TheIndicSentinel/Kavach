@@ -2215,7 +2215,6 @@ dependencies = [
  "kavach-ports",
  "kavach-storage",
  "kavach-telemetry",
- "regex",
  "reqwest",
  "rustls",
  "serde",
@@ -2533,6 +2532,7 @@ dependencies = [
 name = "kavach-telemetry"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "regex",
  "tracing",
  "tracing-subscriber",
