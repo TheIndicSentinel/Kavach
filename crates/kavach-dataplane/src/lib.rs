@@ -22,5 +22,5 @@ pub use gateway::{
     Stage,
 };
 pub use resolve::FixtureResolver;
-pub use tools::{RegistryTrust, ToolRegistry, ToolRequest, Trust};
+pub use tools::{Refusal, RefusalCode, RegistryTrust, ToolRegistry, ToolRequest, Trust};
 pub use whatif::WhatIfStore;

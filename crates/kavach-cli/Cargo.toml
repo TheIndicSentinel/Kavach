@@ -16,9 +16,13 @@ kavach-clocksync = { workspace = true }
 kavach-credential = { workspace = true }
 kavach-dataplane = { workspace = true }
 kavach-devkit = { workspace = true }
+kavach-domain = { workspace = true }
+kavach-evaluate = { workspace = true }
+kavach-evidence = { workspace = true }
 kavach-jws = { workspace = true }
 kavach-keys = { workspace = true }
 kavach-mock-provider = { workspace = true }
+kavach-policy = { workspace = true }
 kavach-ports = { workspace = true }
 kavach-storage = { workspace = true }
 kavach-telemetry = { workspace = true }
@@ -32,6 +36,7 @@ reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml.workspace = true
 sqlx.workspace = true
 tokio = { workspace = true, features = ["signal", "time"] }
 toml.workspace = true

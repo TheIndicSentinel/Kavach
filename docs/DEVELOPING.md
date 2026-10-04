@@ -74,6 +74,44 @@ kavach authorize propose_plan -p waiver_bps=2500         # HUMAN_REVIEW: above t
 kavach authorize send_reminder -p subject_ref=ref:borrower:9876543210   # BLOCK: raw identifier
 ```
 
+### Policy tests (`kavach policy test`)
+
+`kavach init` writes two starter suites to `policy-tests/`; commit them with your project. `kavach policy test [PATH]` runs every `.yaml` file in `policy-tests/`, or the file or directory you name. Each case gets an `ok` or `FAIL` line. A failing case shows what it expected and what it got, and the command exits 1; an invalid suite exits 64. `--json` gives the per-case results.
+
+**What is tested.** The agent policies are the bundled Cedar policies built into `kavach`; your own are not configurable yet, and the output says so. The tool registry, CEL pack and model are your project's.
+
+**Format, version 1 (pre-alpha: it may change before v0.1).** Every key is checked, so a typo fails the file. Every case asserts a `decision` or `refused`.
+
+```yaml
+version: 1
+cases:
+  - kind: tool_call                 # decided offline, as `kavach authorize` does
+    name: no reminders at 20:30 IST # unique within the file
+    tool: send_reminder
+    at: "20:30"                     # RFC 3339, or HH:MM = IST on 2026-10-01 (default 11:00)
+    contacts_today: 0               # contacts already made with the borrower today
+    agent: collections-agent        # default: the delegate, else the mandate's agent
+    params: { subject_ref: "ref:borrower:B-9382", channel: whatsapp, template_id: emi_reminder_v1 }
+    mandate:                        # optional; a real mandate, issued in memory
+      subject: ref:borrower:B-9382  # needs a consent for that borrower in the bundle
+      assigned_to: collections-agent
+      delegate: { to: translation-agent, actions: [read_fields] }   # through the real delegation rules
+    expect: { decision: BLOCK, reasons_include: [contact-window] }
+
+  - kind: evaluate                  # a decision request against the pack and model
+    name: high debt ratio raises an alert
+    governance_mode: enforce        # or shadow
+    at: "2026-08-01T10:00:01Z"      # server time; default the request's decision_time
+    request: { ... }                # as POST /v1/evaluate takes it
+    expect: { decision: ALERT, reasons: [RBI_DTI_EXCEEDED] }
+```
+
+`expect` takes one of:
+- `decision` (PASS, ALERT, BLOCK, HUMAN_REVIEW), optionally with `reasons` (exactly these, in any order) and `reasons_include` (at least these);
+- `refused: true`, or `refused: { code: ... }`.
+
+Refusal codes for tool calls are `unknown_tool`, `invalid_envelope`, `unknown_parameter`, `missing_parameter`, `invalid_parameter` and `no_passport`. For evaluate requests they are `validation`, `model_mismatch`, `pack_not_effective`, `conflict`, `policy` and `domain`. Params are sent exactly as written; nothing is defaulted. The mandate can't widen or narrow its own agent's actions, because no real mandate can do that: use `delegate.actions`.
+
 The live path goes through the running stack, and the stack records it: mandates in its store, and calls in the evidence chain with their contact counts. With `kavach dev up` running in another terminal:
 
 ```bash

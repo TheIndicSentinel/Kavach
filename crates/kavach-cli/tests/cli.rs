@@ -358,3 +358,55 @@ fn the_live_path_issues_mandates_and_records_calls() {
     assert_eq!(stale.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&stale.stderr).contains("nothing answers"));
 }
+
+#[test]
+fn policy_test_runs_the_starter_suites_and_reports_failures() {
+    let dir = scratch("policy");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    assert!(dir.join("policy-tests/collections.yaml").is_file());
+    assert!(dir.join("policy-tests/credit.yaml").is_file());
+
+    let out = kavach(&dir, &["--json", "policy", "test"]);
+    let doc = json(&out);
+    assert_eq!(out.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["command"], "policy test");
+    assert_eq!(doc["failed"], 0);
+    assert_eq!(doc["agent_policies"], "bundled");
+    assert!(doc["passed"].as_u64().unwrap() >= 20, "{doc}");
+
+    let human = kavach(&dir, &["policy", "test"]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.starts_with("Agent policies: the bundled Cedar policies"),
+        "{text}"
+    );
+
+    // A wrong expectation fails the run, and says why.
+    let wrong = dir.join("wrong.yaml");
+    std::fs::write(
+        &wrong,
+        "version: 1\ncases:\n  - kind: tool_call\n    name: wrong\n    tool: send_reminder\n    at: \"20:30\"\n    params: { subject_ref: \"ref:borrower:B-9382\", channel: whatsapp, template_id: emi_reminder_v1 }\n    expect: { decision: PASS }\n",
+    )
+    .unwrap();
+    let out = kavach(&dir, &["--json", "policy", "test", wrong.to_str().unwrap()]);
+    let doc = json(&out);
+    assert_eq!(out.status.code(), Some(1), "{doc}");
+    let case = &doc["suites"][0]["cases"][0];
+    assert_eq!(case["passed"], false);
+    assert_eq!(case["actual"]["decision"], "BLOCK");
+    assert!(
+        case["failure"].as_str().unwrap().contains("expected PASS"),
+        "{case}"
+    );
+
+    // A typo is an invalid suite, not a silent pass.
+    let typo = dir.join("typo.yaml");
+    std::fs::write(
+        &typo,
+        "version: 1\ncases:\n  - kind: tool_call\n    name: typo\n    tool: send_reminder\n    expect: { decision: BLOCK, reasons_inclde: [x] }\n",
+    )
+    .unwrap();
+    let out = kavach(&dir, &["policy", "test", typo.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(64));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("reasons_inclde"));
+}
