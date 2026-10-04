@@ -2207,6 +2207,7 @@ dependencies = [
  "kavach-api",
  "kavach-clocksync",
  "kavach-credential",
+ "kavach-dataplane",
  "kavach-devkit",
  "kavach-jws",
  "kavach-mock-provider",

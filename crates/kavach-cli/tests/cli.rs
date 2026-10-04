@@ -186,3 +186,85 @@ fn dev_up_starts_and_reports_its_endpoints() {
     let bad = kavach(&dir, &["dev", "up", "--at", "25:00", "--exit-when-ready"]);
     assert_eq!(bad.status.code(), Some(64));
 }
+
+#[test]
+fn authorize_decides_offline_and_exits_by_decision() {
+    let dir = scratch("authorize");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+
+    let allow = kavach(
+        &dir,
+        &["--json", "authorize", "send_reminder", "--at", "11:00"],
+    );
+    let doc = json(&allow);
+    assert_eq!(allow.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["command"], "authorize");
+    assert_eq!(doc["decision"], "PASS");
+    assert_eq!(doc["recorded"], false);
+    assert_eq!(doc["mandate"]["what_if"], true);
+
+    let cases: [(&[&str], &str); 4] = [
+        (&["--at", "20:30"], "contact-window"),
+        (
+            &["--at", "11:00", "--contacts-today", "3"],
+            "contact-daily-cap",
+        ),
+        (
+            &["--at", "11:00", "-p", "channel=sms"],
+            "channel-within-mandate",
+        ),
+        (
+            &["--at", "11:00", "-p", "subject_ref=ref:borrower:9876543210"],
+            "raw_identifier:subject_ref:phone",
+        ),
+    ];
+    for (args, reason) in cases {
+        let mut all = vec!["--json", "authorize", "send_reminder"];
+        all.extend_from_slice(args);
+        let out = kavach(&dir, &all);
+        let doc = json(&out);
+        assert_eq!(out.status.code(), Some(1), "{args:?}: {doc}");
+        assert_eq!(doc["decision"], "BLOCK", "{args:?}");
+        let reasons = doc["reasons"].to_string();
+        assert!(reasons.contains(reason), "{args:?}: {reasons}");
+        // Raw identifiers never reach the terminal.
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("9876543210"));
+    }
+
+    let review = kavach(
+        &dir,
+        &[
+            "--json",
+            "authorize",
+            "propose_plan",
+            "--at",
+            "11:00",
+            "-p",
+            "waiver_bps=2500",
+        ],
+    );
+    assert_eq!(review.status.code(), Some(1));
+    assert_eq!(json(&review)["decision"], "HUMAN_REVIEW");
+}
+
+#[test]
+fn authorize_usage_errors_exit_64() {
+    let dir = scratch("authorize-usage");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    for args in [
+        &["authorize", "no_such_tool"][..],
+        &["authorize", "send_reminder", "-p", "bogus=1"],
+        &["authorize", "propose_plan", "-p", "waiver_bps=lots"],
+        &["authorize", "send_reminder", "-p", "channel"],
+        &["authorize", "send_reminder", "--at", "7pm"],
+        &["authorize", "send_reminder", "--agent", "no-such-agent"],
+    ] {
+        let out = kavach(&dir, args);
+        assert_eq!(
+            out.status.code(),
+            Some(64),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
