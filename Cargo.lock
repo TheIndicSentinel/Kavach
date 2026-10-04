@@ -2215,7 +2215,6 @@ dependencies = [
  "kavach-ports",
  "kavach-storage",
  "kavach-telemetry",
- "regex",
  "reqwest",
  "rustls",
  "serde",
