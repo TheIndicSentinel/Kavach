@@ -332,6 +332,31 @@ fn the_live_path_issues_mandates_and_records_calls() {
     assert_eq!(doc["recorded"], true);
     assert!(doc["reply"]["record_id"].is_string(), "{doc}");
 
+    // `why` reads it back (audited), checks its signature against the local
+    // dev keys, and says the chain was not checked.
+    let record_id = doc["reply"]["record_id"].as_str().unwrap().to_string();
+    let why = kavach(&dir, &["--json", "why", &record_id]);
+    let doc = json(&why);
+    assert_eq!(why.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["command"], "why");
+    assert_eq!(doc["decision"], "PASS");
+    assert_eq!(doc["verification"]["record_signature"], "verified");
+    assert_eq!(doc["verification"]["against"], "dev keys");
+    assert_eq!(doc["verification"]["chain"]["checked"], false);
+    assert!(doc["reasons"][0]["meaning"].is_string(), "{doc}");
+    let human = kavach(&dir, &["why", &record_id]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        text.contains("record signature verified against dev keys"),
+        "{text}"
+    );
+    assert!(!text.contains("[redacted"), "{text}");
+    assert_eq!(
+        kavach(&dir, &["why", "adr:default:0:999"]).status.code(),
+        Some(1)
+    );
+    assert_eq!(kavach(&dir, &["why", "nope"]).status.code(), Some(64));
+
     let blocked = kavach(
         &dir,
         &[
@@ -409,4 +434,59 @@ fn policy_test_runs_the_starter_suites_and_reports_failures() {
     let out = kavach(&dir, &["policy", "test", typo.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(64));
     assert!(String::from_utf8_lossy(&out.stderr).contains("reasons_inclde"));
+}
+
+fn vectors() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kavach-evidence-cli/tests/vectors")
+}
+
+#[test]
+fn why_explains_a_record_from_a_verified_bundle() {
+    let dir = scratch("why-bundle");
+    let bundle = vectors().join("bundle-v1");
+    let keys = vectors().join("bundle-v1.keys.json");
+    let run = |bundle: &Path, keys: &Path| {
+        kavach(
+            &dir,
+            &[
+                "--json",
+                "why",
+                "adr:default:0:1",
+                "--bundle",
+                bundle.to_str().unwrap(),
+                "--keys",
+                keys.to_str().unwrap(),
+            ],
+        )
+    };
+
+    // It verifies, with findings that are not protected: exit 2.
+    let out = run(&bundle, &keys);
+    let doc = json(&out);
+    assert_eq!(out.status.code(), Some(2), "{doc}");
+    assert_eq!(doc["verification"]["record_signature"], "verified");
+    assert_eq!(doc["verification"]["against"], "trusted keys");
+    assert_eq!(doc["verification"]["chain"]["checked"], true);
+    assert!(!doc["verification"]["chain"]["not_protected"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    // A changed record: the bundle does not verify.
+    let copy = dir.join("bundle");
+    std::fs::create_dir_all(&copy).unwrap();
+    for entry in std::fs::read_dir(&bundle).unwrap().flatten() {
+        std::fs::copy(entry.path(), copy.join(entry.file_name())).unwrap();
+    }
+    let records = copy.join("records.jsonl");
+    let text = std::fs::read_to_string(&records).unwrap();
+    std::fs::write(&records, text.replacen("\"PASS\"", "\"BLOCK\"", 1)).unwrap();
+    assert_eq!(run(&copy, &keys).status.code(), Some(1));
+
+    // Keys are never taken from the bundle being checked.
+    let inside = copy.join("keys.json");
+    std::fs::copy(&keys, &inside).unwrap();
+    let out = run(&copy, &inside);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("keys"));
 }

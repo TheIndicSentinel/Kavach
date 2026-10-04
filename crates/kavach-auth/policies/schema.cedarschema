@@ -28,6 +28,11 @@ namespace Kavach {
     resource: [System],
   };
 
+  action read_evidence appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
   action read_retention appliesTo {
     principal: [User],
     resource: [System],

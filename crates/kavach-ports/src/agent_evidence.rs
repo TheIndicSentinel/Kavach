@@ -395,6 +395,13 @@ pub trait AgentEvidenceStore: Send + Sync {
         partition_id: i32,
     ) -> impl Future<Output = Result<Vec<AgentDecisionRecord>, PortError>> + Send;
 
+    /// The committed record with `record_id`, if any (operator reads).
+    fn record(
+        &self,
+        tenant_id: &str,
+        record_id: &str,
+    ) -> impl Future<Output = Result<Option<AgentDecisionRecord>, PortError>> + Send;
+
     /// Contacts reserved for a subject on an IST date.
     fn contacts_on(
         &self,
@@ -627,6 +634,19 @@ pub fn check_record(
         .ok_or_else(|| signature(format!("unknown key {}", p.key_id)))?;
     let sig = hex::decode(&record.sig).map_err(|_| signature("not hex".into()))?;
     verify_ed25519(key, &signing_message(&record.hash), &sig).map_err(|e| signature(e.to_string()))
+}
+
+/// One record on its own: its hash matches its content and its signature
+/// verifies with a key in `keys` (`dev-` keys only if allowed). This says
+/// **nothing about the chain**: not that the record is in it, nor that no
+/// record before or after it is missing. Verify a bundle for that.
+pub fn check_record_signature(
+    record: &AgentDecisionRecord,
+    keys: &BTreeMap<String, PublicKey>,
+    allow_dev_keys: bool,
+) -> Result<(), ChainError> {
+    let p = &record.payload;
+    check_record(record, p.seq, &p.prev_hash, keys, allow_dev_keys)
 }
 
 /// Whether an outcome's signature (v1 or v2) verifies with a key in `keys`

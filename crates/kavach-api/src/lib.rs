@@ -10,6 +10,7 @@ pub mod convert;
 pub mod correlation;
 pub mod dataplane;
 pub mod error;
+pub mod evidence_read;
 pub mod forward;
 pub mod governance;
 pub mod grpc;

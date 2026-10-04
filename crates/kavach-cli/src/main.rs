@@ -15,6 +15,7 @@ mod output;
 mod policy_test;
 mod project;
 mod run;
+mod why;
 
 use std::path::PathBuf;
 
@@ -131,6 +132,24 @@ enum Command {
     /// Policy suites.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Explain a recorded decision: its reasons in words, the mandate, the
+    /// time and the policy versions, with the record's signature checked
+    /// against local trusted keys. Exit 0 if it verifies, 1 if not.
+    #[command(
+        after_help = "Examples:\n  kavach why adr:default:0:1                     # from the running dev stack (audited read)\n  kavach why adr:default:0:1 --bundle ./export   # offline, from an evidence bundle"
+    )]
+    Why {
+        /// The record id, as `kavach call` prints it (adr:<tenant>:<partition>:<seq>).
+        record_id: String,
+        /// Read the record from this evidence bundle, after verifying the
+        /// whole bundle, instead of from the running stack.
+        #[arg(long, value_name = "DIR")]
+        bundle: Option<PathBuf>,
+        /// Trusted keys (default: .kavach/auditor/trusted-keys.json). Never
+        /// taken from the server or the bundle.
+        #[arg(long, value_name = "FILE")]
+        keys: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -239,6 +258,21 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
                     at: at.as_deref(),
                     contacts_today: *contacts_today,
                 },
+            )
+            .await,
+        ),
+        Command::Why {
+            record_id,
+            bundle,
+            keys,
+        } => (
+            "why",
+            why::run(
+                &ui,
+                &cli.project,
+                record_id,
+                bundle.as_deref(),
+                keys.as_deref(),
             )
             .await,
         ),

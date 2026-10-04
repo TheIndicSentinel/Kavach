@@ -293,6 +293,23 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
             .map(|(record, _)| record))
     }
 
+    async fn record(
+        &self,
+        tenant_id: &str,
+        record_id: &str,
+    ) -> Result<Option<AgentDecisionRecord>, PortError> {
+        let row = sqlx::query(
+            "SELECT payload, hash, sig FROM agent_decisions \
+            WHERE tenant_id = $1 AND record_id = $2 AND mode = 'commit'",
+        )
+        .bind(tenant_id)
+        .bind(record_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        row.as_ref().map(row_to_record).transpose()
+    }
+
     async fn record_outcome(&self, outcome: OutcomeRecord) -> Result<(), PortError> {
         let hash: Option<String> = sqlx::query_scalar(
             "SELECT hash FROM agent_decisions WHERE tenant_id = $1 AND credential_id = $2",

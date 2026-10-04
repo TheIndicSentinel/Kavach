@@ -74,6 +74,18 @@ kavach authorize propose_plan -p waiver_bps=2500         # HUMAN_REVIEW: above t
 kavach authorize send_reminder -p subject_ref=ref:borrower:9876543210   # BLOCK: raw identifier
 ```
 
+### Explaining a decision (`kavach why`)
+
+`kavach why <record-id>` explains a decision `kavach call` recorded: each reason in words, with the usual fix, plus the mandate, the time and its sync state, and the policy and registry digests. The subject appears only as its pseudonym.
+
+```bash
+kavach why adr:default:0:1                        # from the running dev stack
+kavach why adr:default:0:1 --bundle ./export      # offline, from an evidence bundle
+```
+
+- **Live:** reads the record from the operator API (`read_evidence`; every read is audited). It checks the record's own hash and signature against **local** trusted keys (`--keys`, default `.kavach/auditor/trusted-keys.json`), never a key from the server. Dev records say "verified against dev keys". A single record proves nothing about the chain, and the output says so.
+- **`--bundle`:** verifies the whole bundle first, as `kavach-evidence verify-bundle` does (files, chain, checkpoints), then explains the record from it. No network. It exits 2 if the bundle verifies but something is not protected.
+
 ### Policy tests (`kavach policy test`)
 
 `kavach init` writes two starter suites to `policy-tests/`; commit them with your project. `kavach policy test [PATH]` runs every `.yaml` file in `policy-tests/`, or the file or directory you name. Each case gets an `ok` or `FAIL` line. A failing case shows what it expected and what it got, and the command exits 1; an invalid suite exits 64. `--json` gives the per-case results.

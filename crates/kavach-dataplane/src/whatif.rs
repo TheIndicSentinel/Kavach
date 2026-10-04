@@ -65,6 +65,14 @@ impl AgentEvidenceStore for WhatIfStore {
         ready(Ok(Vec::new()))
     }
 
+    fn record(
+        &self,
+        _tenant_id: &str,
+        _record_id: &str,
+    ) -> impl Future<Output = Result<Option<AgentDecisionRecord>, PortError>> + Send {
+        ready(Ok(None))
+    }
+
     fn contacts_on(
         &self,
         _tenant_id: &str,

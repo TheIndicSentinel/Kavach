@@ -15,7 +15,7 @@ use kavach_domain::Decision;
 use kavach_keys::SubjectKeys;
 use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus};
 use kavach_mandate::{MandateDeps, MandateService};
-use kavach_ports::agent_evidence::{verify_chain, AgentEvidenceStore};
+use kavach_ports::agent_evidence::{verify_chain, AgentDecisionRecord, AgentEvidenceStore};
 use kavach_ports_testkit::agent_evidence::TestSigner;
 use kavach_ports_testkit::FakeClock;
 use kavach_storage::testing::isolated_database_urls;
@@ -121,4 +121,19 @@ async fn reminders_on_postgres_as_the_runtime_role() {
     let records = core.store().records(TENANT, 0).await.unwrap();
     assert_eq!(records.len(), 4, "three allows and the refused fourth");
     verify_chain(&records, &keys, None, &[], ist(12, 0, 0)).expect("signed chain");
+    records_are_read_by_id(core.store().as_ref(), &records[3]).await;
+}
+
+/// A record by its id (`kavach why`); nothing for an unknown id or another
+/// tenant.
+async fn records_are_read_by_id<S: AgentEvidenceStore>(store: &S, record: &AgentDecisionRecord) {
+    let id = &record.payload.record_id;
+    let by_id = store.record(TENANT, id).await.unwrap();
+    assert_eq!(by_id.as_ref(), Some(record));
+    assert!(store
+        .record(TENANT, "adr:default:0:999")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store.record("other", id).await.unwrap().is_none());
 }
