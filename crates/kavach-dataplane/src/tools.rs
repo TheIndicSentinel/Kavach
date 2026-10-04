@@ -122,6 +122,52 @@ pub struct ToolRequest {
     pub params: serde_json::Map<String, Value>,
 }
 
+/// Why a malformed tool request is refused (HTTP 400). The codes are
+/// stable; the messages are for people and may change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalCode {
+    UnknownTool,
+    /// `mandate_id` or `request_id` is malformed.
+    InvalidEnvelope,
+    UnknownParameter,
+    MissingParameter,
+    /// A parameter has the wrong type or size.
+    InvalidParameter,
+}
+
+impl RefusalCode {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnknownTool => "unknown_tool",
+            Self::InvalidEnvelope => "invalid_envelope",
+            Self::UnknownParameter => "unknown_parameter",
+            Self::MissingParameter => "missing_parameter",
+            Self::InvalidParameter => "invalid_parameter",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub code: RefusalCode,
+    pub message: String,
+}
+
+impl Refusal {
+    fn new(code: RefusalCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+}
+
+fn invalid_parameter(message: String) -> Refusal {
+    Refusal::new(RefusalCode::InvalidParameter, message)
+}
+
 /// How the registry file must be vouched for at load.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RegistryTrust<'a> {
@@ -260,18 +306,29 @@ impl ToolRegistry {
     /// Turns a request for `tool` into a [`ToolCall`]. `Err` (`Invalid`) for
     /// a malformed request; policy violations are carried in the call.
     pub fn extract(&self, tool: &str, request: ToolRequest) -> Result<ToolCall, PortError> {
+        self.check(tool, request)
+            .map_err(|refusal| PortError::invalid(refusal.message))
+    }
+
+    /// [`extract`](Self::extract), with a stable code for why a malformed
+    /// request is refused.
+    pub fn check(&self, tool: &str, request: ToolRequest) -> Result<ToolCall, Refusal> {
         let spec = self.tool(tool).ok_or_else(|| {
             let shown = if is_identifier(tool) {
                 tool
             } else {
                 "(not an identifier)"
             };
-            PortError::invalid(format!("unknown tool {shown}"))
+            Refusal::new(RefusalCode::UnknownTool, format!("unknown tool {shown}"))
         })?;
         if request.mandate_id.is_empty() || request.mandate_id.len() > MAX_ID_BYTES {
-            return Err(PortError::invalid("mandate_id must be 1-128 bytes"));
+            return Err(Refusal::new(
+                RefusalCode::InvalidEnvelope,
+                "mandate_id must be 1-128 bytes",
+            ));
         }
-        crate::authorize::validate_request_id(&request.request_id)?;
+        crate::authorize::validate_request_id(&request.request_id)
+            .map_err(|e| Refusal::new(RefusalCode::InvalidEnvelope, e.message))?;
         if let Some(unknown) = request
             .params
             .keys()
@@ -283,9 +340,10 @@ impl ToolRegistry {
             } else {
                 "(not an identifier)"
             };
-            return Err(PortError::invalid(format!(
-                "tool {tool}: unknown parameter {shown}"
-            )));
+            return Err(Refusal::new(
+                RefusalCode::UnknownParameter,
+                format!("tool {tool}: unknown parameter {shown}"),
+            ));
         }
 
         let mut call = ToolCall {
@@ -304,9 +362,10 @@ impl ToolRegistry {
                 if param.optional {
                     continue;
                 }
-                return Err(PortError::invalid(format!(
-                    "tool {tool}: missing parameter {name:?}"
-                )));
+                return Err(Refusal::new(
+                    RefusalCode::MissingParameter,
+                    format!("tool {tool}: missing parameter {name:?}"),
+                ));
             };
             bind(&mut call, name, param, value)?;
         }
@@ -314,12 +373,12 @@ impl ToolRegistry {
     }
 }
 
-fn string_param<'v>(name: &str, value: &'v Value) -> Result<&'v str, PortError> {
+fn string_param<'v>(name: &str, value: &'v Value) -> Result<&'v str, Refusal> {
     let text = value
         .as_str()
-        .ok_or_else(|| PortError::invalid(format!("parameter {name:?} must be a string")))?;
+        .ok_or_else(|| invalid_parameter(format!("parameter {name:?} must be a string")))?;
     if text.len() > MAX_PARAM_BYTES {
-        return Err(PortError::invalid(format!(
+        return Err(invalid_parameter(format!(
             "parameter {name:?} exceeds {MAX_PARAM_BYTES} bytes"
         )));
     }
@@ -327,12 +386,7 @@ fn string_param<'v>(name: &str, value: &'v Value) -> Result<&'v str, PortError> 
 }
 
 /// Checks one parameter and stores it in the call.
-fn bind(
-    call: &mut ToolCall,
-    name: &str,
-    param: &ParamSpec,
-    value: &Value,
-) -> Result<(), PortError> {
+fn bind(call: &mut ToolCall, name: &str, param: &ParamSpec, value: &Value) -> Result<(), Refusal> {
     match param.kind {
         ParamKind::CapabilityRef => {
             let text = string_param(name, value)?;
@@ -364,10 +418,10 @@ fn bind(
         }
         ParamKind::FieldSet => {
             let items = value.as_array().ok_or_else(|| {
-                PortError::invalid(format!("parameter {name:?} must be an array of strings"))
+                invalid_parameter(format!("parameter {name:?} must be an array of strings"))
             })?;
             if items.len() > param.values.len() {
-                return Err(PortError::invalid(format!(
+                return Err(invalid_parameter(format!(
                     "parameter {name:?} has more entries than allowed values"
                 )));
             }
@@ -384,7 +438,7 @@ fn bind(
         }
         ParamKind::Integer => {
             let number = value.as_i64().ok_or_else(|| {
-                PortError::invalid(format!("parameter {name:?} must be an integer"))
+                invalid_parameter(format!("parameter {name:?} must be an integer"))
             })?;
             let (min, max) = (param.min.unwrap_or(i64::MIN), param.max.unwrap_or(i64::MAX));
             if !(min..=max).contains(&number) {
@@ -540,6 +594,56 @@ mod tests {
             "channel": "whatsapp",
             "template_id": "emi_reminder_v1",
         })
+    }
+
+    /// `extract` is `check` without the code: one validation path, so the
+    /// two cannot drift.
+    #[test]
+    fn extract_and_check_refuse_the_same_requests() {
+        let r = registry();
+        let mut bad_envelope = request(reminder());
+        bad_envelope.request_id = "has space".into();
+        let cases = [
+            (
+                "no_such_tool",
+                request(reminder()),
+                Some(RefusalCode::UnknownTool),
+            ),
+            (
+                "send_reminder",
+                bad_envelope,
+                Some(RefusalCode::InvalidEnvelope),
+            ),
+            (
+                "send_reminder",
+                request(json!({ "subject_ref": "ref:borrower:B-1", "channel": "sms",
+                    "template_id": "emi_reminder_v1", "bogus": "x" })),
+                Some(RefusalCode::UnknownParameter),
+            ),
+            (
+                "send_reminder",
+                request(json!({ "subject_ref": "ref:borrower:B-1" })),
+                Some(RefusalCode::MissingParameter),
+            ),
+            (
+                "propose_plan",
+                request(json!({ "subject_ref": "ref:borrower:B-1", "waiver_bps": "lots" })),
+                Some(RefusalCode::InvalidParameter),
+            ),
+            ("send_reminder", request(reminder()), None),
+        ];
+        for (tool, req, expected) in cases {
+            let checked = r.check(tool, req.clone());
+            let extracted = r.extract(tool, req);
+            match (checked, extracted, expected) {
+                (Err(refusal), Err(error), Some(code)) => {
+                    assert_eq!(refusal.code, code, "{tool}");
+                    assert_eq!(refusal.message, error.message, "{tool}");
+                }
+                (Ok(a), Ok(b), None) => assert_eq!(a, b),
+                (c, e, x) => panic!("{tool}: check {c:?}, extract {e:?}, expected {x:?}"),
+            }
+        }
     }
 
     #[test]
