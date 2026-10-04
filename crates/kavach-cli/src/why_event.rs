@@ -19,7 +19,7 @@ use std::time::Duration;
 use chrono::{DateTime, FixedOffset, Utc};
 use kavach_domain::reasons::explain;
 use kavach_domain::{DecisionEvent, GovernanceMode};
-use kavach_evidence::{parse_export, verify_chain, verify_event_hash};
+use kavach_evidence::{check_event, parse_export, verify_chain, EventCheck};
 use serde_json::{json, Value};
 
 use crate::authorize::usage;
@@ -44,11 +44,26 @@ pub fn is_evidence_id(id: &str) -> bool {
 enum Integrity {
     /// One event from the running stack: its own hash only.
     OwnHash(bool),
-    /// The whole export's chain linked and hashed.
-    Chain { events: usize },
+    /// Written before schema 1.1.0 and stored at lower precision than it
+    /// was hashed at: it cannot be re-checked. A warning, never a pass.
+    Legacy,
+    /// The whole export's chain linked and hashed; `legacy` events in it
+    /// (possibly this one) could not be re-checked.
+    Chain {
+        events: usize,
+        legacy: usize,
+        this_legacy: bool,
+    },
     /// Tombstoned: redacted, so its hash cannot be rechecked.
     Tombstoned,
 }
+
+/// What a legacy event's check says.
+const LEGACY: &str = "cannot be re-checked: written before schema 1.1.0, and storage kept its \
+                      timestamps at lower precision than they were hashed at";
+/// What it does not mean.
+const LEGACY_NOTE: &str =
+    "not proof of tampering, and not a pass: re-baseline (export, then start a fresh chain)";
 
 async fn fetch_live(dir: &Path, id: &str) -> Result<(DecisionEvent, bool), CliError> {
     let project = Project::find(dir)?;
@@ -90,7 +105,7 @@ async fn fetch_live(dir: &Path, id: &str) -> Result<(DecisionEvent, bool), CliEr
 
 /// Checks the whole export's chain first; a break is reported before
 /// anything about the event.
-fn from_export(path: &Path, id: &str) -> Result<(DecisionEvent, usize), CliError> {
+fn from_export(path: &Path, id: &str) -> Result<(DecisionEvent, usize, Vec<String>), CliError> {
     let text = std::fs::read_to_string(path)
         .map_err(|e| CliError::new(format!("cannot read {}", path.display()), e))?;
     let events = parse_export(&text).map_err(|e| {
@@ -112,7 +127,7 @@ fn from_export(path: &Path, id: &str) -> Result<(DecisionEvent, usize), CliError
                 format!("{} has no such event", path.display()),
             )
         })?;
-    Ok((event, report.events_checked))
+    Ok((event, report.events_checked, report.legacy_unchecked))
 }
 
 fn ist(t: DateTime<Utc>) -> String {
@@ -134,14 +149,24 @@ fn word(value: impl serde::Serialize) -> String {
 
 pub async fn run(ui: &Ui, dir: &Path, id: &str, export: Option<&Path>) -> Result<i32, CliError> {
     let (event, integrity) = if let Some(path) = export {
-        let (event, events) = from_export(path, id)?;
-        (event, Integrity::Chain { events })
+        let (event, events, legacy) = from_export(path, id)?;
+        let this_legacy = legacy.contains(&event.event_id);
+        let integrity = Integrity::Chain {
+            events,
+            legacy: legacy.len(),
+            this_legacy,
+        };
+        (event, integrity)
     } else {
         let (event, tombstoned) = fetch_live(dir, id).await?;
         let integrity = if tombstoned {
             Integrity::Tombstoned
         } else {
-            Integrity::OwnHash(verify_event_hash(&event).is_ok())
+            match check_event(&event) {
+                EventCheck::Matches => Integrity::OwnHash(true),
+                EventCheck::LegacyPrecision => Integrity::Legacy,
+                EventCheck::Mismatch(_) => Integrity::OwnHash(false),
+            }
         };
         (event, integrity)
     };
@@ -165,10 +190,38 @@ pub async fn run(ui: &Ui, dir: &Path, id: &str, export: Option<&Path>) -> Result
             json!({ "hash": "does NOT match the content", "chain": "not checked", "signed": false }),
             Status::Failed,
         ),
-        Integrity::Chain { events } => (
-            json!({ "hash": "matches the content", "chain": format!("links consistent ({events} events)"), "signed": false, "note": NOT_SIGNED }),
-            Status::Ok,
+        Integrity::Legacy => (
+            json!({ "hash": LEGACY, "chain": "not checked", "signed": false, "legacy": true, "note": LEGACY_NOTE }),
+            Status::Warnings,
         ),
+        Integrity::Chain {
+            events,
+            legacy,
+            this_legacy,
+        } => {
+            let chain = if legacy == 0 {
+                format!("links consistent ({events} events)")
+            } else {
+                format!(
+                    "links consistent ({events} events; {legacy} legacy, could not be re-checked)"
+                )
+            };
+            if this_legacy {
+                (
+                    json!({ "hash": LEGACY, "chain": chain, "signed": false, "legacy": true, "note": LEGACY_NOTE }),
+                    Status::Warnings,
+                )
+            } else {
+                (
+                    json!({ "hash": "matches the content", "chain": chain, "signed": false, "note": NOT_SIGNED }),
+                    if legacy == 0 {
+                        Status::Ok
+                    } else {
+                        Status::Warnings
+                    },
+                )
+            }
+        }
         Integrity::Tombstoned => (
             json!({ "hash": "not checked: the event is tombstoned and redacted", "chain": "not checked", "signed": false }),
             Status::Warnings,
@@ -235,7 +288,7 @@ fn human(ui: Ui, data: &Value) -> String {
         Some(note) => format!("hash {}; {note}", s(&i["hash"])),
         None => format!("hash {}", s(&i["hash"])),
     };
-    let ok = !s(&i["hash"]).contains("NOT");
+    let ok = !s(&i["hash"]).contains("NOT") && i["legacy"] != true;
     let _ = writeln!(
         out,
         "  integrity {}",
@@ -344,7 +397,7 @@ mod tests {
         let (path, events) = export(&dir);
         assert!(events.len() >= 4);
         let id = &events[1].evidence_id;
-        let (event, checked) = from_export(&path, id).unwrap();
+        let (event, checked, _) = from_export(&path, id).unwrap();
         assert_eq!(&event.evidence_id, id);
         assert_eq!(checked, events.len());
 
@@ -380,10 +433,22 @@ mod tests {
             .collect();
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         for event in &events {
-            let (found, checked) = from_export(&path, &event.evidence_id).unwrap();
+            let (found, checked, legacy) = from_export(&path, &event.evidence_id).unwrap();
             assert_eq!(&found, event);
             assert_eq!(checked, 2);
+            assert!(legacy.is_empty(), "both re-check exactly");
         }
+        // The old record as Postgres gives it back: legacy, reported.
+        let mut stored = events.clone();
+        stored[0].decision_time = kavach_evidence::at_storage_precision(stored[0].decision_time);
+        stored[0].evaluated_at = kavach_evidence::at_storage_precision(stored[0].evaluated_at);
+        let lines: Vec<_> = stored
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let (_, _, legacy) = from_export(&path, &stored[0].evidence_id).unwrap();
+        assert_eq!(legacy, vec![stored[0].event_id.clone()]);
         let _ = std::fs::remove_file(path);
     }
 

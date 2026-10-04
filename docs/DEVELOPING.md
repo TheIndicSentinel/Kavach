@@ -94,7 +94,7 @@ kavach why adr:default:0:1 --bundle ./export      # offline, from an evidence bu
 - the reasons, the pack and model versions, and the decision time;
 - the input, only as its digest.
 
-This evidence is hash-chained but **not signed** (v1). Anyone with write access to the database could rewrite a record and rehash the chain, so the output says "hash matches the content; not signed, so this does not prove the record wasn't rewritten". `--export <file>` checks the whole chain of a decision event export first, and reports a break before showing anything. There are no counterfactuals for credit decisions.
+This evidence is hash-chained but **not signed** (v1). Anyone with write access to the database could rewrite a record and rehash the chain, so the output says "hash matches the content; not signed, so this does not prove the record wasn't rewritten". `--export <file>` checks the whole chain of a decision event export first, and reports a break before showing anything. There are no counterfactuals for credit decisions. A record written before schema 1.1.0 and read back from Postgres may fail only because storage dropped its nanoseconds. `why` then says it **cannot be re-checked (legacy precision)** and exits 2: never "verified", and not called tampered either. Re-baseline such chains (export, then start a fresh one).
 
 ### Policy tests (`kavach policy test`)
 
