@@ -19,7 +19,9 @@ use kavach_ports::bundle::{
     manifest_hash, seal_manifest, FileEntry, Files, Manifest, ManifestDraft, ManifestError,
     ManifestSignature, Segment, CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE, RECORDS_FILE,
 };
-use kavach_ports::bundle_verify::{verify_bundle, BundleFailure, BundleReport, VerifyOptions};
+use kavach_ports::bundle_verify::{
+    verify_bundle, BundleFailure, BundleReport, KeyValidity, VerifyOptions,
+};
 use kavach_ports::checkpoint::{Checkpoint, CheckpointError};
 
 use common::*;
@@ -76,6 +78,7 @@ impl Case<'_> {
             self.outcomes.iter().cloned().map(Ok),
             self.checkpoints.iter().cloned().map(Ok),
             &VerifyOptions {
+                validity: &std::collections::BTreeMap::new(),
                 keys: &keys,
                 dev_keys: DevKeys::Refuse,
                 now: exported_at(),
@@ -83,6 +86,27 @@ impl Case<'_> {
             },
         )
     }
+}
+
+/// As [`Case::verify`], with the operator's limits on keys.
+fn verify_limited(
+    case: &Case<'_>,
+    validity: &std::collections::BTreeMap<String, KeyValidity>,
+) -> Result<BundleReport, BundleFailure> {
+    let keys = public_keys();
+    verify_bundle(
+        &manifest(case.start, case.records, case.signed),
+        case.records.iter().cloned().map(Ok),
+        case.outcomes.iter().cloned().map(Ok),
+        case.checkpoints.iter().cloned().map(Ok),
+        &VerifyOptions {
+            validity,
+            keys: &keys,
+            dev_keys: DevKeys::Refuse,
+            now: exported_at(),
+            kept: case.kept,
+        },
+    )
 }
 
 fn kinds(report: &BundleReport) -> Vec<&'static str> {
@@ -178,6 +202,7 @@ fn a_bundle_verifies_and_says_what_it_does_not_protect() {
         outcomes.iter().cloned().map(Ok),
         checkpoints.iter().cloned().map(Ok),
         &VerifyOptions {
+            validity: &std::collections::BTreeMap::new(),
             keys: &keys,
             dev_keys: DevKeys::Refuse,
             now: records[3].payload.ts,
@@ -355,6 +380,7 @@ fn records_outcomes_and_checkpoints_that_do_not_belong_are_refused() {
         outcomes.iter().cloned().map(Ok),
         checkpoints.iter().cloned().map(Ok),
         &VerifyOptions {
+            validity: &std::collections::BTreeMap::new(),
             keys: &keys,
             dev_keys: DevKeys::Refuse,
             now: exported_at(),
@@ -454,6 +480,7 @@ fn checkpoints_that_do_not_fit_the_records_and_unreadable_lines_are_refused() {
         outcomes.iter().cloned().map(Ok),
         checkpoints.iter().cloned().map(Ok),
         &VerifyOptions {
+            validity: &std::collections::BTreeMap::new(),
             keys: &keys,
             dev_keys: DevKeys::Refuse,
             now: exported_at(),
@@ -834,4 +861,134 @@ fn the_command_fails_closed_and_tells_the_three_results_apart() {
     assert_eq!(json["result"], "failed");
     assert!(json["failure"].as_str().unwrap().contains("records.jsonl"));
     fs::remove_dir_all(&tampered).unwrap();
+}
+
+/// The evidence key is stolen after record 2. The operator kept the
+/// checkpoint of record 2 from before. The thief re-signs records 3 and 4
+/// and backdates them to before the compromise (the checkpoint key was not
+/// stolen). A time limit alone lets the forgery through; a limit anchored
+/// to the kept checkpoint (`valid_until_seq`) refuses it.
+#[test]
+fn a_compromised_key_cannot_vouch_for_backdated_records() {
+    let records = records();
+    let checkpoints = checkpoints(&records);
+    let compromised_at = records[2].payload.ts;
+    let evidence = evidence_key();
+    let mut forged = records[..2].to_vec();
+    let mut prev = records[1].hash.clone();
+    for record in &records[2..] {
+        let mut payload = record.payload.clone();
+        payload.prev_hash.clone_from(&prev);
+        payload.purpose = "forged".into();
+        payload.ts = records[0].payload.ts; // backdated, before the compromise
+        let record = kavach_ports::agent_evidence::seal(payload, &evidence).unwrap();
+        prev.clone_from(&record.hash);
+        forged.push(record);
+    }
+    let case = Case {
+        start: SegmentStart::GENESIS,
+        records: &forged,
+        outcomes: &[],
+        checkpoints: &checkpoints[..1],
+        kept: Some(&checkpoints[0]),
+        signed: true,
+    };
+    let limit = |validity: KeyValidity| {
+        std::collections::BTreeMap::from([(evidence.0.to_string(), validity)])
+    };
+
+    // No limits: the forgery verifies (its records are merely uncovered).
+    assert!(case.verify().is_ok());
+    // A time limit alone: the backdated forgery still verifies.
+    let by_time = limit(KeyValidity {
+        not_after: Some(compromised_at),
+        ..KeyValidity::default()
+    });
+    assert!(verify_limited(&case, &by_time).is_ok());
+    // Anchored to the kept checkpoint: refused at the first forged record.
+    let by_seq = limit(KeyValidity {
+        valid_until_seq: Some(2),
+        not_after: Some(compromised_at),
+        ..KeyValidity::default()
+    });
+    match verify_limited(&case, &by_seq) {
+        Err(BundleFailure::KeyNotValid { what, reason }) => {
+            assert_eq!(what, "record 3");
+            assert!(reason.contains("after its limit"), "{reason}");
+        }
+        other => panic!("expected a refusal, got {other:?}"),
+    }
+
+    // An honest record past the limit is accepted when a checkpoint the
+    // operator kept covers it, and refused beyond that checkpoint.
+    let honest = |records| Case {
+        start: SegmentStart::GENESIS,
+        records,
+        outcomes: &[],
+        checkpoints: &checkpoints,
+        kept: Some(&checkpoints[1]),
+        signed: true,
+    };
+    let seq_only = limit(KeyValidity {
+        valid_until_seq: Some(2),
+        ..KeyValidity::default()
+    });
+    assert!(verify_limited(&honest(&records[..3]), &seq_only).is_ok());
+    assert!(matches!(
+        verify_limited(&honest(&records), &seq_only),
+        Err(BundleFailure::KeyNotValid { what, .. }) if what == "record 4"
+    ));
+
+    // The same rule for the checkpoint key.
+    let checkpoint_limit = std::collections::BTreeMap::from([(
+        checkpoint_key().0.to_string(),
+        KeyValidity {
+            valid_until_seq: Some(2),
+            ..KeyValidity::default()
+        },
+    )]);
+    let unkept = Case {
+        kept: None,
+        ..honest(&records)
+    };
+    assert!(matches!(
+        verify_limited(&unkept, &checkpoint_limit),
+        Err(BundleFailure::KeyNotValid { what, .. }) if what == "checkpoint 3"
+    ));
+}
+
+/// The keys file carries the limits; a time window that ends before it
+/// starts is refused.
+#[test]
+fn the_trusted_keys_file_carries_key_limits() {
+    let dir = scratch("keys-limits");
+    let bundle = scratch("keys-limits-bundle");
+    fs::create_dir_all(&dir).unwrap();
+    fs::create_dir_all(&bundle).unwrap();
+    let path = dir.join("keys.json");
+    let key = hex::encode(evidence_key().1.verifying_key().to_bytes());
+    fs::write(
+        &path,
+        serde_json::json!({ "keys": [{
+            "kid": "kavach-evidence-kat", "alg": "Ed25519", "public_key": key,
+            "valid_until_seq": 2, "not_after": "2026-10-02T06:00:00Z"
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    let trusted = kavach_evidence_cli::verify::load_trusted_keys(&path, &bundle).unwrap();
+    let limits = &trusted.validity["kavach-evidence-kat"];
+    assert_eq!(limits.valid_until_seq, Some(2));
+    assert!(limits.not_after.is_some() && limits.not_before.is_none());
+
+    fs::write(
+        &path,
+        serde_json::json!({ "keys": [{
+            "kid": "kavach-evidence-kat", "alg": "Ed25519", "public_key": key,
+            "not_before": "2026-10-02T06:00:00Z", "not_after": "2026-10-02T05:00:00Z"
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    assert!(kavach_evidence_cli::verify::load_trusted_keys(&path, &bundle).is_err());
 }

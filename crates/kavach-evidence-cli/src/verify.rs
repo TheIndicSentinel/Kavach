@@ -21,7 +21,9 @@ use kavach_ports::bundle::{
     FileEntry, Manifest, ManifestSignature, CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE,
     RECORDS_FILE,
 };
-use kavach_ports::bundle_verify::{verify_bundle, BundleFailure, BundleReport, VerifyOptions};
+use kavach_ports::bundle_verify::{
+    verify_bundle, BundleFailure, BundleReport, KeyValidity, VerifyOptions,
+};
 use kavach_ports::checkpoint::Checkpoint;
 use kavach_ports::{KeyAlgorithm, PublicKey};
 use serde::de::DeserializeOwned;
@@ -81,11 +83,36 @@ struct KeyEntry {
     kid: String,
     alg: String,
     public_key: String,
+    /// After a compromise: nothing this key signed for a record after this
+    /// one is trusted, unless a kept checkpoint covers it. Take it from a
+    /// checkpoint kept before the compromise.
+    #[serde(default)]
+    valid_until_seq: Option<i64>,
+    /// Signatures dated before this are refused.
+    #[serde(default)]
+    not_before: Option<chrono::DateTime<chrono::Utc>>,
+    /// Signatures dated at or after this are refused (a timestamp can be
+    /// backdated by whoever holds the key: use `valid_until_seq` for that).
+    #[serde(default)]
+    not_after: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// The operator's trusted keys and the limits set on them.
+#[derive(Debug, Clone, Default)]
+pub struct TrustedKeys {
+    pub keys: BTreeMap<String, PublicKey>,
+    pub validity: BTreeMap<String, KeyValidity>,
 }
 
 /// Reads the operator's trusted keys. A keys file inside the bundle is
 /// refused: keys are never taken from what is being verified.
 pub fn load_keys(path: &Path, bundle: &Path) -> Result<BTreeMap<String, PublicKey>, VerifyError> {
+    load_trusted_keys(path, bundle).map(|trusted| trusted.keys)
+}
+
+/// As [`load_keys`], with each key's limits (`valid_until_seq`,
+/// `not_before`, `not_after`).
+pub fn load_trusted_keys(path: &Path, bundle: &Path) -> Result<TrustedKeys, VerifyError> {
     let canonical = |p: &Path| fs::canonicalize(p).map_err(io(p.display().to_string()));
     if canonical(path)?.starts_with(canonical(bundle)?) {
         return Err(VerifyError::Keys(
@@ -98,7 +125,26 @@ pub fn load_keys(path: &Path, bundle: &Path) -> Result<BTreeMap<String, PublicKe
     let file: KeysFile =
         serde_json::from_str(&text).map_err(|e| VerifyError::Keys(e.to_string()))?;
     let mut keys = BTreeMap::new();
+    let mut validity = BTreeMap::new();
     for entry in file.keys {
+        if entry
+            .not_before
+            .zip(entry.not_after)
+            .is_some_and(|(b, a)| a <= b)
+        {
+            return Err(VerifyError::Keys(format!(
+                "{}: not_after must be later than not_before",
+                entry.kid
+            )));
+        }
+        let limits = KeyValidity {
+            valid_until_seq: entry.valid_until_seq,
+            not_before: entry.not_before,
+            not_after: entry.not_after,
+        };
+        if limits != KeyValidity::default() {
+            validity.insert(entry.kid.clone(), limits);
+        }
         if entry.alg != "Ed25519" {
             return Err(VerifyError::Keys(format!(
                 "{}: unsupported algorithm {}",
@@ -126,7 +172,7 @@ pub fn load_keys(path: &Path, bundle: &Path) -> Result<BTreeMap<String, PublicKe
     if keys.is_empty() {
         return Err(VerifyError::Keys("the file lists no keys".into()));
     }
-    Ok(keys)
+    Ok(TrustedKeys { keys, validity })
 }
 
 /// Reads a kept checkpoint: one JSON object, or the last line of a file of
@@ -282,7 +328,7 @@ pub struct VerifyRequest<'a> {
 pub fn verify_dir(request: &VerifyRequest<'_>) -> Result<BundleReport, VerifyError> {
     let dir = request.bundle;
     check_layout(dir)?;
-    let keys = load_keys(request.keys, dir)?;
+    let TrustedKeys { keys, validity } = load_trusted_keys(request.keys, dir)?;
     let kept = request.expect_checkpoint.map(load_kept).transpose()?;
     let manifest = read_manifest(dir)?;
 
@@ -309,6 +355,7 @@ pub fn verify_dir(request: &VerifyRequest<'_>) -> Result<BundleReport, VerifyErr
 
     let options = VerifyOptions {
         keys: &keys,
+        validity: &validity,
         dev_keys: if request.dev {
             DevKeys::Accept
         } else {
