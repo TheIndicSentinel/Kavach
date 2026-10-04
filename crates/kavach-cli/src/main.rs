@@ -6,6 +6,7 @@
 //! 2 warnings, 64 usage), colour only on a terminal and never with
 //! `NO_COLOR`, no prompts. Nothing is sent anywhere: no telemetry.
 
+mod authorize;
 mod dev;
 mod doctor;
 mod init;
@@ -23,7 +24,8 @@ use output::{CliError, Ui, EXIT_INTERNAL, EXIT_OK, EXIT_USAGE};
     version,
     about = "Authorization and runtime control for AI agents: the developer command line",
     long_about = "Authorization and runtime control for AI agents: the developer command line.\n\n\
-                  Start with `kavach init`, check with `kavach doctor`, run with `kavach dev up`.\n\
+                  Start with `kavach init`, check with `kavach doctor`, try decisions offline with\n\
+                  `kavach authorize`, run with `kavach dev up`.\n\
                   Everything here is for development: loopback only, dev- keys, no telemetry.",
     propagate_version = true
 )]
@@ -58,6 +60,36 @@ enum Command {
     /// Run Kavach locally.
     #[command(subcommand)]
     Dev(DevCommand),
+    /// What the gateway would decide for a tool call: offline, in this
+    /// process, nothing recorded. Exit 0 if allowed, 1 if not.
+    #[command(
+        after_help = "Examples:\n  kavach authorize send_reminder\n  kavach authorize send_reminder --at 20:30\n  kavach authorize send_reminder --contacts-today 3\n  kavach authorize propose_plan --param waiver_bps=2500\n  kavach authorize send_reminder --param subject_ref=ref:borrower:9876543210"
+    )]
+    Authorize {
+        /// The tool, as the registry names it (send_reminder, place_call,
+        /// read_fields, propose_plan).
+        tool: String,
+        /// A tool parameter (repeatable). Required ones left out get a
+        /// default, which the output lists.
+        #[arg(long = "param", short = 'p', value_name = "NAME=VALUE", value_parser = authorize::parse_param)]
+        params: Vec<(String, String)>,
+        /// The calling agent.
+        #[arg(long, default_value = authorize::DEFAULT_AGENT)]
+        agent: String,
+        /// The borrower the what-if mandate covers (and the default
+        /// subject_ref).
+        #[arg(long, default_value = authorize::DEFAULT_SUBJECT)]
+        subject: String,
+        /// The agent the what-if mandate assigns the borrower to.
+        #[arg(long, value_name = "AGENT", default_value = authorize::DEFAULT_AGENT)]
+        mandate_for: String,
+        /// Decide at this time today (HH:MM, IST) instead of now.
+        #[arg(long, value_name = "HH:MM", value_parser = dev::parse_hhmm)]
+        at: Option<String>,
+        /// Contacts already made with the borrower today.
+        #[arg(long, value_name = "N", default_value_t = 0)]
+        contacts_today: u32,
+    },
 }
 
 #[derive(Subcommand)]
@@ -105,6 +137,31 @@ fn main() {
                 init::run(&ui, dir.as_ref().unwrap_or(&cli.project)).await,
             ),
             Command::Doctor => ("doctor", doctor::run(&ui, &cli.project).await),
+            Command::Authorize {
+                tool,
+                params,
+                agent,
+                subject,
+                mandate_for,
+                at,
+                contacts_today,
+            } => (
+                "authorize",
+                authorize::run(
+                    &ui,
+                    &cli.project,
+                    &authorize::Ask {
+                        tool,
+                        agent,
+                        subject,
+                        mandate_for,
+                        params,
+                        at: at.as_deref(),
+                        contacts_today: *contacts_today,
+                    },
+                )
+                .await,
+            ),
             Command::Dev(DevCommand::Up {
                 at,
                 exit_when_ready,

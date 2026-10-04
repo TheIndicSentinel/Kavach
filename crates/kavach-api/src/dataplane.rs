@@ -24,8 +24,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use kavach_credential::{JoseCredentialBroker, RecipientKey};
 use kavach_dataplane::{
     execute, AgentIdentity, AuthorizeConfig, AuthorizeCore, CheckpointPolicy, Checkpointer,
-    FixtureResolver, GatewayDeps, GatewayError, GatewayReply, Mode, RegistryTrust, ToolRegistry,
-    ToolRequest,
+    Decided, FixtureResolver, GatewayDeps, GatewayError, GatewayReply, Mode, RegistryTrust,
+    ToolRegistry, ToolRequest, WhatIfStore,
 };
 use kavach_domain::mandate::{AgentPassport, ConsentRecord, MandateTemplate, RevocationReason};
 use kavach_domain::Decision;
@@ -583,6 +583,122 @@ impl Dataplane {
 
     pub fn mandates(&self) -> &Arc<Mandates> {
         &self.mandates
+    }
+}
+
+/// A what-if authorizer (`kavach authorize`): the same mandate checks,
+/// agent policies and tool registry as [`Dataplane`], in pre-check mode,
+/// over in-memory mandates and a [`WhatIfStore`]. Nothing is recorded, no
+/// contact is reserved and nothing listens. Development bundles only: it
+/// runs as `--insecure-dev` does.
+pub struct WhatIf {
+    mandates: Arc<Mandates>,
+    core: AuthorizeCore<Arc<Mandates>, WhatIfStore>,
+    passports: BTreeSet<(String, String)>,
+    tenant: String,
+}
+
+impl WhatIf {
+    /// Decisions are made at `clock`'s time, with `contacts_today` contacts
+    /// already made with the subject today.
+    pub async fn build(
+        config: &DataplaneConfig,
+        clock: TestClock,
+        contacts_today: u32,
+    ) -> Result<Self, String> {
+        let insecure_dev = true;
+        let tools = Arc::new(load_tools(config, None, insecure_dev)?);
+        let clock = ClockBackend::Test(clock);
+        let sources = open_key_sources(config, insecure_dev)?;
+        let keys = sources.keys(HsmRole::Mandate, &config.mandate_keys_dir);
+        let (mandate_config, passports) =
+            load_mandate_config(&config.mandate_config, &keys, insecure_dev).await?;
+        let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
+        let mandates = Arc::new(
+            MandateService::new(
+                MandateDeps {
+                    keys,
+                    replay: ReplayBackend::Dev(DevReplayGuard::default()),
+                    consents: InMemoryConsentSource::new(consents),
+                    store: MandateStoreBackend::Memory(InMemoryMandateStore::new()),
+                    events: InMemoryEventBus::new(),
+                    clock: clock.clone(),
+                },
+                mandate_config,
+            )
+            .map_err(|e| format!("mandate config: {e}"))?,
+        );
+        // Never used: a pre-check signs nothing. The core needs one.
+        let signer = sources.evidence_signer(
+            HsmRole::Evidence,
+            &config.evidence_keys_dir,
+            &config.evidence_key_id,
+        )?;
+        let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
+            .map_err(|e| format!("subject pseudonym key: {e}"))?;
+        let core = AuthorizeCore::new(
+            Arc::clone(&mandates),
+            Arc::new(WhatIfStore { contacts_today }),
+            tools,
+            subject_keys,
+            signer,
+            Box::new(clock),
+            AuthorizeConfig {
+                tenant_id: config.tenant_id.clone(),
+                ..AuthorizeConfig::default()
+            },
+        )
+        .map_err(|e| format!("authorization core: {e}"))?;
+        Ok(Self {
+            mandates,
+            core,
+            passports,
+            tenant: config.tenant_id.clone(),
+        })
+    }
+
+    /// Issues a mandate from a signed system-of-record event, in memory:
+    /// it lives only as long as this value.
+    pub async fn issue(&self, event: &str) -> Result<String, String> {
+        self.mandates
+            .issue_from_event(event)
+            .await
+            .map(|issued| issued.mandate.id)
+            .map_err(|e| e.message)
+    }
+
+    pub fn tools(&self) -> &ToolRegistry {
+        self.core.tools()
+    }
+
+    /// The decision the gateway would make for `agent_id` calling `tool`
+    /// now. `Err` for a request the gateway would refuse with 400 or 403.
+    pub async fn precheck(
+        &self,
+        agent_id: &str,
+        tool: &str,
+        request: ToolRequest,
+    ) -> Result<Decided, String> {
+        if !self
+            .passports
+            .contains(&(self.tenant.clone(), agent_id.to_string()))
+        {
+            return Err(format!("agent {agent_id} has no passport"));
+        }
+        let call = self
+            .core
+            .tools()
+            .extract(tool, request)
+            .map_err(|e| e.message)?;
+        let agent = AgentIdentity {
+            agent_id: agent_id.into(),
+            identity_key: format!("what-if#{agent_id}"),
+            state: kavach_authz::AgentState::Active,
+        };
+        self.core
+            .authorize(&agent, &call, Mode::Precheck)
+            .await
+            .map_err(|e| e.message)
     }
 }
 

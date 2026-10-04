@@ -64,6 +64,16 @@ kavach dev up          # Kavach and a mock provider in one process, loopback onl
 kavach dev up --at 11:00   # contact is allowed 08:00–19:00 IST; this starts the clock at 11:00 IST
 ```
 
+`kavach authorize` asks what the gateway would decide, offline: the authorization core runs in pre-check mode in the command's own process, with the project's mandate configuration, agent policies and signed tool registry. The mandate is issued in memory from a synthetic event and dropped on exit. Nothing is recorded and no contact is reserved, so you can vary the time, the contacts already made and the parameters. It exits 0 if the call would be allowed and 1 if not.
+
+```bash
+kavach authorize send_reminder                           # required parameters left out get defaults
+kavach authorize send_reminder --at 20:30                # BLOCK: outside the contact window
+kavach authorize send_reminder --contacts-today 3        # BLOCK: daily contact cap
+kavach authorize propose_plan -p waiver_bps=2500         # HUMAN_REVIEW: above the waiver ceiling
+kavach authorize send_reminder -p subject_ref=ref:borrower:9876543210   # BLOCK: raw identifier
+```
+
 Every command takes `--json` and prints one document (schema `kavach.cli/v1`). Exit codes: 0 ok, 1 failed, 2 warnings, 64 usage error. Output passes through the same redaction as the logs. `kavach.toml` keeps everything in memory unless you uncomment its `[database]` section. Nothing is sent anywhere.
 
 ## 5. Running the API

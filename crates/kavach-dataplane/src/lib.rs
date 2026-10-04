@@ -8,6 +8,7 @@ pub mod detect;
 pub mod gateway;
 pub mod resolve;
 pub mod tools;
+pub mod whatif;
 
 pub use authorize::{
     policy_versions, validate_request_id, AgentIdentity, AuthorizeConfig, AuthorizeCore,
@@ -22,3 +23,4 @@ pub use gateway::{
 };
 pub use resolve::FixtureResolver;
 pub use tools::{RegistryTrust, ToolRegistry, ToolRequest, Trust};
+pub use whatif::WhatIfStore;

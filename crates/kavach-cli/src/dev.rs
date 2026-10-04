@@ -26,9 +26,18 @@ use crate::output::{CliError, Status, Style, Ui};
 use crate::project::Project;
 
 /// A clock that starts at a chosen time and runs at real speed (`--at`).
-struct StartedAt {
+pub(crate) struct StartedAt {
     at: DateTime<Utc>,
     since: Instant,
+}
+
+impl StartedAt {
+    pub(crate) fn new(at: DateTime<Utc>) -> Self {
+        Self {
+            at,
+            since: Instant::now(),
+        }
+    }
 }
 
 impl TimeSource for StartedAt {
@@ -50,7 +59,7 @@ pub fn parse_hhmm(text: &str) -> Result<String, String> {
         .map_err(|_| "use HH:MM in IST, e.g. --at 11:00".to_string())
 }
 
-fn parse_at(text: &str) -> Result<DateTime<Utc>, CliError> {
+pub(crate) fn parse_at(text: &str) -> Result<DateTime<Utc>, CliError> {
     let time = NaiveTime::parse_from_str(text, "%H:%M").map_err(|e| {
         CliError::new(format!("--at {text:?} is not a time"), e)
             .fix("use HH:MM in IST, e.g. --at 11:00")
@@ -85,15 +94,7 @@ fn point_providers(project: &Project) -> Result<(), CliError> {
 
 fn api_config(project: &Project, clock: Option<TestClock>) -> ApiConfig {
     let kavach = project.kavach_dir();
-    let keys = kavach.join("keys");
-    let operator = OidcConfig {
-        issuer: kavach_devkit::ISSUER.into(),
-        audience: kavach_devkit::OPERATOR_AUDIENCE.into(),
-        jwks: JwksSource::File(kavach.join("jwks.json")),
-        principal_claim: "sub".into(),
-        groups_claim: "groups".into(),
-        leeway_seconds: 30,
-    };
+    let operator = operator_oidc(&kavach);
     let evidence_store = match &project.file.database {
         Some(db) => EvidenceStoreKind::Postgres {
             database_url: db.url.clone(),
@@ -120,37 +121,56 @@ fn api_config(project: &Project, clock: Option<TestClock>) -> ApiConfig {
         migration_database_url: None,
         database_tls: DatabaseTls::development(),
         database_pool_size: DEFAULT_POOL_SIZE,
-        dataplane: Some(DataplaneConfig {
-            agent_oidc: OidcConfig {
-                audience: kavach_devkit::AGENT_AUDIENCE.into(),
-                principal_claim: "azp".into(),
-                ..operator
-            },
-            mandate_config: kavach.join("mandate-config.json"),
-            mandate_keys_dir: keys.clone(),
-            evidence_keys_dir: keys.clone(),
-            evidence_key_id: kavach_devkit::EVIDENCE_KID.into(),
-            checkpoint_keys_dir: keys.clone(),
-            checkpoint_key_id: kavach_devkit::CHECKPOINT_KID.into(),
-            checkpoint_interval_seconds: 60,
-            checkpoint_stall_seconds: 600,
-            subject_pseudonym_key: kavach.join("pseudonym.key"),
-            consents: kavach.join("consents.json"),
-            tenant_id: kavach_devkit::TENANT.into(),
-            sor_rate_per_second: 20,
-            tool_registry: kavach.join("tools/agent-tools.yaml"),
-            tool_registry_sha256: None,
-            tool_signers: Some(kavach.join("tool-signers.json")),
-            credential_keys_dir: keys,
-            credential_key_id: kavach_devkit::CREDENTIAL_KID.into(),
-            providers: kavach.join("providers.json"),
-            references: kavach.join("references.json"),
-            provider_connect_timeout_ms: 2_000,
-            provider_timeout_ms: 5_000,
-            provider_ca: Some(kavach.join("tls/ca.pem")),
-            test_clock: clock,
-            hsm: None,
-        }),
+        dataplane: Some(dataplane_config(project, clock)),
+    }
+}
+
+/// Operator tokens from the bundle's dev identity provider.
+fn operator_oidc(kavach: &Path) -> OidcConfig {
+    OidcConfig {
+        issuer: kavach_devkit::ISSUER.into(),
+        audience: kavach_devkit::OPERATOR_AUDIENCE.into(),
+        jwks: JwksSource::File(kavach.join("jwks.json")),
+        principal_claim: "sub".into(),
+        groups_claim: "groups".into(),
+        leeway_seconds: 30,
+    }
+}
+
+/// The agent data plane's settings for the project's bundle.
+pub(crate) fn dataplane_config(project: &Project, clock: Option<TestClock>) -> DataplaneConfig {
+    let kavach = project.kavach_dir();
+    let keys = kavach.join("keys");
+    DataplaneConfig {
+        agent_oidc: OidcConfig {
+            audience: kavach_devkit::AGENT_AUDIENCE.into(),
+            principal_claim: "azp".into(),
+            ..operator_oidc(&kavach)
+        },
+        mandate_config: kavach.join("mandate-config.json"),
+        mandate_keys_dir: keys.clone(),
+        evidence_keys_dir: keys.clone(),
+        evidence_key_id: kavach_devkit::EVIDENCE_KID.into(),
+        checkpoint_keys_dir: keys.clone(),
+        checkpoint_key_id: kavach_devkit::CHECKPOINT_KID.into(),
+        checkpoint_interval_seconds: 60,
+        checkpoint_stall_seconds: 600,
+        subject_pseudonym_key: kavach.join("pseudonym.key"),
+        consents: kavach.join("consents.json"),
+        tenant_id: kavach_devkit::TENANT.into(),
+        sor_rate_per_second: 20,
+        tool_registry: kavach.join("tools/agent-tools.yaml"),
+        tool_registry_sha256: None,
+        tool_signers: Some(kavach.join("tool-signers.json")),
+        credential_keys_dir: keys,
+        credential_key_id: kavach_devkit::CREDENTIAL_KID.into(),
+        providers: kavach.join("providers.json"),
+        references: kavach.join("references.json"),
+        provider_connect_timeout_ms: 2_000,
+        provider_timeout_ms: 5_000,
+        provider_ca: Some(kavach.join("tls/ca.pem")),
+        test_clock: clock,
+        hsm: None,
     }
 }
 
@@ -246,10 +266,7 @@ pub async fn up(
     let [operator, agent, sor, provider_listener] = bind_all(&project)?;
     let started_at = at.map(parse_at).transpose()?;
     let clock: Arc<dyn TimeSource + Send + Sync> = match started_at {
-        Some(at) => Arc::new(StartedAt {
-            at,
-            since: Instant::now(),
-        }),
+        Some(at) => Arc::new(StartedAt::new(at)),
         None => Arc::new(kavach_ports::SystemClock),
     };
     point_providers(&project)?;

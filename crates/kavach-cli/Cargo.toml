@@ -14,6 +14,7 @@ path = "src/main.rs"
 kavach-api = { workspace = true }
 kavach-clocksync = { workspace = true }
 kavach-credential = { workspace = true }
+kavach-dataplane = { workspace = true }
 kavach-devkit = { workspace = true }
 kavach-jws = { workspace = true }
 kavach-mock-provider = { workspace = true }
