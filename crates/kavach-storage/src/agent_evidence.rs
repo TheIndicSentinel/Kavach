@@ -332,6 +332,21 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         ready(self.records_sync(tenant_id, partition_id))
     }
 
+    fn record(
+        &self,
+        tenant_id: &str,
+        record_id: &str,
+    ) -> impl Future<Output = Result<Option<AgentDecisionRecord>, PortError>> + Send {
+        let found = self.state.lock().map_err(poisoned).map(|state| {
+            state
+                .records
+                .iter()
+                .find(|r| r.payload.tenant_id == tenant_id && r.payload.record_id == record_id)
+                .cloned()
+        });
+        ready(found)
+    }
+
     fn contacts_on(
         &self,
         tenant_id: &str,

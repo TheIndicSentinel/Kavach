@@ -121,4 +121,16 @@ async fn reminders_on_postgres_as_the_runtime_role() {
     let records = core.store().records(TENANT, 0).await.unwrap();
     assert_eq!(records.len(), 4, "three allows and the refused fourth");
     verify_chain(&records, &keys, None, &[], ist(12, 0, 0)).expect("signed chain");
+
+    // A record by its id (`kavach why`), and nothing for an unknown id.
+    let id = &records[3].payload.record_id;
+    let by_id = core.store().record(TENANT, id).await.unwrap();
+    assert_eq!(by_id.as_ref(), Some(&records[3]));
+    assert!(core
+        .store()
+        .record(TENANT, "adr:default:0:999")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(core.store().record("other", id).await.unwrap().is_none());
 }
