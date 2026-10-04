@@ -144,7 +144,7 @@ kavach call send_reminder --issue-mandate         # sends the event first, and s
 
 `dev up` writes `.kavach/run.json`, readable by its owner only. It holds the process id, the listener addresses and the clock offset from `--at`, and never a token. Events are stamped on the stack's clock. The file is removed on Ctrl-C or SIGTERM. If a killed stack leaves it behind, `call` notices that nothing answers there.
 
-Every command takes `--json` and prints one document (schema `kavach.cli/v1`). Exit codes: 0 ok, 1 failed, 2 warnings, 64 usage error. Output passes through the same redaction as the logs. `kavach.toml` keeps everything in memory unless you uncomment its `[database]` section. Nothing is sent anywhere.
+Every command takes `--json` and prints one document (schema `kavach.cli/v1`). Exit codes: 0 ok, 1 failed, 2 warnings, 64 usage error. Output passes through the same redaction as the logs. The one exception is known digest fields (`input_digest`, and the Cedar and registry digests): they are printed whole when they are well-formed digests. This is decided by field, never by pattern, so the same hex anywhere else is still masked. `kavach.toml` keeps everything in memory unless you uncomment its `[database]` section. Nothing is sent anywhere.
 
 ## 5. Running the API
 

@@ -12,6 +12,7 @@
 
 use std::fmt::{self, Write as _};
 use std::io::{IsTerminal, Write};
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -181,17 +182,104 @@ fn envelope(command: &str, status: Status, data: &Value) -> String {
     if let (Some(doc), Some(data)) = (doc.as_object_mut(), data.as_object()) {
         doc.extend(data.clone());
     }
+    mark_digest_fields(&mut doc);
     serde_json::to_string_pretty(&doc).unwrap_or_default()
 }
 
-/// The single redaction point for everything kavach prints (the logs'
-/// rules: canonical UUIDs and RFC 3339 timestamps stay whole).
+/// Fields that hold digests Kavach computed: printed whole, if well formed.
+/// Matched by field, never by pattern: a hex string anywhere else (where a
+/// caller could choose it) still goes through every masking rule.
+const DIGEST_FIELDS: [&str; 4] = ["input_digest", "cedar", "tools", "registry_sha256"];
+
+/// Start and end of a span the output layer vouches for as a digest. Each
+/// carries a random per-process nonce, so text from anywhere else (input,
+/// a server reply) cannot forge one.
+fn markers() -> &'static (String, String) {
+    static MARKERS: OnceLock<(String, String)> = OnceLock::new();
+    MARKERS.get_or_init(|| {
+        let nonce = uuid::Uuid::new_v4().simple().to_string();
+        (
+            format!("\u{E000}{nonce}\u{E001}"),
+            format!("\u{E001}{nonce}\u{E000}"),
+        )
+    })
+}
+
+/// A digest (`sha256:` optional, then 64 lowercase hex characters).
+fn is_digest(text: &str) -> bool {
+    let hex = text.strip_prefix("sha256:").unwrap_or(text);
+    hex.len() == 64
+        && hex
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A value from a known digest field, for human output: printed whole if
+/// it is a well-formed digest, and redacted like any text if not.
+pub struct Digest<'a>(pub &'a str);
+
+impl fmt::Display for Digest<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if is_digest(self.0) {
+            let (open, close) = markers();
+            write!(f, "{open}{}{close}", self.0)
+        } else {
+            f.write_str(self.0)
+        }
+    }
+}
+
+fn mark_digest_fields(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            for (key, v) in map.iter_mut() {
+                match v {
+                    Value::String(text) if DIGEST_FIELDS.contains(&key.as_str()) => {
+                        if is_digest(text) {
+                            let (open, close) = markers();
+                            *text = format!("{open}{text}{close}");
+                        }
+                    }
+                    other => mark_digest_fields(other),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(mark_digest_fields),
+        _ => {}
+    }
+}
+
+/// One line: digest spans the output layer marked are kept whole (if they
+/// still are digests); everything else goes through the shared rules.
+fn redact_line(line: &str) -> String {
+    let (open, close) = markers();
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find(open.as_str()) {
+        out.push_str(&kavach_telemetry::redact(&rest[..start]));
+        let after = &rest[start + open.len()..];
+        let Some(end) = after.find(close.as_str()) else {
+            rest = after;
+            break;
+        };
+        let inner = &after[..end];
+        if is_digest(inner) {
+            out.push_str(inner);
+        } else {
+            out.push_str(&kavach_telemetry::redact(inner));
+        }
+        rest = &after[end + close.len()..];
+    }
+    out.push_str(&kavach_telemetry::redact(rest));
+    out
+}
+
+/// The single redaction point for everything kavach prints: the shared
+/// rules (canonical UUIDs and RFC 3339 timestamps stay whole), except
+/// known digest fields, which are printed whole when well formed.
 #[must_use]
 pub fn redact(text: &str) -> String {
-    text.lines()
-        .map(|line| kavach_telemetry::redact(line).into_owned())
-        .collect::<Vec<_>>()
-        .join("\n")
+    text.lines().map(redact_line).collect::<Vec<_>>().join("\n")
 }
 
 pub fn print_redacted(text: &str) {
@@ -229,6 +317,57 @@ mod tests {
         assert_eq!(doc["command"], "doctor");
         assert_eq!(doc["status"], "warnings");
         assert!(doc["checks"].is_array());
+    }
+
+    /// 64 hex characters holding a run of ten digits.
+    const HEX: &str = "4fb9876543210f278a54cb0bc90724cbb9c37f774dea053c6854bd6cb467eacb";
+
+    #[test]
+    fn known_digest_fields_print_whole() {
+        assert!(is_digest(HEX) && kavach_telemetry::redact(HEX).contains("[redacted"));
+        let doc = envelope(
+            "why",
+            Status::Ok,
+            &json!({ "input_digest": HEX, "policy_versions": { "cedar": format!("sha256:{HEX}") } }),
+        );
+        let printed = redact(&doc);
+        assert!(
+            printed.contains(&format!("\"input_digest\": \"{HEX}\"")),
+            "{printed}"
+        );
+        assert!(printed.contains(&format!("sha256:{HEX}")), "{printed}");
+        assert!(
+            serde_json::from_str::<Value>(&printed).is_ok(),
+            "still JSON"
+        );
+        assert_eq!(
+            redact(&format!("digest {}", Digest(HEX))),
+            format!("digest {HEX}")
+        );
+    }
+
+    #[test]
+    fn the_same_hex_elsewhere_is_still_masked() {
+        // A free-text field, or human text not rendered as a Digest.
+        let doc = redact(&envelope("why", Status::Ok, &json!({ "note": HEX })));
+        assert!(!doc.contains("9876543210"), "{doc}");
+        assert!(!redact(&format!("note {HEX}")).contains("9876543210"));
+        // A digest field holding something that is not a digest.
+        let doc = redact(&envelope(
+            "why",
+            Status::Ok,
+            &json!({ "input_digest": "+91 98765 43210" }),
+        ));
+        assert!(!doc.contains("43210"), "{doc}");
+        assert!(!redact(&Digest("+91 98765 43210").to_string()).contains("43210"));
+    }
+
+    #[test]
+    fn a_phone_number_in_hex_is_masked_and_markers_cannot_be_forged() {
+        assert!(!redact("ab12cd+919876543210ef").contains("9876543210"));
+        // Markers without this process's nonce exempt nothing.
+        let forged = format!("\u{E000}x\u{E001}{HEX}\u{E001}x\u{E000}");
+        assert!(!redact(&forged).contains("9876543210"));
     }
 
     #[test]
