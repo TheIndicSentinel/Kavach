@@ -1,0 +1,113 @@
+# Policy tests for the collections agent (kavach policy test).
+#
+# Format version 1 (pre-alpha: it may change before v0.1). Each case is a
+# tool call decided offline, as `kavach authorize` decides it: nothing is
+# recorded. `at` is RFC 3339, or HH:MM meaning IST on 2026-10-01 (default
+# 11:00). Params are sent as written: nothing is defaulted.
+#
+# Agent policies are the bundled Cedar policies built into kavach; the tool
+# registry is this project's (.kavach/kavach/tools/agent-tools.yaml).
+version: 1
+cases:
+  - kind: tool_call
+    name: a reminder at 11:00 IST is allowed
+    tool: send_reminder
+    params: { subject_ref: "ref:borrower:B-9382", channel: whatsapp, template_id: emi_reminder_v1 }
+    expect: { decision: PASS, reasons_include: [permit-send-reminder] }
+
+  - kind: tool_call
+    name: the contact window opens at 08:00 IST
+    tool: send_reminder
+    at: "2026-10-01T08:00:00+05:30"
+    params: { subject_ref: "ref:borrower:B-9382", channel: whatsapp, template_id: emi_reminder_v1 }
+    expect: { decision: PASS }
+
+  - kind: tool_call
+    name: no reminders at 20:30 IST
+    tool: send_reminder
+    at: "20:30"
+    params: { subject_ref: "ref:borrower:B-9382", channel: whatsapp, template_id: emi_reminder_v1 }
+    expect: { decision: BLOCK, reasons_include: [contact-window] }
+
+  - kind: tool_call
+    name: the daily contact cap holds
+    tool: send_reminder
+    contacts_today: 3
+    params: { subject_ref: "ref:borrower:B-9382", channel: whatsapp, template_id: emi_reminder_v1 }
+    expect: { decision: BLOCK, reasons_include: [contact-daily-cap] }
+
+  - kind: tool_call
+    name: a channel outside the mandate is blocked
+    tool: send_reminder
+    params: { subject_ref: "ref:borrower:B-9382", channel: sms, template_id: emi_reminder_v1 }
+    expect: { decision: BLOCK, reasons_include: [channel-within-mandate] }
+
+  - kind: tool_call
+    name: a channel outside the registry is blocked
+    tool: send_reminder
+    params: { subject_ref: "ref:borrower:B-9382", channel: voice, template_id: emi_reminder_v1 }
+    expect: { decision: BLOCK, reasons: ["value_not_allowed:channel"] }
+
+  - kind: tool_call
+    name: a phone number in place of a reference is blocked
+    tool: send_reminder
+    params: { subject_ref: "ref:borrower:9876543210", channel: whatsapp, template_id: emi_reminder_v1 }
+    expect: { decision: BLOCK, reasons: ["raw_identifier:subject_ref:phone"] }
+
+  - kind: tool_call
+    name: a mandate for one borrower does not cover another
+    tool: send_reminder
+    params: { subject_ref: "ref:borrower:B-1", channel: whatsapp, template_id: emi_reminder_v1 }
+    expect: { decision: BLOCK, reasons_include: [subject-binding] }
+
+  - kind: tool_call
+    name: a waiver above the ceiling goes to a person
+    tool: propose_plan
+    params: { subject_ref: "ref:borrower:B-9382", waiver_bps: 2500 }
+    expect: { decision: HUMAN_REVIEW, reasons_include: [waiver-ceiling] }
+
+  - kind: tool_call
+    name: a waiver within the ceiling is allowed
+    tool: propose_plan
+    params: { subject_ref: "ref:borrower:B-9382", waiver_bps: 500 }
+    expect: { decision: PASS }
+
+  - kind: tool_call
+    name: another agent cannot use the mandate
+    tool: send_reminder
+    agent: translation-agent
+    params: { subject_ref: "ref:borrower:B-9382", channel: whatsapp, template_id: emi_reminder_v1 }
+    expect: { decision: BLOCK, reasons: [no_matching_permit] }
+
+  - kind: tool_call
+    name: a delegate may do what was delegated
+    tool: read_fields
+    mandate: { delegate: { to: translation-agent, actions: [read_fields] } }
+    params: { subject_ref: "ref:borrower:B-9382", requested_fields: [name] }
+    expect: { decision: PASS }
+
+  - kind: tool_call
+    name: a delegate may not do more
+    tool: send_reminder
+    mandate: { delegate: { to: translation-agent, actions: [read_fields] } }
+    params: { subject_ref: "ref:borrower:B-9382", channel: whatsapp, template_id: emi_reminder_v1 }
+    expect: { decision: BLOCK, reasons: [no_matching_permit] }
+
+  - kind: tool_call
+    name: an unknown parameter is refused
+    tool: send_reminder
+    params: { subject_ref: "ref:borrower:B-9382", channel: whatsapp, template_id: emi_reminder_v1, note: hi }
+    expect: { refused: { code: unknown_parameter } }
+
+  - kind: tool_call
+    name: a missing parameter is refused
+    tool: send_reminder
+    params: { subject_ref: "ref:borrower:B-9382" }
+    expect: { refused: { code: missing_parameter } }
+
+  - kind: tool_call
+    name: an agent without a passport is refused
+    tool: send_reminder
+    agent: unknown-agent
+    params: { subject_ref: "ref:borrower:B-9382", channel: whatsapp, template_id: emi_reminder_v1 }
+    expect: { refused: { code: no_passport } }

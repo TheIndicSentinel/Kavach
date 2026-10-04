@@ -12,6 +12,7 @@ mod doctor;
 mod init;
 mod live;
 mod output;
+mod policy_test;
 mod project;
 mod run;
 
@@ -127,6 +128,21 @@ enum Command {
     /// System-of-record events, sent to the running stack.
     #[command(subcommand)]
     Sor(SorCommand),
+    /// Policy suites.
+    #[command(subcommand)]
+    Policy(PolicyCommand),
+}
+
+#[derive(Subcommand)]
+enum PolicyCommand {
+    /// Run policy test suites (YAML, format version 1, pre-alpha): tool
+    /// calls decided offline, and decision requests against the pack.
+    /// Exit 0 if every case passes, 1 if one fails, 64 for an invalid suite.
+    Test {
+        /// A suite file or a directory of them (default: policy-tests/ in
+        /// the project).
+        path: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -225,6 +241,10 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
                 },
             )
             .await,
+        ),
+        Command::Policy(PolicyCommand::Test { path }) => (
+            "policy test",
+            policy_test::run(&ui, &cli.project, path.as_deref()).await,
         ),
         Command::Sor(SorCommand::Event {
             subject,

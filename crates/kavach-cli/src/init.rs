@@ -14,6 +14,16 @@ pub const MODEL: &str = include_str!("../../../models/finance/credit-underwritin
 pub const PACK_FILE: &str = "policy/finance-v0.yaml";
 pub const MODEL_FILE: &str = "policy/credit-underwriting-v1.yaml";
 
+/// Starter policy test suites, written to `policy-tests/` (committed with
+/// the project, unlike the bundle).
+const SUITES: [(&str, &str); 2] = [
+    (
+        "collections.yaml",
+        include_str!("../policy-tests/collections.yaml"),
+    ),
+    ("credit.yaml", include_str!("../policy-tests/credit.yaml")),
+];
+
 /// Access tokens are minted for this long; `kavach doctor` warns before
 /// they expire.
 const TOKEN_HOURS: i64 = 24 * 30;
@@ -79,6 +89,14 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
     write(&bundle.join(PACK_FILE), PACK)?;
     write(&bundle.join(MODEL_FILE), MODEL)?;
     write(&root.join(FILE), &project::render(&file)?)?;
+    let mut suites = Vec::new();
+    for (name, text) in SUITES {
+        let path = root.join(crate::policy_test::DIR).join(name);
+        if !path.exists() {
+            write(&path, text)?;
+            suites.push(format!("{}/{name}", crate::policy_test::DIR));
+        }
+    }
     let ignored = ignore_bundle(&root)?;
 
     let data = json!({
@@ -88,10 +106,11 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
         "agents": summary.agents,
         "registry_sha256": summary.registry_sha256,
         "gitignore_updated": ignored,
-        "next": ["kavach doctor", "kavach dev up"],
+        "policy_tests": suites,
+        "next": ["kavach doctor", "kavach policy test", "kavach dev up"],
     });
     let human = format!(
-        "{} a Kavach dev project in {}\n\n  {FILE}   project settings (loopback, dev profile)\n  {BUNDLE}/   dev keys, tokens and fixtures ({})\n\n{}\n  kavach doctor     check this machine\n  kavach dev up     start Kavach and a mock provider on loopback\n\n{}",
+        "{} a Kavach dev project in {}\n\n  {FILE}   project settings (loopback, dev profile)\n  {BUNDLE}/   dev keys, tokens and fixtures ({})\n  policy-tests/  starter policy test suites (commit these)\n\n{}\n  kavach doctor        check this machine\n  kavach policy test   run the policy test suites\n  kavach dev up        start Kavach and a mock provider on loopback\n\n{}",
         ui.paint(Style::Ok, "Created"),
         root.display(),
         if ignored { "added to .gitignore" } else { "already git-ignored" },
