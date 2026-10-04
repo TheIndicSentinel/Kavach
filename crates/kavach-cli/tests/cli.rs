@@ -495,7 +495,7 @@ fn why_explains_a_record_from_a_verified_bundle() {
 }
 
 #[test]
-fn authorize_suggests_the_smallest_single_change_for_business_blocks_only() {
+fn authorize_suggests_the_bound_for_a_single_business_block_only() {
     let dir = scratch("counterfactual");
     assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
     let ask = |args: &[&str]| {
@@ -503,25 +503,57 @@ fn authorize_suggests_the_smallest_single_change_for_business_blocks_only() {
         all.extend_from_slice(args);
         json(&kavach(&dir, &all))
     };
-    let first = |doc: &Value| doc["counterfactuals"]["changes"][0].clone();
+    let only = |doc: &Value| {
+        assert_eq!(
+            doc["counterfactuals"]["label"],
+            "what-if under current policies"
+        );
+        let changes = doc["counterfactuals"]["changes"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(changes.len(), 1, "{doc}");
+        assert_eq!(changes[0]["decision"], "PASS");
+        (
+            changes[0]["suggestion"].as_str().unwrap().to_string(),
+            changes[0]["bound"].as_str().unwrap().to_string(),
+        )
+    };
 
-    let late = ask(&["send_reminder", "--at", "20:30"]);
-    assert_eq!(
-        late["counterfactuals"]["label"],
-        "what-if under current policies"
-    );
-    assert_eq!(
-        first(&late),
-        serde_json::json!({ "change": "at", "value": "08:00 IST tomorrow", "decision": "PASS" })
-    );
-    let capped = ask(&["send_reminder", "--at", "11:00", "--contacts-today", "5"]);
-    assert_eq!(first(&capped)["change"], "contacts_today");
-    assert_eq!(first(&capped)["value"], "2");
-    let sms = ask(&["send_reminder", "--at", "11:00", "-p", "channel=sms"]);
-    assert_eq!(first(&sms)["value"], "whatsapp");
-    let waiver = ask(&["propose_plan", "--at", "11:00", "-p", "waiver_bps=2500"]);
-    assert_eq!(first(&waiver)["change"], "waiver_bps");
-    assert_eq!(first(&waiver)["value"], "1000");
+    let (s, b) = only(&ask(&["send_reminder", "--at", "20:30"]));
+    assert_eq!(s, "at 08:00 IST tomorrow");
+    assert_eq!(b, "contact window 08:00–19:00 IST");
+    let (s, b) = only(&ask(&[
+        "send_reminder",
+        "--at",
+        "11:00",
+        "--contacts-today",
+        "5",
+    ]));
+    assert_eq!(s, "after the daily cap resets (08:00 IST tomorrow)");
+    assert_eq!(b, "contacts < 3 per IST day");
+    let (s, _) = only(&ask(&[
+        "send_reminder",
+        "--at",
+        "11:00",
+        "-p",
+        "channel=sms",
+    ]));
+    assert_eq!(s, "channel ∈ {whatsapp}");
+    let (s, _) = only(&ask(&[
+        "propose_plan",
+        "--at",
+        "11:00",
+        "-p",
+        "waiver_bps=2500",
+    ]));
+    assert_eq!(s, "waiver_bps ≤ 1000");
+
+    // Two business constraints fail: no single change passes, so none is offered.
+    let both = ask(&["send_reminder", "--at", "20:30", "--contacts-today", "3"]);
+    let why = both["counterfactuals"]["withheld"].as_str().unwrap();
+    assert!(why.contains("no single change passes"), "{both}");
+    assert_eq!(both["counterfactuals"]["changes"], serde_json::json!([]));
 
     // Safety blocks get no suggestions.
     for args in [

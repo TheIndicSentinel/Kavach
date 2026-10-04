@@ -16,7 +16,9 @@ use chrono::{DateTime, FixedOffset, Utc};
 use kavach_api::dataplane::WhatIf;
 use kavach_dataplane::tools::{ParamKind, ToolSpec};
 use kavach_dataplane::ToolRequest;
+use kavach_domain::mandate::Mandate;
 use kavach_ports::agent_evidence::is_allow;
+use kavach_ports::MandateStore;
 use kavach_ports::TimeSource;
 use serde_json::{json, Map, Value};
 
@@ -190,14 +192,13 @@ fn human(ui: Ui, data: &Value) -> String {
                 let _ = writeln!(out, "    no single change passes");
             }
             for c in changes {
-                let change = match c["change"].as_str() {
-                    Some("at") => format!("at {}", show(&c["value"])),
-                    Some("contacts_today") => {
-                        format!("with {} contacts already today", show(&c["value"]))
-                    }
-                    _ => format!("{}={}", show(&c["change"]), show(&c["value"])),
-                };
-                let _ = writeln!(out, "    {change:<32} → {}", show(&c["decision"]));
+                let _ = writeln!(
+                    out,
+                    "    {:<44} → {}  ({})",
+                    show(&c["suggestion"]),
+                    show(&c["decision"]),
+                    show(&c["bound"])
+                );
             }
         }
     }
@@ -210,6 +211,23 @@ fn human(ui: Ui, data: &Value) -> String {
         )
     );
     out
+}
+
+/// The mandate a what-if world issued (window, channels, ceilings).
+async fn issued_mandate(what_if: &WhatIf, id: &str) -> Result<Mandate, CliError> {
+    let fail = |e: String| CliError::new("cannot read the what-if mandate", e);
+    let stored = what_if
+        .mandates()
+        .store()
+        .get(kavach_devkit::TENANT, id)
+        .await
+        .map_err(|e| fail(e.message))?
+        .ok_or_else(|| fail("it is gone".into()))?;
+    what_if
+        .mandates()
+        .verify_active(&stored.token)
+        .await
+        .map_err(|e| fail(e.message))
 }
 
 /// A what-if world at `at` with `contacts` made today, and a mandate in it.
@@ -287,6 +305,7 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
     } else if let Some(why) = counterfactual::withheld(&decided.reasons) {
         json!({ "label": counterfactual::LABEL, "withheld": why, "changes": [] })
     } else {
+        let mandate = issued_mandate(&what_if, &mandate_id).await?;
         let trial = counterfactual::Trial {
             what_if: &what_if,
             clock: &clock,
@@ -294,14 +313,16 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
             tool: ask.tool,
             spec,
             mandate_id: &mandate_id,
+            mandate: &mandate,
             at,
             params: &params,
         };
-        let contacts = |n: u32| {
+        // A fresh day at `t`: no contacts made yet.
+        let reset = |t: DateTime<Utc>| {
             let (project, params) = (&project, &params);
             async move {
-                let clock = Movable::new(at);
-                let (what_if, mandate_id) = world(project, ask, &clock, n).await.ok()?;
+                let clock = Movable::new(t);
+                let (what_if, mandate_id) = world(project, ask, &clock, 0).await.ok()?;
                 let decided = what_if
                     .precheck(
                         ask.agent,
@@ -322,8 +343,7 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
                 })
             }
         };
-        let changes =
-            counterfactual::search(&trial, &decided.reasons, ask.contacts_today, contacts).await;
+        let changes = counterfactual::search(&trial, &decided.reasons, reset).await;
         json!({ "label": counterfactual::LABEL, "withheld": null, "changes": changes })
     };
 
