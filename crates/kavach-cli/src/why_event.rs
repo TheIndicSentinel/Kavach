@@ -366,6 +366,27 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// An export mixing a record from before evidence timestamps were kept
+    /// at storage precision with a newer one: `why --export` checks the
+    /// chain and explains either.
+    #[test]
+    fn why_export_reads_a_chain_of_old_and_new_records() {
+        let events = kavach_evidence::mixed_chain();
+        let path =
+            std::env::temp_dir().join(format!("kavach-why-mixed-{}.jsonl", std::process::id()));
+        let lines: Vec<_> = events
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap())
+            .collect();
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        for event in &events {
+            let (found, checked) = from_export(&path, &event.evidence_id).unwrap();
+            assert_eq!(&found, event);
+            assert_eq!(checked, 2);
+        }
+        let _ = std::fs::remove_file(path);
+    }
+
     #[test]
     fn the_wording_never_claims_a_signature() {
         assert!(NOT_SIGNED.contains("not signed"));
