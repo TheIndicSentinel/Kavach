@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Changed
 
+- **Breaking (dev stack): `kavach dev up`'s operator API needs the project's operator token** (`.kavach/operator.jwt`), checked by Cedar with the bundled policies. Before, any local process, or a web page using DNS rebinding, could call it. Every `dev up` listener now refuses a Host header other than `localhost`, `127.0.0.1` or `[::1]` (421) and the self-asserted `X-Kavach-Principal` header (401). `kavach` commands send the token. Projects made earlier get their access-control files (`.kavach/kavach/cedar/`) on the next `dev up`. The attack catalog is now version 2, with the agent-token and no-token attacks on the operator route.
 - **Breaking for anyone recomputing evaluate evidence hashes: `DecisionEvent` schema 1.1.0 hashes `decision_time` and `evaluated_at` at microsecond precision.** They used to be hashed with nanoseconds, but Postgres keeps microseconds, so an event read back from the database did not hash to its stored hash and could not be re-checked. Both stores now truncate the two timestamps before hashing, so what is stored is what was hashed.
   - **The hash rule is unchanged** (same fields, same canonical order); the canonical form of the two values changed, hence the minor version.
   - **Records at 1.1.0 or later must re-verify exactly.**

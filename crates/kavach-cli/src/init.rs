@@ -86,6 +86,7 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
     })
     .await
     .map_err(|e| CliError::new("cannot generate the dev bundle", e))?;
+    crate::dev::ensure_cedar(&bundle.join("kavach"))?;
     write(&bundle.join(PACK_FILE), PACK)?;
     write(&bundle.join(MODEL_FILE), MODEL)?;
     write(&root.join(FILE), &project::render(&file)?)?;

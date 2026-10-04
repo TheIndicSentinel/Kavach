@@ -727,6 +727,24 @@ impl kavach_attacks::Target for InProcess<'_> {
         Ok((status.as_u16(), reply))
     }
 
+    async fn get_operator(
+        &self,
+        path: &str,
+        headers: Vec<(String, String)>,
+    ) -> Result<u16, String> {
+        let mut request = axum::http::Request::get(path);
+        for (k, v) in headers {
+            request = request.header(k, v);
+        }
+        let response = tower::ServiceExt::oneshot(
+            kavach_api::router(self.0.state.clone()),
+            request.body(axum::body::Body::empty()).unwrap(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok(response.status().as_u16())
+    }
+
     async fn replay_sor_event(&self) -> Result<(u16, Value), String> {
         // The issuing event, identical (the test clock has not moved).
         let event = event_at("evt-gw", "lms:loan/L-1", self.0.clock.now().utc).await;

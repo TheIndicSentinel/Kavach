@@ -788,3 +788,98 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
         "{doc}"
     );
 }
+
+/// One raw HTTP/1.1 request; returns the status code.
+fn raw_status(addr: &str, method: &str, path: &str, host: &str, headers: &[(&str, &str)]) -> u16 {
+    use std::fmt::Write as _;
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(addr).unwrap();
+    let extra = headers.iter().fold(String::new(), |mut out, (k, v)| {
+        let _ = write!(out, "{k}: {v}\r\n");
+        out
+    });
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\n{extra}Content-Length: 0\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0)
+}
+
+/// `dev up`: the operator API needs the project's operator token, and every
+/// listener refuses a foreign Host header (DNS rebinding) and the
+/// self-asserted X-Kavach-Principal header.
+#[test]
+fn dev_up_requires_the_operator_token_and_a_local_host() {
+    let dir = scratch("guard");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    assert!(dir.join(".kavach/kavach/cedar/kavach.cedar").is_file());
+    use_free_ports(&dir);
+    let _stack = dev_up(&dir, &["--at", "11:00"]);
+    let run: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join(".kavach/run.json")).unwrap())
+            .unwrap();
+    let addr = |name: &str| run[name].as_str().unwrap().to_string();
+    let operator = addr("operator");
+    let token = std::fs::read_to_string(dir.join(".kavach/operator.jwt")).unwrap();
+    let agent_token =
+        std::fs::read_to_string(dir.join(".kavach/agents/collections-agent.jwt")).unwrap();
+    let bearer = format!("Bearer {}", token.trim());
+    let agent_bearer = format!("Bearer {}", agent_token.trim());
+
+    let get = |headers: &[(&str, &str)]| {
+        raw_status(&operator, "GET", "/v1/runtime", "127.0.0.1", headers)
+    };
+    assert_eq!(get(&[]), 401, "no token");
+    assert_eq!(
+        get(&[("Authorization", &bearer)]),
+        200,
+        "the operator token"
+    );
+    assert_eq!(
+        get(&[("Authorization", &agent_bearer)]),
+        401,
+        "an agent's token"
+    );
+    assert_eq!(
+        get(&[("X-Kavach-Principal", "admin-1")]),
+        401,
+        "a claimed identity"
+    );
+    assert_eq!(
+        raw_status(
+            &operator,
+            "GET",
+            "/v1/runtime",
+            "localhost",
+            &[("Authorization", &bearer)]
+        ),
+        200
+    );
+
+    // A foreign Host header, on every listener.
+    for (name, method, path) in [
+        ("operator", "GET", "/v1/runtime"),
+        ("agent", "POST", "/v1/tools/send_reminder"),
+        ("sor", "POST", "/v1/sor/events"),
+        ("inspect", "GET", "/v1/inbox"),
+    ] {
+        assert_eq!(
+            raw_status(
+                &addr(name),
+                method,
+                path,
+                "evil.example",
+                &[("Authorization", &bearer)]
+            ),
+            421,
+            "{name}"
+        );
+    }
+}

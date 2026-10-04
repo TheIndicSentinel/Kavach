@@ -27,7 +27,7 @@ The bypasses fall into four groups:
 
 | Relaxation | Normally |
 |---|---|
-| The self-asserted `X-Kavach-Principal` header is accepted, including as an approver of change requests | Principals come only from a verified token or client certificate; approvals need an OIDC user token |
+| The self-asserted `X-Kavach-Principal` header is accepted, including as an approver of change requests (`kavach dev up` refuses the header on every listener, so this applies only to `kavach-api` started with the flag directly) | Principals come only from a verified token or client certificate; approvals need an OIDC user token |
 | `--access-control none` is allowed: every request passes | Refused at startup |
 | Cedar access control may run with no authenticated principal source | Refused at startup |
 | Memory stores for mandates, replay and agent evidence | Agent surfaces refuse to start without Postgres |

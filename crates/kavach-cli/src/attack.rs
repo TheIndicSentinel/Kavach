@@ -127,6 +127,19 @@ impl Target for Live {
         Ok((status, response.json().await.unwrap_or(Value::Null)))
     }
 
+    async fn get_operator(
+        &self,
+        path: &str,
+        headers: Vec<(String, String)>,
+    ) -> Result<u16, String> {
+        let mut request = self.http.get(format!("http://{}{path}", self.run.operator));
+        for (k, v) in headers {
+            request = request.header(k, v);
+        }
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        Ok(response.status().as_u16())
+    }
+
     async fn replay_sor_event(&self) -> Result<(u16, Value), String> {
         let response = self
             .http
@@ -246,8 +259,10 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
 
     // Health: the operator listener answers, and a legitimate pre-check (which
     // records nothing) is allowed. Otherwise the run cannot be judged.
+    let operator = read(&bundle.join("operator.jwt"))?;
     let healthy = http
         .get(format!("http://{}/health", run.operator))
+        .bearer_auth(&operator)
         .send()
         .await
         .is_ok_and(|r| r.status().is_success());
@@ -324,7 +339,7 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
     let live = Live {
         agent,
         other_agent: read(&bundle.join("agents/translation-agent.jwt"))?,
-        operator: read(&bundle.join("operator.jwt"))?,
+        operator,
         mandate,
         event,
         http,
