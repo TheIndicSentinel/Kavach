@@ -12,6 +12,9 @@
 
 use std::fmt::{self, Write as _};
 use std::io::{IsTerminal, Write};
+use std::sync::OnceLock;
+
+use regex::Regex;
 
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -184,13 +187,40 @@ fn envelope(command: &str, status: Status, data: &Value) -> String {
     serde_json::to_string_pretty(&doc).unwrap_or_default()
 }
 
+/// Printed as they are: canonical UUIDs (mandate, event and request ids)
+/// and RFC 3339 timestamps. Both are ours, not personal data, and the
+/// number rule would otherwise mask them: a timestamp always holds 14
+/// digits, and about one UUID in five holds ten in a row, breaking ids
+/// people copy and JSON that machines read.
+fn verbatim() -> &'static Regex {
+    static VERBATIM: OnceLock<Regex> = OnceLock::new();
+    VERBATIM.get_or_init(|| {
+        Regex::new(concat!(
+            r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+            r"|\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})",
+        ))
+        .expect("valid regex")
+    })
+}
+
+/// One line: the shared rules (`kavach_telemetry::redact`) on everything
+/// between the [`verbatim`] spans.
+fn redact_line(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut last = 0;
+    for id in verbatim().find_iter(line) {
+        out.push_str(&kavach_telemetry::redact(&line[last..id.start()]));
+        out.push_str(id.as_str());
+        last = id.end();
+    }
+    out.push_str(&kavach_telemetry::redact(&line[last..]));
+    out
+}
+
 /// The single redaction point for everything kavach prints.
 #[must_use]
 pub fn redact(text: &str) -> String {
-    text.lines()
-        .map(|line| kavach_telemetry::redact(line).into_owned())
-        .collect::<Vec<_>>()
-        .join("\n")
+    text.lines().map(redact_line).collect::<Vec<_>>().join("\n")
 }
 
 pub fn print_redacted(text: &str) {
@@ -234,5 +264,27 @@ mod tests {
     fn printed_text_is_redacted() {
         let text = redact("call +91 98765 43210 now");
         assert!(!text.contains("98765"), "{text}");
+    }
+
+    #[test]
+    fn timestamps_survive_but_other_dates_do_not() {
+        for ts in ["2026-10-11T05:30:00Z", "2026-10-11T11:00:00.123+05:30"] {
+            assert_eq!(redact(&format!("exp {ts}")), format!("exp {ts}"));
+        }
+        assert!(redact("2026-10-11 11:00:00").contains("[redacted"));
+    }
+
+    #[test]
+    fn uuids_survive_but_numbers_beside_them_do_not() {
+        let id = "3a1f2b9c-1234-5678-9012-345678901234";
+        assert!(
+            kavach_telemetry::redact(id).contains("[redacted"),
+            "the rule alone masks it"
+        );
+        let text = redact(&format!("mandate {id} for +91 98765 43210"));
+        assert!(text.contains(id), "{text}");
+        assert!(!text.contains("98765"), "{text}");
+        // Not canonical (upper case, wrong grouping): the rules apply.
+        assert!(!redact("1234567890-1234").contains("1234567890"));
     }
 }
