@@ -2060,6 +2060,7 @@ dependencies = [
  "http-body-util",
  "include_dir",
  "jsonwebtoken",
+ "kavach-attacks",
  "kavach-auth",
  "kavach-authz",
  "kavach-clocksync",
@@ -2104,6 +2105,15 @@ dependencies = [
  "uuid",
  "walkdir",
  "x509-parser",
+]
+
+[[package]]
+name = "kavach-attacks"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2205,6 +2215,7 @@ dependencies = [
  "clap",
  "hex",
  "kavach-api",
+ "kavach-attacks",
  "kavach-clocksync",
  "kavach-credential",
  "kavach-dataplane",
