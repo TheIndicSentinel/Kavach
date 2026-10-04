@@ -268,3 +268,93 @@ fn authorize_usage_errors_exit_64() {
         );
     }
 }
+
+/// Kills the stack even if the test fails.
+struct Stack(std::process::Child);
+
+impl Drop for Stack {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[test]
+fn the_live_path_issues_mandates_and_records_calls() {
+    let dir = scratch("live");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    use_free_ports(&dir);
+    // Which mandate is a usage error, before any stack is needed.
+    assert_eq!(
+        kavach(&dir, &["call", "send_reminder"]).status.code(),
+        Some(64)
+    );
+    let not_running = kavach(&dir, &["call", "send_reminder", "--issue-mandate"]);
+    assert_eq!(not_running.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&not_running.stderr).contains("not running"));
+
+    let mut stack = Stack(
+        Command::new(env!("CARGO_BIN_EXE_kavach"))
+            .arg("-C")
+            .arg(&dir)
+            .args(["dev", "up", "--at", "11:00"])
+            .env("NO_COLOR", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let run = dir.join(".kavach/run.json");
+    for _ in 0..120 {
+        if run.is_file() {
+            break;
+        }
+        assert!(stack.0.try_wait().unwrap().is_none(), "dev up exited");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let text = std::fs::read_to_string(&run).expect("run.json");
+    assert!(!text.contains("eyJ"), "no tokens in run.json");
+
+    let issued = kavach(&dir, &["--json", "sor", "event"]);
+    let doc = json(&issued);
+    assert_eq!(issued.status.code(), Some(0), "{doc}");
+    let mandate = doc["mandate_id"].as_str().unwrap().to_string();
+    assert_eq!(mandate.len(), 36, "printed whole: {mandate}");
+    assert!(doc["exp"].as_str().unwrap().ends_with('Z'), "{doc}");
+
+    let call = kavach(
+        &dir,
+        &["--json", "call", "send_reminder", "--mandate", &mandate],
+    );
+    let doc = json(&call);
+    assert_eq!(call.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["decision"], "PASS");
+    assert_eq!(doc["recorded"], true);
+    assert!(doc["reply"]["record_id"].is_string(), "{doc}");
+
+    let blocked = kavach(
+        &dir,
+        &[
+            "--json",
+            "call",
+            "send_reminder",
+            "--issue-mandate",
+            "-p",
+            "channel=sms",
+        ],
+    );
+    let doc = json(&blocked);
+    assert_eq!(blocked.status.code(), Some(1), "{doc}");
+    assert_eq!(doc["decision"], "BLOCK");
+    assert!(
+        doc["issued_mandate"]["event_id"].is_string(),
+        "says it issued one"
+    );
+
+    // Killed without cleaning up: the stale file is detected.
+    let _ = stack.0.kill();
+    let _ = stack.0.wait();
+    let stale = kavach(&dir, &["call", "send_reminder", "--mandate", &mandate]);
+    assert_eq!(stale.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&stale.stderr).contains("nothing answers"));
+}

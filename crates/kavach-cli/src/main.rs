@@ -10,8 +10,10 @@ mod authorize;
 mod dev;
 mod doctor;
 mod init;
+mod live;
 mod output;
 mod project;
+mod run;
 
 use std::path::PathBuf;
 
@@ -90,6 +92,59 @@ enum Command {
         #[arg(long, value_name = "N", default_value_t = 0)]
         contacts_today: u32,
     },
+    /// Call a tool through the running stack's gateway (`kavach dev up`):
+    /// recorded in the evidence chain, and it uses up contact caps. Exit 0
+    /// if allowed, 1 if not.
+    #[command(
+        group(clap::ArgGroup::new("which_mandate").required(true).args(["mandate", "issue_mandate"])),
+        after_help = "Examples:\n  kavach sor event                     # prints a mandate id\n  kavach call send_reminder --mandate <id>\n  kavach call send_reminder --issue-mandate"
+    )]
+    Call {
+        /// The tool, as the registry names it.
+        tool: String,
+        /// A tool parameter (repeatable). Required ones left out get a
+        /// default, which the output lists.
+        #[arg(long = "param", short = 'p', value_name = "NAME=VALUE", value_parser = authorize::parse_param)]
+        params: Vec<(String, String)>,
+        /// The calling agent (its token is .kavach/agents/<agent>.jwt).
+        #[arg(long, default_value = authorize::DEFAULT_AGENT)]
+        agent: String,
+        /// The mandate to act under (from `kavach sor event`).
+        #[arg(long, value_name = "ID")]
+        mandate: Option<String>,
+        /// Issue a mandate first, with a system-of-record event for
+        /// --subject assigned to --agent, and say so.
+        #[arg(long)]
+        issue_mandate: bool,
+        /// The borrower: the default subject_ref, and the subject of
+        /// --issue-mandate.
+        #[arg(long, default_value = authorize::DEFAULT_SUBJECT)]
+        subject: String,
+        /// Reuse a request id to retry a call (default: a fresh one).
+        #[arg(long, value_name = "ID")]
+        request_id: Option<String>,
+    },
+    /// System-of-record events, sent to the running stack.
+    #[command(subcommand)]
+    Sor(SorCommand),
+}
+
+#[derive(Subcommand)]
+enum SorCommand {
+    /// Send a signed event that assigns a borrower to an agent: the stack
+    /// issues (and stores) a mandate, and this prints its id.
+    Event {
+        /// The borrower.
+        #[arg(long, default_value = authorize::DEFAULT_SUBJECT)]
+        subject: String,
+        /// The agent the borrower is assigned to.
+        #[arg(long, default_value = authorize::DEFAULT_AGENT)]
+        agent: String,
+        /// The event id (default: a fresh one). Resending an id with the
+        /// same content returns the same mandate.
+        #[arg(long, value_name = "ID")]
+        event_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -130,52 +185,88 @@ fn main() {
             std::process::exit(ui.error("kavach", &error));
         }
     };
-    let (name, result) = runtime.block_on(async {
-        match &cli.command {
-            Command::Init { dir } => (
-                "init",
-                init::run(&ui, dir.as_ref().unwrap_or(&cli.project)).await,
-            ),
-            Command::Doctor => ("doctor", doctor::run(&ui, &cli.project).await),
-            Command::Authorize {
-                tool,
-                params,
-                agent,
-                subject,
-                mandate_for,
-                at,
-                contacts_today,
-            } => (
-                "authorize",
-                authorize::run(
-                    &ui,
-                    &cli.project,
-                    &authorize::Ask {
-                        tool,
-                        agent,
-                        subject,
-                        mandate_for,
-                        params,
-                        at: at.as_deref(),
-                        contacts_today: *contacts_today,
-                    },
-                )
-                .await,
-            ),
-            Command::Dev(DevCommand::Up {
-                at,
-                exit_when_ready,
-            }) => (
-                "dev up",
-                dev::up(&ui, &cli.project, at.as_deref(), *exit_when_ready).await,
-            ),
-        }
-    });
+    let (name, result) = runtime.block_on(dispatch(ui, &cli));
     let code = match result {
         Ok(code) => code,
         Err(e) => ui.error(name, &e),
     };
     std::process::exit(code);
+}
+
+/// Runs the command; returns its name (for the JSON envelope) and result.
+async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
+    match &cli.command {
+        Command::Init { dir } => (
+            "init",
+            init::run(&ui, dir.as_ref().unwrap_or(&cli.project)).await,
+        ),
+        Command::Doctor => ("doctor", doctor::run(&ui, &cli.project).await),
+        Command::Authorize {
+            tool,
+            params,
+            agent,
+            subject,
+            mandate_for,
+            at,
+            contacts_today,
+        } => (
+            "authorize",
+            authorize::run(
+                &ui,
+                &cli.project,
+                &authorize::Ask {
+                    tool,
+                    agent,
+                    subject,
+                    mandate_for,
+                    params,
+                    at: at.as_deref(),
+                    contacts_today: *contacts_today,
+                },
+            )
+            .await,
+        ),
+        Command::Sor(SorCommand::Event {
+            subject,
+            agent,
+            event_id,
+        }) => (
+            "sor event",
+            live::sor_event(&ui, &cli.project, subject, agent, event_id.as_deref()).await,
+        ),
+        Command::Call {
+            tool,
+            params,
+            agent,
+            mandate,
+            issue_mandate,
+            subject,
+            request_id,
+        } => (
+            "call",
+            live::call(
+                &ui,
+                &cli.project,
+                &live::CallAsk {
+                    tool,
+                    agent,
+                    mandate: mandate.as_deref(),
+                    issue_mandate: *issue_mandate,
+                    subject,
+                    params,
+                    request_id: request_id.as_deref(),
+                },
+            )
+            .await,
+        ),
+        Command::Dev(DevCommand::Up {
+            at,
+            exit_when_ready,
+        }) => (
+            "dev up",
+            dev::up(&ui, &cli.project, at.as_deref(), *exit_when_ready).await,
+        ),
+    }
 }
 
 /// The command tree, for tests that check help and conventions.

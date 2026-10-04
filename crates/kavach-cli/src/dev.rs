@@ -24,6 +24,7 @@ use serde_json::{json, Value};
 use crate::init::{MODEL_FILE, PACK_FILE};
 use crate::output::{CliError, Status, Style, Ui};
 use crate::project::Project;
+use crate::run::RunFile;
 
 /// A clock that starts at a chosen time and runs at real speed (`--at`).
 pub(crate) struct StartedAt {
@@ -135,6 +136,39 @@ fn operator_oidc(kavach: &Path) -> OidcConfig {
         groups_claim: "groups".into(),
         leeway_seconds: 30,
     }
+}
+
+/// `run.json` for as long as the stack runs; removed however `up` returns.
+struct RunGuard(std::path::PathBuf);
+
+impl RunGuard {
+    fn write(project: &Project, run: &RunFile) -> Result<Self, CliError> {
+        let path = crate::run::path(project);
+        run.write(&path)?;
+        Ok(Self(path))
+    }
+}
+
+impl Drop for RunGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+/// Ctrl-C, or (Unix) SIGTERM from a process manager.
+async fn stop_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        if let Ok(mut term) = signal(SignalKind::terminate()) {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = term.recv() => {}
+            }
+            return;
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// The agent data plane's settings for the project's bundle.
@@ -313,11 +347,24 @@ pub async fn up(
             "DEVELOPMENT ONLY: --insecure-dev, dev- keys, open operator API on loopback."
         ),
     );
-    let code = ui.finish("dev up", Status::Ok, &data, &human);
     if exit_when_ready {
+        let code = ui.finish("dev up", Status::Ok, &data, &human);
         provider_task.abort();
         return Ok(code);
     }
+    // Before the banner, so whatever waits for it finds the file.
+    let _run = RunGuard::write(
+        &project,
+        &RunFile {
+            version: 1,
+            pid: std::process::id(),
+            clock_offset_ms: started_at.map_or(0, |t| (t - Utc::now()).num_milliseconds()),
+            operator: l.operator,
+            agent: l.agent,
+            sor: l.sor,
+        },
+    )?;
+    let code = ui.finish("dev up", Status::Ok, &data, &human);
 
     let serve = |app: axum::Router, listener: TcpListener| async move {
         serve_http_on(app, listener, None)
@@ -328,7 +375,7 @@ pub async fn up(
         r = serve(router(state.clone()), operator) => r.map_err(|e| CliError::new("the operator listener stopped", e))?,
         r = serve(agent_router(state.clone()), agent) => r.map_err(|e| CliError::new("the agent listener stopped", e))?,
         r = serve(sor_router(state.clone()), sor) => r.map_err(|e| CliError::new("the sor listener stopped", e))?,
-        _ = tokio::signal::ctrl_c() => {}
+        () = stop_signal() => {}
     }
     provider_task.abort();
     if !ui.json {

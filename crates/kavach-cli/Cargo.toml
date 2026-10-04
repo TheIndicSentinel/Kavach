@@ -17,6 +17,7 @@ kavach-credential = { workspace = true }
 kavach-dataplane = { workspace = true }
 kavach-devkit = { workspace = true }
 kavach-jws = { workspace = true }
+kavach-keys = { workspace = true }
 kavach-mock-provider = { workspace = true }
 kavach-ports = { workspace = true }
 kavach-storage = { workspace = true }
@@ -27,12 +28,15 @@ base64.workspace = true
 chrono.workspace = true
 clap.workspace = true
 hex.workspace = true
+regex.workspace = true
+reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 tokio = { workspace = true, features = ["signal", "time"] }
 toml.workspace = true
+uuid.workspace = true
 
 [lints]
 workspace = true
