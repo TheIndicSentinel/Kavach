@@ -362,6 +362,85 @@ async fn agent_surfaces_on_postgres() {
     );
 }
 
+/// Key rotation with an overlap period (K3): after the mandate signing key
+/// changes, mandates signed by the earlier key still verify while that key
+/// is listed in `previous_mandate_keys` (verify-only), and stop verifying
+/// once it is removed. Two API instances over one database, as across a
+/// restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn mandates_signed_before_a_rotation_verify_only_while_the_old_key_is_listed() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let mut config = config(
+        EvidenceStoreKind::Postgres {
+            database_url: runtime,
+        },
+        false,
+        50,
+    );
+    config.migration_database_url = Some(owner);
+    let dp = config.dataplane.clone().unwrap();
+    let auth = [(
+        "authorization",
+        format!("Bearer {}", agent_token("collections-agent")),
+    )];
+    let precheck = |s: Arc<AppState>, mandate: String, request: &'static str| {
+        let auth = auth.clone();
+        async move {
+            let (status, body) = send(
+                agent_router(s),
+                "/v1/authorize",
+                &auth,
+                read_fields(&mandate, request),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            body["decision"].as_str().unwrap().to_string()
+        }
+    };
+
+    let before = Arc::new(AppState::from_config(&config).await.expect("start"));
+    let old = issue(&before, "evt-rot-1").await;
+    drop(before);
+
+    // Rotate: kavach-mandate-2 signs; kavach-mandate-1 verifies only.
+    agent_fixture::owner_only(
+        &dp.mandate_keys_dir.join("kavach-mandate-2.ed25519"),
+        &hex::encode([9u8; 32]),
+    );
+    let old_public = hex::encode(
+        ed25519_dalek::SigningKey::from_bytes(&[1u8; 32])
+            .verifying_key()
+            .to_bytes(),
+    );
+    let mut mandates: Value =
+        serde_json::from_str(&std::fs::read_to_string(&dp.mandate_config).unwrap()).unwrap();
+    mandates["signing_kid"] = json!("kavach-mandate-2");
+    mandates["previous_mandate_keys"] =
+        json!([{ "kid": "kavach-mandate-1", "public_key": old_public }]);
+    std::fs::write(&dp.mandate_config, mandates.to_string()).unwrap();
+    let during = Arc::new(AppState::from_config(&config).await.expect("rotated start"));
+    assert_eq!(precheck(during.clone(), old.clone(), "rot-1").await, "PASS");
+    let new = issue(&during, "evt-rot-2").await;
+    assert_eq!(precheck(during.clone(), new.clone(), "rot-2").await, "PASS");
+    drop(during);
+
+    // The current key cannot be listed as a previous one.
+    mandates["previous_mandate_keys"] = json!([{ "kid": "kavach-mandate-2",
+        "public_key": hex::encode(ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]).verifying_key().to_bytes()) }]);
+    std::fs::write(&dp.mandate_config, mandates.to_string()).unwrap();
+    let err = AppState::from_config(&config).await.err().expect("refused");
+    assert!(err.to_string().contains("current signing key"), "{err}");
+
+    // The overlap ends: the old key is gone, and so is its mandates' authority.
+    mandates["previous_mandate_keys"] = json!([]);
+    std::fs::write(&dp.mandate_config, mandates.to_string()).unwrap();
+    let after = Arc::new(AppState::from_config(&config).await.expect("start after"));
+    assert_eq!(precheck(after.clone(), old, "rot-3").await, "BLOCK");
+    assert_eq!(precheck(after, new, "rot-4").await, "PASS");
+}
+
 /// The agent listener serves agent routes only; the operator listener does
 /// not serve agent routes (ADR-007).
 #[tokio::test]

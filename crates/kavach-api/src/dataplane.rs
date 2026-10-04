@@ -152,6 +152,10 @@ struct SorIssuerFile {
 struct MandateConfigFile {
     issuer_id: String,
     signing_kid: String,
+    /// Earlier mandate signing keys, after a rotation: trusted to verify the
+    /// mandates they signed until those expire, never used to sign.
+    #[serde(default)]
+    previous_mandate_keys: Vec<VerificationKeyFile>,
     sor_issuers: Vec<SorIssuerFile>,
     templates: Vec<MandateTemplate>,
     passports: Vec<AgentPassport>,
@@ -470,7 +474,7 @@ impl Dataplane {
         let sources = open_key_sources(config, insecure_dev)?;
         let keys = sources.keys(HsmRole::Mandate, &config.mandate_keys_dir);
         let (mandate_config, passports) =
-            load_mandate_config(&config.mandate_config, &keys).await?;
+            load_mandate_config(&config.mandate_config, &keys, insecure_dev).await?;
         let mandate_kid = mandate_config.signing_kid.clone();
         refuse_dev_key("mandate signing", &mandate_kid, insecure_dev)?;
         for issuer in &mandate_config.sor_issuers {
@@ -921,15 +925,65 @@ fn select_stores(
     })
 }
 
+/// One verify-only public key (hex).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerificationKeyFile {
+    kid: String,
+    /// Hex Ed25519 public key.
+    public_key: String,
+}
+
+/// The previous mandate keys of a rotation: verify-only, each distinct from
+/// the signing key (by id and by key material) and from each other.
+fn previous_mandate_keys(
+    file: &MandateConfigFile,
+    current: &PublicKey,
+    insecure_dev: bool,
+) -> Result<Vec<PublicKey>, String> {
+    let mut seen = BTreeSet::new();
+    file.previous_mandate_keys
+        .iter()
+        .map(|k| {
+            refuse_dev_key("previous mandate", &k.kid, insecure_dev)?;
+            let bytes: [u8; 32] = hex::decode(k.public_key.trim())
+                .ok()
+                .and_then(|b| b.try_into().ok())
+                .ok_or_else(|| {
+                    format!(
+                        "previous mandate key {}: public_key must be 32 bytes hex",
+                        k.kid
+                    )
+                })?;
+            if k.kid == file.signing_kid || bytes == current.bytes {
+                return Err(format!(
+                    "previous mandate key {} is the current signing key; list only earlier keys",
+                    k.kid
+                ));
+            }
+            if !seen.insert(k.kid.clone()) {
+                return Err(format!("previous mandate key {} is listed twice", k.kid));
+            }
+            Ok(PublicKey {
+                kid: k.kid.clone(),
+                algorithm: KeyAlgorithm::Ed25519,
+                bytes,
+            })
+        })
+        .collect()
+}
+
 async fn load_mandate_config(
     path: &Path,
     keys: &SigningKeys,
+    insecure_dev: bool,
 ) -> Result<(MandateConfig, BTreeSet<(String, String)>), String> {
     let file: MandateConfigFile = read_json(path, "mandate config")?;
     let mandate_public = keys
         .public_key(&file.signing_kid)
         .await
         .map_err(|e| format!("mandate signing key: {e}"))?;
+    let previous = previous_mandate_keys(&file, &mandate_public, insecure_dev)?;
     let sor_issuers = file
         .sor_issuers
         .into_iter()
@@ -956,7 +1010,7 @@ async fn load_mandate_config(
     let mandate_config = MandateConfig {
         issuer_id: file.issuer_id,
         signing_kid: file.signing_kid,
-        mandate_keys: KeySet::new([mandate_public]),
+        mandate_keys: KeySet::new(std::iter::once(mandate_public).chain(previous)),
         sor_issuers,
         templates: file.templates,
         passports: file.passports,

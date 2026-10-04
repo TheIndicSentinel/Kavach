@@ -26,6 +26,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- Key rotation with an overlap (KMS milestone, K3): `previous_mandate_keys` in the mandate configuration lists earlier mandate keys, trusted to verify the mandates they signed until those expire and never used to sign (the current key, by id or material, and duplicates are refused). `docs/KEY_RUNBOOK.md` covers creating, distributing, rotating and retiring every key, and what to do when one is compromised.
 - Signing keys in an HSM, per role (KMS milestone, K2): `--hsm-keys mandate,evidence,checkpoint,credential` with `--hsm-module`, `--hsm-token-label` and an owner-only `--hsm-pin-file`. Listed roles sign through the PKCS#11 provider; the others keep their key files. Keys must have been generated in the HSM outside `--insecure-dev`, the key-separation checks cover HSM keys, an HSM signing failure fails closed, and `/v1/runtime` reports `hsm.roles` and `hsm.healthy`.
 - Fuzz target `cel_policy`: CEL rules through pack loading and evaluation. A crash is always fixed; a hang becomes a tighter load limit or a documented gap.
 - `kavach-keys-pkcs11` (KMS milestone, K1): a PKCS#11 key provider for Ed25519 signing keys held in an HSM. It refuses keys that could have been imported or read out (sensitive, always sensitive, not extractable, never extractable), proves each public key at startup, pools sessions and logs in again after an HSM restart, and fails closed otherwise. Tested against SoftHSM2 in CI. Not wired into the API yet (K2).
