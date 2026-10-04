@@ -59,6 +59,7 @@ Everything an agent sends (tool parameters, model output, borrower content) is *
 | Repudiation (approvals) | WebAuthn step-up bound to `action_hash`; single-use credential | Planned (M4) |
 | Information disclosure | No raw input in DB (digests); no telemetry by default | Implemented |
 | Information disclosure (agents) | Capability references; destinations resolved only inside the gateway after an allow and sent only encrypted to the provider; allowlisted gateway replies | **Implemented** (H5b) for the gateway; purpose-minimal field reads planned (M3) |
+| Information disclosure (evidence reads) | `GET /v1/agent-decisions/{id}` is admin-only (Cedar `read_evidence`), rate-limited and audited per read; sequential ids allow enumeration by an admin, which the audit log records; records hold pseudonyms only | **Implemented** |
 | Information disclosure (logs) | Redacting types never print; every log line passes a redacting writer (numbers in any script, JOSE tokens, credential headers, PAN, email); logs built from allowlisted fields and registry tool names; caller correlation ids validated; logs stay local (no export) | **Implemented** |
 | Information disclosure (evidence PII) | Crypto-shredding with per-subject keys | Planned (M2) |
 | Denial of service | Body size limits; CEL wall-clock timeout | Implemented |
