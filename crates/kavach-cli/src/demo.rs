@@ -114,6 +114,14 @@ impl Scene {
     }
 }
 
+/// A fresh directory name for the throwaway project. The id is a canonical
+/// UUID, which output redaction prints as it is: a bare 32-hex id holds ten
+/// digits in a row about one time in eleven, and the number rule would mask
+/// them, printing a `kept` path that does not exist.
+fn demo_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("kavach-demo-{}", uuid::Uuid::new_v4().hyphenated()))
+}
+
 /// Asks a process to stop (SIGTERM on Unix); 0 is no process.
 fn stop(pid: u32) {
     #[cfg(unix)]
@@ -179,7 +187,7 @@ async fn credit_decision(dir: &Path) -> Result<String, String> {
     let now = chrono::Utc::now().to_rfc3339();
     request["decision_time"] = now.clone().into();
     request["consent"]["timestamp"] = now.into();
-    request["correlation_id"] = format!("demo-{}", uuid::Uuid::new_v4().simple()).into();
+    request["correlation_id"] = format!("demo-{}", uuid::Uuid::new_v4().hyphenated()).into();
     let reply: Value = reqwest::Client::new()
         .post(format!(
             "http://{}/v1/evaluate",
@@ -210,7 +218,7 @@ fn pause(step_mode: bool) {
 // One story, told in order: splitting it would scatter the script.
 #[allow(clippy::too_many_lines)]
 pub async fn run(ui: &Ui, keep: bool, step_mode: bool, attack: bool) -> Result<i32, CliError> {
-    let dir = std::env::temp_dir().join(format!("kavach-demo-{}", uuid::Uuid::new_v4().simple()));
+    let dir = demo_dir();
     std::fs::create_dir_all(&dir)
         .map_err(|e| CliError::new(format!("cannot create {}", dir.display()), e))?;
     // Ctrl-C: the stack (same process group) stops on its own signal; the
@@ -436,4 +444,17 @@ pub async fn run(ui: &Ui, keep: bool, step_mode: bool, attack: bool) -> Result<i
         &data,
         &human,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_demo_directory_is_printed_as_it_is() {
+        for _ in 0..2000 {
+            let dir = demo_dir().display().to_string();
+            assert_eq!(crate::output::redact(&dir), dir);
+        }
+    }
 }
