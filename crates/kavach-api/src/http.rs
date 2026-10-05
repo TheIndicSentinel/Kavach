@@ -57,6 +57,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/agent-decisions/{record_id}",
             get(crate::evidence_read::read_agent_decision),
         )
+        .route("/v1/dev/clock", post(crate::dev_clock::set_dev_clock))
         .route(
             "/v1/decision-events/{evidence_id}",
             get(crate::evidence_read::read_decision_event),

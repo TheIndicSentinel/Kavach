@@ -9,6 +9,7 @@ pub mod console;
 pub mod convert;
 pub mod correlation;
 pub mod dataplane;
+pub mod dev_clock;
 pub mod error;
 pub mod evidence_read;
 pub mod forward;

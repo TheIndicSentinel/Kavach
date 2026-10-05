@@ -13,7 +13,8 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{DateTime, FixedOffset, NaiveTime, TimeZone, Utc};
-use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig, TestClock};
+use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig};
+use kavach_api::dev_clock::{DevClock, DevClockKind};
 use kavach_api::{
     router, serve_http_on, AccessControlKind, ApiConfig, AppState, DatabaseTls, EvidenceStoreKind,
     JwksSource, OidcConfig, DEFAULT_POOL_SIZE,
@@ -93,7 +94,7 @@ fn point_providers(project: &Project) -> Result<(), CliError> {
         .map_err(|e| CliError::new("cannot update providers.json", e))
 }
 
-fn api_config(project: &Project, clock: Option<TestClock>) -> ApiConfig {
+fn api_config(project: &Project, clock: Option<Arc<DevClock>>) -> ApiConfig {
     let kavach = project.kavach_dir();
     let operator = operator_oidc(&kavach);
     let evidence_store = match &project.file.database {
@@ -177,7 +178,7 @@ async fn stop_signal() {
 }
 
 /// The agent data plane's settings for the project's bundle.
-pub(crate) fn dataplane_config(project: &Project, clock: Option<TestClock>) -> DataplaneConfig {
+pub(crate) fn dataplane_config(project: &Project, clock: Option<Arc<DevClock>>) -> DataplaneConfig {
     let kavach = project.kavach_dir();
     let keys = kavach.join("keys");
     DataplaneConfig {
@@ -208,17 +209,148 @@ pub(crate) fn dataplane_config(project: &Project, clock: Option<TestClock>) -> D
         provider_connect_timeout_ms: 2_000,
         provider_timeout_ms: 5_000,
         provider_ca: Some(kavach.join("tls/ca.pem")),
-        test_clock: clock,
+        test_clock: None,
+        dev_clock: clock,
         hsm: None,
     }
+}
+
+/// The development clock `--at` or `--clock` asks for (dev keys only).
+fn dev_clock_for(
+    project: &Project,
+    at: Option<&str>,
+    fixed: Option<&str>,
+) -> Result<Option<Arc<DevClock>>, CliError> {
+    let clock = match (at, fixed) {
+        (Some(t), _) => Some(DevClock::started_at(parse_at(t)?)),
+        (None, Some(t)) => Some(DevClock::fixed(
+            crate::policy_test::parse_time(t)
+                .map_err(|e| crate::authorize::usage("--clock is not a time", e))?,
+        )),
+        (None, None) => None,
+    };
+    if clock.is_some() {
+        refuse_unless_dev_bundle(project)?;
+    }
+    Ok(clock)
+}
+
+/// The `dev up` banner's clock line.
+fn clock_line(clock: Option<&DevClock>) -> String {
+    let ist = FixedOffset::east_opt(5 * 3600 + 1800);
+    let shown = |t: DateTime<Utc>| {
+        ist.map(|o| {
+            t.with_timezone(&o)
+                .format("%H:%M IST on %d %b %Y")
+                .to_string()
+        })
+        .unwrap_or_default()
+    };
+    match clock {
+        None => "system time".into(),
+        Some(c) if c.kind() == DevClockKind::Fixed => format!(
+            "fixed at {} (dev only; move it forward with `kavach dev clock <time>`)",
+            shown(c.time())
+        ),
+        Some(c) => format!("started at {}, then runs (dev only)", shown(c.time())),
+    }
+}
+
+/// A development clock runs with development keys only.
+fn refuse_unless_dev_bundle(project: &Project) -> Result<(), CliError> {
+    let text = read(&project.kavach_dir().join("mandate-config.json"))?;
+    let config: Value = serde_json::from_str(&text)
+        .map_err(|e| CliError::new("the mandate configuration is not JSON", e))?;
+    let kid = config["signing_kid"].as_str().unwrap_or_default();
+    if kavach_ports::agent_evidence::is_dev_key(kid) {
+        Ok(())
+    } else {
+        Err(CliError::new(
+            "a development clock runs with development keys only",
+            format!("the mandate key is {kid:?}"),
+        ))
+    }
+}
+
+/// `kavach dev clock <time>`: moves the running stack's fixed clock forward.
+/// `HH:MM` is the next such IST time after the stack's time; RFC 3339 is
+/// taken as given (and must be later).
+pub async fn move_clock(ui: &Ui, dir: &Path, time: &str) -> Result<i32, CliError> {
+    let project = Project::find(dir)?;
+    let run = crate::run::RunFile::live(&project)?;
+    let token = read(&project.bundle().join("operator.jwt"))?;
+    let now = run.stack_now(&project).await?;
+    let to = if let Ok(t) = DateTime::parse_from_rfc3339(time) {
+        t.with_timezone(&Utc)
+    } else {
+        let hhmm = NaiveTime::parse_from_str(time, "%H:%M").map_err(|_| {
+            crate::authorize::usage(
+                format!("{time:?} is not a time"),
+                "use HH:MM (IST) or RFC 3339",
+            )
+        })?;
+        next_ist(now, hhmm)?
+    };
+    let response = reqwest::Client::new()
+        .post(format!("http://{}/v1/dev/clock", run.operator))
+        .bearer_auth(token.trim())
+        .json(&json!({ "at": to }))
+        .send()
+        .await
+        .map_err(|e| CliError::new("the operator listener did not answer", e))?;
+    let status = response.status().as_u16();
+    let body: Value = response.json().await.unwrap_or(Value::Null);
+    match status {
+        200 => {}
+        404 => {
+            return Err(
+                CliError::new("this stack has no fixed clock", body["error"].to_string())
+                    .fix("start it with `kavach dev up --clock <time>`"),
+            )
+        }
+        409 => {
+            return Err(crate::authorize::usage(
+                "the development clock only moves forward",
+                body["error"].as_str().unwrap_or_default(),
+            )
+            .fix("give a later time, or HH:MM for its next occurrence"))
+        }
+        _ => {
+            return Err(CliError::new(
+                format!("the stack refused the clock change ({status})"),
+                body["error"].to_string(),
+            ))
+        }
+    }
+    let line = clock_line(Some(&*DevClock::fixed(to)));
+    let data = json!({ "from": now, "to": to, "clock": body });
+    Ok(ui.finish("dev clock", Status::Ok, &data, &format!("clock {line}")))
+}
+
+/// The next IST `time` strictly after `after`.
+fn next_ist(after: DateTime<Utc>, time: NaiveTime) -> Result<DateTime<Utc>, CliError> {
+    let ist =
+        FixedOffset::east_opt(5 * 3600 + 1800).ok_or_else(|| CliError::new("IST", "offset"))?;
+    let mut day = after.with_timezone(&ist).date_naive();
+    for _ in 0..3 {
+        if let Some(t) = ist.from_local_datetime(&day.and_time(time)).single() {
+            let t = t.with_timezone(&Utc);
+            if t > after {
+                return Ok(t);
+            }
+        }
+        day += chrono::Duration::days(1);
+    }
+    Err(CliError::new("cannot compute the next IST time", time))
 }
 
 /// The operator API's Cedar policies and entities, in the bundle.
 pub(crate) const CEDAR_POLICIES: &str = "cedar/kavach.cedar";
 pub(crate) const CEDAR_ENTITIES: &str = "cedar/entities.json";
 
-/// Writes the operator API's access control files if they are missing
-/// (projects made before `dev up` required the operator token).
+/// Writes the operator API's access control files. The policies are the
+/// bundled ones, rewritten on every start so they never go stale; the
+/// entities file is written only if it is missing.
 pub(crate) fn ensure_cedar(kavach_dir: &Path) -> Result<(), CliError> {
     let entities = json!([
         { "uid": { "type": "Kavach::System", "id": "api" }, "attrs": {}, "parents": [] },
@@ -235,7 +367,7 @@ pub(crate) fn ensure_cedar(kavach_dir: &Path) -> Result<(), CliError> {
         ),
     ] {
         let path = kavach_dir.join(file);
-        if path.exists() {
+        if file == CEDAR_ENTITIES && path.exists() {
             continue;
         }
         if let Some(parent) = path.parent() {
@@ -395,20 +527,21 @@ pub async fn up(
     ui: &Ui,
     dir: &Path,
     at: Option<&str>,
+    fixed: Option<&str>,
     exit_when_ready: bool,
 ) -> Result<i32, CliError> {
     let project = Project::find(dir)?;
+    let dev_clock = dev_clock_for(&project, at, fixed)?;
     let [operator, agent, sor, provider_listener, inspect_listener] = bind_all(&project)?;
-    let started_at = at.map(parse_at).transpose()?;
-    let clock: Arc<dyn TimeSource + Send + Sync> = match started_at {
-        Some(at) => Arc::new(StartedAt::new(at)),
+    let clock: Arc<dyn TimeSource + Send + Sync> = match &dev_clock {
+        Some(dev) => Arc::clone(dev) as Arc<dyn TimeSource + Send + Sync>,
         None => Arc::new(kavach_ports::SystemClock),
     };
     point_providers(&project)?;
     ensure_cedar(&project.kavach_dir())?;
     let provider_task =
         provider(&project, provider_listener, inspect_listener, clock.clone()).await?;
-    let config = api_config(&project, started_at.map(|_| TestClock(clock.clone())));
+    let config = api_config(&project, dev_clock.clone());
     let state = Arc::new(
         AppState::from_config(&config)
             .await
@@ -421,7 +554,7 @@ pub async fn up(
         "running": !exit_when_ready,
         "profile": "dev",
         "store": if project.file.database.is_some() { "postgres" } else { "memory" },
-        "clock": at.map_or_else(|| "system".to_string(), |t| format!("{t} IST")),
+        "clock": dev_clock.as_ref().map_or_else(|| json!("system"), |c| c.view()),
         "endpoints": {
             "operator": format!("http://{}", l.operator),
             "agent": format!("http://{}", l.agent),
@@ -442,7 +575,7 @@ pub async fn up(
         l.sor,
         l.provider.port(),
         if project.file.database.is_some() { "Postgres (kavach.toml)" } else { "memory (lost on exit)" },
-        at.map_or_else(|| "system time".to_string(), |t| format!("starts at {t} IST today (--at), then runs")),
+        clock_line(dev_clock.as_deref()),
         bundle.display(),
         bundle.display(),
         ui.paint(
@@ -461,7 +594,10 @@ pub async fn up(
         &RunFile {
             version: 1,
             pid: std::process::id(),
-            clock_offset_ms: started_at.map_or(0, |t| (t - Utc::now()).num_milliseconds()),
+            clock_offset_ms: dev_clock
+                .as_ref()
+                .map_or(0, |c| (c.time() - Utc::now()).num_milliseconds()),
+            clock: dev_clock.as_ref().map(|c| c.kind()),
             operator: l.operator,
             agent: l.agent,
             sor: l.sor,

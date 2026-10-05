@@ -236,7 +236,7 @@ fn word(decision: Decision) -> String {
 }
 
 /// `at`: RFC 3339, or `HH:MM` meaning IST on [`SHORTHAND_DATE`].
-fn parse_time(text: &str) -> Result<DateTime<Utc>, String> {
+pub(crate) fn parse_time(text: &str) -> Result<DateTime<Utc>, String> {
     if let Ok(t) = DateTime::parse_from_rfc3339(text) {
         return Ok(t.with_timezone(&Utc));
     }

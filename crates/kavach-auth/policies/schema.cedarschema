@@ -33,6 +33,11 @@ namespace Kavach {
     resource: [System],
   };
 
+  action set_dev_clock appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
   action read_retention appliesTo {
     principal: [User],
     resource: [System],

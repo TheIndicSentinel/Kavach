@@ -777,3 +777,39 @@ fn fresh_credit_request() -> Value {
     request["consent"]["timestamp"] = now.into();
     request
 }
+
+/// A development clock is refused by the API itself: outside
+/// `--insecure-dev`, and with any signing key that is not a `dev-` key. Its
+/// endpoint does not exist on a stack without a fixed development clock.
+#[tokio::test]
+async fn the_api_refuses_a_development_clock_outside_a_dev_stack() {
+    let clock = kavach_api::dev_clock::DevClock::fixed(chrono::Utc::now());
+    let refused = |insecure_dev: bool| {
+        let mut api = config(EvidenceStoreKind::Memory, insecure_dev, 50);
+        api.dataplane.as_mut().unwrap().dev_clock = Some(clock.clone());
+        async move {
+            match AppState::from_config(&api).await {
+                Ok(_) => String::new(),
+                Err(e) => e.to_string(),
+            }
+        }
+    };
+    assert!(
+        refused(false).await.contains("outside --insecure-dev"),
+        "{}",
+        refused(false).await
+    );
+    // The fixture's keys are production-named (not dev-).
+    let why = refused(true).await;
+    assert!(why.contains("development keys only"), "{why}");
+
+    let s = state(50).await;
+    let (status, _) = send(
+        router(s),
+        "/v1/dev/clock",
+        &[("authorization", format!("Bearer {}", operator_token()))],
+        json!({ "at": "2030-01-01T00:00:00Z" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

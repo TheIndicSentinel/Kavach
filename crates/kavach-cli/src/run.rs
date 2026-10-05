@@ -30,6 +30,9 @@ pub struct RunFile {
     /// The mock provider (HTTPS) and its inbox.
     pub provider: SocketAddr,
     pub inspect: SocketAddr,
+    /// The development clock's kind, when the stack runs with one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock: Option<kavach_api::dev_clock::DevClockKind>,
 }
 
 #[must_use]
@@ -42,6 +45,30 @@ impl RunFile {
     #[must_use]
     pub fn now(&self) -> DateTime<Utc> {
         Utc::now() + chrono::Duration::milliseconds(self.clock_offset_ms)
+    }
+
+    /// The stack's time now: from the stack itself when its clock is fixed
+    /// (it moves only when told), else the offset from the system clock.
+    pub async fn stack_now(&self, project: &Project) -> Result<DateTime<Utc>, CliError> {
+        if self.clock != Some(kavach_api::dev_clock::DevClockKind::Fixed) {
+            return Ok(self.now());
+        }
+        let token = std::fs::read_to_string(project.bundle().join("operator.jwt"))
+            .map_err(|e| CliError::new("cannot read the operator token", e))?;
+        let runtime: serde_json::Value = reqwest::Client::new()
+            .get(format!("http://{}/v1/runtime", self.operator))
+            .bearer_auth(token.trim())
+            .send()
+            .await
+            .map_err(|e| CliError::new("the operator listener did not answer", e))?
+            .json()
+            .await
+            .map_err(|e| CliError::new("the runtime view does not parse", e))?;
+        runtime["dev_clock"]["at"]
+            .as_str()
+            .and_then(|t| DateTime::parse_from_rfc3339(t).ok())
+            .map(|t| t.with_timezone(&Utc))
+            .ok_or_else(|| CliError::new("the stack did not report its clock", runtime))
     }
 
     /// Writes the file, readable by its owner only.
@@ -99,6 +126,7 @@ mod tests {
             sor: at(3),
             provider: at(4),
             inspect: at(5),
+            clock: None,
         };
         run.write(&path).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();

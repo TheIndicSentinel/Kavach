@@ -41,6 +41,15 @@ permit (
   resource == Kavach::System::"api"
 );
 
+// Move a development clock forward. The endpoint exists only on a dev
+// stack started with `kavach dev up --clock`; every change is audited.
+@id("admins-may-set-dev-clock")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"set_dev_clock",
+  resource == Kavach::System::"api"
+);
+
 @id("viewers-may-read-health")
 permit (
   principal in Kavach::Group::"viewers",
