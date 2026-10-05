@@ -384,7 +384,11 @@ async fn scenario2_partial_raw_identifiers_are_blocked_without_a_trace() {
     let record = d.record.unwrap();
     assert!(record.payload.params_mac.is_none());
     let text = serde_json::to_string(&record).unwrap();
-    assert!(!text.contains("98765"), "{text}");
+    // Any form the number could leak in; a bare "98765" could also occur by
+    // chance in the record's hex hashes and signature.
+    for leak in ["98765 43210", "9876543210", "+91"] {
+        assert!(!text.contains(leak), "{leak}: {text}");
+    }
 
     // A raw value as the subject itself.
     let mut call = reminder(&mandate, "p-2");

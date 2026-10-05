@@ -317,7 +317,13 @@ async fn precheck_uses_the_tool_registry() {
     ] {
         let (status, body) = post(bad.clone()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{bad} -> {body}");
-        assert!(!body.to_string().contains("98765"), "{body}");
+        // Without the server's random request id, which can hold "98765"
+        // by chance and never holds caller input.
+        let mut shown = body.clone();
+        if let Some(fields) = shown.as_object_mut() {
+            fields.remove("request_id");
+        }
+        assert!(!shown.to_string().contains("98765"), "{body}");
     }
     assert!(
         s.dataplane()
