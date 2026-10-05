@@ -158,6 +158,22 @@ jobs:
       - name: cargo deny
         run: cargo deny check
 
+  openapi-lint:
+    name: OpenAPI lint (Redocly, pinned)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+
+      # Structure and style only; what the server returns is held to the
+      # spec by the contract tests in the Rust job.
+      - name: Lint docs/openapi.yaml
+        run: npx --yes @redocly/cli@1.25.0 lint --format=github-actions docs/openapi.yaml
+
   jose-crosscheck:
     name: Credential interop (independent jose)
     runs-on: ubuntu-latest

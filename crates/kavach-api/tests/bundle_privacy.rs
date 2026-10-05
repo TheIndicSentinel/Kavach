@@ -4,6 +4,7 @@
 //! outcome, a checkpoint or the manifest.
 
 mod agent_fixture;
+mod contract;
 
 use std::time::Duration;
 

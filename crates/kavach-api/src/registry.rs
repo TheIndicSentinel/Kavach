@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use kavach_domain::{ModelRecord, PolicyPack};
+use kavach_domain::{GovernanceMode, ModelOrigin, ModelRecord, ModelStatus, PolicyPack, RiskTier};
 use serde::Serialize;
 
 use crate::error::ApiError;
@@ -22,10 +22,12 @@ pub struct ModelSummary {
     pub model_id: String,
     pub version: String,
     pub sector: String,
-    pub status: String,
-    pub risk_tier: String,
-    pub governance_mode: String,
-    pub origin: String,
+    // The domain enums, so the wire names are serde's (`in_house`), the
+    // same as in model records and evidence.
+    pub status: ModelStatus,
+    pub risk_tier: RiskTier,
+    pub governance_mode: GovernanceMode,
+    pub origin: ModelOrigin,
     pub pack_id: String,
     pub owner: String,
     pub source_path: String,
@@ -146,10 +148,10 @@ pub fn list_models(
             model_id: model.model_id.clone(),
             version: model.version.clone(),
             sector: model.sector.clone(),
-            status: format!("{:?}", model.status).to_lowercase(),
-            risk_tier: format!("{:?}", model.risk_tier).to_lowercase(),
-            governance_mode: format!("{:?}", model.governance_mode).to_lowercase(),
-            origin: format!("{:?}", model.origin).to_lowercase(),
+            status: model.status,
+            risk_tier: model.risk_tier,
+            governance_mode: model.governance_mode,
+            origin: model.origin,
             pack_id: model.pack_id.clone(),
             owner: model.owner.clone(),
             source_path: path.display().to_string(),

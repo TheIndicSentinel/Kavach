@@ -1,0 +1,1440 @@
+openapi: 3.1.0
+info:
+  title: Kavach HTTP API
+  version: 0.1.0-dev
+  summary: Decision governance and agent authorization (pre-alpha).
+  description: |
+    The HTTP API of `kavach-api`, on its three listeners:
+
+    - **operator**: decision evaluation, governance, change requests,
+      evidence reads and administration;
+    - **agent**: the agent data plane (`/v1/authorize`, `/v1/tools/{tool}`);
+    - **system of record (SoR)**: signed events that issue mandates.
+
+    Each path lists the listeners that serve it in `x-kavach-listeners`
+    (the operator listener when absent).
+
+    This file is written by hand and held to the server by contract tests:
+    every response the integration tests see is validated against it
+    (`crates/kavach-api/tests/contract`), and a drift test compares its
+    paths with the routers. The API does not serve it. gRPC is not covered.
+
+    ## Errors
+
+    Every refusal is an RFC 9457 problem (`application/problem+json`), see
+    the `Problem` schema. `type` is a relative URI, `/problems/<code>`: valid
+    under RFC 9457, but **not meant to be dereferenced yet**. The stable,
+    machine-readable field is `code`. A 5xx `detail` is generic on purpose:
+    quote the `request_id` (also the `x-request-id` header) when reporting
+    it. `error` repeats `detail` for older clients and stays through v0.1.
+
+    A BLOCK or HUMAN_REVIEW is not a problem: it is a 200 reply with reasons.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: http://127.0.0.1:8080
+    description: operator listener (kavach dev up default)
+tags:
+  - name: operator
+  - name: governance
+  - name: change-requests
+  - name: evidence
+  - name: admin
+  - name: development
+  - name: agent
+  - name: sor
+security:
+  - operatorToken: []
+  - clientCertificate: []
+
+paths:
+  /health:
+    x-kavach-listeners: [operator, agent]
+    get:
+      operationId: getHealth
+      tags: [operator, agent]
+      summary: Liveness (operator and agent listeners).
+      security: []
+      responses:
+        "200":
+          description: The listener is up.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Health" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /metrics:
+    get:
+      operationId: getMetrics
+      tags: [operator]
+      summary: Prometheus metrics.
+      responses:
+        "200":
+          description: Prometheus text exposition format.
+          content:
+            text/plain:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/evaluate:
+    post:
+      operationId: evaluate
+      tags: [operator]
+      summary: Evaluate one decision under the active pack and model.
+      description: |
+        With an HMAC secret configured, the request must also carry
+        `X-Kavach-Signature`, `X-Kavach-Timestamp` and `X-Kavach-Nonce`
+        (HMAC v2 over timestamp, nonce, method, path and body).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EvaluateRequest" }
+      responses:
+        "200":
+          description: The decision (BLOCK and HUMAN_REVIEW included).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/EvaluateResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/runtime:
+    get:
+      operationId: getRuntime
+      tags: [governance]
+      summary: The active pack, model and runtime state.
+      responses:
+        "200":
+          description: Runtime view.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RuntimeView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/packs:
+    get:
+      operationId: listPacks
+      tags: [governance]
+      summary: Policy packs known to the deployment.
+      responses:
+        "200":
+          description: Pack summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/PackSummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/packs/{pack_id}:
+    get:
+      operationId: getPack
+      tags: [governance]
+      summary: One policy pack.
+      parameters:
+        - { name: pack_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The pack.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PolicyPack" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/models:
+    get:
+      operationId: listModels
+      tags: [governance]
+      summary: Model records known to the deployment.
+      responses:
+        "200":
+          description: Model summaries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ModelSummary" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/models/{model_id}:
+    get:
+      operationId: getModel
+      tags: [governance]
+      summary: One model record, with its governed status.
+      parameters:
+        - { name: model_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The model.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelDetail" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/change-requests:
+    post:
+      operationId: proposeChange
+      tags: [change-requests]
+      summary: Propose a governance change (maker-checker, ADR-009).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ChangeProposal" }
+      responses:
+        "201":
+          description: The pending change request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangeRequest" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+    get:
+      operationId: listChangeRequests
+      tags: [change-requests]
+      summary: List change requests, newest first.
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/ChangeStatus" }
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: Change requests.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ChangeRequest" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/change-requests/{id}:
+    get:
+      operationId: getChangeRequest
+      tags: [change-requests]
+      summary: One change request.
+      parameters:
+        - { $ref: "#/components/parameters/ChangeId" }
+      responses:
+        "200":
+          description: The change request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangeRequest" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/change-requests/{id}/approve:
+    post:
+      operationId: approveChange
+      tags: [change-requests]
+      summary: Approve and apply a change (a principal other than the proposer).
+      parameters:
+        - { $ref: "#/components/parameters/ChangeId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [change_digest]
+              properties:
+                change_digest:
+                  type: string
+                  description: The digest shown at proposal, echoed back.
+      responses:
+        "200":
+          description: The decided change request (`applied` or `failed`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangeRequest" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/change-requests/{id}/reject:
+    post:
+      operationId: rejectChange
+      tags: [change-requests]
+      summary: Reject a pending change.
+      parameters:
+        - { $ref: "#/components/parameters/ChangeId" }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                reason: { type: [string, "null"] }
+      responses:
+        "200":
+          description: The rejected change request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangeRequest" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/change-requests/{id}/cancel:
+    post:
+      operationId: cancelChange
+      tags: [change-requests]
+      summary: Cancel a pending change (its proposer).
+      parameters:
+        - { $ref: "#/components/parameters/ChangeId" }
+      responses:
+        "200":
+          description: The cancelled change request.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChangeRequest" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/admin/audit:
+    get:
+      operationId: listAudit
+      tags: [admin]
+      summary: The audit log, newest first.
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: Audit entries.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AuditEntry" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/dev/clock:
+    post:
+      operationId: setDevClock
+      tags: [development]
+      summary: Move a fixed development clock forward (development stacks only).
+      description: |
+        Exists only on a stack started with a fixed development clock
+        (`kavach dev up --clock`); otherwise 404, before authentication.
+        Forward only; audited (`dev_clock_set`).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [at]
+              properties:
+                at: { type: string, format: date-time }
+      responses:
+        "200":
+          description: The clock after the move.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DevClock" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/agent-decisions/{record_id}:
+    get:
+      operationId: getAgentDecision
+      tags: [evidence]
+      summary: One agent decision record and its outcome (admins; audited).
+      parameters:
+        - name: record_id
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: "^adr:[A-Za-z0-9._-]+:[0-9]{1,9}:[0-9]{1,19}$"
+      responses:
+        "200":
+          description: The signed record and, if any, its signed outcome.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [record, outcome]
+                properties:
+                  record: { $ref: "#/components/schemas/AgentDecisionRecord" }
+                  outcome:
+                    oneOf:
+                      - { $ref: "#/components/schemas/OutcomeRecord" }
+                      - { type: "null" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/decision-events/{evidence_id}:
+    get:
+      operationId: getDecisionEvent
+      tags: [evidence]
+      summary: One evaluate decision event (admins; audited).
+      parameters:
+        - name: evidence_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        "200":
+          description: |
+            The event. When `tombstoned`, it is the redacted form (reasons,
+            hits and PII tokens emptied; idempotency key removed; ids
+            `ERASED`).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [event, tombstoned]
+                properties:
+                  event: { $ref: "#/components/schemas/DecisionEvent" }
+                  tombstoned: { type: boolean }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/admin/retention:
+    get:
+      operationId: getRetention
+      tags: [admin]
+      summary: Evidence retention settings.
+      responses:
+        "200":
+          description: Settings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RetentionSettings" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/admin/tombstones:
+    get:
+      operationId: listTombstones
+      tags: [admin]
+      summary: Erased or expired evidence, newest first.
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: Tombstones.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/TombstoneRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/admin/incidents:
+    get:
+      operationId: listIncidents
+      tags: [admin]
+      summary: Policy incidents, newest first.
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: Incidents.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/IncidentRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/admin/batch-jobs:
+    get:
+      operationId: listBatchJobs
+      tags: [admin]
+      summary: Batch jobs, newest first.
+      parameters:
+        - { $ref: "#/components/parameters/Limit" }
+      responses:
+        "200":
+          description: Batch jobs.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/BatchJobRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/admin/batch-jobs/{job_id}:
+    get:
+      operationId: getBatchJob
+      tags: [admin]
+      summary: One batch job.
+      parameters:
+        - { name: job_id, in: path, required: true, schema: { type: string } }
+      responses:
+        "200":
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/BatchJobRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+
+  /v1/authorize:
+    x-kavach-listeners: [agent]
+    servers:
+      - url: http://127.0.0.1:8091
+        description: agent listener
+    post:
+      operationId: authorizeTool
+      tags: [agent]
+      summary: Pre-check a tool call (authorizes nothing, records nothing).
+      security:
+        - agentToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [tool, mandate_id, request_id]
+              properties:
+                tool: { type: string }
+                mandate_id: { type: string }
+                request_id: { $ref: "#/components/schemas/RequestId" }
+                params: { type: object }
+      responses:
+        "200":
+          description: What a call would be decided as now.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [decision, reasons, precheck]
+                properties:
+                  decision: { $ref: "#/components/schemas/Decision" }
+                  reasons: { type: array, items: { type: string } }
+                  precheck: { const: true }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/tools/{tool}:
+    x-kavach-listeners: [agent]
+    servers:
+      - url: http://127.0.0.1:8091
+        description: agent listener
+    post:
+      operationId: callTool
+      tags: [agent]
+      summary: Call a registered tool through the gateway.
+      description: |
+        Authorized, recorded, forwarded at most once with a one-request
+        credential; the reply never carries the destination or credential.
+        A `request_id` reused with the same content returns the stored reply.
+      security:
+        - agentToken: []
+      parameters:
+        - { name: tool, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mandate_id, request_id]
+              properties:
+                mandate_id: { type: string }
+                request_id: { $ref: "#/components/schemas/RequestId" }
+                params: { type: object }
+      responses:
+        "200":
+          description: The decision and, if forwarded, the outcome.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/GatewayReply" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "501": { $ref: "#/components/responses/NotForwardable" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/sor/events:
+    x-kavach-listeners: [sor]
+    servers:
+      - url: http://127.0.0.1:8090
+        description: system-of-record listener (backend network only)
+    post:
+      operationId: submitSorEvent
+      tags: [sor]
+      summary: Submit a signed system-of-record event; issues one mandate.
+      description: |
+        Not authenticated by a token: the event is a compact JWS signed by
+        a trusted SoR key, and the listener belongs on the backend network.
+        Size- and rate-limited; idempotent per event.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [event]
+              properties:
+                event: { type: string, description: A compact JWS. }
+      responses:
+        "201":
+          description: A mandate was issued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SorEventResponse" }
+        "200":
+          description: The same event again; the mandate it issued.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SorEventResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+components:
+  securitySchemes:
+    operatorToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: An OIDC access token for the operator audience (ADR-008).
+    clientCertificate:
+      type: mutualTLS
+      description: A client certificate whose SAN is the principal (`--mtls-principal-san`).
+    agentToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: An agent access token (agent audience); operator tokens are refused.
+
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      description: At most this many items (default 50; clamped to 1-200).
+      schema: { type: integer, minimum: 0, maximum: 4294967295 }
+    ChangeId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+
+  headers:
+    RequestId:
+      description: The request's correlation id (the caller's, if plain, else a new UUID).
+      schema: { type: string }
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: { type: integer, minimum: 1 }
+    WwwAuthenticate:
+      description: The bearer challenge (RFC 6750).
+      schema: { type: string }
+
+  responses:
+    Problem:
+      description: A refusal (RFC 9457).
+      headers:
+        x-request-id: { $ref: "#/components/headers/RequestId" }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    BadRequest:
+      description: Malformed or invalid request.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Unauthorized:
+      description: No valid credential.
+      headers:
+        WWW-Authenticate: { $ref: "#/components/headers/WwwAuthenticate" }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Forbidden:
+      description: The principal may not do this.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: No such resource, or the surface is not configured.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Conflict:
+      description: Conflicts with the current state or an earlier request.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    PayloadTooLarge:
+      description: The body is larger than this endpoint takes.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    UnsupportedMediaType:
+      description: The body was not sent as application/json.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Unprocessable:
+      description: The body is JSON but not the documented shape, or the event was rejected.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    TooManyRequests:
+      description: Rate limited.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotForwardable:
+      description: The gateway does not execute this tool.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Internal:
+      description: An internal error; `detail` is generic, quote the `request_id`.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Unavailable:
+      description: A dependency is unavailable.
+      headers:
+        Retry-After: { $ref: "#/components/headers/RetryAfter" }
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+
+  schemas:
+    Problem:
+      type: object
+      description: An RFC 9457 problem with Kavach's extensions.
+      additionalProperties: false
+      required: [type, title, status, detail, code, error, request_id]
+      properties:
+        type:
+          type: string
+          pattern: "^/problems/[a-z-]+$"
+          description: Relative URI `/problems/<code>`; not dereferenceable yet.
+        title: { type: string }
+        status: { type: integer, minimum: 400, maximum: 599 }
+        detail: { type: string }
+        code: { $ref: "#/components/schemas/ProblemCode" }
+        fix: { type: string, description: The usual way out for this code. }
+        request_id: { type: string, description: Equals the `x-request-id` header. }
+        error:
+          type: string
+          deprecated: true
+          description: Same text as `detail`, for older clients; kept through v0.1.
+
+    ProblemCode:
+      type: string
+      description: Stable machine code (`CODES` in `crates/kavach-api/src/problem.rs`).
+      enum:
+        - bad_request
+        - unauthorized
+        - forbidden
+        - not_found
+        - method_not_allowed
+        - conflict
+        - rate_limited
+        - unavailable
+        - internal
+        - not_forwardable
+        - in_flight
+        - no_passport
+        - event_rejected
+        - unprocessable
+        - payload_too_large
+        - unsupported_media_type
+        - unknown_tool
+        - invalid_envelope
+        - unknown_parameter
+        - missing_parameter
+        - invalid_parameter
+        - validation
+        - model_mismatch
+        - pack_not_effective
+
+    Health:
+      type: object
+      required: [status]
+      properties:
+        status: { type: string }
+
+    Decision:
+      type: string
+      enum: [PASS, ALERT, BLOCK, HUMAN_REVIEW]
+    GovernanceMode:
+      type: string
+      enum: [shadow, enforce]
+    ModelOrigin:
+      type: string
+      enum: [in_house, vendor]
+    RiskTier:
+      type: string
+      enum: [low, medium, high]
+    ModelStatus:
+      type: string
+      enum: [draft, production, retired]
+    RequestId:
+      type: string
+      pattern: "^[A-Za-z0-9._:-]{1,128}$"
+    DateTime:
+      type: string
+      format: date-time
+    NullableDateTime:
+      type: [string, "null"]
+      format: date-time
+
+    EvaluateRequest:
+      type: object
+      required: [model_id, model_version, purpose, input, decision_time, correlation_id]
+      properties:
+        model_id: { type: string }
+        model_version: { type: string }
+        purpose: { type: string }
+        consent:
+          type: object
+          required: [purpose_id, timestamp]
+          properties:
+            purpose_id: { type: string }
+            timestamp: { $ref: "#/components/schemas/DateTime" }
+            valid: { type: boolean, description: Ignored by the server. }
+        input: { description: Validated against the model's input schema. }
+        output: {}
+        score: { type: number }
+        confidence: { type: number }
+        decision_time: { $ref: "#/components/schemas/DateTime" }
+        correlation_id: { type: string }
+        idempotency_key: { type: string }
+
+    EvaluateResponse:
+      type: object
+      additionalProperties: false
+      required: [policy_decision, returned_decision, evidence_id, reason_codes, policy_hits, latency_ms]
+      properties:
+        policy_decision: { $ref: "#/components/schemas/Decision" }
+        returned_decision: { $ref: "#/components/schemas/Decision" }
+        evidence_id: { type: [string, "null"], format: uuid }
+        reason_codes: { type: array, items: { type: string } }
+        policy_hits: { type: array, items: { type: string } }
+        latency_ms: { type: integer, minimum: 0 }
+
+    DevClock:
+      type: object
+      additionalProperties: false
+      required: [kind, at, development_only]
+      properties:
+        kind: { type: string, enum: [fixed, started_at] }
+        at: { $ref: "#/components/schemas/DateTime" }
+        development_only: { const: true }
+
+    RuntimeView:
+      type: object
+      additionalProperties: false
+      required:
+        - pack_id
+        - pack_version
+        - model_id
+        - model_version
+        - sector
+        - governance_mode
+        - pack_path
+        - model_path
+        - pack_sha256
+        - pointer_version
+        - model_sha256
+        - model_pack_mismatch
+        - stored_pointer_version
+        - pointer_drift
+      dependentRequired:
+        checkpoint_lag_seconds: [checkpoint_stalled, checkpoint_last_seq, checkpoint_uncovered_records]
+      properties:
+        pack_id: { type: string }
+        pack_version: { type: string }
+        model_id: { type: string }
+        model_version: { type: string }
+        sector: { type: string }
+        governance_mode: { $ref: "#/components/schemas/GovernanceMode" }
+        pack_path: { type: string }
+        model_path: { type: string }
+        pack_sha256: { type: [string, "null"] }
+        pointer_version: { type: integer }
+        model_sha256: { type: [string, "null"] }
+        model_pack_mismatch: { type: boolean }
+        stored_pointer_version: { type: integer }
+        pointer_drift: { type: boolean }
+        checkpoint_lag_seconds: { type: integer }
+        checkpoint_stalled: { type: boolean }
+        checkpoint_last_seq: { type: [integer, "null"] }
+        checkpoint_uncovered_records: { type: integer }
+        dev_clock: { $ref: "#/components/schemas/DevClock" }
+        hsm:
+          type: object
+          additionalProperties: false
+          required: [roles, healthy]
+          properties:
+            roles:
+              type: array
+              items: { type: string, enum: [mandate, evidence, checkpoint, credential] }
+            healthy: { type: boolean }
+            error: { type: string }
+
+    PackSummary:
+      type: object
+      additionalProperties: false
+      required: [id, version, sector, jurisdiction, effective_from, rule_count, source_path, active]
+      properties:
+        id: { type: string }
+        version: { type: string }
+        sector: { type: string }
+        jurisdiction: { type: string }
+        effective_from: { $ref: "#/components/schemas/DateTime" }
+        rule_count: { type: integer, minimum: 0 }
+        source_path: { type: string }
+        active: { type: boolean }
+
+    PolicyPack:
+      type: object
+      additionalProperties: false
+      required: [id, version, sector, jurisdiction, effective_from, rules]
+      properties:
+        id: { type: string }
+        version: { type: string }
+        sector: { type: string }
+        jurisdiction: { type: string }
+        effective_from: { $ref: "#/components/schemas/DateTime" }
+        description: { type: [string, "null"] }
+        cel_runtime_limits:
+          oneOf:
+            - type: "null"
+            - type: object
+              properties:
+                timeout_ms: { type: integer }
+                max_alloc_bytes: { type: integer }
+        rules:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, expression, decision, reason_code]
+            properties:
+              id: { type: string }
+              expression: { type: string }
+              decision: { $ref: "#/components/schemas/Decision" }
+              reason_code: { type: string }
+              severity: { type: [string, "null"] }
+              control_mappings: { type: array, items: { type: string } }
+        control_mappings: { type: [object, "null"] }
+
+    ModelSummary:
+      type: object
+      additionalProperties: false
+      required:
+        - model_id
+        - version
+        - sector
+        - status
+        - risk_tier
+        - governance_mode
+        - origin
+        - pack_id
+        - owner
+        - source_path
+        - active
+        - governed
+      properties:
+        model_id: { type: string }
+        version: { type: string }
+        sector: { type: string }
+        status: { $ref: "#/components/schemas/ModelStatus" }
+        risk_tier: { $ref: "#/components/schemas/RiskTier" }
+        governance_mode: { $ref: "#/components/schemas/GovernanceMode" }
+        origin: { $ref: "#/components/schemas/ModelOrigin" }
+        pack_id: { type: string }
+        owner: { type: string }
+        source_path: { type: string }
+        active: { type: boolean }
+        governed: { type: boolean }
+
+    ModelDetail:
+      type: object
+      additionalProperties: false
+      required:
+        - model_id
+        - version
+        - sector
+        - owner
+        - risk_tier
+        - origin
+        - governance_mode
+        - input_schema
+        - human_review_hold_policy
+        - status
+        - pack_id
+        - purpose
+        - governed
+      properties:
+        model_id: { type: string }
+        version: { type: string }
+        sector: { type: string }
+        owner: { type: string }
+        risk_tier: { $ref: "#/components/schemas/RiskTier" }
+        origin: { $ref: "#/components/schemas/ModelOrigin" }
+        governance_mode: { $ref: "#/components/schemas/GovernanceMode" }
+        input_schema: { description: The model's input JSON Schema. }
+        human_review_hold_policy: { type: [string, "null"] }
+        status: { $ref: "#/components/schemas/ModelStatus" }
+        pack_id: { type: string }
+        purpose: { type: string }
+        governed: { type: boolean }
+
+    ChangeKind:
+      type: string
+      enum:
+        - activate_pack
+        - rollback_pack
+        - update_model
+        - update_retention
+        - erase_evidence
+        - apply_retention
+        - activate_model
+    ChangeStatus:
+      type: string
+      enum: [pending, applied, failed, rejected, cancelled, expired]
+
+    ChangeProposal:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      description: |
+        `params` by kind: `activate_pack` `{pack_id}`; `rollback_pack` and
+        `apply_retention` `{}`; `update_model` `{model_id, status?,
+        governance_mode?}`; `activate_model` `{model_id, version,
+        allow_downgrade?}`; `update_retention` `{evidence_retention_days}`;
+        `erase_evidence` `{evidence_id}`. Unknown keys are refused.
+      properties:
+        kind: { $ref: "#/components/schemas/ChangeKind" }
+        params: { type: object }
+        reason: { type: [string, "null"], maxLength: 1000 }
+
+    ChangeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - tenant_id
+        - kind
+        - params
+        - binding
+        - change_digest
+        - reason
+        - proposer
+        - proposer_key
+        - status
+        - decided_by
+        - decided_by_key
+        - outcome
+        - created_at
+        - expires_at
+        - decided_at
+      properties:
+        id: { type: string }
+        tenant_id: { type: string }
+        kind: { $ref: "#/components/schemas/ChangeKind" }
+        params: {}
+        binding: {}
+        change_digest: { type: string }
+        reason: { type: [string, "null"] }
+        proposer: { type: string }
+        proposer_key: { type: string }
+        status: { $ref: "#/components/schemas/ChangeStatus" }
+        decided_by: { type: [string, "null"] }
+        decided_by_key: { type: [string, "null"] }
+        outcome: {}
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        expires_at: { $ref: "#/components/schemas/DateTime" }
+        decided_at: { $ref: "#/components/schemas/NullableDateTime" }
+
+    AuditEntry:
+      type: object
+      additionalProperties: false
+      required: [id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at]
+      properties:
+        id: { type: integer }
+        action: { type: string }
+        resource_type: { type: string }
+        resource_id: { type: string }
+        actor_principal: { type: string }
+        approver_principal: { type: string }
+        payload: {}
+        created_at: { $ref: "#/components/schemas/DateTime" }
+
+    RetentionSettings:
+      type: object
+      additionalProperties: false
+      required: [evidence_retention_days, updated_at, updated_by, approved_by]
+      properties:
+        evidence_retention_days: { type: integer, minimum: 0 }
+        updated_at: { $ref: "#/components/schemas/DateTime" }
+        updated_by: { type: [string, "null"] }
+        approved_by: { type: [string, "null"] }
+
+    TombstoneRecord:
+      type: object
+      additionalProperties: false
+      required: [evidence_id, reason, actor_principal, approver_principal, tombstoned_at]
+      properties:
+        evidence_id: { type: string, format: uuid }
+        reason: { type: string, enum: [dpdp_erasure, retention] }
+        actor_principal: { type: string }
+        approver_principal: { type: string }
+        tombstoned_at: { $ref: "#/components/schemas/DateTime" }
+
+    IncidentRecord:
+      type: object
+      additionalProperties: false
+      required: [id, correlation_id, model_id, reason, recorded_at]
+      properties:
+        id: { type: integer }
+        correlation_id: { type: string }
+        model_id: { type: string }
+        reason: { type: string }
+        recorded_at: { $ref: "#/components/schemas/DateTime" }
+
+    BatchJobRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - job_id
+        - status
+        - input_path
+        - output_path
+        - model_id
+        - governance_mode
+        - total_rows
+        - processed_rows
+        - succeeded_rows
+        - failed_rows
+        - skipped_rows
+        - error_summary
+        - created_at
+        - started_at
+        - completed_at
+      properties:
+        job_id: { type: string }
+        status: { type: string, enum: [pending, running, completed, failed] }
+        input_path: { type: string, description: File name only. }
+        output_path: { type: [string, "null"], description: File name only. }
+        model_id: { type: string }
+        governance_mode: { type: string }
+        total_rows: { type: integer }
+        processed_rows: { type: integer }
+        succeeded_rows: { type: integer }
+        failed_rows: { type: integer }
+        skipped_rows: { type: integer }
+        error_summary: { type: [string, "null"] }
+        created_at: { $ref: "#/components/schemas/DateTime" }
+        started_at: { $ref: "#/components/schemas/NullableDateTime" }
+        completed_at: { $ref: "#/components/schemas/NullableDateTime" }
+
+    DecisionEvent:
+      type: object
+      additionalProperties: false
+      required:
+        - schema_version
+        - event_id
+        - evidence_id
+        - prev_hash
+        - hash
+        - pack_id
+        - pack_version
+        - sector
+        - model_id
+        - model_version
+        - model_origin
+        - governance_mode
+        - policy_decision
+        - returned_decision
+        - reason_codes
+        - policy_hits
+        - input_digest
+        - latency_ms
+        - decision_time
+        - evaluated_at
+        - service_identity_id
+        - correlation_id
+      properties:
+        schema_version: { type: string }
+        event_id: { type: string }
+        evidence_id: { type: string, format: uuid }
+        prev_hash: { type: string }
+        hash: { type: string }
+        pack_id: { type: string }
+        pack_version: { type: string }
+        sector: { type: string }
+        model_id: { type: string }
+        model_version: { type: string }
+        model_origin: { $ref: "#/components/schemas/ModelOrigin" }
+        governance_mode: { $ref: "#/components/schemas/GovernanceMode" }
+        policy_decision: { $ref: "#/components/schemas/Decision" }
+        returned_decision: { $ref: "#/components/schemas/Decision" }
+        reason_codes: { type: array, items: { type: string } }
+        policy_hits: { type: array, items: { type: string } }
+        pii_tokens: { type: array, items: { type: string } }
+        input_digest: { type: string }
+        latency_ms: { type: integer, minimum: 0 }
+        decision_time: { $ref: "#/components/schemas/DateTime" }
+        evaluated_at: { $ref: "#/components/schemas/DateTime" }
+        service_identity_id: { type: string }
+        correlation_id: { type: string }
+        idempotency_key: { type: string }
+
+    AgentDecisionRecord:
+      type: object
+      additionalProperties: false
+      description: A signed agent decision record (evidence v2, ADR-005).
+      required:
+        - record_id
+        - tenant_id
+        - partition_id
+        - seq
+        - prev_hash
+        - kind
+        - hash_alg
+        - key_id
+        - actor
+        - chain
+        - mandate_id
+        - purpose
+        - consent_refs
+        - action
+        - request_id
+        - subject_pseudonym
+        - params_mac
+        - policy_versions
+        - signals
+        - pre_commit_decision
+        - policy_decision
+        - returned_decision
+        - obligations
+        - credential_id
+        - credential_expires_at
+        - send_by
+        - time_sync
+        - ts
+        - hash
+        - sig
+      properties:
+        record_id: { type: string }
+        tenant_id: { type: string }
+        partition_id: { type: integer }
+        seq: { type: integer }
+        prev_hash: { type: string }
+        kind: { type: string }
+        hash_alg: { type: string }
+        key_id: { type: string }
+        actor:
+          type: object
+          additionalProperties: false
+          required: [agent_id, identity_key]
+          properties:
+            agent_id: { type: string }
+            identity_key: { type: string }
+        chain: { type: array, items: { type: string } }
+        mandate_id: { type: string }
+        purpose: { type: string }
+        consent_refs: { type: array, items: { type: string } }
+        action: { type: string }
+        request_id: { type: string }
+        subject_pseudonym: { type: string }
+        params_mac: { type: [string, "null"] }
+        policy_versions:
+          type: object
+          additionalProperties: false
+          required: [cedar, cel, packs, build]
+          properties:
+            cedar: { type: string }
+            cel: { type: [string, "null"] }
+            packs: { type: array, items: { type: string } }
+            tools: { type: string }
+            build: { type: string }
+        signals: { type: array, items: { type: string } }
+        pre_commit_decision: { $ref: "#/components/schemas/Decision" }
+        policy_decision: { $ref: "#/components/schemas/Decision" }
+        returned_decision: { $ref: "#/components/schemas/Decision" }
+        obligations: { type: array, items: { type: string } }
+        credential_id: { type: [string, "null"] }
+        credential_expires_at: { $ref: "#/components/schemas/NullableDateTime" }
+        send_by: { $ref: "#/components/schemas/NullableDateTime" }
+        time_sync:
+          type: object
+          additionalProperties: false
+          required: [status, max_error_ms]
+          properties:
+            status: { type: string, enum: [synced, unsynced, unknown, dev_fixed] }
+            max_error_ms: { type: [integer, "null"] }
+        ts: { $ref: "#/components/schemas/DateTime" }
+        hash: { type: string }
+        sig: { type: string }
+
+    Outcome:
+      type: string
+      enum: [delivered, failed, refused, not_executed, unknown]
+
+    OutcomeRecord:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, credential_id, record_hash, outcome, ts, key_id, sig]
+      properties:
+        tenant_id: { type: string }
+        credential_id: { type: string }
+        record_hash: { type: string }
+        outcome: { $ref: "#/components/schemas/Outcome" }
+        reason: { type: string }
+        ts: { $ref: "#/components/schemas/DateTime" }
+        key_id: { type: string }
+        sig: { type: string }
+
+    GatewayReply:
+      type: object
+      additionalProperties: false
+      description: An allowlist of fields; never a destination or credential.
+      required: [decision, reasons, request_id, outcome_recorded, replayed]
+      properties:
+        decision: { $ref: "#/components/schemas/Decision" }
+        reasons: { type: array, items: { type: string } }
+        request_id: { type: string }
+        record_id: { type: string }
+        outcome: { $ref: "#/components/schemas/Outcome" }
+        outcome_reason: { type: string }
+        provider_message_id: { type: string }
+        outcome_recorded: { type: boolean }
+        replayed: { type: boolean }
+
+    SorEventResponse:
+      type: object
+      additionalProperties: false
+      required: [mandate_id, exp, replayed]
+      properties:
+        mandate_id: { type: string }
+        exp: { $ref: "#/components/schemas/DateTime" }
+        replayed: { type: boolean }

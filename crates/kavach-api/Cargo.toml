@@ -80,6 +80,7 @@ kavach-storage = { workspace = true, features = ["test-support"] }
 sqlx.workspace = true
 jsonwebtoken.workspace = true
 kavach-keys = { workspace = true }
+jsonschema.workspace = true
 
 [lints]
 workspace = true

@@ -2,6 +2,7 @@
 //! token, the gateway fixture with keys in the HSM, `/v1/runtime`.
 #![allow(dead_code)]
 
+use crate::contract::router;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -14,7 +15,7 @@ use cryptoki::object::{Attribute, AttributeType};
 use cryptoki::session::UserType;
 use cryptoki::types::AuthPin;
 use kavach_api::signing::{HsmConfig, HsmRole};
-use kavach_api::{router, AppState};
+use kavach_api::AppState;
 use kavach_ports::{KeyAlgorithm, PublicKey};
 use serde_json::Value;
 use tower::ServiceExt;

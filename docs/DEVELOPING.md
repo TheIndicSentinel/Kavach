@@ -207,6 +207,16 @@ Every command takes `--json` and prints one document (schema `kavach.cli/v1`). E
 - **macOS has no Linux kernel clock status**, so the agent surfaces cannot prove synced time. Use `--insecure-dev` locally; it declares the system clock synced, allows in-memory stores and an unsigned tool registry, and prints a warning. Never use it in production.
 - The agent surfaces need keys and fixtures (mandate, evidence and credential keys; a signed tool registry; providers; references). `kavach init` will generate them; until then, follow the agent-surfaces section of `docs/INSTALL.md` and use `kavach-keys` and `kavach-mock-provider keygen`.
 
+### The API contract: `docs/openapi.yaml`
+
+The HTTP API is described by hand in `docs/openapi.yaml` (OpenAPI 3.1; not served by the API; gRPC not covered). Tests keep it true:
+
+- **Contract checks.** The API integration tests build their routers through `tests/contract`, which checks every response against the spec: the status is documented for the route, the content type is the documented one, and the body validates against the schema. A new route, status or field shows up as a failing test until the spec says so.
+- **Drift test** (`tests/openapi.rs`). The routes and methods on each listener match the routers' source, the problem codes match `CODES`, and every schema compiles.
+- **Lint.** CI runs a pinned Redocly CLI (`redocly.yaml`).
+
+When you change a route or a response, change `docs/openapi.yaml` in the same PR.
+
 ### Errors: RFC 9457 problems
 
 Every refusal, on every listener, is `application/problem+json` (RFC 9457):

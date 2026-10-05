@@ -13,6 +13,7 @@
 //! separate token); it is skipped otherwise.
 
 mod agent_fixture;
+mod contract;
 mod hsm_common;
 
 use std::path::PathBuf;

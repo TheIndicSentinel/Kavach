@@ -2,6 +2,7 @@
 //! keys, a signed tool registry, providers, references, mandates, tokens.
 #![allow(dead_code)]
 
+use crate::contract::{agent_router, sor_router};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,7 +16,7 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use ed25519_dalek::{Signer, SigningKey};
 use http_body_util::BodyExt;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
-use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig, TestClock};
+use kavach_api::dataplane::{DataplaneConfig, TestClock};
 use kavach_api::{
     AccessControlKind, ApiConfig, AppState, EvidenceStoreKind, JwksSource, OidcConfig,
 };
