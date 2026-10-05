@@ -81,8 +81,11 @@ fn assert_problem(status: StatusCode, headers: &HeaderMap, body: &Value, text: &
         headers.get("x-request-id").and_then(|v| v.to_str().ok()),
         "{text}"
     );
+    // The server's random request id can hold "98765" by chance and never
+    // holds caller input (no hostile test sends its own x-request-id).
+    let shown = text.replace(body["request_id"].as_str().unwrap_or_default(), "");
     for hostile in HOSTILE {
-        assert!(!text.contains(hostile), "{hostile} echoed: {text}");
+        assert!(!shown.contains(hostile), "{hostile} echoed: {text}");
     }
 }
 

@@ -187,7 +187,11 @@ async fn scenario02_partial_raw_phone_number_is_blocked_and_recorded(store: Stor
     let text = record.to_string();
     assert!(text.contains("reference_only_violation"), "{text}");
     assert!(record["payload"]["params_mac"].is_null());
-    assert!(!text.contains("98765"), "{text}");
+    // The number in any form it could leak in (a bare "98765" could also
+    // occur by chance in the record's hex hashes and signature).
+    for leak in ["98765 43210", "9876543210", "+91"] {
+        assert!(!text.contains(leak), "{leak}: {text}");
+    }
     assert!(gw.provider.inbox().is_empty());
 }
 
