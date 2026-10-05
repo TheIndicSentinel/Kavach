@@ -2064,7 +2064,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-api"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "axum 0.8.9",
  "axum-server",
@@ -2129,7 +2129,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-attacks"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -2138,7 +2138,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-auth"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cedar-policy",
  "serde",
@@ -2148,7 +2148,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-authz"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cedar-policy",
  "chrono",
@@ -2163,7 +2163,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-batch"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "clap",
@@ -2187,7 +2187,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-bench"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "axum 0.8.9",
  "chrono",
@@ -2216,7 +2216,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-cedar-analysis"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cedar-policy",
  "cedar-policy-symcc",
@@ -2226,7 +2226,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-cli"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "axum 0.8.9",
  "axum-server",
@@ -2267,7 +2267,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-clocksync"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "kavach-ports",
@@ -2277,7 +2277,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-credential"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2299,7 +2299,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-dataplane"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "hex",
@@ -2322,7 +2322,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-devkit"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2346,7 +2346,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-domain"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "jsonschema",
@@ -2361,7 +2361,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-evaluate"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "jsonschema",
@@ -2378,7 +2378,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-evidence"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "kavach-domain",
@@ -2393,7 +2393,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-evidence-cli"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "clap",
@@ -2418,7 +2418,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-jws"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "base64 0.22.1",
  "kavach-ports",
@@ -2428,7 +2428,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-keys"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "clap",
  "ed25519-dalek",
@@ -2447,7 +2447,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-keys-pkcs11"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cryptoki",
  "ed25519-dalek",
@@ -2459,7 +2459,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-mandate"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2478,7 +2478,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-mock-provider"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "axum 0.8.9",
  "axum-server",
@@ -2503,7 +2503,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-policy"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "cel",
  "chrono",
@@ -2518,7 +2518,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-ports"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -2536,7 +2536,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-ports-testkit"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "ed25519-dalek",
@@ -2547,7 +2547,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-storage"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "kavach-domain",
@@ -2571,7 +2571,7 @@ dependencies = [
 
 [[package]]
 name = "kavach-telemetry"
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "regex",

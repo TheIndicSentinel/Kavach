@@ -18,7 +18,7 @@ An agent should not hold the credential to act unless it is authorised to act. K
 | **Mock provider** (protocol fixture) and **reference resolver** (synthetic numbers only) | ✅ |
 | **Gateway** `POST /v1/tools/{tool}`: authorize and record → resolve → credential → deadline re-check → forward once → signed outcome | ✅ |
 | **Network isolation** (compose, agent network with no egress) | 🚧 planned (H5b-2) |
-| **Developer CLI** (`kavach init`, `dev up`, offline `authorize`, `why`, `attack`) | 🗺️ v0.1 developer preview |
+| **Developer CLI** (`kavach init`, `dev up`, offline `authorize`, `why`, `attack`) | 🗺️ v0.1 (pre-alpha, `0.1.0-alpha.1`) |
 | **Decision Governance** for credit decisions (packs, evaluate API, console, fairness, retention) | ✅ (earlier milestones) |
 
 What each guarantee covers, and what it does not, is listed in [docs/SECURITY_PROPERTIES.md](docs/SECURITY_PROPERTIES.md).
