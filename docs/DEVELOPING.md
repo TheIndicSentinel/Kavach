@@ -150,6 +150,10 @@ kavach attack                   # exit 0 all refused, 1 an attack succeeded or d
 - **Not a security assessment:** passing means these known attacks fail. `--list --json` maps each attack to its `SECURITY_PROPERTIES.md` row and, where one applies, its `BYPASS_INVENTORY.md` row.
 - **The inbox listener:** `dev up` now serves the mock provider's inbox on a fifth loopback listener (`[listen] inspect`, default `127.0.0.1:8444`), which the attack run reads.
 
+### Simulations (`kavach simulate`)
+
+`kavach simulate run` runs synthetic agents over simulated days against a throwaway dev stack of its own, and judges every decision with an independent oracle. It exits 0 as expected, 1 not, and 2 inconclusive. `kavach simulate list` shows the built-in scenarios. The scenario format, the oracle and what is not covered: `docs/SIMULATE.md`.
+
 ### Shell completions and man pages
 
 Both are generated from the command tree, so they always match the binary:

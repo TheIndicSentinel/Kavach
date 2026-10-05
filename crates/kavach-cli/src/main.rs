@@ -21,6 +21,8 @@ mod policy_test;
 mod problem;
 mod project;
 mod run;
+mod scene;
+mod simulate;
 mod why;
 mod why_event;
 
@@ -142,6 +144,10 @@ enum Command {
     /// Evidence bundles: export the agent evidence chain, verify a bundle.
     #[command(subcommand)]
     Evidence(EvidenceCommand),
+    /// Synthetic agents over simulated days against a throwaway dev stack,
+    /// judged by an independent oracle (pre-alpha).
+    #[command(subcommand)]
+    Simulate(SimulateCommand),
     /// Print a shell completion script, generated from the command tree.
     #[command(
         after_help = "Examples:\n  kavach completions zsh > ~/.zfunc/_kavach\n  kavach completions bash > ~/.local/share/bash-completion/completions/kavach\n  kavach completions fish > ~/.config/fish/completions/kavach.fish"
@@ -216,6 +222,39 @@ enum PolicyCommand {
         /// A suite file or a directory of them (default: policy-tests/ in
         /// the project).
         path: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SimulateCommand {
+    /// The built-in scenarios and agent types; nothing is run.
+    List,
+    /// Run a scenario: a throwaway project and dev stack (fixed clock,
+    /// loopback, synthetic data), its evidence exported and verified, every
+    /// call judged by an independent oracle. Exit 0 as expected, 1 not
+    /// (a violation, mismatch or leak, or an unmet expectation), 2
+    /// inconclusive (no evidence to judge by).
+    #[command(
+        after_help = "Examples:\n  kavach simulate run                                 # the normal-day scenario\n  kavach simulate run --builtin two-agents-one-borrower\n  kavach simulate run my-scenario.yaml --seed 42 --report report.json"
+    )]
+    Run {
+        /// A scenario file (format version 1, pre-alpha).
+        file: Option<PathBuf>,
+        /// A built-in scenario (`kavach simulate list`); normal-day by default.
+        #[arg(long, value_name = "NAME", conflicts_with = "file")]
+        builtin: Option<String>,
+        #[arg(long)]
+        seed: Option<u64>,
+        #[arg(long)]
+        days: Option<u32>,
+        #[arg(long)]
+        borrowers: Option<u32>,
+        /// Keep the throwaway project (and its evidence bundle) afterwards.
+        #[arg(long)]
+        keep: bool,
+        /// Also write the report and every call to this JSON file.
+        #[arg(long, value_name = "FILE")]
+        report: Option<PathBuf>,
     },
 }
 
@@ -348,10 +387,7 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             init::run(&ui, dir.as_ref().unwrap_or(&cli.project)).await,
         ),
         Command::Doctor => ("doctor", doctor::run(&ui, &cli.project).await),
-        Command::Completions { shell } => {
-            ("completions", generated::completions(ui, *shell, command()))
-        }
-        Command::Man { out } => ("man", generated::man(ui, command(), out.as_deref())),
+        Command::Completions { .. } | Command::Man { .. } => generated_command(ui, &cli.command),
         Command::Authorize {
             tool,
             params,
@@ -405,6 +441,7 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             policy_test::run(&ui, &cli.project, path.as_deref()).await,
         ),
         Command::Evidence(command) => evidence_command(ui, cli, command).await,
+        Command::Simulate(command) => simulate_command(ui, command).await,
         Command::Sor(SorCommand::Event {
             subject,
             agent,
@@ -481,6 +518,50 @@ async fn attack_command(ui: Ui, cli: &Cli, list: bool) -> Result<i32, CliError> 
 
 /// `kavach why`: an evidence id (UUID) is an evaluate decision; anything
 /// else is an agent decision record.
+/// `completions` and `man`: generated from the command tree.
+fn generated_command(ui: Ui, asked: &Command) -> (&'static str, Result<i32, CliError>) {
+    match asked {
+        Command::Completions { shell } => {
+            ("completions", generated::completions(ui, *shell, command()))
+        }
+        Command::Man { out } => ("man", generated::man(ui, command(), out.as_deref())),
+        _ => unreachable!("dispatch sends only completions and man here"),
+    }
+}
+
+async fn simulate_command(
+    ui: Ui,
+    command: &SimulateCommand,
+) -> (&'static str, Result<i32, CliError>) {
+    match command {
+        SimulateCommand::List => ("simulate list", Ok(simulate::list(ui))),
+        SimulateCommand::Run {
+            file,
+            builtin,
+            seed,
+            days,
+            borrowers,
+            keep,
+            report,
+        } => (
+            "simulate run",
+            simulate::run(
+                &ui,
+                &simulate::Ask {
+                    file: file.as_deref(),
+                    builtin: builtin.as_deref(),
+                    seed: *seed,
+                    days: *days,
+                    borrowers: *borrowers,
+                    keep: *keep,
+                    report: report.as_deref(),
+                },
+            )
+            .await,
+        ),
+    }
+}
+
 async fn evidence_command(
     ui: Ui,
     cli: &Cli,

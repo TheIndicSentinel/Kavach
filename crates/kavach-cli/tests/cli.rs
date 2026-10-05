@@ -1277,3 +1277,101 @@ fn dev_up_exports_a_development_bundle_when_stopped() {
     assert!(!stop_with(&mut stack, "-KILL").success());
     assert!(!killed.exists(), "a killed stack writes nothing");
 }
+
+/// `kavach simulate`: every built-in scenario behaves as expected against
+/// a throwaway dev stack (the oracle agrees with every decision, nothing
+/// leaks, the exported evidence verifies), a seed reproduces its run, and
+/// a scenario that is not valid starts nothing.
+#[test]
+fn simulate_runs_every_builtin_as_expected() {
+    let dir = scratch("simulate");
+    let listed = kavach(&dir, &["--json", "simulate", "list"]);
+    assert_eq!(listed.status.code(), Some(0));
+    let names: Vec<String> = json(&listed)["scenarios"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "normal-day",
+            "after-hours",
+            "fourth-contact",
+            "two-agents-one-borrower"
+        ]
+    );
+
+    for name in &names {
+        let out = kavach(&dir, &["--json", "simulate", "run", "--builtin", name]);
+        let doc = json(&out);
+        assert_eq!(out.status.code(), Some(0), "{name}: {doc}");
+        let keys: Vec<&String> = doc.as_object().unwrap().keys().collect();
+        assert_eq!(keys[3], "not_covered", "not covered comes first: {keys:?}");
+        assert_eq!(doc["evidence"]["state"], "verified", "{doc}");
+        assert_eq!(doc["evidence"]["signed_with"], "dev-export-1");
+        assert_eq!(doc["evidence"]["records"], doc["calls"], "{doc}");
+        for list in ["violations", "mismatches", "leaks", "expectations_unmet"] {
+            assert!(
+                doc[list].as_array().unwrap().is_empty(),
+                "{name} {list}: {doc}"
+            );
+        }
+    }
+
+    // The shared cap, across two agents' own mandates.
+    let doc = json(&kavach(
+        &dir,
+        &[
+            "--json",
+            "simulate",
+            "run",
+            "--builtin",
+            "two-agents-one-borrower",
+        ],
+    ));
+    assert_eq!(doc["blocked_by_reason"]["contact-daily-cap"], 1, "{doc}");
+    assert_eq!(doc["agents"]["sim-compliant-1"]["allowed"], 2);
+    assert_eq!(doc["agents"]["sim-compliant-2"]["allowed"], 1);
+
+    // Same seed, same run; a report file with every call.
+    let report = dir.join("report.json");
+    let first = json(&kavach(
+        &dir,
+        &[
+            "--json",
+            "simulate",
+            "run",
+            "--report",
+            report.to_str().unwrap(),
+        ],
+    ));
+    let second = json(&kavach(&dir, &["--json", "simulate", "run"]));
+    assert_eq!(first["digest"], second["digest"]);
+    let written: Value = serde_json::from_str(&std::fs::read_to_string(&report).unwrap()).unwrap();
+    assert_eq!(
+        u64::try_from(written["ledger"].as_array().unwrap().len()).unwrap(),
+        first["calls"].as_u64().unwrap()
+    );
+    assert!(written["ledger"][0]["request_id"]
+        .as_str()
+        .unwrap()
+        .starts_with("sim-"));
+
+    // Not valid: refused before anything starts.
+    let bad = dir.join("bad.yaml");
+    std::fs::write(&bad, "version: 1\nname: x\nseed: 1\n").unwrap();
+    assert_eq!(
+        kavach(&dir, &["simulate", "run", bad.to_str().unwrap()])
+            .status
+            .code(),
+        Some(64)
+    );
+    assert_eq!(
+        kavach(&dir, &["simulate", "run", "--builtin", "nope"])
+            .status
+            .code(),
+        Some(64)
+    );
+}
