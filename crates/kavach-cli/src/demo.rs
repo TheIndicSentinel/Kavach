@@ -80,7 +80,32 @@ impl Scene {
         ))
     }
 
+    /// Starts the stack; if it exits while starting (a port taken in the
+    /// meantime), moves to other free ports and tries once more.
     fn start_stack(&mut self) -> Result<(), CliError> {
+        use_free_ports(&self.dir)?;
+        if self.try_start().is_ok() {
+            return Ok(());
+        }
+        self.stop_stack();
+        use_free_ports(&self.dir)?;
+        self.try_start()
+    }
+
+    fn stop_stack(&mut self) {
+        if let Some(mut stack) = self.stack.take() {
+            let _ = stack.kill();
+            let _ = stack.wait();
+        }
+        self.stack_pid.store(0, Ordering::SeqCst);
+    }
+
+    /// The stack's stderr goes to `.kavach/dev-up.log` in the throwaway
+    /// project; its last line explains a stack that did not start.
+    fn try_start(&mut self) -> Result<(), CliError> {
+        let log_path = self.dir.join(".kavach/dev-up.log");
+        let log = std::fs::File::create(&log_path)
+            .map_err(|e| CliError::new("cannot write the dev stack's log", e))?;
         let exe = std::env::current_exe()
             .map_err(|e| CliError::new("cannot find the kavach binary", e))?;
         let child = Command::new(exe)
@@ -90,7 +115,7 @@ impl Scene {
             .env("NO_COLOR", "1")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(log)
             .spawn()
             .map_err(|e| CliError::new("cannot start the dev stack", e))?;
         self.stack_pid.store(child.id(), Ordering::SeqCst);
@@ -107,10 +132,17 @@ impl Scene {
             }
             std::thread::sleep(Duration::from_millis(250));
         }
-        Err(
-            CliError::new("the dev stack did not start", "no run.json appeared")
-                .fix("run `kavach demo --keep` and then `kavach doctor` in the printed directory"),
-        )
+        let last = std::fs::read_to_string(&log_path)
+            .ok()
+            .and_then(|text| {
+                text.lines()
+                    .rev()
+                    .find(|l| !l.trim().is_empty())
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "no run.json appeared".to_string());
+        Err(CliError::new("the dev stack did not start", last)
+            .fix("run `kavach demo --keep` and then `kavach doctor` in the printed directory"))
     }
 }
 
@@ -134,24 +166,49 @@ fn stop(pid: u32) {
     }
 }
 
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .and_then(|l| l.local_addr())
-        .map_or(0, |a| a.port())
+/// `n` distinct free loopback ports: every probe socket stays open until
+/// all are chosen, so the system cannot hand out the same port twice.
+fn free_ports(n: usize) -> Vec<u16> {
+    let probes: Vec<TcpListener> = (0..n)
+        .filter_map(|_| TcpListener::bind("127.0.0.1:0").ok())
+        .collect();
+    probes
+        .iter()
+        .filter_map(|l| l.local_addr().ok())
+        .map(|a| a.port())
+        .collect()
 }
 
-/// Moves the project's listeners to free loopback ports.
+/// Moves every listener of the project (`"127.0.0.1:<port>"`) to its own
+/// free loopback port. Safe to run again, for a retry.
 fn use_free_ports(dir: &Path) -> Result<(), CliError> {
+    const HOST: &str = "\"127.0.0.1:";
     let path = dir.join(crate::project::FILE);
-    let mut text = std::fs::read_to_string(&path)
+    let text = std::fs::read_to_string(&path)
         .map_err(|e| CliError::new("cannot read the demo project", e))?;
-    for port in ["8080", "8091", "8090", "8443", "8444"] {
-        text = text.replace(
-            &format!("127.0.0.1:{port}\""),
-            &format!("127.0.0.1:{}\"", free_port()),
-        );
+    let ports = free_ports(text.matches(HOST).count());
+    let mut ports = ports.into_iter();
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(HOST) {
+        let after = &rest[at + HOST.len()..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        out.push_str(&rest[..at + HOST.len()]);
+        if digits > 0 && after[digits..].starts_with('"') {
+            let port = ports.next().ok_or_else(|| {
+                CliError::new(
+                    "cannot find free loopback ports",
+                    "the system has none to spare",
+                )
+            })?;
+            out.push_str(&port.to_string());
+            rest = &after[digits..];
+        } else {
+            rest = after;
+        }
     }
-    std::fs::write(&path, text).map_err(|e| CliError::new("cannot write the demo project", e))
+    out.push_str(rest);
+    std::fs::write(&path, out).map_err(|e| CliError::new("cannot write the demo project", e))
 }
 
 /// A JSON value as a plain word (no quotes).
@@ -260,7 +317,6 @@ pub async fn run(ui: &Ui, keep: bool, step_mode: bool, attack: bool) -> Result<i
             code,
         ));
     }
-    use_free_ports(&dir)?;
     scene.start_stack()?;
 
     let (_, issued) = scene.kavach(&["sor", "event"])?;
@@ -449,6 +505,40 @@ pub async fn run(ui: &Ui, keep: bool, step_mode: bool, attack: bool) -> Result<i
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn free_ports_are_distinct_and_the_project_moves_to_them() {
+        let ports = free_ports(5);
+        assert_eq!(ports.len(), 5);
+        assert_eq!(
+            ports
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            5
+        );
+
+        let dir = demo_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(crate::project::FILE);
+        let listen = "[listen]\noperator = \"127.0.0.1:8080\"\nagent = \"127.0.0.1:8091\"\n\
+                      sor = \"127.0.0.1:8090\"\nprovider = \"127.0.0.1:8443\"\n\
+                      inspect = \"127.0.0.1:8444\"\nname = \"127.0.0.1:x\"\n";
+        std::fs::write(&file, listen).unwrap();
+        for _ in 0..2 {
+            use_free_ports(&dir).unwrap();
+            let text = std::fs::read_to_string(&file).unwrap();
+            let used: std::collections::BTreeSet<&str> = text
+                .lines()
+                .filter_map(|l| l.split("127.0.0.1:").nth(1))
+                .filter(|p| p.starts_with(|c: char| c.is_ascii_digit()))
+                .collect();
+            assert_eq!(used.len(), 5, "{text}");
+            assert!(!text.contains(":8080\""), "{text}");
+            assert!(text.contains("127.0.0.1:x"), "{text}");
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn the_demo_directory_is_printed_as_it_is() {
