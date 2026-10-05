@@ -1068,12 +1068,7 @@ components:
         status: { $ref: "#/components/schemas/ModelStatus" }
         risk_tier: { $ref: "#/components/schemas/RiskTier" }
         governance_mode: { $ref: "#/components/schemas/GovernanceMode" }
-        origin:
-          type: string
-          enum: [inhouse, vendor]
-          description: |
-            Note: `inhouse` here, `in_house` in model records and evidence.
-            Kept as it is on the wire until v0.1 decides.
+        origin: { $ref: "#/components/schemas/ModelOrigin" }
         pack_id: { type: string }
         owner: { type: string }
         source_path: { type: string }

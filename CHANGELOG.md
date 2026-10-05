@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Changed
 
+- **Breaking (API): `GET /v1/models` writes an in-house model's `origin` as `in_house`**, the same as model records, `GET /v1/models/{model_id}` and evidence. It used to write `inhouse`. The list's `status`, `risk_tier` and `governance_mode` are unchanged; they now come from the same types as the rest of the API.
 - **Breaking (API errors): every refusal is now an RFC 9457 problem, `application/problem+json`**, on the operator, agent and system-of-record listeners. The body has `type` (`/problems/<code>`, relative), `title`, `status`, `detail`, a stable `code`, a `fix`, and the request's `request_id`. 401s carry `WWW-Authenticate`, and 429s and 503s carry `Retry-After`. Unknown paths and wrong methods are problems too (404, 405), where they used to be empty bodies.
   - **The old `error` member stays through v0.1**, holding the same text as `detail`. Clients that check for `application/json` on errors must accept `application/problem+json`.
   - **A 5xx no longer returns its cause:** `detail` is generic, and the cause is logged (redacted) under the `request_id`.

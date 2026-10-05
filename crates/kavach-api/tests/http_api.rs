@@ -459,7 +459,18 @@ async fn governance_lists_packs_and_models() {
         .as_array()
         .is_some_and(|items| !items.is_empty()));
     assert_eq!(models_json[0]["active"], true);
-    assert!(models_json[0]["origin"].is_string());
+    // The same names as model records and evidence (once `inhouse`).
+    let origins: Vec<&str> = models_json
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|m| m["origin"].as_str())
+        .collect();
+    assert!(origins.contains(&"in_house"), "{origins:?}");
+    assert!(
+        origins.iter().all(|o| matches!(*o, "in_house" | "vendor")),
+        "{origins:?}"
+    );
 }
 
 #[tokio::test]
