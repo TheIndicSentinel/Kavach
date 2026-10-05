@@ -328,7 +328,7 @@ pub async fn move_clock(ui: &Ui, dir: &Path, time: &str) -> Result<i32, CliError
 }
 
 /// The next IST `time` strictly after `after`.
-fn next_ist(after: DateTime<Utc>, time: NaiveTime) -> Result<DateTime<Utc>, CliError> {
+pub(crate) fn next_ist(after: DateTime<Utc>, time: NaiveTime) -> Result<DateTime<Utc>, CliError> {
     let ist =
         FixedOffset::east_opt(5 * 3600 + 1800).ok_or_else(|| CliError::new("IST", "offset"))?;
     let mut day = after.with_timezone(&ist).date_naive();

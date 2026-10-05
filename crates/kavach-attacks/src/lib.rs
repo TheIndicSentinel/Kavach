@@ -22,7 +22,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 
 /// Bumped whenever an attack is added, removed or its expectation changes.
-pub const CATALOG_VERSION: &str = "2";
+pub const CATALOG_VERSION: &str = "3";
 
 /// The borrower the dev mandate covers, and one it does not.
 pub const SUBJECT: &str = "ref:borrower:B-9382";
@@ -71,6 +71,21 @@ pub enum Probe {
     SorReplay,
     /// A message straight to the provider, with no gateway credential.
     ProviderDirect,
+    /// A reminder at 20:30 IST: the stack's clock is moved there first
+    /// (needs a development clock), and on to the next 11:00 afterwards.
+    OutOfHours,
+    /// A fourth reminder in a day: the clock moves to 11:00 on a fresh day,
+    /// three allowed reminders are made as declared setup (not judged, and
+    /// reported), then the fourth is judged (needs a development clock).
+    DailyCap,
+}
+
+impl Probe {
+    /// Whether the attack needs to move the stack's clock.
+    #[must_use]
+    pub fn needs_clock(self) -> bool {
+        matches!(self, Self::OutOfHours | Self::DailyCap)
+    }
 }
 
 /// The reply that means the attack was refused.
@@ -120,7 +135,7 @@ const SOR_KEY: &str = "A system of record with a valid issuer key";
 const AROUND: &str = "A resource the agent reaches without the gateway";
 
 /// The catalog, in the order it runs.
-pub const CATALOG: [Attack; 20] = [
+pub const CATALOG: [Attack; 22] = [
     Attack {
         id: "raw-phone-number",
         group: "identifiers",
@@ -402,6 +417,30 @@ pub const CATALOG: [Attack; 20] = [
         bypass: None,
     },
     Attack {
+        id: "out-of-hours",
+        group: "policy",
+        tries: "a reminder at 20:30 IST, outside the contact window",
+        probe: Probe::OutOfHours,
+        expect: Expect::Decision {
+            decision: "BLOCK",
+            reason: "contact-window",
+        },
+        security_property: CORE,
+        bypass: None,
+    },
+    Attack {
+        id: "daily-cap",
+        group: "policy",
+        tries: "a fourth reminder to the same borrower in one day",
+        probe: Probe::DailyCap,
+        expect: Expect::Decision {
+            decision: "BLOCK",
+            reason: "contact-daily-cap",
+        },
+        security_property: CORE,
+        bypass: None,
+    },
+    Attack {
         id: "provider-without-credential",
         group: "around the gateway",
         tries: "sending a message straight to the provider, with no gateway credential",
@@ -501,6 +540,16 @@ pub trait Target {
     fn allowed(&self) -> impl Future<Output = Result<u64, String>>;
     /// Called between attacks (a live runner rate-limits itself here).
     fn pause(&self) -> impl Future<Output = ()>;
+    /// Whether this stack's clock can be moved (a fixed development clock).
+    fn clock_control(&self) -> bool;
+    /// Moves the stack's clock forward to the next `hour:minute` IST; with
+    /// `fresh_day`, to that time on a later IST day than any so far.
+    fn move_clock(
+        &self,
+        hour: u32,
+        minute: u32,
+        fresh_day: bool,
+    ) -> impl Future<Output = Result<(), String>>;
 }
 
 /// How an attack ended.
@@ -515,8 +564,11 @@ pub enum Verdict {
     /// It got through: an allowed decision, a 2xx where a refusal was
     /// expected, a credential minted or a message sent.
     Succeeded,
-    /// It could not be judged (a request failed to reach the stack).
+    /// It could not be judged (a request failed to reach the stack, or its
+    /// declared setup did not run as expected).
     Error,
+    /// Not run: it needs a development clock this stack does not have.
+    Skipped,
 }
 
 /// One attack's result.
@@ -530,6 +582,9 @@ pub struct Outcome {
     pub verdict: Verdict,
     pub security_property: &'static str,
     pub bypass: Option<&'static str>,
+    /// What its declared setup did, if it has one (not judged).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub setup: Option<Value>,
 }
 
 /// A run of the catalog.
@@ -537,9 +592,12 @@ pub struct Outcome {
 pub struct Report {
     pub catalog_version: &'static str,
     pub outcomes: Vec<Outcome>,
-    /// Ground truth across the whole run.
+    /// Ground truth across every attack's judged window.
     pub credentials_minted: u64,
     pub messages_delivered: usize,
+    /// What declared setups did (allowed on purpose, not judged).
+    pub setup_credentials: u64,
+    pub setup_messages: usize,
 }
 
 impl Report {
@@ -558,6 +616,26 @@ impl Report {
     #[must_use]
     pub fn all_refused_as_expected(&self) -> bool {
         !self.breached() && self.outcomes.iter().all(|o| o.verdict == Verdict::Refused)
+    }
+
+    /// Whether every attack that ran was refused as expected (skipped ones
+    /// did not run, and are reported).
+    #[must_use]
+    pub fn passed(&self) -> bool {
+        !self.breached()
+            && self
+                .outcomes
+                .iter()
+                .all(|o| matches!(o.verdict, Verdict::Refused | Verdict::Skipped))
+    }
+
+    /// Attacks skipped for want of a development clock.
+    #[must_use]
+    pub fn skipped(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|o| o.verdict == Verdict::Skipped)
+            .count()
     }
 }
 
@@ -610,21 +688,12 @@ async fn ground<T: Target>(target: &T) -> (Result<u64, String>, Result<usize, St
 /// Runs `attacks` against `target`, judging each on its reply and on
 /// ground truth (credentials minted, messages delivered).
 pub async fn run<T: Target>(target: &T, attacks: &[Attack]) -> Report {
-    let (start_allowed, start_delivered) = ground(target).await;
     let mut outcomes = Vec::new();
+    let (mut minted_total, mut delivered_total) = (0u64, 0usize);
+    let (mut setup_minted, mut setup_delivered) = (0u64, 0usize);
     for (n, attack) in attacks.iter().enumerate() {
         target.pause().await;
-        let (before_allowed, before_delivered) = ground(target).await;
-        let (verdict, observed) = probe(target, attack, n).await;
-        let (after_allowed, after_delivered) = ground(target).await;
-        let minted = matches!((&before_allowed, &after_allowed), (Ok(b), Ok(a)) if a > b);
-        let sent = matches!((&before_delivered, &after_delivered), (Ok(b), Ok(a)) if a != b);
-        let verdict = if minted || sent {
-            Verdict::Succeeded
-        } else {
-            verdict
-        };
-        outcomes.push(Outcome {
+        let outcome = |verdict, observed, setup| Outcome {
             id: attack.id,
             group: attack.group,
             tries: attack.tries,
@@ -633,20 +702,116 @@ pub async fn run<T: Target>(target: &T, attacks: &[Attack]) -> Report {
             verdict,
             security_property: attack.security_property,
             bypass: attack.bypass,
-        });
+            setup,
+        };
+        if attack.probe.needs_clock() && !target.clock_control() {
+            outcomes.push(outcome(
+                Verdict::Skipped,
+                json!({ "skipped": "needs a development clock: kavach dev up --clock" }),
+                None,
+            ));
+            continue;
+        }
+        // Declared setup first, outside the judged window.
+        let setup = match prepare(target, attack, n).await {
+            Ok(setup) => setup,
+            Err(e) => {
+                outcomes.push(outcome(Verdict::Error, json!({ "setup_failed": e }), None));
+                continue;
+            }
+        };
+        if let Some((allowed, delivered, _)) = &setup {
+            setup_minted += allowed;
+            setup_delivered += delivered;
+        }
+        let (before_allowed, before_delivered) = ground(target).await;
+        let (verdict, observed) = probe(target, attack, n).await;
+        let (after_allowed, after_delivered) = ground(target).await;
+        let minted = match (&before_allowed, &after_allowed) {
+            (Ok(b), Ok(a)) => a.saturating_sub(*b),
+            _ => 0,
+        };
+        let sent = match (&before_delivered, &after_delivered) {
+            (Ok(b), Ok(a)) => a.abs_diff(*b),
+            _ => 0,
+        };
+        minted_total += minted;
+        delivered_total += sent;
+        let verdict = if minted > 0 || sent > 0 {
+            Verdict::Succeeded
+        } else {
+            verdict
+        };
+        outcomes.push(outcome(verdict, observed, setup.map(|(_, _, v)| v)));
+        if matches!(attack.probe, Probe::OutOfHours) {
+            // Back inside the contact window for what follows.
+            let _ = target.move_clock(11, 0, false).await;
+        }
     }
-    let (end_allowed, end_delivered) = ground(target).await;
     Report {
         catalog_version: CATALOG_VERSION,
         outcomes,
-        credentials_minted: match (start_allowed, end_allowed) {
-            (Ok(s), Ok(e)) => e.saturating_sub(s),
-            _ => 0,
-        },
-        messages_delivered: match (start_delivered, end_delivered) {
-            (Ok(s), Ok(e)) => e.abs_diff(s),
-            _ => 0,
-        },
+        credentials_minted: minted_total,
+        messages_delivered: delivered_total,
+        setup_credentials: setup_minted,
+        setup_messages: setup_delivered,
+    }
+}
+
+type Setup = Option<(u64, usize, Value)>;
+
+/// An attack's declared setup, before its judged window: what it allowed
+/// and delivered on purpose, and a description.
+async fn prepare<T: Target>(target: &T, attack: &Attack, n: usize) -> Result<Setup, String> {
+    match attack.probe {
+        Probe::OutOfHours => {
+            target.move_clock(20, 30, false).await?;
+            Ok(None)
+        }
+        Probe::DailyCap => {
+            target.move_clock(11, 0, true).await?;
+            let (before_allowed, before_delivered) = ground(target).await;
+            for k in 1..=3 {
+                let body = json!({
+                    "mandate_id": target.mandate(),
+                    "request_id": format!("attack-setup-{}-{n}-{k}", attack.id),
+                    "params": reminder(SUBJECT, "whatsapp"),
+                });
+                let (status, reply) = target
+                    .post_agent(
+                        "/v1/tools/send_reminder",
+                        auth_headers(target, Auth::Agent),
+                        body,
+                    )
+                    .await?;
+                if status != 200 || reply["decision"] != "PASS" {
+                    return Err(format!(
+                        "setup call {k} of 3 was not allowed ({status}: {})",
+                        reply["reasons"]
+                    ));
+                }
+                target.pause().await;
+            }
+            let (after_allowed, after_delivered) = ground(target).await;
+            let allowed = match (before_allowed, after_allowed) {
+                (Ok(b), Ok(a)) => a.saturating_sub(b),
+                _ => 0,
+            };
+            let delivered = match (before_delivered, after_delivered) {
+                (Ok(b), Ok(a)) => a.abs_diff(b),
+                _ => 0,
+            };
+            Ok(Some((
+                allowed,
+                delivered,
+                json!({
+                    "declared": "three allowed reminders on a fresh day, to reach the daily cap",
+                    "allowed_calls": allowed,
+                    "messages_delivered": delivered,
+                }),
+            )))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -732,6 +897,24 @@ async fn probe<T: Target>(target: &T, attack: &Attack, n: usize) -> (Verdict, Va
             }
             Err(e) => (Verdict::Error, json!({ "error": e })),
         },
+        Probe::OutOfHours | Probe::DailyCap => {
+            let body = json!({
+                "mandate_id": target.mandate(),
+                "request_id": request_id,
+                "params": reminder(SUBJECT, "whatsapp"),
+            });
+            match target
+                .post_agent(
+                    "/v1/tools/send_reminder",
+                    auth_headers(target, Auth::Agent),
+                    body,
+                )
+                .await
+            {
+                Ok((status, reply)) => decision_reply(attack.expect, status, &reply),
+                Err(e) => (Verdict::Error, json!({ "error": e })),
+            }
+        }
         Probe::ProviderDirect => match target.post_provider().await {
             Ok(status) => {
                 let verdict = if (400..500).contains(&status) {
@@ -823,6 +1006,40 @@ mod tests {
             judge(status, 400, &Value::Null),
             Verdict::RefusedUnexpectedly
         );
+    }
+
+    #[test]
+    fn only_the_clock_attacks_need_a_clock_and_skips_are_not_failures() {
+        let clocked: Vec<_> = CATALOG
+            .iter()
+            .filter(|a| a.probe.needs_clock())
+            .map(|a| a.id)
+            .collect();
+        assert_eq!(clocked, ["out-of-hours", "daily-cap"]);
+        let outcome = |verdict| Outcome {
+            id: "x",
+            group: "g",
+            tries: "t",
+            expected: Expect::Refused,
+            observed: Value::Null,
+            verdict,
+            security_property: CORE,
+            bypass: None,
+            setup: None,
+        };
+        let report = |verdicts: Vec<Verdict>| Report {
+            catalog_version: CATALOG_VERSION,
+            outcomes: verdicts.into_iter().map(outcome).collect(),
+            credentials_minted: 0,
+            messages_delivered: 0,
+            setup_credentials: 3,
+            setup_messages: 3,
+        };
+        let skipped = report(vec![Verdict::Refused, Verdict::Skipped]);
+        assert!(skipped.passed() && !skipped.all_refused_as_expected());
+        assert_eq!(skipped.skipped(), 1);
+        assert!(!skipped.breached(), "declared setup is not a breach");
+        assert!(!report(vec![Verdict::RefusedUnexpectedly]).passed());
     }
 
     #[test]

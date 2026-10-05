@@ -81,6 +81,7 @@ fn inconclusive(ui: Ui, why: &str, fix: &str) -> i32 {
 
 /// The live stack, over HTTP.
 struct Live {
+    project: Project,
     run: RunFile,
     agent: String,
     other_agent: String,
@@ -199,6 +200,63 @@ impl Target for Live {
     async fn pause(&self) {
         tokio::time::sleep(PAUSE).await;
     }
+
+    fn clock_control(&self) -> bool {
+        self.run.clock == Some(kavach_api::dev_clock::DevClockKind::Fixed)
+    }
+
+    async fn move_clock(&self, hour: u32, minute: u32, fresh_day: bool) -> Result<(), String> {
+        let now = self
+            .run
+            .stack_now(&self.project)
+            .await
+            .map_err(|e| e.what)?;
+        let at = chrono::NaiveTime::from_hms_opt(hour, minute, 0).ok_or("not a time")?;
+        let after = if fresh_day {
+            // Past the end of the stack's IST day.
+            crate::dev::next_ist(now, chrono::NaiveTime::MIN).map_err(|e| e.what)?
+                - chrono::Duration::seconds(1)
+        } else {
+            now
+        };
+        let to = crate::dev::next_ist(after, at).map_err(|e| e.what)?;
+        let response = self
+            .http
+            .post(format!("http://{}/v1/dev/clock", self.run.operator))
+            .bearer_auth(&self.operator)
+            .json(&json!({ "at": to }))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("the clock did not move ({})", response.status()))
+        }
+    }
+}
+
+impl Live {
+    /// A legitimate pre-check (records nothing): must be allowed for the
+    /// run to be judged.
+    async fn baseline(&self) -> Result<Value, CliError> {
+        Ok(self
+            .http
+            .post(format!("http://{}/v1/authorize", self.run.agent))
+            .bearer_auth(&self.agent)
+            .json(&json!({
+                "tool": "send_reminder",
+                "mandate_id": self.mandate,
+                "request_id": "attack-baseline",
+                "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" },
+            }))
+            .send()
+            .await
+            .map_err(|e| CliError::new("the agent listener did not answer", e))?
+            .json()
+            .await
+            .unwrap_or(Value::Null))
+    }
 }
 
 fn read(path: &Path) -> Result<String, CliError> {
@@ -303,21 +361,29 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
             "run `kavach doctor`",
         ));
     };
-    let baseline: Value = http
-        .post(format!("http://{}/v1/authorize", run.agent))
-        .bearer_auth(&agent)
-        .json(&json!({
-            "tool": "send_reminder",
-            "mandate_id": mandate,
-            "request_id": "attack-baseline",
-            "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" },
-        }))
-        .send()
-        .await
-        .map_err(|e| CliError::new("the agent listener did not answer", e))?
-        .json()
-        .await
-        .unwrap_or(Value::Null);
+    let live = Live {
+        project: project.clone(),
+        agent,
+        other_agent: read(&bundle.join("agents/translation-agent.jwt"))?,
+        operator,
+        mandate,
+        event,
+        http,
+        provider: client(Some(&project.kavach_dir().join("tls/ca.pem")))?,
+        run,
+    };
+    let mut baseline = live.baseline().await?;
+    let outside_hours = |b: &Value| {
+        let reasons = b["reasons"].to_string();
+        reasons.contains("contact-window") || reasons.contains("contact-hours-floor")
+    };
+    if baseline["decision"] != "PASS" && outside_hours(&baseline) && live.clock_control() {
+        // A fixed development clock: move it into contact hours instead.
+        live.move_clock(11, 0, false)
+            .await
+            .map_err(|e| CliError::new("cannot move the development clock", e))?;
+        baseline = live.baseline().await?;
+    }
     if baseline["decision"] != "PASS" {
         let reasons = baseline["reasons"].to_string();
         return Ok(if reasons.contains("trusted_time_unavailable") {
@@ -330,7 +396,7 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
             inconclusive(
                 *ui,
                 "the stack's clock is outside contact hours, so decisions would BLOCK for the window, not for each attack",
-                "start the stack with `kavach dev up --at 11:00`",
+                "start the stack with `kavach dev up --clock 11:00` (or `--at 11:00`)",
             )
         } else {
             inconclusive(
@@ -341,16 +407,6 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
         });
     }
 
-    let live = Live {
-        agent,
-        other_agent: read(&bundle.join("agents/translation-agent.jwt"))?,
-        operator,
-        mandate,
-        event,
-        http,
-        provider: client(Some(&project.kavach_dir().join("tls/ca.pem")))?,
-        run,
-    };
     let report = kavach_attacks::run(&live, &CATALOG).await;
     Ok(finish(*ui, &report))
 }
@@ -366,9 +422,10 @@ fn finish(ui: Ui, report: &Report) -> i32 {
             Verdict::RefusedUnexpectedly => ui.paint(Style::Warn, "REFUSED, unexpected reason"),
             Verdict::Succeeded => ui.paint(Style::Fail, "SUCCEEDED"),
             Verdict::Error => ui.paint(Style::Warn, "error"),
+            Verdict::Skipped => ui.paint(Style::Dim, "skipped (needs dev up --clock)"),
         };
         let _ = writeln!(human, "  {:<30} {word}", o.id);
-        if o.verdict != Verdict::Refused {
+        if !matches!(o.verdict, Verdict::Refused | Verdict::Skipped) {
             let _ = writeln!(human, "  {:<30} {}", "", o.observed);
         }
     }
@@ -377,12 +434,26 @@ fn finish(ui: Ui, report: &Report) -> i32 {
         "\n  ground truth: {} credential(s) minted, {} message(s) delivered",
         report.credentials_minted, report.messages_delivered
     );
-    let status = if report.all_refused_as_expected() {
+    if report.setup_credentials > 0 || report.setup_messages > 0 {
+        let _ = writeln!(
+            human,
+            "  declared setup (not judged): {} allowed call(s), {} message(s) to the synthetic destination",
+            report.setup_credentials, report.setup_messages
+        );
+    }
+    let skipped = report.skipped();
+    if skipped > 0 {
+        let _ = writeln!(
+            human,
+            "  {skipped} attack(s) skipped: they need a fixed development clock (kavach dev up --clock 11:00)"
+        );
+    }
+    let status = if report.passed() {
         let _ = write!(
             human,
-            "\nAll {} attacks were refused. That shows these known attacks fail; it is not a \
+            "\nAll {} attacks that ran were refused. That shows these known attacks fail; it is not a \
              security assessment (see docs/ACCEPTANCE.md and docs/THREAT_MODEL.md).",
-            report.outcomes.len()
+            report.outcomes.len() - skipped
         );
         Status::Ok
     } else {

@@ -690,7 +690,10 @@ async fn catalog_attacks_are_refused(store: Store) {
     assert_eq!(report.credentials_minted, 0);
     assert_eq!(report.messages_delivered, 0);
     assert!(report.all_refused_as_expected());
-    assert!(gw.provider.inbox().is_empty());
+    // Only the daily-cap attack's declared setup reached the provider.
+    assert_eq!(report.setup_credentials, 3);
+    assert_eq!(report.setup_messages, 3);
+    assert_eq!(gw.provider.inbox().len(), 3);
 }
 
 /// The acceptance world as an attack target.
@@ -793,5 +796,50 @@ impl kavach_attacks::Target for InProcess<'_> {
 
     fn pause(&self) -> impl std::future::Future<Output = ()> {
         std::future::ready(())
+    }
+
+    fn clock_control(&self) -> bool {
+        true
+    }
+
+    fn move_clock(
+        &self,
+        hour: u32,
+        minute: u32,
+        fresh_day: bool,
+    ) -> impl std::future::Future<Output = Result<(), String>> {
+        let now = self.0.clock.now().utc;
+        let to = next_ist(now, hour, minute, fresh_day);
+        self.0.clock.advance(to - now);
+        std::future::ready(Ok(()))
+    }
+}
+
+/// The next `hour:minute` IST after `after`; with `fresh_day`, on a later
+/// IST date than `after`'s.
+fn next_ist(
+    after: chrono::DateTime<chrono::Utc>,
+    hour: u32,
+    minute: u32,
+    fresh_day: bool,
+) -> chrono::DateTime<chrono::Utc> {
+    use chrono::TimeZone;
+    let ist = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
+    let today = after.with_timezone(&ist).date_naive();
+    let mut day = if fresh_day {
+        today.succ_opt().unwrap()
+    } else {
+        today
+    };
+    loop {
+        let t = ist
+            .from_local_datetime(&day.and_hms_opt(hour, minute, 0).unwrap())
+            .single()
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        if t > after {
+            return t;
+        }
+        day = day.succ_opt().unwrap();
     }
 }
