@@ -1299,7 +1299,13 @@ fn simulate_runs_every_builtin_as_expected() {
             "normal-day",
             "after-hours",
             "fourth-contact",
-            "two-agents-one-borrower"
+            "two-agents-one-borrower",
+            "prompt-injection-raw-number",
+            "wrong-borrower",
+            "forged-mandate",
+            "provider-failures",
+            "retry-after-unknown",
+            "mixed-week",
         ]
     );
 
@@ -1311,7 +1317,12 @@ fn simulate_runs_every_builtin_as_expected() {
         assert_eq!(keys[3], "not_covered", "not covered comes first: {keys:?}");
         assert_eq!(doc["evidence"]["state"], "verified", "{doc}");
         assert_eq!(doc["evidence"]["signed_with"], "dev-export-1");
-        assert_eq!(doc["evidence"]["records"], doc["calls"], "{doc}");
+        // Every call is a record, except malformed ones (400: nothing is
+        // recorded) and retries (answered without a new record).
+        assert!(
+            doc["evidence"]["records"].as_u64() <= doc["calls"].as_u64(),
+            "{doc}"
+        );
         for list in ["violations", "mismatches", "leaks", "expectations_unmet"] {
             assert!(
                 doc[list].as_array().unwrap().is_empty(),
@@ -1319,7 +1330,14 @@ fn simulate_runs_every_builtin_as_expected() {
             );
         }
     }
+}
 
+/// What the built-ins show in detail: the cap across agents, attacks
+/// refused, retries never sent twice, seeds reproducing runs, the report
+/// file, and invalid scenarios refused before anything starts.
+#[test]
+fn simulate_shows_what_each_rule_does() {
+    let dir = scratch("simulate-rules");
     // The shared cap, across two agents' own mandates.
     let doc = json(&kavach(
         &dir,
@@ -1334,6 +1352,35 @@ fn simulate_runs_every_builtin_as_expected() {
     assert_eq!(doc["blocked_by_reason"]["contact-daily-cap"], 1, "{doc}");
     assert_eq!(doc["agents"]["sim-compliant-1"]["allowed"], 2);
     assert_eq!(doc["agents"]["sim-compliant-2"]["allowed"], 1);
+
+    // Attacks are refused; a retry after an unknown outcome is never sent
+    // again (409 in_flight, the forward-once contract).
+    let doc = json(&kavach(
+        &dir,
+        &[
+            "--json",
+            "simulate",
+            "run",
+            "--builtin",
+            "retry-after-unknown",
+        ],
+    ));
+    assert_eq!(doc["retries"], serde_json::json!([2, 2]), "{doc}");
+    let doc = json(&kavach(
+        &dir,
+        &[
+            "--json",
+            "simulate",
+            "run",
+            "--builtin",
+            "prompt-injection-raw-number",
+        ],
+    ));
+    let attacks = doc["attacks"].as_object().unwrap();
+    assert!(!attacks.is_empty(), "{doc}");
+    for (id, tally) in attacks {
+        assert_eq!(tally[0], tally[1], "{id} refused every time: {doc}");
+    }
 
     // Same seed, same run; a report file with every call.
     let report = dir.join("report.json");

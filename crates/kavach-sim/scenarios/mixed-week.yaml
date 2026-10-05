@@ -1,0 +1,27 @@
+# Everything at once, over three days: compliant and eager agents sharing
+# a book of borrowers, an adversarial agent trying every agent attack,
+# provider failures, and retries after lost responses.
+version: 1
+name: mixed-week
+description: Compliant, eager and adversarial agents, provider failures and retries, over three days.
+seed: 41
+days: 3
+borrowers: 8
+schedule: ["07:45", "09:00", "12:00", "15:00", "18:55", "19:05"]
+agents:
+  - type: compliant
+    count: 2
+    behaviour:
+      contacts_per_day: 2
+      retry_rate: 1.0
+  - type: eager
+  - type: adversarial
+    behaviour:
+      attack_rate: 0.5
+assignment: shared
+provider_failures: { refuse: 1, error: 1, lose: 1 }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 20

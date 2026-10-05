@@ -3,7 +3,24 @@
 //! serves whom. Written into the throwaway project before its stack starts
 //! (the stack reads its fixtures once, at startup).
 
+use std::collections::BTreeMap;
+
 use crate::scenario::{AgentKind, Assignment, Resolved, Scenario};
+
+/// The mock provider's failure numbers.
+pub const REFUSE_NUMBER: &str = "+910000000998";
+pub const ERROR_NUMBER: &str = "+910000000997";
+pub const LOSE_NUMBER: &str = "+910000000999";
+
+/// What the provider does with a borrower's messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Delivery {
+    Delivers,
+    Refuses,
+    Errs,
+    /// Delivers, and the response is lost.
+    Loses,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Agent {
@@ -15,6 +32,9 @@ pub struct Agent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Borrower {
+    /// Kept for an adversarial agent's attacks (no real contacts).
+    pub for_attacks: bool,
+    pub delivery: Delivery,
     /// `ref:borrower:S-0001`: at most four digits, never an identifier.
     pub subject_ref: String,
     /// WhatsApp and SMS: `+910` and nine digits, the synthetic range.
@@ -48,21 +68,57 @@ impl World {
                 });
             }
         }
-        let borrowers: Vec<Borrower> = (1..=scenario.borrowers)
-            .map(|i| Borrower {
-                subject_ref: format!("ref:borrower:S-{i:04}"),
-                destination: format!("+910{:09}", 100_000 + i),
-                voice: format!("+910{:09}", 200_000 + i),
+        let f = scenario.provider_failures;
+        let failures = std::iter::repeat_n(Delivery::Refuses, f.refuse as usize)
+            .chain(std::iter::repeat_n(Delivery::Errs, f.error as usize))
+            .chain(std::iter::repeat_n(Delivery::Loses, f.lose as usize));
+        let mut deliveries = failures.chain(std::iter::repeat(Delivery::Delivers));
+        let mut borrowers: Vec<Borrower> = (1..=scenario.borrowers)
+            .map(|i| {
+                let delivery = deliveries.next().unwrap_or(Delivery::Delivers);
+                Borrower {
+                    for_attacks: false,
+                    delivery,
+                    subject_ref: format!("ref:borrower:S-{i:04}"),
+                    destination: match delivery {
+                        Delivery::Delivers => format!("+910{:09}", 100_000 + i),
+                        Delivery::Refuses => REFUSE_NUMBER.into(),
+                        Delivery::Errs => ERROR_NUMBER.into(),
+                        Delivery::Loses => LOSE_NUMBER.into(),
+                    },
+                    voice: format!("+910{:09}", 200_000 + i),
+                }
             })
             .collect();
-        let assignments = match scenario.assignment {
-            Assignment::Split => (0..borrowers.len())
-                .map(|b| (b % agents.len(), b))
-                .collect(),
-            Assignment::Shared => (0..agents.len())
-                .flat_map(|a| (0..borrowers.len()).map(move |b| (a, b)))
-                .collect(),
-        };
+        // One borrower of its own for each adversarial agent.
+        let attackers: Vec<usize> = (0..agents.len())
+            .filter(|&a| agents[a].kind == AgentKind::Adversarial)
+            .collect();
+        let mut assignments = Vec::new();
+        for (n, &agent) in attackers.iter().enumerate() {
+            let i = u32::try_from(n + 1).unwrap_or(u32::MAX);
+            borrowers.push(Borrower {
+                for_attacks: true,
+                delivery: Delivery::Delivers,
+                subject_ref: format!("ref:borrower:A-{i:04}"),
+                destination: format!("+910{:09}", 300_000 + i),
+                voice: format!("+910{:09}", 400_000 + i),
+            });
+            assignments.push((agent, borrowers.len() - 1));
+        }
+        let workers: Vec<usize> = (0..agents.len())
+            .filter(|a| !attackers.contains(a))
+            .collect();
+        let real = scenario.borrowers as usize;
+        match scenario.assignment {
+            Assignment::Split => {
+                assignments.extend((0..real).map(|b| (workers[b % workers.len()], b)));
+            }
+            Assignment::Shared => {
+                assignments.extend(workers.iter().flat_map(|&a| (0..real).map(move |b| (a, b))));
+            }
+        }
+        assignments.sort_unstable();
         Self {
             agents,
             borrowers,
@@ -77,6 +133,15 @@ impl World {
             .iter()
             .filter(|(a, _)| *a == agent)
             .map(|(_, b)| *b)
+            .collect()
+    }
+
+    /// Each borrower's delivery, by reference (for the oracle).
+    #[must_use]
+    pub fn deliveries(&self) -> BTreeMap<String, Delivery> {
+        self.borrowers
+            .iter()
+            .map(|b| (b.subject_ref.clone(), b.delivery))
             .collect()
     }
 

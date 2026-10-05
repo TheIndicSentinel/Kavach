@@ -2552,6 +2552,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
  "hex",
+ "kavach-attacks",
  "kavach-devkit",
  "serde",
  "serde_json",

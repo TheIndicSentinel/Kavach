@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use crate::ledger::{digest, Entry};
-use crate::oracle::{Oracle, Rules};
+use crate::oracle::{Oracle, Retry, Rules};
 use crate::scenario::Scenario;
 
 /// Always shown, before anything else.
@@ -64,6 +64,11 @@ pub struct Report {
     pub blocked: usize,
     pub blocked_by_reason: BTreeMap<String, u32>,
     pub delivered: usize,
+    /// Each catalog attack the adversarial agents made: tried, refused.
+    pub attacks: BTreeMap<String, (u32, u32)>,
+    /// Calls sent again after an unknown outcome, and how many came back
+    /// replayed (never sent twice).
+    pub retries: (u32, u32),
     pub violations: Vec<Finding>,
     pub mismatches: Vec<Finding>,
     pub leaks: Vec<Finding>,
@@ -80,6 +85,67 @@ pub struct AgentCounts {
     pub blocked: u32,
 }
 
+/// A disagreement between Kavach and the oracle on one call.
+enum Issue {
+    Violation(String),
+    Mismatch(String),
+}
+
+/// A first send: allowed against the rules is a violation; refused when
+/// the rules allow it, or an outcome other than the destination means, a
+/// mismatch.
+fn first_issue(call: &Entry, expected: &crate::oracle::Expected) -> Option<Issue> {
+    if call.allowed() && !expected.allow {
+        return Some(Issue::Violation(format!(
+            "allowed, but {}",
+            expected.because.join(", ")
+        )));
+    }
+    if call.allowed() && call.outcome.as_deref() != expected.outcome {
+        return Some(Issue::Mismatch(format!(
+            "outcome {}, but the destination means {}",
+            call.outcome.as_deref().unwrap_or("none"),
+            expected.outcome.unwrap_or("none")
+        )));
+    }
+    if !call.allowed() && expected.allow {
+        return Some(Issue::Mismatch(format!(
+            "refused ({} {}), but the rules allow it",
+            call.status,
+            call.reasons.join(", ")
+        )));
+    }
+    None
+}
+
+/// A call sent again: whether it was answered without a second send, and
+/// the issue if not.
+fn retry_issue(call: &Entry, retry: Retry) -> (bool, Option<Issue>) {
+    let in_flight = call.status == 409 && call.reasons.iter().any(|r| r == "in_flight");
+    let answered = match retry {
+        Retry::InFlight => in_flight,
+        Retry::Stored { allowed } => call.replayed && call.allowed() == allowed,
+    };
+    let issue = if call.allowed() && !call.replayed {
+        Some(Issue::Violation(
+            "allowed again without the stored reply: a possible second send".into(),
+        ))
+    } else if answered {
+        None
+    } else {
+        Some(Issue::Mismatch(format!(
+            "sent again: {} {}, but the rules mean {}",
+            call.status,
+            call.reasons.join(", "),
+            match retry {
+                Retry::InFlight => "409 in_flight (no final outcome yet)",
+                Retry::Stored { .. } => "the stored reply, replayed",
+            }
+        )))
+    };
+    (answered, issue)
+}
+
 impl Report {
     #[must_use]
     pub fn build(
@@ -89,7 +155,7 @@ impl Report {
         evidence: Bundle,
         rules: Rules,
     ) -> Self {
-        let mut oracle = Oracle::new(rules);
+        let mut oracle = Oracle::new(rules, world.deliveries());
         let (mut violations, mut mismatches, mut leaks) = (Vec::new(), Vec::new(), Vec::new());
         let mut agents: BTreeMap<String, AgentCounts> = world
             .agents
@@ -105,6 +171,8 @@ impl Report {
             })
             .collect();
         let mut blocked_by_reason = BTreeMap::new();
+        let mut attacks: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+        let mut retries = (0, 0);
         for call in ledger {
             let expected = oracle.judge(call);
             let finding = |detail: String| Finding {
@@ -114,35 +182,40 @@ impl Report {
                 at: call.at.to_rfc3339(),
                 detail,
             };
-            let counts = agents.entry(call.agent.clone()).or_default();
-            if call.allowed() {
-                counts.allowed += 1;
-                if !expected.allow {
-                    violations.push(finding(format!(
-                        "allowed, but {}",
-                        expected.because.join(", ")
-                    )));
-                }
+            if let Some(id) = &call.attack {
+                let tally = attacks.entry(id.clone()).or_default();
+                tally.0 += 1;
+                tally.1 += u32::from(!call.allowed());
+            }
+            let issue = if let Some(retry) = expected.retry {
+                let (answered, issue) = retry_issue(call, retry);
+                retries.0 += 1;
+                retries.1 += u32::from(answered);
+                issue
             } else {
-                counts.blocked += 1;
-                for reason in &call.reasons {
-                    if reason != "forbidden" {
+                let counts = agents.entry(call.agent.clone()).or_default();
+                if call.allowed() {
+                    counts.allowed += 1;
+                } else {
+                    counts.blocked += 1;
+                    for reason in call.reasons.iter().filter(|r| *r != "forbidden") {
                         *blocked_by_reason.entry(reason.clone()).or_insert(0) += 1;
                     }
                 }
-                if expected.allow {
-                    mismatches.push(finding(format!(
-                        "refused ({} {}), but the rules allow it",
-                        call.status,
-                        call.reasons.join(", ")
-                    )));
-                }
+                first_issue(call, &expected)
+            };
+            match issue {
+                Some(Issue::Violation(detail)) => violations.push(finding(detail)),
+                Some(Issue::Mismatch(detail)) => mismatches.push(finding(detail)),
+                None => {}
             }
             if let Some(what) = &call.leak {
                 leaks.push(finding(format!("the reply held {what}")));
             }
         }
-        let allowed = ledger.iter().filter(|c| c.allowed()).count();
+        let firsts = ledger.iter().filter(|c| c.retry_of.is_none());
+        let calls = firsts.clone().count();
+        let allowed = firsts.filter(|c| c.allowed()).count();
         let mut report = Self {
             not_covered: NOT_COVERED.to_vec(),
             scenario: scenario.name.clone(),
@@ -150,14 +223,16 @@ impl Report {
             days: scenario.days,
             borrowers: scenario.borrowers,
             agents,
-            calls: ledger.len(),
+            calls,
             allowed,
-            blocked: ledger.len() - allowed,
+            blocked: calls - allowed,
             blocked_by_reason,
             delivered: ledger
                 .iter()
-                .filter(|c| c.outcome.as_deref() == Some("delivered"))
+                .filter(|c| c.retry_of.is_none() && c.outcome.as_deref() == Some("delivered"))
                 .count(),
+            attacks,
+            retries,
             violations,
             mismatches,
             leaks,
@@ -225,13 +300,19 @@ mod tests {
             agent: agent.into(),
             borrower: "ref:borrower:S-0001".into(),
             tool: "send_reminder".into(),
+            params: serde_json::json!({ "subject_ref": "ref:borrower:S-0001",
+                "channel": "whatsapp", "template_id": "emi_reminder_v1" }),
             channel: "whatsapp".into(),
+            mandate_for: Some("ref:borrower:S-0001".into()),
             request_id: format!("sim-17-{seq}"),
+            retry_of: None,
+            attack: None,
             status: 200,
             decision: Some(decision.into()),
             reasons: reasons.iter().map(ToString::to_string).collect(),
             record_id: None,
-            outcome: None,
+            outcome: (decision == "PASS").then(|| "delivered".into()),
+            replayed: false,
             leak: None,
         }
     }
@@ -345,5 +426,11 @@ mod tests {
                 "the oracle must not see expectations ({path})"
             );
         }
+        // It judges what was sent, never the attack label on a call.
+        let code = oracle.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            !code.contains(".attack"),
+            "the oracle must not read the attack label"
+        );
     }
 }

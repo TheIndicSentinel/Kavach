@@ -1,0 +1,20 @@
+# An agent contacts a borrower its mandate does not cover.
+version: 1
+name: wrong-borrower
+description: A borrower outside the mandate is refused.
+seed: 23
+days: 1
+borrowers: 2
+schedule: ["10:00", "11:00"]
+agents:
+  - type: compliant
+  - type: adversarial
+    behaviour:
+      attacks: [another-borrower]
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 2
+  blocked_at_least:
+    subject-binding: 2

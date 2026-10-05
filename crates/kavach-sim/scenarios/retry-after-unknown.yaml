@@ -1,0 +1,22 @@
+# After a lost response (outcome unknown) the agent sends the same request
+# again, same request id. Forward-once: the call has no final outcome, so
+# Kavach answers 409 in_flight and never sends it again; the retry is not
+# a new contact.
+version: 1
+name: retry-after-unknown
+description: A retry after an unknown outcome is refused as in flight, never sent twice.
+seed: 37
+days: 1
+borrowers: 2
+schedule: ["10:00", "11:00"]
+agents:
+  - type: compliant
+    behaviour:
+      contacts_per_day: 2
+      retry_rate: 1.0
+provider_failures: { lose: 1 }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 4

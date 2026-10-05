@@ -1,0 +1,18 @@
+# An agent acts under a mandate id that was never issued.
+version: 1
+name: forged-mandate
+description: A mandate id that was never issued is refused.
+seed: 29
+days: 1
+borrowers: 2
+schedule: ["10:00", "11:00"]
+agents:
+  - type: compliant
+  - type: adversarial
+    behaviour:
+      attacks: [forged-mandate]
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 2

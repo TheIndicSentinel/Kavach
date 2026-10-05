@@ -27,7 +27,22 @@ pub struct Scenario {
     pub agents: Vec<AgentSpec>,
     #[serde(default)]
     pub assignment: Assignment,
+    /// Borrowers whose destination is one of the mock provider's failure
+    /// numbers (the first ones, in this order: refuse, error, lose).
+    #[serde(default)]
+    pub provider_failures: ProviderFailures,
     pub expect: Expect,
+}
+
+/// How many borrowers get each failure: refused by the recipient (422), a
+/// provider error (500), or delivered with the response lost (outcome
+/// unknown; each costs the stack's provider timeout, about 5 s).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ProviderFailures {
+    pub refuse: u32,
+    pub error: u32,
+    pub lose: u32,
 }
 
 /// Who serves which borrower.
@@ -63,6 +78,9 @@ pub enum AgentKind {
     Compliant,
     /// Contacts late, too often, and on the wrong channel, by its rates.
     Eager,
+    /// Tries the attack catalog's tool-call attacks, on borrowers kept for
+    /// it (so it never uses up a real borrower's daily cap).
+    Adversarial,
 }
 
 impl AgentKind {
@@ -71,12 +89,13 @@ impl AgentKind {
         match self {
             Self::Compliant => "compliant",
             Self::Eager => "eager",
+            Self::Adversarial => "adversarial",
         }
     }
 }
 
 /// Behaviour settings; unset ones take the agent type's defaults.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Behaviour {
     /// Contacts per borrower per day the agent means to make.
@@ -87,29 +106,56 @@ pub struct Behaviour {
     pub extra_contact_rate: Option<f64>,
     /// Chance of using SMS, which the mandate does not allow.
     pub wrong_channel_rate: Option<f64>,
+    /// Chance of sending the same request again (same request id) after an
+    /// outcome that is not known.
+    pub retry_rate: Option<f64>,
+    /// Adversarial: chance of an attack per borrower per slot.
+    pub attack_rate: Option<f64>,
+    /// Adversarial: only these attack catalog ids (default: every tool-call
+    /// attack an agent can make with its own token).
+    pub attacks: Option<Vec<String>>,
 }
 
 /// [`Behaviour`] with the type's defaults filled in.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Resolved {
     pub contacts_per_day: u32,
     pub late_rate: f64,
     pub extra_contact_rate: f64,
     pub wrong_channel_rate: f64,
+    pub retry_rate: f64,
+    pub attack_rate: f64,
+    /// Catalog ids; empty for agents that do not attack.
+    pub attacks: Vec<&'static str>,
 }
 
 impl Behaviour {
     #[must_use]
-    pub fn resolve(self, kind: AgentKind) -> Resolved {
+    pub fn resolve(&self, kind: AgentKind) -> Resolved {
         let (per_day, late, extra, wrong) = match kind {
             AgentKind::Compliant => (1, 0.0, 0.0, 0.0),
             AgentKind::Eager => (3, 0.5, 0.5, 0.2),
+            AgentKind::Adversarial => (0, 1.0, 0.0, 0.0),
+        };
+        let attacks = if kind == AgentKind::Adversarial {
+            crate::agents::agent_attacks()
+                .filter(|id| {
+                    self.attacks
+                        .as_ref()
+                        .is_none_or(|only| only.iter().any(|o| o == id))
+                })
+                .collect()
+        } else {
+            Vec::new()
         };
         Resolved {
             contacts_per_day: self.contacts_per_day.unwrap_or(per_day),
             late_rate: self.late_rate.unwrap_or(late),
             extra_contact_rate: self.extra_contact_rate.unwrap_or(extra),
             wrong_channel_rate: self.wrong_channel_rate.unwrap_or(wrong),
+            retry_rate: self.retry_rate.unwrap_or(0.0),
+            attack_rate: self.attack_rate.unwrap_or(1.0),
+            attacks,
         }
     }
 }
@@ -180,15 +226,40 @@ impl Scenario {
             return Err(format!("at most {MAX_AGENTS} agents"));
         }
         for agent in &self.agents {
-            let b = agent.behaviour;
-            for rate in [b.late_rate, b.extra_contact_rate, b.wrong_channel_rate]
-                .into_iter()
-                .flatten()
+            let b = &agent.behaviour;
+            for rate in [
+                b.late_rate,
+                b.extra_contact_rate,
+                b.wrong_channel_rate,
+                b.retry_rate,
+                b.attack_rate,
+            ]
+            .into_iter()
+            .flatten()
             {
                 if !(0.0..=1.0).contains(&rate) {
                     return Err(format!("rates are between 0 and 1, not {rate}"));
                 }
             }
+            if let Some(only) = &b.attacks {
+                let known: Vec<&str> = crate::agents::agent_attacks().collect();
+                if let Some(unknown) = only.iter().find(|a| !known.contains(&a.as_str())) {
+                    return Err(format!(
+                        "{unknown:?} is not an attack an agent can make (there are: {})",
+                        known.join(", ")
+                    ));
+                }
+            }
+        }
+        let f = self.provider_failures;
+        if f.refuse + f.error + f.lose > self.borrowers {
+            return Err("more provider failures than borrowers".into());
+        }
+        if !self.agents.iter().any(|a| a.kind != AgentKind::Adversarial) {
+            return Err(
+                "at least one agent that is not adversarial (the world's borrowers need one)"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -211,6 +282,27 @@ pub const BUILTINS: &[(&str, &str)] = &[
         "two-agents-one-borrower",
         include_str!("../scenarios/two-agents-one-borrower.yaml"),
     ),
+    (
+        "prompt-injection-raw-number",
+        include_str!("../scenarios/prompt-injection-raw-number.yaml"),
+    ),
+    (
+        "wrong-borrower",
+        include_str!("../scenarios/wrong-borrower.yaml"),
+    ),
+    (
+        "forged-mandate",
+        include_str!("../scenarios/forged-mandate.yaml"),
+    ),
+    (
+        "provider-failures",
+        include_str!("../scenarios/provider-failures.yaml"),
+    ),
+    (
+        "retry-after-unknown",
+        include_str!("../scenarios/retry-after-unknown.yaml"),
+    ),
+    ("mixed-week", include_str!("../scenarios/mixed-week.yaml")),
 ];
 
 /// A built-in scenario by name.

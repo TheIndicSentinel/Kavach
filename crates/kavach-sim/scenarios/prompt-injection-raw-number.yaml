@@ -1,0 +1,20 @@
+# A prompt-injected agent puts raw identifiers where a borrower reference
+# belongs: a phone number, a PAN, an Aadhaar-like number (the attack
+# catalog's payloads). Every one is refused; nothing is sent.
+version: 1
+name: prompt-injection-raw-number
+description: Raw phone, PAN and Aadhaar numbers in place of a reference are refused.
+seed: 19
+days: 1
+borrowers: 2
+schedule: ["10:00", "11:00", "12:00", "13:00"]
+agents:
+  - type: compliant
+  - type: adversarial
+    behaviour:
+      attacks: [raw-phone-number, raw-pan, raw-aadhaar]
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 2
