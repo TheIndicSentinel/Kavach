@@ -76,6 +76,7 @@ Properties not yet guaranteed are under *Planned*; known gaps are under *Not gua
 | Packs are bounded in size and complexity | Enforced | ≤ 256 KiB, ≤ 200 rules, expressions ≤ 2048 chars, `timeout_ms` 1–1000 | `load_limits_reject_oversized_packs` |
 | A failed pack/model change leaves live traffic on the previous pack | Enforced | Validate, then persist pointers and audit, and only then swap the live evaluator | `crates/kavach-api` lifecycle code |
 | When evidence cannot be written in enforce mode, the decision is `BLOCK` | Enforced | ADR-001 fail-closed matrix | `crates/kavach-evaluate` tests |
+| **API refusals do not repeat the caller's input, and a server error does not show its cause** | Enforced | Every refusal on the operator, agent and system-of-record listeners is an RFC 9457 problem (`kavach_api::problem`). Its `detail` names schema fields and plain identifiers only, never values: parser and JSON Schema messages are reduced to the field and the keyword it failed, and an extractor's own rejection text is replaced. A 5xx `detail` is generic; the cause goes only to the redacted log, joined by `request_id` | `hostile_input_is_never_echoed_in_a_problem`, `hostile_input_is_never_echoed_by_the_sor_or_operator_listeners`, `internal_errors_never_carry_their_cause`, `schema_failures_name_the_field_never_the_value` |
 
 ## Planned for the MVP (not yet guaranteed)
 

@@ -103,8 +103,12 @@ struct EraseEvidenceParams {
 }
 
 fn parse<T: DeserializeOwned>(params: &Value) -> Result<T, ApiError> {
-    serde_json::from_value(params.clone())
-        .map_err(|e| ApiError::BadRequest(format!("invalid params: {e}")))
+    serde_json::from_value(params.clone()).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "invalid params: {}",
+            crate::problem::json_error_detail(&e)
+        ))
+    })
 }
 
 fn to_value<T: Serialize>(value: &T) -> Result<Value, ApiError> {

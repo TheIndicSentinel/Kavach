@@ -356,7 +356,7 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
             *ui,
             &format!(
                 "the stack is unhealthy: no mandate was issued ({})",
-                issued["error"]
+                issued["detail"].as_str().unwrap_or("no reply")
             ),
             "run `kavach doctor`",
         ));

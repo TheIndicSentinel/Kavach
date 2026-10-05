@@ -1195,19 +1195,20 @@ async fn load_mandate_config(
 
 // ---- HTTP ----
 
-#[derive(Debug, Serialize)]
-pub struct ErrorBody {
-    pub error: String,
+/// Agent and SoR refusals are RFC 9457 problems (`crate::problem`).
+type Refusal = crate::problem::Problem;
+
+/// A refusal with the code that goes with its status.
+fn refuse(status: StatusCode, error: impl Into<String>) -> Refusal {
+    crate::problem::Problem::for_status(status, error)
 }
 
-type Refusal = (StatusCode, Json<ErrorBody>);
-
-fn refuse(status: StatusCode, error: impl Into<String>) -> Refusal {
-    (
-        status,
-        Json(ErrorBody {
-            error: error.into(),
-        }),
+/// A refused tool request, with the registry's code.
+fn refuse_tool(refusal: kavach_dataplane::Refusal) -> Refusal {
+    crate::problem::Problem::new(
+        StatusCode::BAD_REQUEST,
+        refusal.code.as_str(),
+        refusal.message,
     )
 }
 
@@ -1243,7 +1244,11 @@ fn authenticate_agent(dp: &Dataplane, headers: &HeaderMap) -> Result<AgentIdenti
         .passports
         .contains(&(dp.tenant.clone(), verified.principal.clone()))
     {
-        return Err(refuse(StatusCode::FORBIDDEN, "agent has no passport"));
+        return Err(crate::problem::Problem::new(
+            StatusCode::FORBIDDEN,
+            "no_passport",
+            "agent has no passport",
+        ));
     }
     Ok(AgentIdentity {
         identity_key: format!("oidc:{}#{}", dp.agents.issuer(), verified.principal),
@@ -1295,7 +1300,7 @@ pub async fn authorize(
     let call = dp
         .core
         .tools()
-        .extract(
+        .check(
             &body.tool,
             ToolRequest {
                 mandate_id: body.mandate_id,
@@ -1303,7 +1308,7 @@ pub async fn authorize(
                 params: body.params,
             },
         )
-        .map_err(|e| refuse(StatusCode::BAD_REQUEST, e.message))?;
+        .map_err(refuse_tool)?;
     let decided = dp
         .core
         .authorize(&agent, &call, Mode::Precheck)
@@ -1369,10 +1374,12 @@ pub async fn sor_event(
             }
             _ => Err(match issue_err.class {
                 ErrorClass::Invalid => refuse(StatusCode::BAD_REQUEST, issue_err.message),
-                ErrorClass::Rejected => refuse(StatusCode::UNPROCESSABLE_ENTITY, issue_err.message),
-                ErrorClass::Unavailable => {
-                    refuse(StatusCode::SERVICE_UNAVAILABLE, issue_err.message)
-                }
+                ErrorClass::Rejected => crate::problem::Problem::new(
+                    StatusCode::UNPROCESSABLE_ENTITY,
+                    "event_rejected",
+                    issue_err.message,
+                ),
+                ErrorClass::Unavailable => crate::problem::Problem::unavailable(&issue_err.message),
             }),
         },
     }
@@ -1403,6 +1410,12 @@ pub async fn tool_call(
             "malformed body: expected JSON with exactly mandate_id, request_id, params".into(),
         )
     })?;
+    // The registry's own check first, for a refusal with its code; the
+    // gateway runs the same check (one validation path).
+    if let Err(refusal) = dp.core.tools().check(&tool, request.clone()) {
+        metrics.observe_gateway_malformed();
+        return Err(refuse_tool(refusal));
+    }
     let deps = GatewayDeps {
         core: &dp.core,
         resolver: &dp.resolver,
@@ -1452,8 +1465,9 @@ pub async fn tool_call(
             StatusCode::CONFLICT,
             "request_id was already used for different content",
         )),
-        Err(GatewayError::InFlight) => Err(refuse(
+        Err(GatewayError::InFlight) => Err(crate::problem::Problem::new(
             StatusCode::CONFLICT,
+            "in_flight",
             "in_flight_or_unknown: an earlier identical call has no final outcome; it is never \
              run again",
         )),
@@ -1482,6 +1496,8 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
             "/health",
             axum::routing::get(|| async { Json(serde_json::json!({ "status": "ok" })) }),
         )
+        .fallback(crate::problem::not_found)
+        .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
         .with_state(state)
 }
@@ -1490,6 +1506,8 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
 pub fn sor_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/sor/events", post(sor_event))
+        .fallback(crate::problem::not_found)
+        .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
         .layer(DefaultBodyLimit::max(SOR_BODY_LIMIT))
         .with_state(state)

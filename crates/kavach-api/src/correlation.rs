@@ -14,7 +14,7 @@ use std::time::Instant;
 use axum::extract::{MatchedPath, Request};
 use axum::http::HeaderValue;
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use tracing::Instrument;
 
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
@@ -30,7 +30,22 @@ fn request_id(req: &Request) -> String {
 
 /// Axum middleware (install with `route_layer`, so the route is known).
 pub async fn correlate(req: Request, next: Next) -> Response {
-    let id = request_id(&req);
+    let (id, span) = begin(&req);
+    let started = Instant::now();
+    let response = next.run(req).instrument(span.clone()).await;
+    finish(&id, &span, started, response).await
+}
+
+/// Correlates a router fallback's response the same way: `route_layer`
+/// does not wrap fallbacks, so they call this themselves.
+pub async fn unmatched(req: Request, response: Response) -> Response {
+    let (id, span) = begin(&req);
+    drop(req);
+    finish(&id, &span, Instant::now(), response).await
+}
+
+fn begin(req: &Request) -> (String, tracing::Span) {
+    let id = request_id(req);
     let route = req
         .extensions()
         .get::<MatchedPath>()
@@ -38,14 +53,59 @@ pub async fn correlate(req: Request, next: Next) -> Response {
         .to_string();
     let method = req.method().clone();
     let span = tracing::info_span!("request", request_id = %id, method = %method, route = %route);
-    let started = Instant::now();
-    let mut response = next.run(req).instrument(span.clone()).await;
+    (id, span)
+}
+
+async fn finish(
+    id: &str,
+    span: &tracing::Span,
+    started: Instant,
+    mut response: Response,
+) -> Response {
     let latency_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
     span.in_scope(|| {
         tracing::info!(status = response.status().as_u16(), latency_ms, "handled");
     });
-    if let Ok(value) = HeaderValue::from_str(&id) {
+    if let Ok(value) = HeaderValue::from_str(id) {
         response.headers_mut().insert(REQUEST_ID_HEADER, value);
     }
-    response
+    with_request_id(response, id).await
+}
+
+/// Adds `request_id` to a problem body (RFC 9457 extension), so a caller
+/// can quote it to support; other responses pass through untouched.
+async fn with_request_id(response: Response, id: &str) -> Response {
+    let is_problem = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with(crate::problem::CONTENT_TYPE));
+    if !is_problem {
+        // An extractor's own rejection (axum's text, which can quote the
+        // caller's input): replaced by a generic problem for its status.
+        let status = response.status();
+        if !(status.is_client_error() || status.is_server_error()) {
+            return response;
+        }
+        let mut generic = crate::problem::Problem::generic(status).into_response();
+        if let Some(value) = response.headers().get(REQUEST_ID_HEADER) {
+            generic
+                .headers_mut()
+                .insert(REQUEST_ID_HEADER, value.clone());
+        }
+        return Box::pin(with_request_id(generic, id)).await;
+    }
+    let (mut parts, body) = response.into_parts();
+    let Ok(bytes) = axum::body::to_bytes(body, 64 * 1024).await else {
+        return Response::from_parts(parts, axum::body::Body::empty());
+    };
+    let body = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+        Ok(mut problem) => {
+            problem["request_id"] = id.into();
+            problem.to_string().into_bytes()
+        }
+        Err(_) => bytes.to_vec(),
+    };
+    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+    Response::from_parts(parts, axum::body::Body::from(body))
 }

@@ -16,6 +16,7 @@ mod init;
 mod live;
 mod output;
 mod policy_test;
+mod problem;
 mod project;
 mod run;
 mod why;

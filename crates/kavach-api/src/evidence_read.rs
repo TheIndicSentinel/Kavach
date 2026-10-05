@@ -72,7 +72,7 @@ fn valid_record_id(id: &str) -> bool {
 }
 
 fn refuse(status: StatusCode, error: &str) -> Response {
-    (status, Json(json!({ "error": error }))).into_response()
+    crate::problem::Problem::for_status(status, error).into_response()
 }
 
 /// Authorises the read, checks the id and the rate limit; returns who

@@ -13,18 +13,19 @@ mod embedded {
 
     /// Static files and the single-page fallback, for reads only: any other
     /// method on an unknown path is 404, never the console page.
-    pub async fn fallback(method: axum::http::Method, uri: axum::http::Uri) -> Response {
+    pub async fn fallback(req: axum::extract::Request) -> Response {
+        let method = req.method();
         if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
-            return StatusCode::NOT_FOUND.into_response();
+            return crate::problem::not_found(req).await;
         }
-        match lookup(uri.path()) {
+        match lookup(req.uri().path()) {
             Some((content_type, bytes)) => (
                 StatusCode::OK,
                 [(header::CONTENT_TYPE, content_type)],
                 bytes,
             )
                 .into_response(),
-            None => StatusCode::NOT_FOUND.into_response(),
+            None => crate::problem::not_found(req).await,
         }
     }
 

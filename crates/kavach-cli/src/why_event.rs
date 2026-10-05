@@ -81,20 +81,23 @@ async fn fetch_live(dir: &Path, id: &str) -> Result<(DecisionEvent, bool), CliEr
         .map_err(|e| CliError::new("the operator listener did not answer", e))?;
     let status = response.status().as_u16();
     let body: Value = response.json().await.unwrap_or(Value::Null);
-    let error = body["error"].as_str().unwrap_or_default().to_string();
+    let error = crate::problem::detail(status, &body);
     match status {
         200 => {}
         404 => {
-            return Err(CliError::new(format!("no decision event {id}"), error).fix(
-                "the memory store forgets events when `kavach dev up` stops \
+            return Err(
+                crate::problem::error(format!("no decision event {id}"), status, &body).fix(
+                    "the memory store forgets events when `kavach dev up` stops \
                  (set [database] in kavach.toml to keep them)",
-            ))
+                ),
+            )
         }
         400 => return Err(usage(format!("{id} is not an evidence id"), error)),
         _ => {
-            return Err(CliError::new(
+            return Err(crate::problem::error(
                 format!("the stack refused the read ({status})"),
-                error,
+                status,
+                &body,
             ))
         }
     }

@@ -68,6 +68,15 @@ pub struct CliError {
     pub why: String,
     pub fix: Option<String>,
     pub code: i32,
+    /// The API problem behind it, when the stack refused (`crate::problem`).
+    pub problem: Option<Box<ProblemRef>>,
+}
+
+/// What to quote about an API refusal: its code and the request's id.
+#[derive(Debug, Clone)]
+pub struct ProblemRef {
+    pub code: String,
+    pub request_id: Option<String>,
 }
 
 impl CliError {
@@ -77,6 +86,7 @@ impl CliError {
             why: why.to_string(),
             fix: None,
             code: EXIT_FAILED,
+            problem: None,
         }
     }
 
@@ -157,7 +167,11 @@ impl Ui {
     pub fn error(self, command: &str, error: &CliError) -> i32 {
         if self.json {
             let data = json!({
-                "error": { "what": error.what, "why": error.why, "fix": error.fix }
+                "error": {
+                    "what": error.what, "why": error.why, "fix": error.fix,
+                    "code": error.problem.as_ref().map(|p| &p.code),
+                    "request_id": error.problem.as_ref().and_then(|p| p.request_id.as_ref()),
+                }
             });
             print_redacted(&envelope(command, Status::Failed, &data));
         } else {
@@ -170,6 +184,17 @@ impl Ui {
             );
             if let Some(fix) = &error.fix {
                 let _ = write!(text, "\n  {} {fix}", self.paint(Style::Dim, "fix:"));
+            }
+            if let Some(problem) = &error.problem {
+                let _ = write!(
+                    text,
+                    "\n  {} {}",
+                    self.paint(Style::Dim, "code:"),
+                    problem.code
+                );
+                if let Some(id) = &problem.request_id {
+                    let _ = write!(text, " (request {id})");
+                }
             }
             eprintln_redacted(&text);
         }

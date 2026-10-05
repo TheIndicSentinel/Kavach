@@ -10,10 +10,7 @@ pub fn compile_input_validator(schema: &Value) -> Result<Validator, EvaluateErro
 }
 
 pub fn validate_input(validator: &Validator, input: &Value) -> Result<(), EvaluateError> {
-    let errors: Vec<String> = validator
-        .iter_errors(input)
-        .map(|e| e.to_string())
-        .collect();
+    let errors: Vec<String> = validator.iter_errors(input).map(|e| describe(&e)).collect();
     if errors.is_empty() {
         Ok(())
     } else {
@@ -22,6 +19,32 @@ pub fn validate_input(validator: &Validator, input: &Value) -> Result<(), Evalua
             errors.join("; ")
         )))
     }
+}
+
+/// One schema failure, without the value that failed (the caller's data,
+/// which a refusal must not repeat): the field's path, when it is plain,
+/// and the schema keyword it failed.
+fn describe(error: &jsonschema::ValidationError<'_>) -> String {
+    let path = error.instance_path.to_string();
+    let field = if path.is_empty() {
+        "the input".to_string()
+    } else if path.len() <= 128
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_-.".contains(&b))
+    {
+        path
+    } else {
+        "a field whose name is not an identifier".to_string()
+    };
+    if let jsonschema::error::ValidationErrorKind::Required { property } = &error.kind {
+        if let Some(name) = property.as_str() {
+            return format!("{field}: missing required {name}");
+        }
+    }
+    let schema_path = error.schema_path.to_string();
+    let keyword = schema_path.rsplit('/').next().unwrap_or_default();
+    format!("{field} fails {keyword}")
 }
 
 pub fn validate_supplier_controls(model: &ModelRecord) -> Result<(), EvaluateError> {
@@ -61,4 +84,34 @@ pub fn validate_model_binding(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn schema_failures_name_the_field_never_the_value() {
+        let validator = compile_input_validator(&json!({
+            "type": "object",
+            "required": ["income"],
+            "properties": {
+                "income": { "type": "integer", "minimum": 0 },
+                "pan": { "type": "string", "maxLength": 3 }
+            },
+            "additionalProperties": { "type": "integer" }
+        }))
+        .unwrap();
+        let input = json!({
+            "pan": "ABCPE1234F",
+            "ABCPE1234F' OR 1=1": "+91 98765 43210"
+        });
+        let message = validate_input(&validator, &input).unwrap_err().to_string();
+        for leak in ["ABCPE1234F", "98765", "OR 1=1"] {
+            assert!(!message.contains(leak), "{message}");
+        }
+        assert!(message.contains("missing required income"), "{message}");
+        assert!(message.contains("/pan fails maxLength"), "{message}");
+    }
 }

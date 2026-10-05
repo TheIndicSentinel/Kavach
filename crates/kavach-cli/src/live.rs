@@ -29,13 +29,6 @@ fn fresh_id(prefix: &str) -> String {
     format!("{prefix}-{}", uuid::Uuid::new_v4())
 }
 
-/// The body of a refusal (`{"error": ...}`), or the status line.
-fn refusal(status: StatusCode, body: &Value) -> String {
-    body["error"]
-        .as_str()
-        .map_or_else(|| status.to_string(), str::to_string)
-}
-
 /// A mandate the stack issued.
 pub struct Issued {
     pub mandate_id: String,
@@ -72,9 +65,10 @@ async fn issue(
     let status = response.status();
     let body: Value = response.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
-        return Err(CliError::new(
+        return Err(crate::problem::error(
             "the stack refused the event",
-            refusal(status, &body),
+            status.as_u16(),
+            &body,
         ));
     }
     Ok(Issued {
@@ -198,9 +192,10 @@ pub async fn call(ui: &Ui, dir: &Path, ask: &CallAsk<'_>) -> Result<i32, CliErro
     let status = response.status();
     let reply: Value = response.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
-        let mut error = CliError::new(
+        let mut error = crate::problem::error(
             format!("the gateway refused the call ({})", status.as_u16()),
-            refusal(status, &reply),
+            status.as_u16(),
+            &reply,
         );
         if status == StatusCode::BAD_REQUEST {
             error.code = EXIT_USAGE;
