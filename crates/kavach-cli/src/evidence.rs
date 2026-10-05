@@ -16,9 +16,12 @@ use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use kavach_evidence_cli::postgres::{run_export, Signing, Target};
+use kavach_evidence_cli::export::{ExportRequest, Snapshot, DEFAULT_PAGE};
+use kavach_evidence_cli::postgres::{export_key, run_export, Signing, Target};
 use kavach_evidence_cli::verify::{load_trusted_keys, verify_dir, Verdict, VerifyRequest};
-use kavach_ports::agent_evidence::is_dev_key;
+use kavach_ports::agent_evidence::{is_dev_key, AgentEvidenceStore};
+use kavach_ports::bundle::Exporter;
+use kavach_ports::checkpoint::{CheckpointStore, Scope, CHAIN_AGENT_DECISIONS};
 use serde_json::json;
 
 use crate::output::{CliError, Status, Style, Ui};
@@ -118,6 +121,106 @@ pub async fn export(
         Status::Ok
     };
     Ok(ui.finish("evidence export", status, &data, &human))
+}
+
+/// `kavach dev up --export-on-exit`: the running stack's chain as a bundle,
+/// written as it stops (Ctrl-C or SIGTERM; a killed stack writes nothing).
+/// A checkpoint covers every record first. Signed with the auditor's dev
+/// export key, so it verifies only as a development bundle.
+pub async fn export_on_exit(
+    project: &Project,
+    state: &kavach_api::AppState,
+    out: &Path,
+) -> Result<String, CliError> {
+    let fail = |e: &dyn std::fmt::Display| {
+        CliError::new(
+            format!("the evidence could not be exported to {}", out.display()),
+            e,
+        )
+    };
+    let dataplane = state
+        .dataplane()
+        .ok_or_else(|| fail(&"the stack has no agent surfaces"))?;
+    let checkpoint = dataplane
+        .checkpointer()
+        .checkpoint_now(std::time::Instant::now())
+        .await;
+    let store = dataplane.core().store();
+    let tenant = kavach_devkit::TENANT;
+    let records = store
+        .records(tenant, PARTITION)
+        .await
+        .map_err(|e| fail(&e.message))?;
+    let mut outcomes = Vec::new();
+    for record in &records {
+        if let Some(credential) = &record.payload.credential_id {
+            if let Some(outcome) = store
+                .outcome(tenant, credential)
+                .await
+                .map_err(|e| fail(&e.message))?
+            {
+                outcomes.push((record.payload.seq, outcome));
+            }
+        }
+    }
+    let scope = Scope {
+        tenant_id: tenant,
+        partition_id: PARTITION,
+        chain: CHAIN_AGENT_DECISIONS,
+    };
+    let mut checkpoints = Vec::new();
+    loop {
+        let after = checkpoints
+            .last()
+            .map_or(0, |c: &kavach_ports::checkpoint::Checkpoint| c.payload.seq);
+        let page = store
+            .list(scope, after, DEFAULT_PAGE)
+            .await
+            .map_err(|e| fail(&e.message))?;
+        if page.is_empty() {
+            break;
+        }
+        checkpoints.extend(page);
+    }
+    let signer = export_key(&Signing::Key {
+        key_dir: project.bundle().join("auditor"),
+        key_id: kavach_devkit::EXPORT_KID.into(),
+    })
+    .map_err(|e| fail(&e))?;
+    let summary = kavach_evidence_cli::export::export(
+        &mut Snapshot::new(records, outcomes, checkpoints),
+        ExportRequest {
+            scope,
+            after_checkpoint: None,
+            out,
+            signer: signer.as_deref(),
+            exported_at: Utc::now(),
+            exporter: Exporter {
+                tool: "kavach dev up".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
+            },
+            page: DEFAULT_PAGE,
+        },
+    )
+    .await
+    .map_err(|e| fail(&e))?;
+    let p = &summary.manifest.payload;
+    let mut line = format!(
+        "evidence exported to {}: {} records, {} outcomes, {} checkpoints, signed with {} (a development bundle)",
+        out.display(),
+        p.files.records.count,
+        p.files.outcomes.count,
+        p.files.checkpoints.count,
+        kavach_devkit::EXPORT_KID,
+    );
+    if summary.uncovered_records > 0 {
+        let _ = write!(
+            line,
+            "; {} records not covered by a checkpoint ({:?})",
+            summary.uncovered_records, checkpoint.tick
+        );
+    }
+    Ok(line)
 }
 
 pub fn verify(

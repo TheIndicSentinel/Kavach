@@ -50,6 +50,87 @@ pub trait ExportSource {
     ) -> impl Future<Output = Result<Vec<Checkpoint>, PortError>>;
 }
 
+/// A chain already read into memory: what a store without paging (the
+/// in-memory development store) exports from.
+pub struct Snapshot {
+    head: Option<(i64, String)>,
+    records: Vec<AgentDecisionRecord>,
+    /// Each outcome with its record's `seq`, in `seq` order.
+    outcomes: Vec<(i64, OutcomeRecord)>,
+    checkpoints: Vec<Checkpoint>,
+}
+
+impl Snapshot {
+    /// `records` and `checkpoints` in `seq` order; `outcomes` keyed by
+    /// their record's `seq`.
+    #[must_use]
+    pub fn new(
+        records: Vec<AgentDecisionRecord>,
+        mut outcomes: Vec<(i64, OutcomeRecord)>,
+        checkpoints: Vec<Checkpoint>,
+    ) -> Self {
+        outcomes.sort_by_key(|(seq, _)| *seq);
+        Self {
+            head: records.last().map(|r| (r.payload.seq, r.hash.clone())),
+            records,
+            outcomes,
+            checkpoints,
+        }
+    }
+}
+
+impl ExportSource for Snapshot {
+    fn head(&mut self) -> impl Future<Output = Result<Option<(i64, String)>, PortError>> {
+        std::future::ready(Ok(self.head.clone()))
+    }
+
+    fn records(
+        &mut self,
+        after_seq: i64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<AgentDecisionRecord>, PortError>> {
+        let page = self
+            .records
+            .iter()
+            .filter(|r| r.payload.seq > after_seq)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        std::future::ready(Ok(page))
+    }
+
+    fn outcomes(
+        &mut self,
+        after_seq: i64,
+        through_seq: i64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<(i64, OutcomeRecord)>, PortError>> {
+        let page = self
+            .outcomes
+            .iter()
+            .filter(|(seq, _)| *seq > after_seq && *seq <= through_seq)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        std::future::ready(Ok(page))
+    }
+
+    fn checkpoints(
+        &mut self,
+        after_seq: i64,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<Checkpoint>, PortError>> {
+        let page = self
+            .checkpoints
+            .iter()
+            .filter(|c| c.payload.seq > after_seq)
+            .take(limit as usize)
+            .cloned()
+            .collect();
+        std::future::ready(Ok(page))
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExportError {
     #[error(transparent)]

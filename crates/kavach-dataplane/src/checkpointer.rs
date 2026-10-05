@@ -195,7 +195,17 @@ impl<S: CheckpointStore> Checkpointer<S> {
     /// One step. `now` is monotonic time (it only measures intervals; the
     /// checkpoint itself is dated by the trusted clock).
     pub async fn tick(&self, now: Instant) -> TickReport {
-        let tick = self.step(now).await;
+        self.run(now, false).await
+    }
+
+    /// A checkpoint of every uncovered record now, due or not (a stack
+    /// about to stop and export). Trusted time and signing still apply.
+    pub async fn checkpoint_now(&self, now: Instant) -> TickReport {
+        self.run(now, true).await
+    }
+
+    async fn run(&self, now: Instant, force: bool) -> TickReport {
+        let tick = self.step(now, force).await;
         let mut state = self.state();
         if matches!(tick, Tick::Covered | Tick::Written { .. }) {
             state.last_covered = now;
@@ -216,7 +226,7 @@ impl<S: CheckpointStore> Checkpointer<S> {
         TickReport { tick, stall }
     }
 
-    async fn step(&self, now: Instant) -> Tick {
+    async fn step(&self, now: Instant, force: bool) -> Tick {
         let skipped = |reason, detail: String| Tick::Skipped { reason, detail };
         let head = match self.store.head(self.scope()).await {
             Ok(head) => head,
@@ -252,7 +262,8 @@ impl<S: CheckpointStore> Checkpointer<S> {
         if uncovered == 0 {
             return Tick::Covered;
         }
-        let due = uncovered >= self.policy.every_records
+        let due = force
+            || uncovered >= self.policy.every_records
             || now.saturating_duration_since(since) >= self.policy.every;
         if !due {
             return Tick::Waiting;

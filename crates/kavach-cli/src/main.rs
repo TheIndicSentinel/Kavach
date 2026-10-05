@@ -294,6 +294,11 @@ enum DevCommand {
         /// Start, print where everything is, and exit (for scripts and CI).
         #[arg(long, hide = true)]
         exit_when_ready: bool,
+        /// When stopped (Ctrl-C or SIGTERM), write the evidence chain to this
+        /// new directory as a development bundle, after a final checkpoint.
+        /// Works with the memory store. A killed stack writes nothing.
+        #[arg(long, value_name = "DIR")]
+        export_on_exit: Option<PathBuf>,
     },
     /// Move the running stack's fixed clock forward (`dev up --clock` only).
     /// HH:MM is its next occurrence after the stack's time; RFC 3339 as given.
@@ -448,6 +453,7 @@ async fn dev_command(
             at,
             clock,
             exit_when_ready,
+            export_on_exit,
         } => (
             "dev up",
             dev::up(
@@ -456,6 +462,7 @@ async fn dev_command(
                 at.as_deref(),
                 clock.as_deref(),
                 *exit_when_ready,
+                export_on_exit.as_deref(),
             )
             .await,
         ),

@@ -121,6 +121,8 @@ This evidence is hash-chained but **not signed** (v1). Anyone with write access 
 
 `kavach evidence export <dir>` writes the agent evidence chain as a bundle (`docs/EVIDENCE_BUNDLE.md`), signed with the auditor's export key in `.kavach/auditor/`, never a key of the stack. It needs `[database]` in `kavach.toml`: the memory store keeps nothing once `dev up` stops. A dev project reads with a role that can write, which a production export (`kavach-evidence export`, as `kavach_auditor`) refuses; the output says so.
 
+Without Postgres, `kavach dev up --export-on-exit <dir>` writes the same kind of bundle when the stack stops (Ctrl-C or SIGTERM), after a final checkpoint that covers every record. It refuses a directory that already exists, before anything starts. A stack that is killed (SIGKILL, a crash) writes nothing. Its records and the bundle are signed with dev keys, so it verifies only as a development bundle.
+
 `kavach evidence verify <dir>` checks a bundle offline against trusted keys (`.kavach/auditor/trusted-keys.json`, or `--keys`; never the bundle's). What is **not** protected comes first, then what verified. Exit 0 verified, 2 verified but not fully protected (`--allow-warnings` accepts that), 1 failed. Dev keys are accepted only when the trusted keys are themselves dev keys, and the output says "development". Pass `--checkpoint` with a checkpoint you kept off-host to detect a chain cut short or rewritten by someone holding the keys.
 
 ### Known attacks (`kavach attack`)

@@ -114,7 +114,9 @@ fn require_export_key(key_id: &str) -> Result<(), CommandError> {
     }
 }
 
-fn export_key(signing: &Signing) -> Result<Option<Box<dyn EvidenceSigner>>, CommandError> {
+/// The signer for `signing`: only an export key (`export-…`) signs a
+/// bundle; `None` for an unsigned one.
+pub fn export_key(signing: &Signing) -> Result<Option<Box<dyn EvidenceSigner>>, CommandError> {
     match signing {
         Signing::Unsigned => Ok(None),
         Signing::Key { key_dir, key_id } => {

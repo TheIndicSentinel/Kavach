@@ -1164,3 +1164,116 @@ fn evidence_export_from_postgres_verifies_and_a_changed_copy_fails() {
         String::from_utf8_lossy(&out.stdout)
     );
 }
+
+/// Sends `signal` to the stack and waits for it to exit.
+fn stop_with(stack: &mut Stack, signal: &str) -> std::process::ExitStatus {
+    let pid = stack.0.id().to_string();
+    assert!(Command::new("kill")
+        .args([signal, &pid])
+        .status()
+        .unwrap()
+        .success());
+    for _ in 0..120 {
+        if let Some(status) = stack.0.try_wait().unwrap() {
+            return status;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    panic!("dev up did not stop");
+}
+
+/// `dev up --export-on-exit`: a stack stopped with SIGTERM leaves a signed
+/// development bundle whose every record a checkpoint covers; it verifies
+/// only as a development bundle, and a changed copy fails. A killed stack
+/// leaves nothing; an existing directory is refused before anything starts.
+#[test]
+fn dev_up_exports_a_development_bundle_when_stopped() {
+    let dir = scratch("export-on-exit");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    use_free_ports(&dir);
+    let bundle = dir.join("bundle");
+    let target = bundle.to_str().unwrap();
+
+    // An existing directory: refused, nothing started.
+    std::fs::create_dir_all(dir.join("taken")).unwrap();
+    let taken = kavach(
+        &dir,
+        &[
+            "dev",
+            "up",
+            "--export-on-exit",
+            dir.join("taken").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(taken.status.code(), Some(64));
+    assert!(!dir.join(".kavach/run.json").exists());
+
+    let mut stack = dev_up(&dir, &["--clock", "11:00", "--export-on-exit", target]);
+    assert_eq!(
+        kavach(&dir, &["call", "send_reminder", "--issue-mandate"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let blocked = kavach(
+        &dir,
+        &[
+            "call",
+            "send_reminder",
+            "--issue-mandate",
+            "-p",
+            "channel=sms",
+        ],
+    );
+    assert_eq!(blocked.status.code(), Some(1));
+    assert!(stop_with(&mut stack, "-TERM").success());
+
+    // Verified, every record checkpointed, development only.
+    let out = kavach(&dir, &["--json", "evidence", "verify", target]);
+    let doc = json(&out);
+    assert!(matches!(out.status.code(), Some(0 | 2)), "{doc}");
+    assert_eq!(doc["development"], true, "{doc}");
+    assert_eq!(doc["verified"]["signed_with"], "dev-export-1", "{doc}");
+    let kinds: Vec<&str> = doc["not_protected"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|f| f["kind"].as_str())
+        .collect();
+    assert_eq!(kinds, ["no_kept_checkpoint"], "{doc}");
+    let refused =
+        kavach_evidence_cli::verify::verify_dir(&kavach_evidence_cli::verify::VerifyRequest {
+            bundle: &bundle,
+            keys: &dir.join(".kavach/auditor/trusted-keys.json"),
+            expect_checkpoint: None,
+            dev: false,
+            now: chrono::Utc::now(),
+        });
+    assert!(refused.is_err(), "a production verifier refuses dev keys");
+
+    let records = std::fs::read_to_string(bundle.join("records.jsonl")).unwrap();
+    std::fs::write(
+        bundle.join("records.jsonl"),
+        records.replacen("send_reminder", "send_remindex", 1),
+    )
+    .unwrap();
+    assert_eq!(
+        kavach(&dir, &["evidence", "verify", target]).status.code(),
+        Some(1)
+    );
+
+    // Killed: no bundle.
+    let killed = dir.join("killed");
+    let mut stack = dev_up(
+        &dir,
+        &[
+            "--clock",
+            "11:00",
+            "--export-on-exit",
+            killed.to_str().unwrap(),
+        ],
+    );
+    kavach(&dir, &["call", "send_reminder", "--issue-mandate"]);
+    assert!(!stop_with(&mut stack, "-KILL").success());
+    assert!(!killed.exists(), "a killed stack writes nothing");
+}
