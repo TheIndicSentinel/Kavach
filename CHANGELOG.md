@@ -39,6 +39,12 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- `kavach demo` (CLI milestone C5) shows what Kavach does in about a minute, at any hour.
+  - **Setup:** a throwaway project (deleted afterwards, also on Ctrl-C; `--keep` to keep it) and a dev stack on free loopback ports with a fixed clock at 11:00 IST.
+  - **The story,** told with the real commands, each shown: a mandate, a delivered reminder, `why` with the signature checked, a raw phone number blocked, another borrower blocked, the clock moved to 20:30 and the reminder blocked, the offline what-if, a credit decision whose shadow-mode PASS hides a would-be BLOCK, and the attack catalog refused.
+  - **Each step checks its own result:** exit 0 if every step behaved as scripted, 1 if one didn't.
+  - **Options:** `--step` pauses on a terminal; `--no-attack` leaves out the last step.
+  - **The 20× acceptance gate** runs it.
 - Attack catalog version 3: **out of hours** (the clock moves to 20:30, BLOCK `contact-window`) and **daily cap** (the clock moves to 11:00 on a fresh day, three allowed reminders as declared setup, then the fourth must BLOCK `contact-daily-cap`).
   - **Clock:** both need a fixed development clock. Without one they are reported as skipped, never passed.
   - **Setup:** reported separately and not judged. Ground truth counts only each attack's judged window.
