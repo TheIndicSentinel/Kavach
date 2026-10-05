@@ -41,6 +41,25 @@ cargo test --workspace
 
 The tests create a `kavach_runtime` role to check least-privilege access. Use a throwaway database, never a shared one.
 
+## 3b. A one-minute tour (`kavach demo`)
+
+```bash
+cargo run -q -p kavach-cli -- demo     # or: kavach demo
+```
+
+`kavach demo` tells the story with the real commands, each shown so you can repeat it:
+1. a mandate from a system-of-record event;
+2. a reminder allowed at 11:00 and delivered, without the agent seeing the number;
+3. `why` with the record's signature checked;
+4. a raw phone number blocked;
+5. another borrower blocked;
+6. the clock moved to 20:30 and the same reminder blocked;
+7. the offline what-if;
+8. a credit decision whose shadow-mode PASS hides a would-be BLOCK;
+9. the attack catalog refused.
+
+It runs in a throwaway project (deleted afterwards; `--keep` to keep it) with a dev stack on free loopback ports and a fixed clock, so it works at any hour, and nothing leaves the machine. `--step` pauses between steps on a terminal, and `--no-attack` leaves out the last step. It exits 0 if every step behaved as scripted and 1 if one didn't, which means a regression. The 20× acceptance gate runs it.
+
 ## 4. A development bundle (`kavach-dev`)
 
 `kavach-dev generate` writes everything a local stack needs: `dev-` keys, the signed tool registry, a dev CA and provider certificate, mandate config, consents, synthetic references, providers, JWKS and agent and operator tokens, plus a `kavach.env` with every `kavach-api` setting. Each directory is meant for one consumer (agents get only their token).

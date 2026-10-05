@@ -3,7 +3,7 @@ name: Acceptance gate
 # PRD: all acceptance scenarios pass "20 consecutive runs without flakiness".
 # Runs the acceptance suite (including the attack catalog, in process, on
 # memory and Postgres), the gateway end-to-end tests and `kavach attack`
-# against a real dev stack (the same catalog over HTTP) 20 times, nightly
+# against a real dev stack (the same catalog over HTTP) and `kavach demo` 20 times, nightly
 # and on demand (run it before tagging a release). Not a required PR check
 # (too slow per PR); a failure here is a flake to fix.
 on:
@@ -67,6 +67,8 @@ jobs:
               echo "::error::flaky or failing on run $i of $RUNS"; exit 1; }
             cargo test -q -p kavach-cli --test cli attack_catalog_is_refused_against_a_dev_stack || {
               echo "::error::kavach attack flaky or failing on run $i of $RUNS"; exit 1; }
+            cargo test -q -p kavach-cli --test cli demo_runs_every_step_as_scripted || {
+              echo "::error::kavach demo flaky or failing on run $i of $RUNS"; exit 1; }
             echo "::endgroup::"
           done
           echo "$RUNS consecutive clean runs"
