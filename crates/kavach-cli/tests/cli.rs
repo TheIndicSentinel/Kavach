@@ -760,7 +760,8 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
     // No stack: an error, nothing attacked.
     assert_eq!(kavach(&dir, &["attack"]).status.code(), Some(1));
 
-    let stack = dev_up(&dir, &["--at", "11:00"]);
+    // A fixed clock, starting outside contact hours: the run moves it.
+    let stack = dev_up(&dir, &["--clock", "20:30"]);
     let out = kavach(&dir, &["--json", "attack"]);
     let doc = json(&out);
     assert_eq!(out.status.code(), Some(0), "{doc}");
@@ -768,6 +769,7 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
     assert_eq!(doc["breached"], false);
     assert_eq!(doc["credentials_minted"], 0);
     assert_eq!(doc["messages_delivered"], 0);
+    assert_eq!(doc["setup_messages"], 3, "the daily-cap setup, declared");
     let outcomes = doc["outcomes"].as_array().unwrap();
     assert_eq!(outcomes.len(), count);
     for o in outcomes {
@@ -775,7 +777,7 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
     }
     drop(stack);
 
-    // Outside contact hours: inconclusive (2), and it says why.
+    // Outside contact hours on a clock it cannot move: inconclusive (2).
     let _stack = dev_up(&dir, &["--at", "20:30"]);
     let out = kavach(&dir, &["--json", "attack"]);
     let doc = json(&out);
