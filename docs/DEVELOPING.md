@@ -117,6 +117,12 @@ kavach why adr:default:0:1 --bundle ./export      # offline, from an evidence bu
 
 This evidence is hash-chained but **not signed** (v1). Anyone with write access to the database could rewrite a record and rehash the chain, so the output says "hash matches the content; not signed, so this does not prove the record wasn't rewritten". `--export <file>` checks the whole chain of a decision event export first, and reports a break before showing anything. There are no counterfactuals for credit decisions. A record written before schema 1.1.0 and read back from Postgres may fail only because storage dropped its nanoseconds. `why` then says it **cannot be re-checked (legacy precision)** and exits 2: never "verified", and not called tampered either. Re-baseline such chains (export, then start a fresh one).
 
+### Evidence bundles (`kavach evidence`)
+
+`kavach evidence export <dir>` writes the agent evidence chain as a bundle (`docs/EVIDENCE_BUNDLE.md`), signed with the auditor's export key in `.kavach/auditor/`, never a key of the stack. It needs `[database]` in `kavach.toml`: the memory store keeps nothing once `dev up` stops. A dev project reads with a role that can write, which a production export (`kavach-evidence export`, as `kavach_auditor`) refuses; the output says so.
+
+`kavach evidence verify <dir>` checks a bundle offline against trusted keys (`.kavach/auditor/trusted-keys.json`, or `--keys`; never the bundle's). What is **not** protected comes first, then what verified. Exit 0 verified, 2 verified but not fully protected (`--allow-warnings` accepts that), 1 failed. Dev keys are accepted only when the trusted keys are themselves dev keys, and the output says "development". Pass `--checkpoint` with a checkpoint you kept off-host to detect a chain cut short or rewritten by someone holding the keys.
+
 ### Known attacks (`kavach attack`)
 
 `kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 3, 22 attacks) is the same one the acceptance suite runs in CI.

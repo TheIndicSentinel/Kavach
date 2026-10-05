@@ -45,5 +45,8 @@ tokio = { workspace = true, features = ["signal", "time"] }
 toml.workspace = true
 uuid.workspace = true
 
+[dev-dependencies]
+kavach-storage = { workspace = true, features = ["test-support"] }
+
 [lints]
 workspace = true

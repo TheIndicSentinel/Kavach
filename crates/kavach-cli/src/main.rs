@@ -12,6 +12,7 @@ mod counterfactual;
 mod demo;
 mod dev;
 mod doctor;
+mod evidence;
 mod init;
 mod live;
 mod output;
@@ -137,6 +138,9 @@ enum Command {
     /// Policy suites.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Evidence bundles: export the agent evidence chain, verify a bundle.
+    #[command(subcommand)]
+    Evidence(EvidenceCommand),
     /// What Kavach does, in about a minute, at any hour: a throwaway project
     /// and dev stack (fixed clock, loopback, synthetic data), a scripted
     /// story told with the real commands. Exit 0 if every step behaved as
@@ -194,6 +198,47 @@ enum PolicyCommand {
         /// A suite file or a directory of them (default: policy-tests/ in
         /// the project).
         path: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum EvidenceCommand {
+    /// Export the agent evidence chain as a bundle (docs/EVIDENCE_BUNDLE.md),
+    /// signed with the auditor's export key. Needs [database] in
+    /// kavach.toml: the memory store keeps nothing. Exit 0, or 2 if the
+    /// bundle is unsigned or has records no checkpoint covers yet.
+    #[command(
+        after_help = "Examples:\n  kavach evidence export ./export\n  kavach evidence export ./later --after 120   # only records after the checkpoint at 120"
+    )]
+    Export {
+        /// The directory to create (it must not exist).
+        out: PathBuf,
+        /// Only the records after the checkpoint at this record.
+        #[arg(long, value_name = "SEQ")]
+        after: Option<i64>,
+        /// Write the bundle without a signature (the verifier says so).
+        #[arg(long)]
+        unsigned: bool,
+    },
+    /// Verify a bundle offline with keys you trust: what is NOT protected is
+    /// shown first. Exit 0 verified, 1 failed, 2 verified but not fully
+    /// protected.
+    #[command(
+        after_help = "Examples:\n  kavach evidence verify ./export\n  kavach evidence verify ./export --checkpoint kept.json --keys trusted-keys.json"
+    )]
+    Verify {
+        /// The bundle directory.
+        bundle: PathBuf,
+        /// Trusted keys (default: .kavach/auditor/trusted-keys.json). Never
+        /// taken from the bundle.
+        #[arg(long, value_name = "FILE")]
+        keys: Option<PathBuf>,
+        /// A checkpoint you kept off-host, to compare the chain with.
+        #[arg(long, value_name = "FILE")]
+        checkpoint: Option<PathBuf>,
+        /// Exit 0 even when the bundle verifies but is not fully protected.
+        #[arg(long)]
+        allow_warnings: bool,
     },
 }
 
@@ -332,6 +377,7 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             "policy test",
             policy_test::run(&ui, &cli.project, path.as_deref()).await,
         ),
+        Command::Evidence(command) => evidence_command(ui, cli, command).await,
         Command::Sor(SorCommand::Event {
             subject,
             agent,
@@ -406,6 +452,39 @@ async fn attack_command(ui: Ui, cli: &Cli, list: bool) -> Result<i32, CliError> 
 
 /// `kavach why`: an evidence id (UUID) is an evaluate decision; anything
 /// else is an agent decision record.
+async fn evidence_command(
+    ui: Ui,
+    cli: &Cli,
+    command: &EvidenceCommand,
+) -> (&'static str, Result<i32, CliError>) {
+    match command {
+        EvidenceCommand::Export {
+            out,
+            after,
+            unsigned,
+        } => (
+            "evidence export",
+            evidence::export(&ui, &cli.project, out, *after, *unsigned).await,
+        ),
+        EvidenceCommand::Verify {
+            bundle,
+            keys,
+            checkpoint,
+            allow_warnings,
+        } => (
+            "evidence verify",
+            evidence::verify(
+                ui,
+                &cli.project,
+                bundle,
+                keys.as_deref(),
+                checkpoint.as_deref(),
+                *allow_warnings,
+            ),
+        ),
+    }
+}
+
 async fn why_dispatch(
     ui: Ui,
     cli: &Cli,
