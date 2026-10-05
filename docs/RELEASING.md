@@ -13,7 +13,7 @@ Kavach is pre-alpha. Versions are `0.1.0-alpha.N` until v0.1 is declared. **Noth
 | `*-<version>-<target>.cdx.json` | One CycloneDX 1.5 SBOM per binary and target |
 | `SHA256SUMS` | Checksums of all of the above |
 
-Targets: `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (built on Ubuntu 22.04, so glibc 2.35 or later), `aarch64-apple-darwin`, and `x86_64-apple-darwin` (cross-built on Apple silicon). Windows is not built: the dev stack relies on Unix signals and is not tested there. The API server ships later, as a container image.
+Targets: `x86_64-unknown-linux-gnu` and `aarch64-unknown-linux-gnu` (built on Ubuntu 22.04, needing glibc 2.34 or later), `aarch64-apple-darwin`, and `x86_64-apple-darwin` (cross-built on Apple silicon). Windows is not built: the dev stack relies on Unix signals and is not tested there. The API server ships later, as a container image.
 
 Every file gets **SLSA build provenance** (`actions/attest-build-provenance`). It is signed with GitHub's Sigstore identity for this workflow and recorded in Sigstore's public transparency log.
 

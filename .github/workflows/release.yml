@@ -59,7 +59,8 @@ jobs:
       fail-fast: true
       matrix:
         include:
-          # Built on 22.04, so the binaries need glibc 2.35 or later.
+          # Built on 22.04; the binaries need glibc 2.34 or later (measured: the
+          # highest symbol they use, printed by "Check the binaries").
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, native: true, docs: true }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, native: true, docs: false }
           - { target: aarch64-apple-darwin, os: macos-latest, native: true, docs: false }
@@ -223,7 +224,7 @@ jobs:
           cat >notes.md <<NOTES
           Kavach $VERSION: pre-alpha. Development use only: dev keys, loopback, synthetic data.
 
-          - Binaries: \`kavach\` (the developer CLI) and \`kavach-evidence\` (offline evidence verifier), for Linux (x86_64, arm64; glibc 2.35+) and macOS (Intel, Apple silicon). Not signed or notarized for macOS.
+          - Binaries: \`kavach\` (the developer CLI) and \`kavach-evidence\` (offline evidence verifier), for Linux (x86_64, arm64; glibc 2.34+) and macOS (Intel, Apple silicon). Not signed or notarized for macOS.
           - Check a download: \`sha256sum -c SHA256SUMS --ignore-missing\` and \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`.
           - One CycloneDX SBOM per binary and target. What changed: CHANGELOG.md.
           NOTES
