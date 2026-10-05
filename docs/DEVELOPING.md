@@ -2,7 +2,7 @@
 
 This is the setup for running and testing Kavach on your own machine. It is written for macOS and Linux; everything optional is marked so.
 
-> **Coming in the v0.1 developer preview:** `kavach init` will generate the development keys, signed tool registry, fixtures and configuration below in one step, and `kavach dev up` will start the whole stack. Until then, the steps here are manual.
+> **The quick way:** `kavach init` generates the development keys, signed tool registry, fixtures and configuration below in one step, and `kavach dev up` starts the whole stack (section 4). The manual steps here are what those commands do, for when you need one piece on its own.
 
 ## 1. Prerequisites
 
@@ -147,6 +147,16 @@ kavach attack                   # exit 0 all refused, 1 an attack succeeded or d
   - request ids start with `attack-`, so the BLOCK records are easy to tell apart in evidence.
 - **Not a security assessment:** passing means these known attacks fail. `--list --json` maps each attack to its `SECURITY_PROPERTIES.md` row and, where one applies, its `BYPASS_INVENTORY.md` row.
 - **The inbox listener:** `dev up` now serves the mock provider's inbox on a fifth loopback listener (`[listen] inspect`, default `127.0.0.1:8444`), which the attack run reads.
+
+### Shell completions and man pages
+
+Both are generated from the command tree, so they always match the binary:
+
+```bash
+kavach completions zsh > ~/.zfunc/_kavach        # also bash, fish, powershell, elvish
+kavach man | man -l -                            # kavach(1)
+kavach man --out ./man                           # one page per command: kavach-dev-up.1, ...
+```
 
 ### Policy tests (`kavach policy test`)
 
