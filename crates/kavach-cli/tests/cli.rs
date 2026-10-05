@@ -985,3 +985,138 @@ fn demo_runs_every_step_as_scripted() {
     assert!(!path.join(".kavach/run.json").exists(), "the stack stopped");
     std::fs::remove_dir_all(path).unwrap();
 }
+
+/// `kavach evidence verify`: what is not protected first, then what
+/// verified; a changed record fails; keys never come from the bundle.
+#[test]
+fn evidence_verify_reports_what_is_not_protected_and_fails_a_changed_bundle() {
+    let dir = scratch("evidence-verify");
+    let keys = vectors().join("bundle-v1.keys.json");
+    let verify = |bundle: &Path, extra: &[&str]| {
+        let mut args = vec![
+            "evidence",
+            "verify",
+            bundle.to_str().unwrap(),
+            "--keys",
+            keys.to_str().unwrap(),
+        ];
+        args.extend_from_slice(extra);
+        kavach(&dir, &args)
+    };
+
+    let out = verify(&vectors().join("bundle-v1"), &[]);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(out.status.code(), Some(2), "{text}");
+    let not_protected = text.find("NOT PROTECTED").expect("findings first");
+    assert!(not_protected < text.find("VERIFIED:").unwrap(), "{text}");
+    assert!(
+        !text.contains("development:"),
+        "test keys are not dev keys: {text}"
+    );
+
+    let out = verify(&vectors().join("bundle-v1"), &["--allow-warnings"]);
+    assert_eq!(out.status.code(), Some(0));
+    let mut args = vec!["--json"];
+    args.extend(["evidence", "verify"]);
+    let bundle = vectors().join("bundle-v1");
+    args.push(bundle.to_str().unwrap());
+    args.extend(["--keys", keys.to_str().unwrap()]);
+    let doc = json(&kavach(&dir, &args));
+    assert_eq!(doc["command"], "evidence verify");
+    assert_eq!(doc["status"], "warnings");
+    assert!(
+        !doc["not_protected"].as_array().unwrap().is_empty(),
+        "{doc}"
+    );
+
+    // One changed character in a record: it fails.
+    let copy = dir.join("changed");
+    std::fs::create_dir_all(&copy).unwrap();
+    for file in [
+        "manifest.json",
+        "records.jsonl",
+        "outcomes.jsonl",
+        "checkpoints.jsonl",
+    ] {
+        std::fs::copy(vectors().join("bundle-v1").join(file), copy.join(file)).unwrap();
+    }
+    let records = std::fs::read_to_string(copy.join("records.jsonl")).unwrap();
+    std::fs::write(
+        copy.join("records.jsonl"),
+        records.replacen("send_reminder", "send_remindex", 1),
+    )
+    .unwrap();
+    let out = verify(&copy, &[]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("RESULT: FAILED"));
+}
+
+/// `kavach evidence export` from a dev stack on Postgres, then verify:
+/// the exported bundle verifies against the project's auditor keys (dev),
+/// and a changed copy fails. Skipped without KAVACH_TEST_DATABASE_URL.
+#[test]
+fn evidence_export_from_postgres_verifies_and_a_changed_copy_fails() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let Some(url) = runtime.block_on(kavach_storage::testing::isolated_database_url()) else {
+        return;
+    };
+    let dir = scratch("evidence-export");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    use_free_ports(&dir);
+    let toml = dir.join("kavach.toml");
+    let text = std::fs::read_to_string(&toml).unwrap();
+    std::fs::write(&toml, format!("{text}\n[database]\nurl = \"{url}\"\n")).unwrap();
+
+    let stack = dev_up(&dir, &["--at", "11:00"]);
+    let called = kavach(
+        &dir,
+        &["--json", "call", "send_reminder", "--issue-mandate"],
+    );
+    assert_eq!(called.status.code(), Some(0), "{}", json(&called));
+
+    let bundle = dir.join("export");
+    let out = kavach(
+        &dir,
+        &["--json", "evidence", "export", bundle.to_str().unwrap()],
+    );
+    let doc = json(&out);
+    assert!(matches!(out.status.code(), Some(0 | 2)), "{doc}");
+    assert_eq!(doc["signed_with"], "dev-export-1", "{doc}");
+    assert!(doc["records"].as_u64().unwrap() >= 1, "{doc}");
+    drop(stack);
+
+    // A second export into the same directory is refused, not merged.
+    let again = kavach(&dir, &["evidence", "export", bundle.to_str().unwrap()]);
+    assert_eq!(again.status.code(), Some(1));
+
+    let out = kavach(
+        &dir,
+        &["--json", "evidence", "verify", bundle.to_str().unwrap()],
+    );
+    let doc = json(&out);
+    assert!(matches!(out.status.code(), Some(0 | 2)), "{doc}");
+    assert_eq!(doc["development"], true, "{doc}");
+    assert_eq!(doc["verified"]["signed_with"], "dev-export-1", "{doc}");
+
+    let records = std::fs::read_to_string(bundle.join("records.jsonl")).unwrap();
+    std::fs::write(
+        bundle.join("records.jsonl"),
+        records.replacen("send_reminder", "send_remindex", 1),
+    )
+    .unwrap();
+    let out = kavach(&dir, &["evidence", "verify", bundle.to_str().unwrap()]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}

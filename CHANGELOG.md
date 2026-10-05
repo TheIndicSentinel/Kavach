@@ -45,6 +45,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- `kavach evidence export` and `kavach evidence verify`: the agent evidence chain as a bundle from a dev project on Postgres, signed with the auditor's export key, and offline verification against trusted keys that never come from the bundle. Verification shows what is **not** protected first; exit 0 verified, 2 not fully protected, 1 failed. Same code as `kavach-evidence`.
 - **`docs/openapi.yaml`: the HTTP API in OpenAPI 3.1**, for the operator, agent and system-of-record listeners, with every request, response and problem schema. Tests hold it to the server: every response in the API integration tests is validated against it, a drift test compares its routes, methods and problem codes with the code, and CI lints it with a pinned Redocly CLI. Problem `type` URIs are relative and not meant to be dereferenced yet. The API does not serve the file, and gRPC is not covered.
 - The console shows a refusal's `detail` and `request_id`.
 - `kavach demo` (CLI milestone C5) shows what Kavach does in about a minute, at any hour.
