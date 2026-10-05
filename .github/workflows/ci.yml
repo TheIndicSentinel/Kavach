@@ -174,6 +174,34 @@ jobs:
       - name: Lint docs/openapi.yaml
         run: npx --yes @redocly/cli@1.25.0 lint --format=github-actions docs/openapi.yaml
 
+  cli-macos:
+    name: CLI on macOS
+    # The developer preview runs on developers' Macs: build the CLI there and
+    # run its suites, including dev up, kavach attack and kavach demo end to
+    # end (the stack runs in-process with --insecure-dev; macOS has no
+    # kernel clock status to prove synced time).
+    runs-on: macos-latest
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-10-01)
+        with:
+          toolchain: "1.98.0"
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+
+      # No Postgres service on macOS runners: the one Postgres-backed CLI test
+      # is skipped by name here (the Linux job runs it; the test helper fails
+      # rather than skips under CI, so this has to be explicit).
+      - name: cargo test (kavach-cli)
+        run: cargo test -p kavach-cli --locked -- --skip evidence_export_from_postgres
+
   jose-crosscheck:
     name: Credential interop (independent jose)
     runs-on: ubuntu-latest
