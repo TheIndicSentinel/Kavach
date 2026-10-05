@@ -53,7 +53,7 @@ default-members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 license = "Apache-2.0"
 authors = ["Kavach"]
@@ -69,27 +69,27 @@ cel = "0.14.5"
 serde_yaml = "0.9.34"
 walkdir = "2.5.0"
 jsonschema = "0.29.1"
-kavach-domain = { path = "crates/kavach-domain", version = "0.1.0" }
-kavach-policy = { path = "crates/kavach-policy", version = "0.1.0" }
-kavach-evidence = { path = "crates/kavach-evidence", version = "0.1.0" }
-kavach-evidence-cli = { path = "crates/kavach-evidence-cli", version = "0.1.0" }
-kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0" }
-kavach-storage = { path = "crates/kavach-storage", version = "0.1.0" }
-kavach-attacks = { path = "crates/kavach-attacks", version = "0.1.0" }
-kavach-dataplane = { path = "crates/kavach-dataplane", version = "0.1.0" }
-kavach-jws = { path = "crates/kavach-jws", version = "0.1.0" }
-kavach-credential = { path = "crates/kavach-credential", version = "0.1.0" }
-kavach-mock-provider = { path = "crates/kavach-mock-provider", version = "0.1.0" }
-kavach-devkit = { path = "crates/kavach-devkit", version = "0.1.0" }
-kavach-api = { path = "crates/kavach-api", version = "0.1.0" }
-kavach-telemetry = { path = "crates/kavach-telemetry", version = "0.1.0" }
-kavach-clocksync = { path = "crates/kavach-clocksync", version = "0.1.0" }
-kavach-auth = { path = "crates/kavach-auth", version = "0.1.0" }
-kavach-batch = { path = "crates/kavach-batch", version = "0.1.0" }
-kavach-ports = { path = "crates/kavach-ports", version = "0.1.0" }
-kavach-ports-testkit = { path = "crates/kavach-ports-testkit", version = "0.1.0" }
-kavach-keys = { path = "crates/kavach-keys", version = "0.1.0" }
-kavach-keys-pkcs11 = { path = "crates/kavach-keys-pkcs11", version = "0.1.0" }
+kavach-domain = { path = "crates/kavach-domain", version = "0.1.0-alpha.1" }
+kavach-policy = { path = "crates/kavach-policy", version = "0.1.0-alpha.1" }
+kavach-evidence = { path = "crates/kavach-evidence", version = "0.1.0-alpha.1" }
+kavach-evidence-cli = { path = "crates/kavach-evidence-cli", version = "0.1.0-alpha.1" }
+kavach-evaluate = { path = "crates/kavach-evaluate", version = "0.1.0-alpha.1" }
+kavach-storage = { path = "crates/kavach-storage", version = "0.1.0-alpha.1" }
+kavach-attacks = { path = "crates/kavach-attacks", version = "0.1.0-alpha.1" }
+kavach-dataplane = { path = "crates/kavach-dataplane", version = "0.1.0-alpha.1" }
+kavach-jws = { path = "crates/kavach-jws", version = "0.1.0-alpha.1" }
+kavach-credential = { path = "crates/kavach-credential", version = "0.1.0-alpha.1" }
+kavach-mock-provider = { path = "crates/kavach-mock-provider", version = "0.1.0-alpha.1" }
+kavach-devkit = { path = "crates/kavach-devkit", version = "0.1.0-alpha.1" }
+kavach-api = { path = "crates/kavach-api", version = "0.1.0-alpha.1" }
+kavach-telemetry = { path = "crates/kavach-telemetry", version = "0.1.0-alpha.1" }
+kavach-clocksync = { path = "crates/kavach-clocksync", version = "0.1.0-alpha.1" }
+kavach-auth = { path = "crates/kavach-auth", version = "0.1.0-alpha.1" }
+kavach-batch = { path = "crates/kavach-batch", version = "0.1.0-alpha.1" }
+kavach-ports = { path = "crates/kavach-ports", version = "0.1.0-alpha.1" }
+kavach-ports-testkit = { path = "crates/kavach-ports-testkit", version = "0.1.0-alpha.1" }
+kavach-keys = { path = "crates/kavach-keys", version = "0.1.0-alpha.1" }
+kavach-keys-pkcs11 = { path = "crates/kavach-keys-pkcs11", version = "0.1.0-alpha.1" }
 ed25519-dalek = "2.2.0"
 getrandom = "0.3.3"
 hex = "0.4.3"
@@ -103,10 +103,10 @@ ring = "0.17.14"
 x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }
 proptest = "1.11.0"
 peak_alloc = "0.3.0"
-kavach-mandate = { path = "crates/kavach-mandate", version = "0.1.0" }
+kavach-mandate = { path = "crates/kavach-mandate", version = "0.1.0-alpha.1" }
 serde_json_canonicalizer = "0.3.2"
 base64 = "0.22.1"
-kavach-authz = { path = "crates/kavach-authz", version = "0.1.0" }
+kavach-authz = { path = "crates/kavach-authz", version = "0.1.0-alpha.1" }
 chrono-tz = "0.10.4"
 cedar-policy-symcc = "=0.7.0"
 jsonwebtoken = { version = "9.3.1", default-features = false }

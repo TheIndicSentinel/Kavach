@@ -1,0 +1,233 @@
+name: Release
+
+# Builds the release files: `kavach` and `kavach-evidence` for four targets,
+# man pages and completions, one CycloneDX SBOM per binary and target,
+# SHA256SUMS, and SLSA build provenance for all of them.
+#
+# - A pull request that changes this workflow, or a manual run, is a DRY
+#   RUN: everything is built and attested, nothing is released.
+# - A tag `v<version>` (matching the workspace version) also creates a
+#   DRAFT, pre-release GitHub release with those files. Publishing the
+#   draft is a manual step, after name clearance (docs/RELEASING.md).
+#
+# Attestations from a public repository are recorded in Sigstore's public
+# transparency log, naming this repository and workflow.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read the workspace version (and match the tag, if any)
+        id: read
+        run: |
+          version=$(awk '/^\[workspace.package\]/{p=1} p && /^version *=/{gsub(/[" ]/,"",$0); split($0,a,"="); print a[2]; exit}' Cargo.toml)
+          test -n "$version"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "workspace version: $version"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [[ "$tag" != "$version" ]]; then
+              echo "::error::tag v$tag does not match the workspace version $version"
+              exit 1
+            fi
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: version
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Built on 22.04; the binaries need glibc 2.34 or later (measured: the
+          # highest symbol they use, printed by "Check the binaries").
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, native: true, docs: true }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, native: true, docs: false }
+          - { target: aarch64-apple-darwin, os: macos-latest, native: true, docs: false }
+          # Cross-built on Apple silicon; checked for its architecture only.
+          - { target: x86_64-apple-darwin, os: macos-latest, native: false, docs: false }
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-10-01)
+        with:
+          toolchain: "1.98.0"
+          targets: ${{ matrix.target }}
+
+      - name: Build (release, locked)
+        run: cargo build --release --locked --target "$TARGET" -p kavach-cli -p kavach-evidence-cli
+
+      - name: Check the binaries
+        run: |
+          out="target/$TARGET/release"
+          if [[ "${{ matrix.native }}" == "true" ]]; then
+            test "$("$out/kavach" --version)" = "kavach $VERSION"
+            "$out/kavach-evidence" --help >/dev/null
+          else
+            file "$out/kavach" | tee /dev/stderr | grep -q x86_64
+            file "$out/kavach-evidence" | grep -q x86_64
+          fi
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            echo "highest glibc symbol needed:"
+            objdump -T "$out/kavach" | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1
+          fi
+
+      - name: Package
+        run: |
+          name="kavach-$VERSION-$TARGET"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/kavach" "target/$TARGET/release/kavach-evidence" "dist/$name/"
+          cp LICENSE README.md CHANGELOG.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -rf "dist/$name"
+
+      # Man pages and completions are the same for every target: made once,
+      # from the binary that runs here.
+      - name: Man pages and completions
+        if: matrix.docs
+        run: |
+          kavach="target/$TARGET/release/kavach"
+          name="kavach-$VERSION-docs"
+          mkdir -p "dist/$name/completions"
+          "$kavach" man --out "dist/$name/man" >/dev/null
+          for shell in bash zsh fish powershell elvish; do
+            "$kavach" completions "$shell" >"dist/$name/completions/kavach.$shell"
+          done
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          rm -rf "dist/$name"
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-${{ matrix.target }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  sbom:
+    name: SBOMs (CycloneDX)
+    needs: version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust (pinned)
+        uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master (2026-10-01)
+        with:
+          toolchain: "1.98.0"
+
+      - name: Install cargo-cyclonedx (pinned)
+        run: cargo install cargo-cyclonedx --locked --version 0.5.9
+
+      - name: One SBOM per shipped binary and target (CycloneDX 1.5)
+        run: |
+          mkdir -p sbom
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo cyclonedx --format json --spec-version 1.5 --describe binaries --target "$target"
+            for crate in kavach-cli kavach-evidence-cli; do
+              for f in crates/$crate/*.cdx.json; do
+                mv "$f" "sbom/$(basename "$f" .cdx.json)-$VERSION-$target.cdx.json"
+              done
+            done
+            find crates -name '*.cdx.json' -delete
+          done
+          ls -l sbom
+          test "$(ls sbom | wc -l)" -eq 8
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: sbom/*.cdx.json
+          if-no-files-found: error
+
+  provenance:
+    name: Checksums and provenance
+    needs: [version, build, sbom]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # Sigstore signing for the attestation
+      attestations: write
+    steps:
+      - name: Collect the files
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: SHA256SUMS
+        working-directory: release
+        run: |
+          sha256sum -- * >SHA256SUMS
+          cat SHA256SUMS
+
+      - name: SLSA build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: release/*
+
+      - name: Upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-files
+          path: release/*
+          if-no-files-found: error
+
+  draft:
+    name: Draft release (tags only)
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, provenance]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the draft release
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Collect the files
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: release-files
+          path: release
+
+      - name: Create the draft (never published here)
+        run: |
+          cat >notes.md <<NOTES
+          Kavach $VERSION: pre-alpha. Development use only: dev keys, loopback, synthetic data.
+
+          - Binaries: \`kavach\` (the developer CLI) and \`kavach-evidence\` (offline evidence verifier), for Linux (x86_64, arm64; glibc 2.34+) and macOS (Intel, Apple silicon). Not signed or notarized for macOS.
+          - Check a download: \`sha256sum -c SHA256SUMS --ignore-missing\` and \`gh attestation verify <file> --repo $GITHUB_REPOSITORY\`.
+          - One CycloneDX SBOM per binary and target. What changed: CHANGELOG.md.
+          NOTES
+          gh release create "v$VERSION" release/* \
+            --draft --prerelease --verify-tag \
+            --title "Kavach $VERSION (pre-alpha)" --notes-file notes.md
