@@ -368,7 +368,7 @@ fn human(ui: Ui, data: &Value, record: &AgentDecisionRecord) -> String {
     let _ = writeln!(
         out,
         "  subject   pseudonym {}",
-        p.subject_pseudonym.chars().take(16).collect::<String>()
+        Digest(&p.subject_pseudonym.chars().take(16).collect::<String>())
     );
     let _ = writeln!(
         out,
