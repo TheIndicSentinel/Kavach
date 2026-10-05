@@ -39,6 +39,11 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- Attack catalog version 3: **out of hours** (the clock moves to 20:30, BLOCK `contact-window`) and **daily cap** (the clock moves to 11:00 on a fresh day, three allowed reminders as declared setup, then the fourth must BLOCK `contact-daily-cap`).
+  - **Clock:** both need a fixed development clock. Without one they are reported as skipped, never passed.
+  - **Setup:** reported separately and not judged. Ground truth counts only each attack's judged window.
+  - **No more inconclusive under `--clock`:** with a fixed clock, `kavach attack` moves it into contact hours instead of returning inconclusive.
+  - **The 20× gate** runs the CLI attack test under `--clock`.
 - `kavach dev up --clock <time>` gives a fixed development clock (`HH:MM` = IST on 2026-10-01, or RFC 3339), and `kavach dev clock <time>` moves it **forward only** (`HH:MM` = its next occurrence), so one stack can show "PASS at 11:00, BLOCK at 20:30" at any hour.
   - **API-side guards:** `kavach-api` refuses a dev clock unless `--insecure-dev` is on and every signing key (mandate, evidence, checkpoint, credential) is a `dev-` key, and never with an HSM.
   - **Endpoint:** `POST /v1/dev/clock` exists only on a stack with a fixed dev clock, needs the operator token (new Cedar action `set_dev_clock`, admins) and audits every move (`dev_clock_set`).

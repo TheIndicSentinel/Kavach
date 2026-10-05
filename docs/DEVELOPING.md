@@ -100,17 +100,21 @@ This evidence is hash-chained but **not signed** (v1). Anyone with write access 
 
 ### Known attacks (`kavach attack`)
 
-`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 2, 20 attacks) is the same one the acceptance suite runs in CI.
+`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 3, 22 attacks) is the same one the acceptance suite runs in CI.
 
 ```bash
 kavach attack --list            # the scope: every attack, nothing run
-kavach dev up --at 11:00        # in another terminal (inside contact hours)
+kavach dev up --clock 11:00     # in another terminal: a fixed clock the run can move
 kavach attack                   # exit 0 all refused, 1 an attack succeeded or drifted, 2 inconclusive
 ```
 
 - **Ground truth:** an attack **succeeded** if a credential was minted (an allowed gateway call, read from `/metrics`) or the mock provider's inbox changed, whatever the reply said.
 - **Drift:** an attack refused for a reason the catalog doesn't expect fails the run too. The catalog no longer matches the policies.
-- **Inconclusive (exit 2):** the stack is unhealthy, its trusted time is unsynced, or its clock is outside contact hours. The output says which.
+- **Inconclusive (exit 2):** the stack is unhealthy, its trusted time is unsynced, or its clock is outside contact hours and can't be moved (`--at`, or no dev clock). The output says which. With `--clock`, the run moves the clock to 11:00 itself.
+- **Clock attacks:** two attacks need a fixed clock (`dev up --clock`).
+  - **out of hours:** the clock moves to 20:30 for the call, then on to 11:00.
+  - **daily cap:** the clock moves to 11:00 on a fresh day, three allowed reminders are made as **declared setup**, and only the fourth call is judged. The setup is reported separately and sends three messages to the synthetic destination.
+  - **Without a fixed clock** both are reported as skipped, never as passed.
 - **Safety:**
   - loopback only, and only bundles with `dev-` keys;
   - at most ten requests a second;
