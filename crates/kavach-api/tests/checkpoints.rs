@@ -3,7 +3,9 @@
 //! decisions, and startup refuses an unsafe checkpoint key.
 
 mod agent_fixture;
+mod contract;
 
+use contract::router;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +13,7 @@ use std::time::Duration;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use ed25519_dalek::SigningKey;
-use kavach_api::{router, ApiConfig, AppState, EvidenceStoreKind};
+use kavach_api::{ApiConfig, AppState, EvidenceStoreKind};
 use kavach_ports::agent_evidence::{AgentEvidenceStore, DevKeys, SegmentStart};
 use kavach_ports::checkpoint::{
     verify_checkpoints, ChainSegment, CheckpointStore, Scope, CHAIN_AGENT_DECISIONS,

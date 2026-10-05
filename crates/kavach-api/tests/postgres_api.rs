@@ -3,13 +3,15 @@
 //! requests apply exactly once across replicas.
 
 mod common;
+mod contract;
 
+use contract::router;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use kavach_api::{router, AccessControlKind, ApiConfig, AppState, EvidenceStoreKind};
+use kavach_api::{AccessControlKind, ApiConfig, AppState, EvidenceStoreKind};
 use kavach_storage::testing::isolated_database_url;
 use tower::ServiceExt;
 

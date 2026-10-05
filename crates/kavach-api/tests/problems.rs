@@ -2,11 +2,13 @@
 //! correlation id, the standard headers, and never the caller's input.
 
 mod agent_fixture;
+mod contract;
 
 use axum::body::Body;
 use axum::http::{header, HeaderMap, Method, Request, StatusCode};
+use contract::{agent_router, sor_router};
 use http_body_util::BodyExt;
-use kavach_api::dataplane::{agent_router, sor_router};
+
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
@@ -226,7 +228,7 @@ async fn hostile_input_is_never_echoed_by_the_sor_or_operator_listeners() {
         ),
     ] {
         let (status, h, body, text) = raw(
-            kavach_api::router(gw.state.clone()),
+            contract::router(gw.state.clone()),
             method,
             uri,
             &operator,
@@ -266,7 +268,7 @@ async fn problems_carry_the_request_id_and_the_standard_headers() {
     for (app, uri) in [
         (agent_router(gw.state.clone()), "/v1/nope"),
         (sor_router(gw.state.clone()), "/v1/nope"),
-        (kavach_api::router(gw.state.clone()), "/v1/nope"),
+        (contract::router(gw.state.clone()), "/v1/nope"),
     ] {
         let (status, h, body, text) = raw(app, Method::POST, uri, &[], "").await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{text}");
@@ -276,7 +278,7 @@ async fn problems_carry_the_request_id_and_the_standard_headers() {
     for (app, uri) in [
         (agent_router(gw.state.clone()), "/v1/authorize"),
         (sor_router(gw.state.clone()), "/v1/sor/events"),
-        (kavach_api::router(gw.state.clone()), "/v1/evaluate"),
+        (contract::router(gw.state.clone()), "/v1/evaluate"),
     ] {
         let (status, h, body, text) = raw(app, Method::DELETE, uri, &[], "").await;
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED, "{text}");

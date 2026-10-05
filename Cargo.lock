@@ -2059,6 +2059,7 @@ dependencies = [
  "http",
  "http-body-util",
  "include_dir",
+ "jsonschema",
  "jsonwebtoken",
  "kavach-attacks",
  "kavach-auth",

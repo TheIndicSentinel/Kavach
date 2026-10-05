@@ -1,12 +1,14 @@
 mod common;
+mod contract;
 
+use contract::router;
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chrono::Utc;
 use http_body_util::BodyExt;
-use kavach_api::{router, AccessControlKind, ApiConfig, AppState, EvidenceStoreKind};
+use kavach_api::{AccessControlKind, ApiConfig, AppState, EvidenceStoreKind};
 use kavach_domain::EvaluateRequest;
 use std::path::PathBuf;
 use tower::ServiceExt;
