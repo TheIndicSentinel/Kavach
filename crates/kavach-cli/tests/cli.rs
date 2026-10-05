@@ -957,3 +957,31 @@ fn a_fixed_dev_clock_moves_forward_and_marks_evidence() {
         Some(1)
     );
 }
+
+/// `kavach demo`: every step of the story behaves as scripted, at any hour,
+/// and the throwaway project is gone afterwards (kept with --keep). Part of
+/// the 20× acceptance gate: it is the first-impression path.
+#[test]
+fn demo_runs_every_step_as_scripted() {
+    let dir = scratch("demo");
+    let out = kavach(&dir, &["--json", "demo"]);
+    let doc = json(&out);
+    assert_eq!(out.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["all_as_scripted"], true, "{doc}");
+    let steps = doc["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 9, "{doc}");
+    for s in steps {
+        assert_eq!(s["ok"], true, "{s}");
+        assert!(s["command"].as_str().unwrap().starts_with("kavach "), "{s}");
+    }
+    assert!(doc["kept"].is_null());
+
+    let kept = kavach(&dir, &["--json", "demo", "--keep", "--no-attack"]);
+    let doc = json(&kept);
+    assert_eq!(kept.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["steps"].as_array().unwrap().len(), 8, "no attack step");
+    let path = PathBuf::from(doc["kept"].as_str().unwrap());
+    assert!(path.join("kavach.toml").is_file(), "{}", path.display());
+    assert!(!path.join(".kavach/run.json").exists(), "the stack stopped");
+    std::fs::remove_dir_all(path).unwrap();
+}

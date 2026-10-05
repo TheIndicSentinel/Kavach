@@ -9,6 +9,7 @@
 mod attack;
 mod authorize;
 mod counterfactual;
+mod demo;
 mod dev;
 mod doctor;
 mod init;
@@ -135,6 +136,21 @@ enum Command {
     /// Policy suites.
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// What Kavach does, in about a minute, at any hour: a throwaway project
+    /// and dev stack (fixed clock, loopback, synthetic data), a scripted
+    /// story told with the real commands. Exit 0 if every step behaved as
+    /// scripted, 1 if one did not.
+    Demo {
+        /// Keep the demo project afterwards (its path is printed).
+        #[arg(long)]
+        keep: bool,
+        /// Pause for Enter between steps (on a terminal).
+        #[arg(long)]
+        step: bool,
+        /// Leave out the attack catalog step.
+        #[arg(long)]
+        no_attack: bool,
+    },
     /// Run the attack catalog (the same one CI runs) against the running
     /// dev stack: loopback and dev keys only, rate-limited, nothing aimed at
     /// an allow. Exit 0 all refused as expected, 1 an attack succeeded or
@@ -306,6 +322,11 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             .await,
         ),
         Command::Attack { list } => ("attack", attack_command(ui, cli, *list).await),
+        Command::Demo {
+            keep,
+            step,
+            no_attack,
+        } => ("demo", demo::run(&ui, *keep, *step, !*no_attack).await),
         Command::Policy(PolicyCommand::Test { path }) => (
             "policy test",
             policy_test::run(&ui, &cli.project, path.as_deref()).await,
