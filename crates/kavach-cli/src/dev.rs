@@ -161,6 +161,34 @@ impl Drop for RunGuard {
     }
 }
 
+/// `--export-on-exit` writes a new directory: checked before anything
+/// starts, so a bundle is never merged into old files.
+fn refuse_existing(out: Option<&Path>) -> Result<(), CliError> {
+    match out {
+        Some(out) if out.exists() => Err(crate::authorize::usage(
+            format!("{} already exists", out.display()),
+            "--export-on-exit writes a new directory",
+        )
+        .fix("name a directory that does not exist")),
+        _ => Ok(()),
+    }
+}
+
+async fn export_at_exit(
+    ui: &Ui,
+    project: &Project,
+    state: &AppState,
+    out: Option<&Path>,
+) -> Result<(), CliError> {
+    if let Some(out) = out {
+        let line = crate::evidence::export_on_exit(project, state, out).await?;
+        if !ui.json {
+            crate::output::print_redacted(&line);
+        }
+    }
+    Ok(())
+}
+
 /// Ctrl-C, or (Unix) SIGTERM from a process manager.
 async fn stop_signal() {
     #[cfg(unix)]
@@ -530,8 +558,10 @@ pub async fn up(
     at: Option<&str>,
     fixed: Option<&str>,
     exit_when_ready: bool,
+    export_on_exit: Option<&Path>,
 ) -> Result<i32, CliError> {
     let project = Project::find(dir)?;
+    refuse_existing(export_on_exit)?;
     let dev_clock = dev_clock_for(&project, at, fixed)?;
     let [operator, agent, sor, provider_listener, inspect_listener] = bind_all(&project)?;
     let clock: Arc<dyn TimeSource + Send + Sync> = match &dev_clock {
@@ -620,6 +650,7 @@ pub async fn up(
         () = stop_signal() => {}
     }
     provider_task.abort();
+    export_at_exit(ui, &project, &state, export_on_exit).await?;
     if !ui.json {
         crate::output::print_redacted("Stopped.");
     }

@@ -139,6 +139,35 @@ async fn a_checkpoint_is_written_when_records_are_due_by_time_or_by_count() {
     assert_eq!(report.records_after_last, 0);
 }
 
+/// A stack about to stop covers what it has: at once, but only with
+/// trusted time, and only when something is uncovered.
+#[tokio::test]
+async fn checkpoint_now_covers_uncovered_records_without_waiting() {
+    let rig = Rig::new();
+    let writer = rig.checkpointer(key());
+    assert_eq!(writer.checkpoint_now(rig.at(0)).await.tick, Tick::Covered);
+    rig.commit(2).await;
+    // Not due by time or count, yet written.
+    assert_eq!(writer.tick(rig.at(1)).await.tick, Tick::Waiting);
+    assert_eq!(
+        writer.checkpoint_now(rig.at(2)).await.tick,
+        Tick::Written { seq: 2 }
+    );
+    assert_eq!(writer.checkpoint_now(rig.at(3)).await.tick, Tick::Covered);
+
+    // Still never dated by a guess.
+    rig.commit(1).await;
+    rig.clock.set_sync(SyncStatus::Unsynced);
+    assert!(matches!(
+        writer.checkpoint_now(rig.at(4)).await.tick,
+        Tick::Skipped {
+            reason: Skip::Time,
+            ..
+        }
+    ));
+    assert_eq!(rig.stored().await.len(), 1);
+}
+
 #[tokio::test]
 async fn a_restarted_or_second_writer_continues_the_same_line() {
     let rig = Rig::new();
