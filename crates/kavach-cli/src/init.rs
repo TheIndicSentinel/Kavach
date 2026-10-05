@@ -61,29 +61,29 @@ fn ignore_bundle(root: &Path) -> Result<bool, CliError> {
     Ok(true)
 }
 
-pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
-    std::fs::create_dir_all(dir)
-        .map_err(|e| CliError::new(format!("cannot create {}", dir.display()), e))?;
-    let root: PathBuf = std::fs::canonicalize(dir)
-        .map_err(|e| CliError::new(format!("cannot open {}", dir.display()), e))?;
-    if root.join(FILE).exists() || root.join(BUNDLE).exists() {
-        return Err(CliError::new(
-            "a Kavach project already exists here",
-            format!("{} has {FILE} or {BUNDLE}/", root.display()),
-        )
-        .fix("use another directory, or remove both to start again"));
-    }
+/// What [`create`] made.
+pub struct Created {
+    pub summary: kavach_devkit::Summary,
+    pub suites: Vec<String>,
+    pub ignored: bool,
+}
 
+/// Writes a dev project into `root` holding `world` (`kavach init`'s is
+/// [`kavach_devkit::World::default`]).
+pub async fn create(root: &Path, world: &kavach_devkit::World) -> Result<Created, CliError> {
     let bundle = root.join(BUNDLE);
     let file = ProjectFile::default();
-    let summary = kavach_devkit::generate(&kavach_devkit::Options {
-        out: bundle.clone(),
-        kavach_mount: bundle.join("kavach").display().to_string(),
-        provider_endpoint: format!("https://localhost:{}", file.listen.provider.port()),
-        provider_hosts: vec!["localhost".into(), "127.0.0.1".into()],
-        database_hosts: vec!["localhost".into(), "127.0.0.1".into()],
-        token_hours: TOKEN_HOURS,
-    })
+    let summary = kavach_devkit::generate_with(
+        &kavach_devkit::Options {
+            out: bundle.clone(),
+            kavach_mount: bundle.join("kavach").display().to_string(),
+            provider_endpoint: format!("https://localhost:{}", file.listen.provider.port()),
+            provider_hosts: vec!["localhost".into(), "127.0.0.1".into()],
+            database_hosts: vec!["localhost".into(), "127.0.0.1".into()],
+            token_hours: TOKEN_HOURS,
+        },
+        world,
+    )
     .await
     .map_err(|e| CliError::new("cannot generate the dev bundle", e))?;
     crate::dev::ensure_cedar(&bundle.join("kavach"))?;
@@ -98,7 +98,30 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
             suites.push(format!("{}/{name}", crate::policy_test::DIR));
         }
     }
-    let ignored = ignore_bundle(&root)?;
+    let ignored = ignore_bundle(root)?;
+    Ok(Created {
+        summary,
+        suites,
+        ignored,
+    })
+}
+
+pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
+    std::fs::create_dir_all(dir)
+        .map_err(|e| CliError::new(format!("cannot create {}", dir.display()), e))?;
+    let root: PathBuf = std::fs::canonicalize(dir)
+        .map_err(|e| CliError::new(format!("cannot open {}", dir.display()), e))?;
+    if root.join(FILE).exists() || root.join(BUNDLE).exists() {
+        return Err(CliError::new(
+            "a Kavach project already exists here",
+            format!("{} has {FILE} or {BUNDLE}/", root.display()),
+        )
+        .fix("use another directory, or remove both to start again"));
+    }
+
+    let created = create(&root, &kavach_devkit::World::default()).await?;
+    let (summary, suites, ignored) = (created.summary, created.suites, created.ignored);
+    let bundle = root.join(BUNDLE);
 
     let data = json!({
         "project": root,

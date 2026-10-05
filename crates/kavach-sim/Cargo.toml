@@ -1,0 +1,19 @@
+[package]
+name = "kavach-sim"
+description = "`kavach simulate`: synthetic workflows over time, judged by an independent oracle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+chrono.workspace = true
+hex.workspace = true
+kavach-devkit.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

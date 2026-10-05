@@ -18,6 +18,7 @@ kavach-clocksync = { workspace = true }
 kavach-credential = { workspace = true }
 kavach-dataplane = { workspace = true }
 kavach-devkit = { workspace = true }
+kavach-sim = { workspace = true }
 kavach-domain = { workspace = true }
 kavach-evaluate = { workspace = true }
 kavach-evidence = { workspace = true }

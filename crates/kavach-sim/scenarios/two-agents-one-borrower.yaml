@@ -1,0 +1,23 @@
+# Two vendors' agents on one borrower: each compliant agent means to make
+# two contacts a day, each under its own mandate. The daily cap counts the
+# borrower's contacts across agents, so the fourth contact is blocked.
+version: 1
+name: two-agents-one-borrower
+description: The daily cap holds across agents serving the same borrower.
+seed: 17
+days: 1
+borrowers: 1
+schedule: ["09:00", "12:00"]
+agents:
+  - type: compliant
+    count: 2
+    behaviour:
+      contacts_per_day: 2
+assignment: shared
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 3
+  blocked_at_least:
+    contact-daily-cap: 1

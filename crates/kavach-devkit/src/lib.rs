@@ -79,6 +79,79 @@ pub struct Options {
     pub token_hours: i64,
 }
 
+/// Who a development project holds: agents (each with a token and a
+/// passport) and borrowers (each with a consent and synthetic
+/// destinations). The default is what `kavach init` writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct World {
+    pub agents: Vec<String>,
+    /// The agents the mandate template assigns borrowers to.
+    pub eligible_agents: Vec<String>,
+    pub borrowers: Vec<Borrower>,
+}
+
+/// One borrower: an opaque reference and synthetic destinations
+/// (`+910` and nine digits; the reference fixture refuses anything else).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Borrower {
+    pub subject_ref: String,
+    /// WhatsApp and SMS.
+    pub destination: String,
+    pub voice: String,
+}
+
+impl Default for World {
+    fn default() -> Self {
+        Self {
+            agents: AGENTS.iter().map(ToString::to_string).collect(),
+            eligible_agents: vec!["collections-agent".into()],
+            borrowers: vec![Borrower {
+                subject_ref: SUBJECT.into(),
+                destination: DESTINATION.into(),
+                voice: "+910000000002".into(),
+            }],
+        }
+    }
+}
+
+/// The collections template for `world`: its eligible agents, and
+/// delegation only to agents it holds (none: no delegation).
+fn world_template(world: &World) -> MandateTemplate {
+    let base = template();
+    let allowed: BTreeSet<String> = base
+        .delegation
+        .allowed_agents
+        .iter()
+        .filter(|a| world.agents.contains(a))
+        .cloned()
+        .collect();
+    MandateTemplate {
+        eligible_agents: world.eligible_agents.iter().cloned().collect(),
+        delegation: DelegationRules {
+            max_depth: if allowed.is_empty() {
+                0
+            } else {
+                base.delegation.max_depth
+            },
+            allowed_agents: allowed,
+        },
+        ..base
+    }
+}
+
+/// The consent a borrower's system-of-record events cite.
+#[must_use]
+pub fn consent_id(subject_ref: &str) -> String {
+    if subject_ref == SUBJECT {
+        "C-dev-1".into()
+    } else {
+        format!(
+            "C-{}",
+            subject_ref.rsplit(':').next().unwrap_or(subject_ref)
+        )
+    }
+}
+
 fn random32() -> Result<[u8; 32], String> {
     let mut bytes = [0u8; 32];
     getrandom::fill(&mut bytes).map_err(|e| format!("os rng: {e}"))?;
@@ -227,6 +300,11 @@ pub struct Summary {
 
 /// Generates the bundle into `opts.out` (which should be empty).
 pub async fn generate(opts: &Options) -> Result<Summary, String> {
+    generate_with(opts, &World::default()).await
+}
+
+/// [`generate`], holding `world`'s agents and borrowers.
+pub async fn generate_with(opts: &Options, world: &World) -> Result<Summary, String> {
     if !opts.provider_endpoint.starts_with("https://") {
         return Err("the dev provider endpoint must be https (TLS to the provider)".into());
     }
@@ -299,7 +377,7 @@ pub async fn generate(opts: &Options) -> Result<Summary, String> {
             "public_key": hex::encode(signer_public.bytes) }] }),
     )?;
 
-    write_identity(&kavach, &agents, out, opts.token_hours)?;
+    write_identity(&kavach, &agents, out, opts.token_hours, &world.agents)?;
 
     // The provider: encryption key, trusted credential key, TLS.
     let provider_secret = random32()?;
@@ -326,20 +404,26 @@ pub async fn generate(opts: &Options) -> Result<Summary, String> {
     write(&provider.join("tls.pem"), &cert_pem)?;
     write_secret(&provider.join("tls-key.pem"), &key_pem)?;
 
-    write_kavach_config(&kavach, opts, &sor_public, &provider_key)?;
+    write_kavach_config(&kavach, opts, world, &sor_public, &provider_key)?;
     write(&kavach.join("kavach.env"), &env_file(&opts.kavach_mount))?;
     write(&out.join("README.txt"), README)?;
 
     Ok(Summary {
         out: out.clone(),
         registry_sha256: digest,
-        agents: AGENTS.iter().map(ToString::to_string).collect(),
+        agents: world.agents.clone(),
     })
 }
 
 /// The dev identity provider: its JWKS for Kavach, and minted tokens (one
 /// per agent, in that agent's file; one for operators).
-fn write_identity(kavach: &Path, agents: &Path, out: &Path, hours: i64) -> Result<(), String> {
+fn write_identity(
+    kavach: &Path,
+    agents: &Path,
+    out: &Path,
+    hours: i64,
+    names: &[String],
+) -> Result<(), String> {
     // The dev identity provider and tokens.
     let idp_seed = random32()?;
     let idp_public = ed25519_dalek::SigningKey::from_bytes(&idp_seed)
@@ -350,7 +434,7 @@ fn write_identity(kavach: &Path, agents: &Path, out: &Path, hours: i64) -> Resul
         &json!({ "keys": [{ "kty": "OKP", "crv": "Ed25519", "x": URL_SAFE_NO_PAD.encode(idp_public),
             "kid": IDP_KID, "alg": "EdDSA", "use": "sig" }] }),
     )?;
-    for agent in AGENTS {
+    for agent in names {
         let token = mint(
             &idp_seed,
             AGENT_AUDIENCE,
@@ -376,6 +460,7 @@ fn write_identity(kavach: &Path, agents: &Path, out: &Path, hours: i64) -> Resul
 fn write_kavach_config(
     kavach: &Path,
     opts: &Options,
+    world: &World,
     sor_public: &kavach_ports::PublicKey,
     provider_key: &DecryptionKey,
 ) -> Result<(), String> {
@@ -386,28 +471,36 @@ fn write_kavach_config(
             "issuer_id": "kavach-dev",
             "signing_kid": MANDATE_KID,
             "sor_issuers": [{ "system": "lms", "kid": SOR_KID, "public_key": hex::encode(sor_public.bytes) }],
-            "templates": [template()],
-            "passports": AGENTS.iter().map(|a| passport(a)).collect::<Vec<_>>(),
+            "templates": [world_template(world)],
+            "passports": world.agents.iter().map(|a| passport(a)).collect::<Vec<_>>(),
             "event_freshness_seconds": 300,
             "replay_window_seconds": 86400,
         }),
     )?;
     write_json(
         &kavach.join("consents.json"),
-        &serde_json::to_value(vec![ConsentRecord {
-            consent_id: "C-dev-1".into(),
-            tenant_id: TENANT.into(),
-            subject_ref: SUBJECT.into(),
-            purposes: set(&["loan_recovery"]),
-            expires_at: Utc::now() + Duration::days(30),
-            active: true,
-        }])
+        &serde_json::to_value(
+            world
+                .borrowers
+                .iter()
+                .map(|b| ConsentRecord {
+                    consent_id: consent_id(&b.subject_ref),
+                    tenant_id: TENANT.into(),
+                    subject_ref: b.subject_ref.clone(),
+                    purposes: set(&["loan_recovery"]),
+                    expires_at: Utc::now() + Duration::days(30),
+                    active: true,
+                })
+                .collect::<Vec<_>>(),
+        )
         .unwrap_or_default(),
     )?;
     write_json(
         &kavach.join("references.json"),
-        &json!({ "references": [{ "tenant_id": TENANT, "subject_ref": SUBJECT,
-            "destinations": { "whatsapp": DESTINATION, "sms": DESTINATION, "voice": "+910000000002" } }] }),
+        &json!({ "references": world.borrowers.iter().map(|b| json!({
+            "tenant_id": TENANT, "subject_ref": b.subject_ref,
+            "destinations": { "whatsapp": b.destination, "sms": b.destination, "voice": b.voice },
+        })).collect::<Vec<_>>() }),
     )?;
     write_json(
         &kavach.join("providers.json"),
@@ -473,7 +566,7 @@ pub async fn sor_event(
         record_ref: format!("lms:loan/{event_id}"),
         subject_ref: subject_ref.into(),
         principal: "nbfc-collections-system".into(),
-        consent_refs: set(&["C-dev-1"]),
+        consent_refs: [consent_id(subject_ref)].into(),
         assigned_agent: agent.into(),
         occurred_at,
         nonce: format!("n-{event_id}"),
@@ -507,6 +600,118 @@ mod tests {
                 assert_eq!(mode, 0o600, "{secret}");
             }
         }
+    }
+
+    fn options(out: &std::path::Path) -> Options {
+        Options {
+            out: out.to_path_buf(),
+            kavach_mount: "/etc/kavach".into(),
+            provider_endpoint: "https://localhost:8443".into(),
+            provider_hosts: vec!["localhost".into()],
+            database_hosts: vec!["localhost".into()],
+            token_hours: 1,
+        }
+    }
+
+    fn read(path: &std::path::Path) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// `kavach init`'s world is exactly what it was before worlds existed.
+    #[tokio::test]
+    async fn the_default_world_is_init_s() {
+        let out =
+            std::env::temp_dir().join(format!("kavach-devkit-default-{}", std::process::id()));
+        generate(&options(&out)).await.unwrap();
+        let k = out.join("kavach");
+        let config = read(&k.join("mandate-config.json"));
+        let template = &config["templates"][0];
+        assert_eq!(template["eligible_agents"], json!(["collections-agent"]));
+        assert_eq!(
+            template["delegation"],
+            json!({ "max_depth": 1, "allowed_agents": ["translation-agent"] })
+        );
+        let passports: Vec<&str> = config["passports"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|p| p["agent_id"].as_str())
+            .collect();
+        assert_eq!(passports, AGENTS);
+        let consents = read(&k.join("consents.json"));
+        assert_eq!(consents.as_array().unwrap().len(), 1);
+        assert_eq!(consents[0]["consent_id"], "C-dev-1");
+        assert_eq!(consents[0]["subject_ref"], SUBJECT);
+        assert_eq!(
+            read(&k.join("references.json")),
+            json!({ "references": [{ "tenant_id": TENANT, "subject_ref": SUBJECT,
+                "destinations": { "whatsapp": DESTINATION, "sms": DESTINATION, "voice": "+910000000002" } }] })
+        );
+        for agent in AGENTS {
+            assert!(out.join(format!("agents/{agent}.jwt")).is_file());
+        }
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
+    /// A simulated world: its agents (tokens, passports, all eligible), its
+    /// borrowers (one consent each, synthetic destinations), delegation only
+    /// to agents it holds, and events citing each borrower's consent.
+    #[tokio::test]
+    async fn a_world_has_its_agents_and_borrowers() {
+        let out = std::env::temp_dir().join(format!("kavach-devkit-world-{}", std::process::id()));
+        let agents = vec!["sim-a-1".to_string(), "sim-a-2".to_string()];
+        let borrowers: Vec<Borrower> = (1..=3)
+            .map(|i| Borrower {
+                subject_ref: format!("ref:borrower:S-000{i}"),
+                destination: format!("+910000100{i:03}"),
+                voice: format!("+910000200{i:03}"),
+            })
+            .collect();
+        let world = World {
+            agents: agents.clone(),
+            eligible_agents: agents.clone(),
+            borrowers: borrowers.clone(),
+        };
+        let summary = generate_with(&options(&out), &world).await.unwrap();
+        assert_eq!(summary.agents, agents);
+        let k = out.join("kavach");
+        let config = read(&k.join("mandate-config.json"));
+        assert_eq!(config["templates"][0]["eligible_agents"], json!(agents));
+        assert_eq!(
+            config["templates"][0]["delegation"],
+            json!({ "max_depth": 0, "allowed_agents": [] }),
+            "no translation-agent in this world: no delegation"
+        );
+        assert_eq!(config["passports"].as_array().unwrap().len(), 2);
+        for agent in &agents {
+            assert!(out.join(format!("agents/{agent}.jwt")).is_file());
+        }
+        assert!(!out.join("agents/collections-agent.jwt").exists());
+        let consents = read(&k.join("consents.json"));
+        let ids: Vec<&str> = consents
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c["consent_id"].as_str())
+            .collect();
+        assert_eq!(ids, ["C-S-0001", "C-S-0002", "C-S-0003"]);
+        assert_eq!(
+            read(&k.join("references.json"))["references"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+
+        // An event cites its borrower's consent.
+        let token = sor_event(&out, "evt-w", "ref:borrower:S-0002", "sim-a-1", Utc::now())
+            .await
+            .unwrap();
+        let payload = token.split('.').nth(1).unwrap();
+        let event: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert_eq!(event["consent_refs"], json!(["C-S-0002"]));
+        std::fs::remove_dir_all(out).unwrap();
     }
 
     #[tokio::test]

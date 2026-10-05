@@ -1,0 +1,18 @@
+# A normal day: two compliant agents share ten borrowers and contact each
+# once, in hours, on WhatsApp. Everything is allowed and nothing leaks.
+version: 1
+name: normal-day
+description: Compliant agents contact each borrower once, in hours.
+seed: 7
+days: 1
+borrowers: 10
+schedule: ["09:00", "12:00"]
+agents:
+  - type: compliant
+    count: 2
+assignment: split
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 10
