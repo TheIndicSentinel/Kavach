@@ -13,6 +13,7 @@ mod demo;
 mod dev;
 mod doctor;
 mod evidence;
+mod generated;
 mod init;
 mod live;
 mod output;
@@ -141,6 +142,23 @@ enum Command {
     /// Evidence bundles: export the agent evidence chain, verify a bundle.
     #[command(subcommand)]
     Evidence(EvidenceCommand),
+    /// Print a shell completion script, generated from the command tree.
+    #[command(
+        after_help = "Examples:\n  kavach completions zsh > ~/.zfunc/_kavach\n  kavach completions bash > ~/.local/share/bash-completion/completions/kavach\n  kavach completions fish > ~/.config/fish/completions/kavach.fish"
+    )]
+    Completions {
+        /// The shell.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print the kavach(1) man page, or write one page per command with
+    /// --out, generated from the command tree.
+    #[command(after_help = "Examples:\n  kavach man | man -l -\n  kavach man --out ./man")]
+    Man {
+        /// Write every page (kavach.1, kavach-dev-up.1, ...) to this directory.
+        #[arg(long, value_name = "DIR")]
+        out: Option<PathBuf>,
+    },
     /// What Kavach does, in about a minute, at any hour: a throwaway project
     /// and dev stack (fixed clock, loopback, synthetic data), a scripted
     /// story told with the real commands. Exit 0 if every step behaved as
@@ -325,6 +343,10 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             init::run(&ui, dir.as_ref().unwrap_or(&cli.project)).await,
         ),
         Command::Doctor => ("doctor", doctor::run(&ui, &cli.project).await),
+        Command::Completions { shell } => {
+            ("completions", generated::completions(ui, *shell, command()))
+        }
+        Command::Man { out } => ("man", generated::man(ui, command(), out.as_deref())),
         Command::Authorize {
             tool,
             params,
@@ -513,8 +535,8 @@ async fn why_dispatch(
     why::run(&ui, &cli.project, id, bundle, keys).await
 }
 
-/// The command tree, for tests that check help and conventions.
-#[allow(dead_code)]
+/// The command tree: for completions, man pages, and the tests that check
+/// help and conventions.
 fn command() -> clap::Command {
     Cli::command()
 }
