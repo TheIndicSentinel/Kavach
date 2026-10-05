@@ -33,27 +33,41 @@ fn json(output: &Output) -> Value {
     })
 }
 
-/// A free loopback port (released before kavach binds it).
-fn free_port() -> u16 {
-    TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+/// `n` distinct free loopback ports: every probe socket stays open until
+/// all are chosen, so the system cannot hand out the same port twice.
+fn free_ports(n: usize) -> Vec<u16> {
+    let probes: Vec<TcpListener> = (0..n)
+        .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect();
+    probes
+        .iter()
+        .map(|l| l.local_addr().unwrap().port())
+        .collect()
 }
 
-/// Moves a project's listeners to free ports, so tests run in parallel and
-/// beside anything already on 8080.
+/// Moves every listener of a project (`"127.0.0.1:<port>"`) to its own free
+/// port, so tests run in parallel and beside anything already on 8080. Safe
+/// to run again: a retry gets new ports.
 fn use_free_ports(dir: &Path) {
+    const HOST: &str = "\"127.0.0.1:";
     let path = dir.join("kavach.toml");
-    let mut text = std::fs::read_to_string(&path).unwrap();
-    for port in ["8080", "8091", "8090", "8443", "8444"] {
-        text = text.replace(
-            &format!("127.0.0.1:{port}\""),
-            &format!("127.0.0.1:{}\"", free_port()),
-        );
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut ports = free_ports(text.matches(HOST).count()).into_iter();
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(HOST) {
+        let after = &rest[at + HOST.len()..];
+        let digits = after.bytes().take_while(u8::is_ascii_digit).count();
+        out.push_str(&rest[..at + HOST.len()]);
+        if digits > 0 && after[digits..].starts_with('"') {
+            out.push_str(&ports.next().unwrap().to_string());
+            rest = &after[digits..];
+        } else {
+            rest = after;
+        }
     }
-    std::fs::write(&path, text).unwrap();
+    out.push_str(rest);
+    std::fs::write(&path, out).unwrap();
 }
 
 #[test]
@@ -165,11 +179,22 @@ fn doctor_reports_every_check_in_the_envelope() {
 fn dev_up_starts_and_reports_its_endpoints() {
     let dir = scratch("devup");
     assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
-    use_free_ports(&dir);
-    let out = kavach(
-        &dir,
-        &["--json", "dev", "up", "--at", "11:00", "--exit-when-ready"],
-    );
+    // A port another test took between choosing and binding: new ports, and
+    // up to two more tries.
+    let mut out = None;
+    for _ in 0..3 {
+        use_free_ports(&dir);
+        let tried = kavach(
+            &dir,
+            &["--json", "dev", "up", "--at", "11:00", "--exit-when-ready"],
+        );
+        let done = tried.status.code() == Some(0);
+        out = Some(tried);
+        if done {
+            break;
+        }
+    }
+    let out = out.unwrap();
     assert_eq!(
         out.status.code(),
         Some(0),
@@ -715,8 +740,25 @@ fn chrono_now() -> String {
 
 /// Starts `kavach dev up` in `dir` with extra arguments; waits for run.json.
 fn dev_up(dir: &Path, extra: &[&str]) -> Stack {
+    // A port another test took between choosing and binding makes the stack
+    // exit at start: new ports, and up to two more tries.
+    for attempt in 0..3 {
+        if attempt > 0 {
+            use_free_ports(dir);
+        }
+        if let Some(stack) = try_dev_up(dir, extra) {
+            return stack;
+        }
+    }
+    let log = std::fs::read_to_string(dir.join(".kavach/dev-up-test.log")).unwrap_or_default();
+    panic!("dev up exited three times; its last stderr:\n{log}");
+}
+
+/// The stack, once its run.json appears; `None` if it exits first.
+fn try_dev_up(dir: &Path, extra: &[&str]) -> Option<Stack> {
     let run = dir.join(".kavach/run.json");
     let _ = std::fs::remove_file(&run);
+    let log = std::fs::File::create(dir.join(".kavach/dev-up-test.log")).unwrap();
     let mut args = vec!["dev", "up"];
     args.extend_from_slice(extra);
     let mut stack = Stack(
@@ -725,18 +767,20 @@ fn dev_up(dir: &Path, extra: &[&str]) -> Stack {
             .arg(dir)
             .args(args)
             .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
+            .stderr(log)
             .spawn()
             .unwrap(),
     );
     for _ in 0..120 {
         if run.is_file() {
-            break;
+            return Some(stack);
         }
-        assert!(stack.0.try_wait().unwrap().is_none(), "dev up exited");
+        if stack.0.try_wait().unwrap().is_some() {
+            return None;
+        }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
-    stack
+    panic!("dev up did not start within 30 s");
 }
 
 /// `kavach attack`: the shared catalog against a real dev stack. Every
