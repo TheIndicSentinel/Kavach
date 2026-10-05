@@ -2,6 +2,8 @@
 //! connections (HTTP via the peer-certificate acceptor, gRPC via
 //! `peer_certs`).
 
+mod contract;
+use contract::router;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -11,7 +13,7 @@ use chrono::Utc;
 use kavach_api::proto::kavach::v1::evaluate_service_client::EvaluateServiceClient;
 use kavach_api::proto::kavach::v1::{Consent, EvaluateRequest};
 use kavach_api::{
-    grpc_server_tls_config, router, serve_http_on, validate_principal_sources, AccessControlKind,
+    grpc_server_tls_config, serve_http_on, validate_principal_sources, AccessControlKind,
     ApiConfig, AppState, EvaluateServiceServer, EvidenceStoreKind, GrpcEvaluateService,
     MtlsSanKind, TlsConfig,
 };

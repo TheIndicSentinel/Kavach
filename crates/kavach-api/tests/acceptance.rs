@@ -9,12 +9,14 @@
 //! read as more than it is.
 
 mod agent_fixture;
+mod contract;
 
+use contract::agent_router;
 use std::collections::{BTreeMap, BTreeSet};
 
 use axum::http::StatusCode;
 use chrono::Duration;
-use kavach_api::dataplane::agent_router;
+
 use kavach_api::EvidenceStoreKind;
 use kavach_domain::mandate::{DelegationRequest, RevocationReason};
 use kavach_evidence_cli::postgres::{run_export, Signing, Target};
@@ -608,7 +610,7 @@ async fn scenario11_partial_bypass_attempts_fail(store: Store) {
     // The same signed event again (identical content): 200 with the
     // existing mandate, never a second one.
     let (status, replayed) = send(
-        kavach_api::dataplane::sor_router(gw.state.clone()),
+        contract::sor_router(gw.state.clone()),
         "/v1/sor/events",
         &[],
         json!({ "event": event_at("evt-gw", "lms:loan/L-1", gw.clock.now().utc).await }),
@@ -740,7 +742,7 @@ impl kavach_attacks::Target for InProcess<'_> {
             request = request.header(k, v);
         }
         let response = tower::ServiceExt::oneshot(
-            kavach_api::router(self.0.state.clone()),
+            contract::router(self.0.state.clone()),
             request.body(axum::body::Body::empty()).unwrap(),
         )
         .await
@@ -752,7 +754,7 @@ impl kavach_attacks::Target for InProcess<'_> {
         // The issuing event, identical (the test clock has not moved).
         let event = event_at("evt-gw", "lms:loan/L-1", self.0.clock.now().utc).await;
         let (status, reply) = send(
-            kavach_api::dataplane::sor_router(self.0.state.clone()),
+            contract::sor_router(self.0.state.clone()),
             "/v1/sor/events",
             &[],
             json!({ "event": event }),
@@ -777,7 +779,7 @@ impl kavach_attacks::Target for InProcess<'_> {
 
     async fn allowed(&self) -> Result<u64, String> {
         let response = tower::ServiceExt::oneshot(
-            kavach_api::router(self.0.state.clone()),
+            contract::router(self.0.state.clone()),
             axum::http::Request::get("/metrics")
                 .header("authorization", format!("Bearer {}", operator_token()))
                 .body(axum::body::Body::empty())

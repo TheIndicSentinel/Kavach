@@ -5,11 +5,13 @@
 //! window does not depend on when CI runs.
 
 mod agent_fixture;
+mod contract;
 
+use contract::agent_router;
 use std::sync::Arc;
 
 use axum::http::StatusCode;
-use kavach_api::dataplane::agent_router;
+
 use kavach_api::EvidenceStoreKind;
 use kavach_mock_provider::{ERROR_NUMBER, HANG_NUMBER, REFUSE_NUMBER};
 use kavach_ports::agent_evidence::{AgentEvidenceStore, Outcome};
@@ -489,7 +491,7 @@ async fn evidence_reads_are_admin_only_audited_and_hold_no_secrets() {
     let record_id = reply["record_id"].as_str().unwrap().to_string();
 
     let read = |id: String, token: Option<String>| {
-        let app = kavach_api::router(gw.state.clone());
+        let app = contract::router(gw.state.clone());
         async move {
             let mut request = Request::get(format!("/v1/agent-decisions/{id}"));
             if let Some(t) = token {

@@ -3,6 +3,7 @@
 //! (T1). No database is needed: the refusal comes before any connection.
 
 mod agent_fixture;
+mod contract;
 
 use kavach_api::{ApiConfig, AppState, DatabaseTls, EvidenceStoreKind};
 

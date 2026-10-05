@@ -49,6 +49,26 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A refusal's text: the RFC 9457 `detail` (or the `error` member older
+ * servers sent), with the `request_id` to quote when reporting it.
+ */
+function problemDetail(payload: unknown): string | undefined {
+  const body = payload as
+    | { detail?: unknown; error?: unknown; request_id?: unknown }
+    | null;
+  const text =
+    typeof body?.detail === "string"
+      ? body.detail
+      : typeof body?.error === "string"
+        ? body.error
+        : undefined;
+  if (text === undefined) return undefined;
+  return typeof body?.request_id === "string"
+    ? `${text} (request ${body.request_id})`
+    : text;
+}
+
 export async function fetchHealth(): Promise<{ status: string }> {
   const response = await fetch("/health", { headers: authHeaders() });
   if (!response.ok) {
@@ -79,9 +99,7 @@ export async function evaluateRequest(
   const payload = await response.json();
   if (!response.ok) {
     const message =
-      typeof payload?.error === "string"
-        ? payload.error
-        : `Evaluate failed (${response.status})`;
+      problemDetail(payload) ?? `Evaluate failed (${response.status})`;
     throw new ApiError(message, response.status);
   }
   return payload as EvaluateResponse;
@@ -171,9 +189,7 @@ async function governanceFetch<T>(path: string): Promise<T> {
   const payload = await response.json();
   if (!response.ok) {
     const message =
-      typeof payload?.error === "string"
-        ? payload.error
-        : `Request failed (${response.status})`;
+      problemDetail(payload) ?? `Request failed (${response.status})`;
     throw new ApiError(message, response.status);
   }
   return payload as T;
@@ -323,9 +339,7 @@ async function changeFetch<T>(path: string, body?: unknown): Promise<T> {
   const payload = await response.json();
   if (!response.ok) {
     const message =
-      typeof payload?.error === "string"
-        ? payload.error
-        : `Request failed (${response.status})`;
+      problemDetail(payload) ?? `Request failed (${response.status})`;
     throw new ApiError(message, response.status);
   }
   return payload as T;

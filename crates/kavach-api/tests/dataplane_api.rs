@@ -3,14 +3,16 @@
 //! pre-check; startup refuses unsafe configurations.
 
 mod agent_fixture;
+mod contract;
 
+use contract::{agent_router, router, sor_router};
 use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use ed25519_dalek::SigningKey;
-use kavach_api::dataplane::{agent_router, sor_router};
-use kavach_api::{router, ApiConfig, AppState, EvidenceStoreKind};
+
+use kavach_api::{ApiConfig, AppState, EvidenceStoreKind};
 use kavach_credential::{open_credential, DecryptionKey};
 use kavach_ports::agent_evidence::AgentEvidenceStore;
 use serde_json::{json, Value};

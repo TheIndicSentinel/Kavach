@@ -1,0 +1,9 @@
+# Lint rules for docs/openapi.yaml (CI: `OpenAPI lint`, Redocly CLI pinned).
+extends:
+  - recommended
+rules:
+  # The Problem response is the contract tests' fallback for paths and
+  # methods the spec does not have; no operation refers to it.
+  no-unused-components: off
+  # Local listeners, not a public host.
+  no-server-example.com: off

@@ -1,6 +1,7 @@
 //! H2a: API principals come from verified OIDC JWT access tokens; the
 //! self-asserted header is refused unless `--insecure-dev`.
 
+use contract::router;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -11,12 +12,13 @@ use base64::Engine;
 use ed25519_dalek::SigningKey;
 use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
 use kavach_api::{
-    router, AccessControlKind, ApiConfig, AppState, EvidenceStoreKind, JwksSource, OidcConfig,
+    AccessControlKind, ApiConfig, AppState, EvidenceStoreKind, JwksSource, OidcConfig,
 };
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 mod common;
+mod contract;
 
 const ISSUER: &str = "https://idp.test/realms/kavach";
 const AUDIENCE: &str = "kavach-api";

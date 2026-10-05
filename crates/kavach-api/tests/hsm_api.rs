@@ -5,6 +5,7 @@
 //! otherwise. Each test makes its own keys, with labels unique to the run.
 
 mod agent_fixture;
+mod contract;
 mod hsm_common;
 
 use std::time::{Duration, Instant};

@@ -44,6 +44,8 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **`docs/openapi.yaml`: the HTTP API in OpenAPI 3.1**, for the operator, agent and system-of-record listeners, with every request, response and problem schema. Tests hold it to the server: every response in the API integration tests is validated against it, a drift test compares its routes, methods and problem codes with the code, and CI lints it with a pinned Redocly CLI. Problem `type` URIs are relative and not meant to be dereferenced yet. The API does not serve the file, and gRPC is not covered.
+- The console shows a refusal's `detail` and `request_id`.
 - `kavach demo` (CLI milestone C5) shows what Kavach does in about a minute, at any hour.
   - **Setup:** a throwaway project (deleted afterwards, also on Ctrl-C; `--keep` to keep it) and a dev stack on free loopback ports with a fixed clock at 11:00 IST.
   - **The story,** told with the real commands, each shown: a mandate, a delivered reminder, `why` with the signature checked, a raw phone number blocked, another borrower blocked, the clock moved to 20:30 and the reminder blocked, the offline what-if, a credit decision whose shadow-mode PASS hides a would-be BLOCK, and the attack catalog refused.
