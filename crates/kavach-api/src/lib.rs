@@ -22,6 +22,7 @@ pub mod lifecycle;
 pub mod metrics;
 pub mod mtls;
 pub mod oidc;
+pub mod problem;
 pub mod proto;
 pub mod registry;
 pub mod retention;

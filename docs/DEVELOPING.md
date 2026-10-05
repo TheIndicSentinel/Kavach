@@ -207,6 +207,32 @@ Every command takes `--json` and prints one document (schema `kavach.cli/v1`). E
 - **macOS has no Linux kernel clock status**, so the agent surfaces cannot prove synced time. Use `--insecure-dev` locally; it declares the system clock synced, allows in-memory stores and an unsigned tool registry, and prints a warning. Never use it in production.
 - The agent surfaces need keys and fixtures (mandate, evidence and credential keys; a signed tool registry; providers; references). `kavach init` will generate them; until then, follow the agent-surfaces section of `docs/INSTALL.md` and use `kavach-keys` and `kavach-mock-provider keygen`.
 
+### Errors: RFC 9457 problems
+
+Every refusal, on every listener, is `application/problem+json` (RFC 9457):
+
+```json
+{
+  "type": "/problems/unknown-parameter",
+  "title": "Unknown parameter",
+  "status": 400,
+  "detail": "tool send_reminder: unknown parameter (not an identifier)",
+  "code": "unknown_parameter",
+  "fix": "send only the parameters the registry lists for this tool",
+  "request_id": "6f1c0b9e-4c1a-4f7e-9d3a-2b8e5f0c7a11",
+  "error": "tool send_reminder: unknown parameter (not an identifier)"
+}
+```
+
+- `code` is stable and machine-readable; the full list, with titles and fixes, is `CODES` in `crates/kavach-api/src/problem.rs`. `type` is the relative URI `/problems/<code>`: valid under RFC 9457, but not meant to be dereferenced yet.
+- `request_id` matches the `x-request-id` response header. Quote it when reporting a problem: a 5xx `detail` is generic on purpose, and the cause is only in the server's (redacted) log under that id.
+- `detail` never repeats what the caller sent beyond plain identifiers.
+- Headers: `WWW-Authenticate: Bearer` on 401 (RFC 6750), `Retry-After` on 429 and 503.
+- `error` repeats `detail` for clients written against the old `{"error": …}` body. It stays through v0.1 and goes after that.
+- A BLOCK or HUMAN_REVIEW is not a problem: it is a 200 reply with reasons.
+
+`kavach` commands print a refusal's `code` and `request_id` under the error (and in `--json`, as `error.code` and `error.request_id`).
+
 ## 6. Policy proofs (optional)
 
 CI proves properties of the agent Cedar policies with cvc5 on every PR. To run them locally, install cvc5 (a release binary from <https://github.com/cvc5/cvc5/releases>) and run:

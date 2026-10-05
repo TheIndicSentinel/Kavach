@@ -68,11 +68,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/admin/batch-jobs", get(list_batch_jobs))
         .route("/v1/admin/batch-jobs/{job_id}", get(get_batch_job));
 
-    // The governance console, when it was built into this binary.
+    // The governance console, when it was built into this binary; else an
+    // unknown path is a problem.
     #[cfg(console_embedded)]
     let router = router.fallback(crate::console::fallback);
+    #[cfg(not(console_embedded))]
+    let router = router.fallback(crate::problem::not_found);
 
     router
+        .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
         .with_state(state)
 }
@@ -126,16 +130,55 @@ async fn evaluate(
     if crate::strict_json::uses_raw_value_key(&body) {
         return Err(ApiError::BadRequest(crate::strict_json::refusal_message()));
     }
-    let request: EvaluateRequest = serde_json::from_slice(&body)
-        .map_err(|e| ApiError::BadRequest(format!("invalid JSON body: {e}")))?;
+    let request: EvaluateRequest = serde_json::from_slice(&body).map_err(|e| {
+        ApiError::BadRequest(format!(
+            "invalid JSON body: {}",
+            crate::problem::json_error_detail(&e)
+        ))
+    })?;
     let response = state.evaluate("http", &request)?;
     Ok(Json(response))
 }
 
+impl From<ApiError> for crate::problem::Problem {
+    fn from(error: ApiError) -> Self {
+        use crate::problem::Problem;
+        use kavach_evaluate::EvaluateError as E;
+        let status = error.status_code();
+        match error {
+            ApiError::Unauthorized => {
+                Problem::new(status, "unauthorized", "a valid bearer token is required")
+            }
+            ApiError::Forbidden => {
+                Problem::new(status, "forbidden", "this principal may not do this")
+            }
+            ApiError::ForbiddenBecause(why) => Problem::new(status, "forbidden", why),
+            ApiError::BadRequest(why) => Problem::new(status, "bad_request", why),
+            ApiError::NotFound(what) => Problem::new(status, "not_found", what),
+            ApiError::Conflict(why) => Problem::new(status, "conflict", why),
+            ApiError::Evaluate(E::Validation(why)) => Problem::new(status, "validation", why),
+            ApiError::Evaluate(E::ModelMismatch(why)) => {
+                Problem::new(status, "model_mismatch", why)
+            }
+            ApiError::Evaluate(E::PackNotEffective) => Problem::new(
+                status,
+                "pack_not_effective",
+                "no policy pack is effective at server time",
+            ),
+            ApiError::Evaluate(E::IdempotencyConflict(why)) => {
+                Problem::new(status, "conflict", why)
+            }
+            ApiError::Evaluate(e) if status == axum::http::StatusCode::SERVICE_UNAVAILABLE => {
+                Problem::unavailable(&e)
+            }
+            ApiError::Evaluate(e) => Problem::internal(&e),
+            ApiError::Internal(cause) => Problem::internal(&cause),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let status = self.status_code();
-        let body = Json(serde_json::json!({ "error": self.to_string() }));
-        (status, body).into_response()
+        crate::problem::Problem::from(self).into_response()
     }
 }

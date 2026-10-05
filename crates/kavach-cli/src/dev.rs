@@ -304,21 +304,22 @@ pub async fn move_clock(ui: &Ui, dir: &Path, time: &str) -> Result<i32, CliError
         200 => {}
         404 => {
             return Err(
-                CliError::new("this stack has no fixed clock", body["error"].to_string())
+                crate::problem::error("this stack has no fixed clock", status, &body)
                     .fix("start it with `kavach dev up --clock <time>`"),
             )
         }
         409 => {
             return Err(crate::authorize::usage(
                 "the development clock only moves forward",
-                body["error"].as_str().unwrap_or_default(),
+                crate::problem::detail(status, &body),
             )
             .fix("give a later time, or HH:MM for its next occurrence"))
         }
         _ => {
-            return Err(CliError::new(
+            return Err(crate::problem::error(
                 format!("the stack refused the clock change ({status})"),
-                body["error"].to_string(),
+                status,
+                &body,
             ))
         }
     }

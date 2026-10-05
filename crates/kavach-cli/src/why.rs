@@ -68,20 +68,24 @@ async fn fetch_live(
         .map_err(|e| CliError::new("the operator listener did not answer", e))?;
     let status = response.status();
     let body: Value = response.json().await.unwrap_or(Value::Null);
-    let error = body["error"].as_str().unwrap_or_default().to_string();
-    match status.as_u16() {
+    let code = status.as_u16();
+    let error = crate::problem::detail(code, &body);
+    match code {
         200 => {}
         404 => {
-            return Err(CliError::new(format!("no record {record_id}"), error).fix(
-                "check the id from `kavach call`; the memory store forgets records when \
+            return Err(
+                crate::problem::error(format!("no record {record_id}"), code, &body).fix(
+                    "check the id from `kavach call`; the memory store forgets records when \
                  `kavach dev up` stops (set [database] in kavach.toml to keep them)",
-            ))
+                ),
+            )
         }
         400 => return Err(usage(format!("{record_id} is not a record id"), error)),
         _ => {
-            return Err(CliError::new(
-                format!("the stack refused the read ({})", status.as_u16()),
-                error,
+            return Err(crate::problem::error(
+                format!("the stack refused the read ({code})"),
+                code,
+                &body,
             ))
         }
     }

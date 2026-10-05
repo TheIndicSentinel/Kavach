@@ -109,7 +109,9 @@ pub enum StrictJsonRejection {
 impl IntoResponse for StrictJsonRejection {
     fn into_response(self) -> Response {
         match self {
-            Self::Json(rejection) => rejection.into_response(),
+            Self::Json(rejection) => {
+                crate::problem::Problem::from_json_rejection(&rejection).into_response()
+            }
             Self::RawValueKey => ApiError::BadRequest(refusal_message()).into_response(),
         }
     }
