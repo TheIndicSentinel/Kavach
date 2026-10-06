@@ -1468,8 +1468,8 @@ pub async fn tool_call(
         Err(GatewayError::InFlight) => Err(crate::problem::Problem::new(
             StatusCode::CONFLICT,
             "in_flight",
-            "in_flight_or_unknown: an earlier identical call has no final outcome; it is never \
-             run again",
+            "an earlier identical call is still running; it is never run again: send it again \
+             later for its outcome",
         )),
     }
 }

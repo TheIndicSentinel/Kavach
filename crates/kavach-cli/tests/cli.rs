@@ -1368,7 +1368,7 @@ fn simulate_shows_what_each_rule_does() {
     assert_eq!(doc["agents"]["sim-compliant-2"]["allowed"], 1);
 
     // Attacks are refused; a retry after an unknown outcome is never sent
-    // again (409 in_flight, the forward-once contract).
+    // again (its recorded outcome, unknown, replayed: forward-once).
     let doc = json(&kavach(
         &dir,
         &[

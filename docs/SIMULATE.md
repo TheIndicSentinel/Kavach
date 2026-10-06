@@ -73,7 +73,7 @@ It models the product's rules, written independently of Kavach's policies, and j
 - **contact hours:** only from 08:00 to 19:00 IST (19:00 itself is out);
 - **the daily cap:** at most three contacts per borrower per IST day, **across all agents**. Only contacts Kavach allowed count, and a retry is not a new contact;
 - **channels:** only those the mandate grants (WhatsApp, voice);
-- **forward-once:** a retry (same request id) is never sent again. After a final outcome it gets the stored reply (`replayed`); after an unknown one, 409 `in_flight`;
+- **forward-once:** a retry (same request id) is never sent again. Once the first call's outcome is recorded, `unknown` included, it gets the stored reply (`replayed`). Only while the first call is still running is it 409 `in_flight`, and a run never retries into that;
 - **provider outcomes** follow the agreed status contract (ADR-007): 2xx delivered, 4xx refused, and a 5xx or a lost response unknown (a 5xx does not prove the message was not sent).
 
 The adversarial agent's attacks are the attack catalog's own payloads (`kavach-attacks`). Each call's attack label is for the report only; the oracle never reads it, and a test checks that.
@@ -109,7 +109,7 @@ The same seed gives the same digest over the ledger (who did what, when, and wha
 | `wrong-borrower` | A borrower outside the mandate is refused (`subject-binding`) | Agent authorization core (the mandate's subject) |
 | `forged-mandate` | A mandate id that was never issued is refused | Agent authorization core (a mandate whose chain verifies) |
 | `provider-failures` | 422 is recorded as refused, and a 500 or a lost response as unknown | Credential broker / gateway (outcomes) |
-| `retry-after-unknown` | A retry after an unknown outcome gets 409 `in_flight` and is never sent again | Gateway (forward-once) |
+| `retry-after-unknown` | A retry after an unknown outcome gets it back, replayed, and is never sent again | Gateway (forward-once) |
 | `mixed-week` | All of the above, over three days | All of the above |
 
 ## Not covered yet

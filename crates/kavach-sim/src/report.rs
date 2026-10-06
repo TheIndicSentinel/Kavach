@@ -122,12 +122,9 @@ fn first_issue(call: &Entry, expected: &crate::oracle::Expected) -> Option<Issue
 
 /// A call sent again: whether it was answered without a second send, and
 /// the issue if not.
-fn retry_issue(call: &Entry, retry: Retry) -> (bool, Option<Issue>) {
-    let in_flight = call.status == 409 && call.reasons.iter().any(|r| r == "in_flight");
-    let answered = match retry {
-        Retry::InFlight => in_flight,
-        Retry::Stored { allowed } => call.replayed && call.allowed() == allowed,
-    };
+fn retry_issue(call: &Entry, retry: &Retry) -> (bool, Option<Issue>) {
+    let answered =
+        call.replayed && call.allowed() == retry.allowed && call.outcome == retry.outcome;
     let issue = if call.allowed() && !call.replayed {
         Some(Issue::Violation(
             "allowed again without the stored reply: a possible second send".into(),
@@ -136,13 +133,10 @@ fn retry_issue(call: &Entry, retry: Retry) -> (bool, Option<Issue>) {
         None
     } else {
         Some(Issue::Mismatch(format!(
-            "sent again: {} {}, but the rules mean {}",
+            "sent again: {} {}, but the rules mean the stored reply, replayed, outcome {}",
             call.status,
             call.reasons.join(", "),
-            match retry {
-                Retry::InFlight => "409 in_flight (no final outcome yet)",
-                Retry::Stored { .. } => "the stored reply, replayed",
-            }
+            retry.outcome.as_deref().unwrap_or("none")
         )))
     };
     (answered, issue)
@@ -190,7 +184,7 @@ impl Report {
                 tally.0 += 1;
                 tally.1 += u32::from(!call.allowed());
             }
-            let issue = if let Some(retry) = expected.retry {
+            let issue = if let Some(retry) = &expected.retry {
                 let (answered, issue) = retry_issue(call, retry);
                 retries.0 += 1;
                 retries.1 += u32::from(answered);
