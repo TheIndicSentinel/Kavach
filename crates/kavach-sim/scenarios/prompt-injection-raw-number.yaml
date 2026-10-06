@@ -4,6 +4,7 @@
 version: 1
 name: prompt-injection-raw-number
 description: Raw phone, PAN and Aadhaar numbers in place of a reference are refused.
+covers: ["Agent authorization core (library):", "Agent tool registry:"]   # SECURITY_PROPERTIES.md rows
 seed: 19
 days: 1
 borrowers: 2

@@ -24,7 +24,6 @@ pub const NOT_COVERED: &[&str] = &[
     "consent withdrawn mid-run (needs runtime consent changes)",
     "quarantining a rogue agent (needs the kill switch)",
     "trusted time lost (covered by the acceptance suite, not here)",
-    "the provider's inbox reconciled against the evidence (S3)",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -73,6 +72,9 @@ pub struct Report {
     pub mismatches: Vec<Finding>,
     pub leaks: Vec<Finding>,
     pub evidence: Bundle,
+    /// The ledger, the evidence and the provider's inbox, against each
+    /// other (when there is evidence to read).
+    pub reconciliation: Option<crate::reconcile::Reconciliation>,
     /// Same seed, same digest.
     pub digest: String,
     pub expectations_unmet: Vec<String>,
@@ -153,6 +155,7 @@ impl Report {
         world: &crate::world::World,
         ledger: &[Entry],
         evidence: Bundle,
+        reconciliation: Option<crate::reconcile::Reconciliation>,
         rules: Rules,
     ) -> Self {
         let mut oracle = Oracle::new(rules, world.deliveries());
@@ -237,6 +240,7 @@ impl Report {
             mismatches,
             leaks,
             evidence,
+            reconciliation,
             digest: digest(ledger),
             expectations_unmet: Vec::new(),
         };
@@ -279,7 +283,15 @@ impl Report {
     pub fn exit_code(&self) -> i32 {
         match &self.evidence {
             Bundle::Missing { .. } => 2,
-            Bundle::Verified { .. } if self.expectations_unmet.is_empty() => 0,
+            Bundle::Verified { .. }
+                if self.expectations_unmet.is_empty()
+                    && self
+                        .reconciliation
+                        .as_ref()
+                        .is_some_and(|r| r.findings.is_empty()) =>
+            {
+                0
+            }
             Bundle::Failed { .. } | Bundle::Verified { .. } => 1,
         }
     }
@@ -351,6 +363,7 @@ mod tests {
             &world,
             &shared_cap(),
             verified(),
+            Some(crate::reconcile::Reconciliation::default()),
             Rules::default(),
         );
         assert!(
@@ -373,14 +386,28 @@ mod tests {
             daily_cap: 4,
             ..Rules::default()
         };
-        let report = Report::build(&scenario, &world, &shared_cap(), verified(), weak);
+        let report = Report::build(
+            &scenario,
+            &world,
+            &shared_cap(),
+            verified(),
+            Some(crate::reconcile::Reconciliation::default()),
+            weak,
+        );
         assert_eq!(report.mismatches.len(), 1, "{report:?}");
         assert_eq!(report.exit_code(), 1);
 
         // And Kavach allowing a fourth contact is a violation.
         let mut allowed = shared_cap();
         allowed[3] = entry(4, 720, "sim-compliant-2", "PASS", &["authorized"]);
-        let report = Report::build(&scenario, &world, &allowed, verified(), Rules::default());
+        let report = Report::build(
+            &scenario,
+            &world,
+            &allowed,
+            verified(),
+            Some(crate::reconcile::Reconciliation::default()),
+            Rules::default(),
+        );
         assert_eq!(report.violations.len(), 1);
         assert_eq!(report.exit_code(), 1);
     }
@@ -392,12 +419,26 @@ mod tests {
         let missing = Bundle::Missing {
             reason: "the stack was killed".into(),
         };
-        let report = Report::build(&scenario, &world, &shared_cap(), missing, Rules::default());
+        let report = Report::build(
+            &scenario,
+            &world,
+            &shared_cap(),
+            missing,
+            Some(crate::reconcile::Reconciliation::default()),
+            Rules::default(),
+        );
         assert_eq!(report.exit_code(), 2);
         let failed = Bundle::Failed {
             reason: "records.jsonl digest".into(),
         };
-        let report = Report::build(&scenario, &world, &shared_cap(), failed, Rules::default());
+        let report = Report::build(
+            &scenario,
+            &world,
+            &shared_cap(),
+            failed,
+            Some(crate::reconcile::Reconciliation::default()),
+            Rules::default(),
+        );
         assert_eq!(report.exit_code(), 1);
     }
 

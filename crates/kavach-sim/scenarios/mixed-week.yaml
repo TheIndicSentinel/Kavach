@@ -4,6 +4,7 @@
 version: 1
 name: mixed-week
 description: Compliant, eager and adversarial agents, provider failures and retries, over three days.
+covers: ["Agent authorization core (library):", "Agent tool registry:", "Gateway"]   # SECURITY_PROPERTIES.md rows
 seed: 41
 days: 3
 borrowers: 8

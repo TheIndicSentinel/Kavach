@@ -4,6 +4,7 @@
 version: 1
 name: provider-failures
 description: Provider refusals, errors and lost responses are recorded as such.
+covers: ["Gateway"]   # SECURITY_PROPERTIES.md rows
 seed: 31
 days: 1
 borrowers: 5

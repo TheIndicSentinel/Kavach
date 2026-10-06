@@ -5,6 +5,7 @@
 version: 1
 name: retry-after-unknown
 description: A retry after an unknown outcome is refused as in flight, never sent twice.
+covers: ["Gateway"]   # SECURITY_PROPERTIES.md rows
 seed: 37
 days: 1
 borrowers: 2

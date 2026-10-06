@@ -2,6 +2,7 @@
 version: 1
 name: forged-mandate
 description: A mandate id that was never issued is refused.
+covers: ["Agent authorization core (library):"]   # SECURITY_PROPERTIES.md rows
 seed: 29
 days: 1
 borrowers: 2

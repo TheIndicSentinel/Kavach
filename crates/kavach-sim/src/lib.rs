@@ -10,8 +10,10 @@
 //!   policies (contact window, combined daily cap, channel).
 //! - [`driver`]: one run against a [`driver::Stack`] (the CLI implements it
 //!   over HTTP), recorded in the [`ledger`].
-//! - [`report`]: violations, mismatches and leaks; what is not covered
-//!   first.
+//! - [`reconcile`]: the ledger, Kavach's evidence and the provider's
+//!   inbox, checked against each other.
+//! - [`report`]: violations, mismatches, leaks and reconciliation; what is
+//!   not covered first.
 //!
 //! A simulation shows these synthetic scenarios behave as expected on this
 //! machine. It is not a security assessment and proves nothing about real
@@ -21,6 +23,7 @@ pub mod agents;
 pub mod driver;
 pub mod ledger;
 pub mod oracle;
+pub mod reconcile;
 pub mod report;
 pub mod rng;
 pub mod scenario;

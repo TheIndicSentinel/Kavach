@@ -4,6 +4,7 @@
 //! oracle (`kavach-sim`), with the stack's evidence exported as it stops
 //! and verified. Never attaches to a running stack.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -12,6 +13,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use kavach_sim::driver::{self, Stack};
 use kavach_sim::oracle::Rules;
+use kavach_sim::reconcile::{reconcile, Arrived, Recorded};
 use kavach_sim::report::{Bundle, Report};
 use kavach_sim::scenario::{self, Scenario, BUILTINS};
 use kavach_sim::world::World;
@@ -108,14 +110,38 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     let project = Project::find(&scene.dir)?;
     let live = Live::new(&project, start)?;
     let ledger = driver::run(&live, &scenario, &world).await;
+    // The provider's own record, read before the stack (and its inbox) stops.
+    let inbox = live.inbox().await;
     // Stopped either way: the bundle is written as it stops.
     let clean = scene.stop_gracefully(Duration::from_secs(60));
     let ledger = ledger.map_err(|e| {
         CliError::new("the simulation could not run", e)
             .fix("run again with --keep, and read .kavach/dev-up.log in the kept directory")
     })?;
+    let inbox = inbox.map_err(|e| CliError::new("cannot read the provider's inbox", e))?;
     let bundle = check_evidence(&project, &evidence, clean);
-    let report = Report::build(&scenario, &world, &ledger, bundle, Rules::default());
+    let reconciliation = match &bundle {
+        Bundle::Verified { .. } => {
+            let (recorded, outcomes) = read_bundle(&evidence)?;
+            Some(reconcile(
+                &ledger,
+                &recorded,
+                &outcomes,
+                &inbox,
+                &world.destinations(),
+                &world.deliveries(),
+            ))
+        }
+        _ => None,
+    };
+    let report = Report::build(
+        &scenario,
+        &world,
+        &ledger,
+        bundle,
+        reconciliation,
+        Rules::default(),
+    );
 
     let mut data =
         serde_json::to_value(&report).map_err(|e| CliError::new("cannot write the report", e))?;
@@ -135,6 +161,36 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     let code = ui.finish("simulate run", status, &data, &human);
     // 2 is "inconclusive" here (no evidence to judge by), as Status maps it.
     Ok(code)
+}
+
+/// The bundle's records and outcomes (it verified first).
+fn read_bundle(dir: &Path) -> Result<(Vec<Recorded>, BTreeMap<String, String>), CliError> {
+    let lines = |file: &str| -> Result<Vec<Value>, CliError> {
+        std::fs::read_to_string(dir.join(file))
+            .map_err(|e| CliError::new(format!("cannot read {file}"), e))?
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| {
+                serde_json::from_str(l)
+                    .map_err(|e| CliError::new(format!("{file} has a bad line"), e))
+            })
+            .collect()
+    };
+    let text = |v: &Value, key: &str| v[key].as_str().unwrap_or_default().to_string();
+    let recorded = lines("records.jsonl")?
+        .iter()
+        .map(|r| Recorded {
+            record_id: text(r, "record_id"),
+            request_id: text(r, "request_id"),
+            returned_decision: text(r, "returned_decision"),
+            credential_id: r["credential_id"].as_str().map(str::to_string),
+        })
+        .collect();
+    let outcomes = lines("outcomes.jsonl")?
+        .iter()
+        .map(|o| (text(o, "credential_id"), text(o, "outcome")))
+        .collect();
+    Ok((recorded, outcomes))
 }
 
 /// The bundle the stack wrote as it stopped, verified with the auditor's
@@ -172,6 +228,38 @@ fn check_evidence(project: &Project, evidence: &Path, clean: bool) -> Bundle {
         Err(e) => Bundle::Failed {
             reason: e.to_string(),
         },
+    }
+}
+
+/// The evidence and how the three records reconciled.
+fn evidence_lines(out: &mut String, r: &Report) {
+    let _ = writeln!(
+        out,
+        "Evidence: {}",
+        match &r.evidence {
+            Bundle::Verified {
+                signed_with,
+                records,
+                ..
+            } =>
+                format!("{records} records, verified against dev keys (signed with {signed_with})"),
+            Bundle::Missing { reason } => format!("INCONCLUSIVE: {reason}"),
+            Bundle::Failed { reason } => format!("FAILED to verify: {reason}"),
+        }
+    );
+    if let Some(rec) = &r.reconciliation {
+        let _ = writeln!(
+            out,
+            "Reconciled: {} ledger records · {} in the evidence ({} outcomes) · {} in the provider's inbox · {}",
+            rec.ledger_records,
+            rec.evidence_records,
+            rec.outcomes,
+            rec.inbox_messages,
+            if rec.findings.is_empty() { "consistent".to_string() } else { format!("{} FINDINGS", rec.findings.len()) }
+        );
+        for finding in &rec.findings {
+            let _ = writeln!(out, "  reconciliation: {finding}");
+        }
     }
 }
 
@@ -249,20 +337,7 @@ fn text(ui: Ui, r: &Report, kept: Option<&Path>) -> String {
             );
         }
     }
-    let _ = writeln!(
-        out,
-        "Evidence: {}",
-        match &r.evidence {
-            Bundle::Verified {
-                signed_with,
-                records,
-                ..
-            } =>
-                format!("{records} records, verified against dev keys (signed with {signed_with})"),
-            Bundle::Missing { reason } => format!("INCONCLUSIVE: {reason}"),
-            Bundle::Failed { reason } => format!("FAILED to verify: {reason}"),
-        }
-    );
+    evidence_lines(&mut out, r);
     let _ = writeln!(out, "Digest {} (same seed, same digest)", r.digest);
     for unmet in &r.expectations_unmet {
         let _ = writeln!(out, "  expected: {unmet}");
@@ -310,6 +385,27 @@ impl Live {
         std::fs::read_to_string(self.bundle.join(format!("agents/{agent}.jwt")))
             .map(|t| t.trim().to_string())
             .map_err(|e| format!("token of {agent}: {e}"))
+    }
+
+    /// What the mock provider received (its inspection listener).
+    async fn inbox(&self) -> Result<Vec<Arrived>, String> {
+        let messages: Vec<Value> = self
+            .client
+            .get(format!("http://{}/v1/inbox", self.run.inspect))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?
+            .json()
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(messages
+            .iter()
+            .map(|m| Arrived {
+                record_id: m["record_id"].as_str().unwrap_or_default().into(),
+                jti: m["jti"].as_str().unwrap_or_default().into(),
+                destination: m["destination"].as_str().unwrap_or_default().into(),
+            })
+            .collect())
     }
 
     fn time(&self) -> DateTime<Utc> {

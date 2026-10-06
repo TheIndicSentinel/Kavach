@@ -23,8 +23,17 @@ kavach simulate run my-scenario.yaml --seed 42 --report report.json --keep
    - each agent decides its calls from its behaviour settings;
    - each call goes to `POST /v1/tools/send_reminder` with a `sim-` request id;
    - every reply goes into the ledger.
-5. **The stack stops (SIGTERM)** and writes its evidence as a development bundle. The bundle is verified against the auditor's dev keys.
-6. **The oracle** judges every call in the ledger. The report counts violations, mismatches and leaks, and checks the scenario's `expect`.
+5. **The provider's inbox is read**: what actually arrived, the one record Kavach does not write.
+6. **The stack stops (SIGTERM)** and writes its evidence as a development bundle. The bundle is verified against the auditor's dev keys.
+7. **The oracle** judges every call in the ledger. The report counts violations, mismatches and leaks, and checks the scenario's `expect`.
+8. **The three records are reconciled.** The ledger, the evidence and the inbox are checked against each other:
+   - every call that produced a record is in the evidence, with the same request, decision and outcome;
+   - every record came from a call;
+   - an allowed, deliverable call arrived **exactly once**: the provider's proof that nothing was sent twice;
+   - a blocked call, or one the provider refused or failed, never arrived;
+   - each message went to that borrower's own destination, with the credential the evidence names.
+
+   Any finding fails the run. Findings name borrowers and record ids, never destinations.
 
 ## Scenario file (format version 1)
 
@@ -53,7 +62,7 @@ expect:                   # required: what passing means
   blocked_at_least: { contact-daily-cap: 1 }
 ```
 
-Unknown keys are refused. `--seed`, `--days` and `--borrowers` override the file.
+Unknown keys are refused. `--seed`, `--days` and `--borrowers` override the file. A scenario may name the SECURITY_PROPERTIES.md rows it exercises in `covers:`. Every built-in does, and a test fails if one of those rows is renamed or removed.
 
 ## The oracle
 
@@ -81,8 +90,8 @@ Agents never see it, and two tests are mandatory:
 
 ## Exit codes
 
-- **0** as expected: every `expect` met, and the evidence verifies.
-- **1** not as expected: a violation, mismatch or leak; an unmet expectation; or evidence that does not verify.
+- **0** as expected: every `expect` met, the evidence verifies, and the three records reconcile.
+- **1** not as expected: a violation, mismatch or leak; an unmet expectation; evidence that does not verify; or a reconciliation finding.
 - **2** inconclusive: no evidence to judge by, for example the stack was killed or crashed. Never a pass.
 - **64** the scenario or the command is not valid. Nothing is started.
 
@@ -110,6 +119,5 @@ The same seed gives the same digest over the ledger (who did what, when, and wha
 - **Consent withdrawn mid-run:** needs runtime consent changes.
 - **Quarantining a rogue agent:** needs the kill switch.
 - **Trusted time lost:** the acceptance suite covers it.
-- **The provider's inbox reconciled against the evidence** (proof from the provider's side that nothing was sent twice): planned for S3. Until then, "never sent twice" rests on Kavach's replies and its evidence.
 - **Network isolation:** CI's isolation job.
 - **Performance:** `kavach-bench`.

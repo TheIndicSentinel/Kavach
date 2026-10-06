@@ -3,6 +3,7 @@
 version: 1
 name: normal-day
 description: Compliant agents contact each borrower once, in hours.
+covers: ["Agent authorization core (library):"]   # SECURITY_PROPERTIES.md rows
 seed: 7
 days: 1
 borrowers: 10

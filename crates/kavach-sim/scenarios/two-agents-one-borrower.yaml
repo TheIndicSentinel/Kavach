@@ -4,6 +4,7 @@
 version: 1
 name: two-agents-one-borrower
 description: The daily cap holds across agents serving the same borrower.
+covers: ["Agent authorization core (library):"]   # SECURITY_PROPERTIES.md rows
 seed: 17
 days: 1
 borrowers: 1

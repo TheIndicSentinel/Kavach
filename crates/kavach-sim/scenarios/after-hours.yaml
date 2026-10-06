@@ -4,6 +4,7 @@
 version: 1
 name: after-hours
 description: Contacts at 18:55 are allowed; at 19:05 they are blocked.
+covers: ["Agent authorization core (library):"]   # SECURITY_PROPERTIES.md rows
 seed: 11
 days: 1
 borrowers: 4
