@@ -1,6 +1,6 @@
 # ADR-012: Revocation by Signed System-of-Record Event
 
-**Status:** Proposed  
+**Status:** Accepted (2026-10-06)  
 **Date:** 2026-10-06  
 **Deciders:** Kavach product/engineering  
 **Related:** ADR-004 (mandates), ADR-007 (forward-once), ADR-011, PRD FR-9, [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md)
@@ -45,7 +45,10 @@ A resource credential is minted by the gateway inside the same request that forw
 - `MandateRevoked` is published per mandate, as today.
 - A later call under a revoked mandate is a recorded BLOCK, as today, because verification refuses revoked mandates.
 
-### 7. Attacks (catalog version 4)
+### 7. Revocations are evidence
+Each revocation is also a signed record in the agent evidence chain (kind `mandate_revocation`, as ADR-013 adds `agent_state`): the event id, the record, the reason and the revoked ids. It is exported and verified with the decisions.
+
+### 8. Attacks (catalog version 4)
 - `forged-revocation`: a bad signature is refused.
 - `replayed-revocation`: the replay guard refuses it.
 - `stale-revocation`: outside the freshness window, refused.
@@ -62,6 +65,6 @@ A resource credential is minted by the gateway inside the same request that forw
 ## Not addressed here
 
 - **Consent withdrawal:** needs runtime consent changes, which have their own ADR.
-- **Quarantine and manual kill:** ADR-013.
+- **Quarantine and manual kill:** ADR-013. A quarantine *suspends* mandates (reversible); only revoking an agent, or this ADR's events, revokes them.
 - **Revocation propagation to other replicas' caches:** there are none today, because mandates are read from the store on every call.
 - **An outbox for `MandateRevoked`:** FR-9's Postgres outbox, which comes with the event bus work.
