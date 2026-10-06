@@ -671,7 +671,7 @@ paths:
     post:
       operationId: submitSorEvent
       tags: [sor]
-      summary: Submit a signed system-of-record event; issues one mandate.
+      summary: Submit a signed system-of-record event; issues one mandate, or (loan.paid, loan.disputed) revokes a loan's mandates.
       description: |
         Not authenticated by a token: the event is a compact JWS signed by
         a trusted SoR key, and the listener belongs on the backend network.
@@ -694,10 +694,17 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/SorEventResponse" }
         "200":
-          description: The same event again; the mandate it issued.
+          description: |
+            The same issuing event again (the mandate it issued), or a revoking
+            event (`loan.paid`, `loan.disputed`; ADR-012): the mandates it
+            revoked, delegations included. A revoking event again returns the
+            same list with `replayed: true`.
           content:
             application/json:
-              schema: { $ref: "#/components/schemas/SorEventResponse" }
+              schema:
+                oneOf:
+                  - { $ref: "#/components/schemas/SorEventResponse" }
+                  - { $ref: "#/components/schemas/SorRevocationResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -1437,4 +1444,16 @@ components:
       properties:
         mandate_id: { type: string }
         exp: { $ref: "#/components/schemas/DateTime" }
+        replayed: { type: boolean }
+
+    SorRevocationResponse:
+      type: object
+      additionalProperties: false
+      description: What a revoking event did (ADR-012).
+      required: [revoked, replayed]
+      properties:
+        revoked:
+          type: array
+          items: { type: string }
+          description: Every mandate whose status changed, delegations included.
         replayed: { type: boolean }

@@ -400,6 +400,39 @@ pub async fn event_at(
     .unwrap()
 }
 
+/// A signed revoking event (ADR-012: `loan.paid`, `loan.disputed`) about
+/// `record_ref`, at `at`.
+pub async fn revocation_at(
+    event_id: &str,
+    event_type: &str,
+    record_ref: &str,
+    at: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let mut sor = InMemoryKeyProvider::new();
+    sor.insert_seed("lms-issuer-1", [2u8; 32]).unwrap();
+    let event = SorEvent {
+        event_id: event_id.into(),
+        tenant_id: "default".into(),
+        system: "lms".into(),
+        event_type: event_type.into(),
+        record_ref: record_ref.into(),
+        subject_ref: SUBJECT.into(),
+        principal: "nbfc-collections-system".into(),
+        consent_refs: BTreeSet::new(),
+        assigned_agent: String::new(),
+        occurred_at: at,
+        nonce: format!("n-{event_id}-{record_ref}"),
+    };
+    kavach_mandate::jws::sign(
+        &sor,
+        "lms-issuer-1",
+        kavach_mandate::jws::TYP_SOR_EVENT,
+        &event,
+    )
+    .await
+    .unwrap()
+}
+
 pub async fn send(
     app: axum::Router,
     uri: &str,

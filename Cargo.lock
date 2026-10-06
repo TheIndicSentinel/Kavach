@@ -2464,6 +2464,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "hex",
  "kavach-domain",
  "kavach-jws",
  "kavach-keys",
@@ -2473,6 +2474,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
+ "sha2",
  "tokio",
  "uuid",
 ]

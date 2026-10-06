@@ -43,10 +43,10 @@ use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::CredentialBroker;
 use kavach_ports::{
     ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey, ReplayGuard,
-    StoredMandate, SyncStatus, TimeSource, TrustedNow,
+    StoredMandate, StoredRevocation, SyncStatus, TimeSource, TrustedNow,
 };
 use kavach_storage::{
-    MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, PostgresMandateStore,
+    AuditInsert, MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, PostgresMandateStore,
     PostgresReplayGuard, StoragePool,
 };
 use serde::{Deserialize, Serialize};
@@ -230,6 +230,34 @@ impl MandateStore for MandateStoreBackend {
         match self {
             Self::Memory(s) => s.revoke_tree(tenant_id, id, reason).await,
             Self::Postgres(s) => s.revoke_tree(tenant_id, id, reason).await,
+        }
+    }
+    async fn live_roots_for_record(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        record_ref: &str,
+    ) -> Result<Vec<StoredMandate>, PortError> {
+        match self {
+            Self::Memory(s) => s.live_roots_for_record(tenant_id, system, record_ref).await,
+            Self::Postgres(s) => s.live_roots_for_record(tenant_id, system, record_ref).await,
+        }
+    }
+    async fn record_revocation(&self, revocation: StoredRevocation) -> Result<(), PortError> {
+        match self {
+            Self::Memory(s) => s.record_revocation(revocation).await,
+            Self::Postgres(s) => s.record_revocation(revocation).await,
+        }
+    }
+    async fn revocation_for_event(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        event_id: &str,
+    ) -> Result<Option<StoredRevocation>, PortError> {
+        match self {
+            Self::Memory(s) => s.revocation_for_event(tenant_id, system, event_id).await,
+            Self::Postgres(s) => s.revocation_for_event(tenant_id, system, event_id).await,
         }
     }
 }
@@ -1336,35 +1364,68 @@ pub struct SorEventResponse {
     pub replayed: bool,
 }
 
+/// What a revoking event did (ADR-012).
+#[derive(Debug, Serialize)]
+pub struct SorRevocationResponse {
+    /// Every mandate whose status changed, delegations included.
+    pub revoked: Vec<String>,
+    /// True when this event had already been applied (a retry).
+    pub replayed: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum SorReply {
+    Issued(SorEventResponse),
+    Revoked(SorRevocationResponse),
+}
+
+/// A refused event, the same for issuing and revoking.
+fn event_refusal(err: &PortError) -> Refusal {
+    match err.class {
+        ErrorClass::Invalid => refuse(StatusCode::BAD_REQUEST, err.message.clone()),
+        ErrorClass::Rejected => crate::problem::Problem::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "event_rejected",
+            err.message.clone(),
+        ),
+        ErrorClass::Unavailable => crate::problem::Problem::unavailable(&err.message),
+    }
+}
+
 /// `POST /v1/sor/events` (system-of-record listener, ADR-004 §4): a signed
-/// event issues a mandate. A retry with identical content returns the
-/// existing mandate; the same event id with other content is a conflict.
+/// event issues a mandate, or (`loan.paid`, `loan.disputed`, ADR-012)
+/// revokes a loan's live mandates. A retry with identical content returns
+/// the first result (`replayed`); the same id with other content is 409.
 pub async fn sor_event(
     State(state): State<Arc<AppState>>,
     Json(body): Json<SorEventBody>,
-) -> Result<(StatusCode, Json<SorEventResponse>), Refusal> {
+) -> Result<(StatusCode, Json<SorReply>), Refusal> {
     let dp = dataplane(&state)?;
     let allowed = dp.sor_limiter.lock().is_ok_and(|mut bucket| bucket.take());
     if !allowed {
         return Err(refuse(StatusCode::TOO_MANY_REQUESTS, "event rate limit"));
     }
+    if kavach_mandate::is_revoking_event(&body.event) {
+        return revoke_by_event(&state, dp, &body.event).await;
+    }
     match dp.mandates.issue_from_event(&body.event).await {
         Ok(issued) => Ok((
             StatusCode::CREATED,
-            Json(SorEventResponse {
+            Json(SorReply::Issued(SorEventResponse {
                 mandate_id: issued.mandate.id,
                 exp: issued.mandate.exp,
                 replayed: false,
-            }),
+            })),
         )),
         Err(issue_err) => match dp.mandates.existing_for_event(&body.event).await {
             Ok(Some(existing)) => Ok((
                 StatusCode::OK,
-                Json(SorEventResponse {
+                Json(SorReply::Issued(SorEventResponse {
                     mandate_id: existing.mandate.id,
                     exp: existing.mandate.exp,
                     replayed: true,
-                }),
+                })),
             )),
             Err(conflict)
                 if conflict.class == ErrorClass::Rejected
@@ -1372,15 +1433,59 @@ pub async fn sor_event(
             {
                 Err(refuse(StatusCode::CONFLICT, conflict.message))
             }
-            _ => Err(match issue_err.class {
-                ErrorClass::Invalid => refuse(StatusCode::BAD_REQUEST, issue_err.message),
-                ErrorClass::Rejected => crate::problem::Problem::new(
-                    StatusCode::UNPROCESSABLE_ENTITY,
-                    "event_rejected",
-                    issue_err.message,
-                ),
-                ErrorClass::Unavailable => crate::problem::Problem::unavailable(&issue_err.message),
-            }),
+            _ => Err(event_refusal(&issue_err)),
+        },
+    }
+}
+
+/// ADR-012: revokes, audits, and answers a retry with the stored result.
+async fn revoke_by_event(
+    state: &AppState,
+    dp: &Dataplane,
+    event: &str,
+) -> Result<(StatusCode, Json<SorReply>), Refusal> {
+    let reply = |revoked: Vec<String>, replayed: bool| {
+        (
+            StatusCode::OK,
+            Json(SorReply::Revoked(SorRevocationResponse {
+                revoked,
+                replayed,
+            })),
+        )
+    };
+    match dp.mandates.revoke_from_event(event).await {
+        Ok(done) => {
+            let audited = state
+                .admin()
+                .append_audit(AuditInsert {
+                    action: "mandates_revoked_by_event".into(),
+                    resource_type: "loan".into(),
+                    resource_id: done.record_ref.clone(),
+                    actor_principal: "system-of-record".into(),
+                    approver_principal: String::new(),
+                    payload: serde_json::json!({
+                        "event_id": done.event_id,
+                        "event_type": done.event_type,
+                        "revoked": done.revoked,
+                    }),
+                })
+                .await;
+            if let Err(e) = audited {
+                // The revocation stands (it only ever stops contact); the
+                // missing audit entry is reported.
+                tracing::error!(error = %e, event_id = %done.event_id, "revocation not audited");
+            }
+            Ok(reply(done.revoked, false))
+        }
+        Err(err) => match dp.mandates.existing_revocation(event).await {
+            Ok(Some(stored)) => Ok(reply(stored.revoked, true)),
+            Err(conflict)
+                if conflict.class == ErrorClass::Rejected
+                    && conflict.message.contains("different content") =>
+            {
+                Err(refuse(StatusCode::CONFLICT, conflict.message))
+            }
+            _ => Err(event_refusal(&err)),
         },
     }
 }

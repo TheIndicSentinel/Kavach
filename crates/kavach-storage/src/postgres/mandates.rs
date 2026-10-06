@@ -8,7 +8,7 @@
 
 use chrono::{DateTime, Utc};
 use kavach_domain::mandate::{Mandate, MandateStatus, RevocationReason};
-use kavach_ports::{MandateStore, PortError, ReplayGuard, StoredMandate};
+use kavach_ports::{MandateStore, PortError, ReplayGuard, StoredMandate, StoredRevocation};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
 /// Bound on recursive walks (above the delegation depth cap), so a corrupted
@@ -262,6 +262,90 @@ impl MandateStore for PostgresMandateStore {
                 ))
             })
             .collect()
+    }
+
+    async fn live_roots_for_record(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        record_ref: &str,
+    ) -> Result<Vec<StoredMandate>, PortError> {
+        let rows = sqlx::query(
+            "SELECT mandate, token, status, revoked_reason FROM mandates \
+            WHERE tenant_id = $1 AND source_system = $2 \
+            AND mandate -> 'source' ->> 'record_ref' = $3 \
+            AND parent_id IS NULL AND status = 'active' \
+            ORDER BY created_at",
+        )
+        .bind(tenant_id)
+        .bind(system)
+        .bind(record_ref)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter().map(row_to_stored).collect()
+    }
+
+    async fn record_revocation(&self, revocation: StoredRevocation) -> Result<(), PortError> {
+        let revoked = serde_json::to_value(&revocation.revoked)
+            .map_err(|e| PortError::invalid(format!("revoked ids: {e}")))?;
+        let inserted = sqlx::query(
+            "INSERT INTO mandate_revocations (tenant_id, source_system, event_id, \
+            content_sha256, event_type, record_ref, occurred_at, revoked) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+        )
+        .bind(&revocation.tenant_id)
+        .bind(&revocation.system)
+        .bind(&revocation.event_id)
+        .bind(&revocation.content_sha256)
+        .bind(&revocation.event_type)
+        .bind(&revocation.record_ref)
+        .bind(revocation.occurred_at)
+        .bind(revoked)
+        .execute(&self.pool)
+        .await;
+        match inserted {
+            Ok(_) => Ok(()),
+            Err(e) if is_unique_violation(&e) => Err(PortError::rejected(format!(
+                "revocation event {} was recorded already",
+                revocation.event_id
+            ))),
+            Err(e) => Err(unavailable(&e)),
+        }
+    }
+
+    async fn revocation_for_event(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        event_id: &str,
+    ) -> Result<Option<StoredRevocation>, PortError> {
+        let row = sqlx::query(
+            "SELECT content_sha256, event_type, record_ref, occurred_at, revoked \
+            FROM mandate_revocations \
+            WHERE tenant_id = $1 AND source_system = $2 AND event_id = $3",
+        )
+        .bind(tenant_id)
+        .bind(system)
+        .bind(event_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let revoked: serde_json::Value = row.try_get("revoked").map_err(|e| unavailable(&e))?;
+        Ok(Some(StoredRevocation {
+            tenant_id: tenant_id.to_string(),
+            system: system.to_string(),
+            event_id: event_id.to_string(),
+            content_sha256: row.try_get("content_sha256").map_err(|e| unavailable(&e))?,
+            event_type: row.try_get("event_type").map_err(|e| unavailable(&e))?,
+            record_ref: row.try_get("record_ref").map_err(|e| unavailable(&e))?,
+            occurred_at: row.try_get("occurred_at").map_err(|e| unavailable(&e))?,
+            revoked: serde_json::from_value(revoked)
+                .map_err(|e| PortError::invalid(format!("stored revoked ids: {e}")))?,
+        }))
     }
 }
 

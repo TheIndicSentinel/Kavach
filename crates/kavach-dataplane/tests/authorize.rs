@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
 use kavach_authz::AgentState;
+use kavach_dataplane::MandateVerifier as _;
 use kavach_dataplane::{
     AgentIdentity, AuthorizeConfig, AuthorizeCore, CommitStatus, Mode, ToolCall,
 };
@@ -738,4 +739,260 @@ impl<B: kavach_ports::CredentialBroker> kavach_ports::CredentialBroker for SlowB
     ) -> impl std::future::Future<Output = Result<u64, kavach_ports::PortError>> + Send {
         self.inner.revoke_by_mandate(tenant_id, mandate_id)
     }
+}
+
+/// A resolver that revokes the mandate while it resolves: the decision is
+/// already recorded, the credential not yet minted (ADR-012 §5).
+struct RevokingResolver {
+    mandates: Arc<Service>,
+    mandate: String,
+}
+
+impl kavach_ports::ReferenceResolver for RevokingResolver {
+    fn resolve(
+        &self,
+        tenant_id: &str,
+        _subject_ref: &str,
+        _channel: &str,
+    ) -> impl std::future::Future<Output = Result<kavach_ports::Destination, kavach_ports::PortError>>
+           + Send {
+        let (mandates, mandate, tenant) = (
+            Arc::clone(&self.mandates),
+            self.mandate.clone(),
+            tenant_id.to_string(),
+        );
+        async move {
+            mandates
+                .revoke(&tenant, &mandate, RevocationReason::Payment)
+                .await
+                .expect("revoked");
+            Ok(kavach_ports::Destination::new("+910000000001"))
+        }
+    }
+
+    fn describe(&self) -> String {
+        "revoking".into()
+    }
+}
+
+/// Counts credentials minted.
+struct CountingBroker<B> {
+    inner: B,
+    issued: std::sync::atomic::AtomicUsize,
+}
+
+impl<B: kavach_ports::CredentialBroker> kavach_ports::CredentialBroker for CountingBroker<B> {
+    async fn issue(
+        &self,
+        request: &kavach_ports::CredentialRequest<'_>,
+    ) -> Result<kavach_ports::IssuedCredential, kavach_ports::PortError> {
+        self.issued
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.issue(request).await
+    }
+
+    fn revoke_by_mandate(
+        &self,
+        tenant_id: &str,
+        mandate_id: &str,
+    ) -> impl std::future::Future<Output = Result<u64, kavach_ports::PortError>> + Send {
+        self.inner.revoke_by_mandate(tenant_id, mandate_id)
+    }
+}
+
+/// ADR-012 §5: a mandate revoked after the decision was recorded but before
+/// the credential is minted gets no credential, and nothing is sent; the
+/// recorded allow ends `not_executed` / `mandate_revoked`.
+#[tokio::test]
+async fn a_mandate_revoked_after_the_decision_mints_nothing_and_sends_nothing() {
+    use kavach_ports::agent_evidence::Outcome;
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let mut keys = InMemoryKeyProvider::new();
+    keys.insert_seed("kavach-credential-1", [5u8; 32]).unwrap();
+    let broker = CountingBroker {
+        inner: kavach_credential::JoseCredentialBroker::new(
+            keys,
+            "kavach-credential-1",
+            "kavach",
+            BTreeMap::from([(
+                "mock-messaging".to_string(),
+                kavach_credential::DecryptionKey::from_bytes("enc", [11u8; 32]).recipient(),
+            )]),
+        ),
+        issued: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let forwarder = CountingForwarder::default();
+    let resolver = RevokingResolver {
+        mandates: Arc::clone(&w.mandates),
+        mandate: mandate.clone(),
+    };
+    let deps = kavach_dataplane::GatewayDeps {
+        core: &w.core,
+        resolver: &resolver,
+        broker: &broker,
+        forwarder: &forwarder,
+        observer: &NoMetrics,
+    };
+    let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
+        "mandate_id": mandate,
+        "request_id": "revoked-1",
+        "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" }
+    }))
+    .unwrap();
+    let reply =
+        kavach_dataplane::execute(&deps, &agent("collections-agent"), "send_reminder", request)
+            .await
+            .unwrap();
+    assert_eq!(reply.decision, Decision::Pass, "allowed when decided");
+    assert_eq!(reply.outcome, Some(Outcome::NotExecuted));
+    assert_eq!(reply.outcome_reason.as_deref(), Some("mandate_revoked"));
+    assert_eq!(
+        broker.issued.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "no credential"
+    );
+    assert_eq!(
+        forwarder.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing sent"
+    );
+}
+
+/// A signed revoking event (ADR-012) about `borrower`'s loan.
+async fn revocation(
+    sor: &InMemoryKeyProvider,
+    borrower: &str,
+    event_type: &str,
+    event_id: &str,
+    occurred_at: DateTime<Utc>,
+) -> String {
+    let event = kavach_domain::mandate::SorEvent {
+        event_id: event_id.into(),
+        tenant_id: TENANT.into(),
+        system: "lms".into(),
+        event_type: event_type.into(),
+        record_ref: format!("lms:loan/{borrower}"),
+        subject_ref: format!("ref:borrower:{borrower}"),
+        principal: "nbfc-collections-system".into(),
+        consent_refs: BTreeSet::new(),
+        assigned_agent: String::new(),
+        occurred_at,
+        nonce: format!("n-{event_id}"),
+    };
+    kavach_mandate::jws::sign(
+        sor,
+        "lms-issuer-1",
+        kavach_mandate::jws::TYP_SOR_EVENT,
+        &event,
+    )
+    .await
+    .unwrap()
+}
+
+/// ADR-012: a payment revokes the loan's live mandates and every mandate
+/// delegated from them; a retry gets the stored result; the id reused for
+/// other content, a forged, a stale or a non-revoking event is refused.
+#[tokio::test]
+async fn a_payment_event_revokes_the_loans_mandates_and_their_delegations() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let child = w
+        .mandates
+        .delegate(
+            TENANT,
+            &mandate,
+            "collections-agent",
+            "translator-agent",
+            &kavach_domain::mandate::DelegationRequest {
+                actions: common::set(&["read_fields"]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .mandate
+        .id;
+    w.at(ist(12, 0, 0));
+    let paid = revocation(&w.sor, "B-9382", "loan.paid", "pay-1", w.clock.now().utc).await;
+    assert!(kavach_mandate::is_revoking_event(&paid));
+    let done = w.mandates.revoke_from_event(&paid).await.unwrap();
+    assert_eq!(
+        done.revoked,
+        [mandate.clone(), child.clone()],
+        "the root and its delegation"
+    );
+    assert!(!done.replayed);
+    for id in [&mandate, &child] {
+        assert!(
+            w.mandates.verify(TENANT, id).await.is_err(),
+            "{id} no longer authorises"
+        );
+    }
+
+    // The same event again: the stored result, nothing revoked now.
+    assert!(
+        w.mandates.revoke_from_event(&paid).await.is_err(),
+        "the replay guard"
+    );
+    let again = w
+        .mandates
+        .existing_revocation(&paid)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((again.revoked, again.replayed), (done.revoked, true));
+    // The id reused for another record: refused.
+    let other = revocation(&w.sor, "B-1111", "loan.paid", "pay-1", w.clock.now().utc).await;
+    let conflict = w.mandates.existing_revocation(&other).await.unwrap_err();
+    assert!(
+        conflict.message.contains("different content"),
+        "{conflict:?}"
+    );
+
+    // Forged (another key), stale, and not a revoking type.
+    let mut other_keys = InMemoryKeyProvider::new();
+    other_keys.insert_seed("lms-issuer-1", [99u8; 32]).unwrap();
+    let forged = revocation(
+        &other_keys,
+        "B-9382",
+        "loan.paid",
+        "pay-2",
+        w.clock.now().utc,
+    )
+    .await;
+    assert!(
+        w.mandates.revoke_from_event(&forged).await.is_err(),
+        "forged"
+    );
+    let stale = revocation(&w.sor, "B-9382", "loan.disputed", "pay-3", ist(11, 0, 0)).await;
+    assert!(
+        w.mandates.revoke_from_event(&stale).await.is_err(),
+        "stale (an hour old)"
+    );
+    let wrong = revocation(&w.sor, "B-9382", "loan.dpd30", "pay-4", w.clock.now().utc).await;
+    assert!(!kavach_mandate::is_revoking_event(&wrong));
+    assert!(
+        w.mandates.revoke_from_event(&wrong).await.is_err(),
+        "loan.dpd30 does not revoke"
+    );
+}
+
+/// ADR-012 §3: a revocation never reaches forward. A mandate issued after
+/// the revoking event occurred (a new default after a payment) stays.
+#[tokio::test]
+async fn a_revocation_never_reaches_a_mandate_issued_after_it() {
+    let w = world();
+    let occurred = w.clock.now().utc;
+    w.at(ist(11, 1, 0));
+    let mandate = w.mandate_for("B-9382").await;
+    // A payment that occurred a minute before the mandate was issued
+    // (fresh enough to be accepted) does not revoke it.
+    let paid = revocation(&w.sor, "B-9382", "loan.paid", "pay-old", occurred).await;
+    let done = w.mandates.revoke_from_event(&paid).await.unwrap();
+    assert!(done.revoked.is_empty(), "{done:?}");
+    assert!(
+        w.mandates.verify(TENANT, &mandate).await.is_ok(),
+        "still live"
+    );
 }

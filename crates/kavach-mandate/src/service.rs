@@ -10,8 +10,9 @@ use kavach_domain::mandate::{
 };
 use kavach_ports::{
     ConsentSource, DomainEvent, EventBus, KeyProvider, MandateStore, PortError, ReplayGuard,
-    StoredMandate, TimeSource,
+    StoredMandate, StoredRevocation, TimeSource,
 };
+use sha2::{Digest, Sha256};
 
 use crate::config::MandateConfig;
 use crate::delegation::{is_within, narrow_child, ChildIdentity};
@@ -32,6 +33,51 @@ pub struct IssuedMandate {
 pub struct RevokeOutcome {
     pub revoked: Vec<String>,
     pub publish_errors: Vec<(String, String)>,
+}
+
+/// The system-of-record event types that revoke (ADR-012), and why.
+pub const REVOKING_EVENTS: [(&str, RevocationReason); 2] = [
+    ("loan.paid", RevocationReason::Payment),
+    ("loan.disputed", RevocationReason::Dispute),
+];
+
+/// What a revoking event did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokedByEvent {
+    pub event_id: String,
+    pub event_type: String,
+    pub record_ref: String,
+    /// Every mandate whose status changed, delegations included.
+    pub revoked: Vec<String>,
+    /// The same event again: the stored result, nothing revoked now.
+    pub replayed: bool,
+}
+
+/// Whether `event_token` names a revoking event type. Only routes the
+/// request: the event is fully verified by whichever path handles it.
+#[must_use]
+pub fn is_revoking_event(event_token: &str) -> bool {
+    use base64::Engine as _;
+    event_token
+        .split('.')
+        .nth(1)
+        .and_then(|payload| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .ok()
+        })
+        .and_then(|bytes: Vec<u8>| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|event| event["event_type"].as_str().map(str::to_string))
+        .is_some_and(|t| REVOKING_EVENTS.iter().any(|(name, _)| *name == t))
+}
+
+/// SHA-256 of an event's content (a struct serializes in a fixed field
+/// order, its sets sorted): a retry has the same, a reuse of its id for
+/// other content does not.
+fn content_sha256(event: &SorEvent) -> Result<String, PortError> {
+    let bytes =
+        serde_json::to_vec(event).map_err(|e| PortError::invalid(format!("event content: {e}")))?;
+    Ok(hex::encode(Sha256::digest(&bytes)))
 }
 
 /// Adapters the service depends on (ADR-006).
@@ -376,6 +422,95 @@ where
             outcome.revoked.push(mandate_id);
         }
         Ok(outcome)
+    }
+
+    /// ADR-012: a signed `loan.paid` or `loan.disputed` revokes the live
+    /// mandates issued (by `nbf`) at or before it for the same `system` and
+    /// record, with their delegations. The event is verified like an
+    /// issuing one: a registered issuer key for its system, freshness, the
+    /// replay guard. Its result is kept for retries.
+    pub async fn revoke_from_event(&self, event_token: &str) -> Result<RevokedByEvent, PortError> {
+        let now = self.deps.clock.now().utc;
+        let event = self.verify_event(event_token, now).await?;
+        let reason = REVOKING_EVENTS
+            .iter()
+            .find(|(name, _)| *name == event.event_type)
+            .map(|(_, reason)| *reason)
+            .ok_or_else(|| PortError::rejected(format!("{} does not revoke", event.event_type)))?;
+        let roots = self
+            .deps
+            .store
+            .live_roots_for_record(&event.tenant_id, &event.system, &event.record_ref)
+            .await?;
+        let mut revoked = Vec::new();
+        // A revocation never reaches forward: a mandate issued after the
+        // event occurred (a new default after a payment) stays. One issued
+        // at the same instant is revoked: when in doubt, contact stops.
+        for root in roots.iter().filter(|r| r.mandate.nbf <= event.occurred_at) {
+            let outcome = self
+                .revoke(&event.tenant_id, &root.mandate.id, reason)
+                .await?;
+            revoked.extend(outcome.revoked);
+        }
+        self.deps
+            .store
+            .record_revocation(StoredRevocation {
+                tenant_id: event.tenant_id.clone(),
+                system: event.system.clone(),
+                event_id: event.event_id.clone(),
+                content_sha256: content_sha256(&event)?,
+                event_type: event.event_type.clone(),
+                record_ref: event.record_ref.clone(),
+                occurred_at: event.occurred_at,
+                revoked: revoked.clone(),
+            })
+            .await?;
+        Ok(RevokedByEvent {
+            event_id: event.event_id,
+            event_type: event.event_type,
+            record_ref: event.record_ref,
+            revoked,
+            replayed: false,
+        })
+    }
+
+    /// For a retried revoking event: its stored result, when the event
+    /// (signature and issuer binding checked, not freshness or replay)
+    /// carries the same content. `Ok(None)` when it made none; `Rejected`
+    /// when the id was reused with different content.
+    pub async fn existing_revocation(
+        &self,
+        event_token: &str,
+    ) -> Result<Option<RevokedByEvent>, PortError> {
+        let (kid, event): (String, SorEvent) =
+            jws::verify(event_token, TYP_SOR_EVENT, &self.config.sor_keys())?;
+        if self.config.sor_system_for_kid(&kid) != Some(event.system.as_str()) {
+            return Err(PortError::rejected(format!(
+                "key {kid} is not registered for system {}",
+                event.system
+            )));
+        }
+        let Some(stored) = self
+            .deps
+            .store
+            .revocation_for_event(&event.tenant_id, &event.system, &event.event_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if stored.content_sha256 != content_sha256(&event)? {
+            return Err(PortError::rejected(format!(
+                "event {} was already used with different content",
+                event.event_id
+            )));
+        }
+        Ok(Some(RevokedByEvent {
+            event_id: stored.event_id,
+            event_type: stored.event_type,
+            record_ref: stored.record_ref,
+            revoked: stored.revoked,
+            replayed: true,
+        }))
     }
 
     async fn verify_event(&self, token: &str, now: DateTime<Utc>) -> Result<SorEvent, PortError> {

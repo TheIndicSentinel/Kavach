@@ -28,7 +28,7 @@ Every **live** mandate issued from an event of the same `system`, `tenant_id` an
 A revocation event names no agent and issues nothing.
 
 ### 3. Ordering: a revocation never reaches forward in time
-A revocation applies only to mandates whose issuing event `occurred_at` is **earlier** than the revocation's `occurred_at`. If the loan defaults again after a payment, the new `loan.dpd30` mandate is not revoked by the old `loan.paid`, even if that event is replayed within the window. The replay guard also refuses it.
+A revocation applies only to mandates **issued at or before** the revocation's `occurred_at` (by the mandate's `nbf`, its issue time; an issuing event is accepted only within the 300 s freshness window, so this is its event's time within that window). A mandate issued at the same instant is revoked: when in doubt, contact stops. If the loan defaults again after a payment, the new `loan.dpd30` mandate is not revoked by the old `loan.paid`, even if that event is replayed within the window. The replay guard also refuses it.
 
 ### 4. The reply
 - `200` with `{ "revoked": [mandate ids], "replayed": bool }`.
@@ -37,7 +37,7 @@ A revocation applies only to mandates whose issuing event `occurred_at` is **ear
 
 ### 5. Credentials: closing the check-to-send window
 A resource credential is minted by the gateway inside the same request that forwards it, and the agent never holds one. The remaining window is between the authorize decision and the forward. The gateway **re-reads the mandate's status immediately before forwarding**:
-- A mandate revoked in between makes the call a recorded BLOCK (`mandate_revoked`) with outcome `not_executed`. Nothing is sent.
+- A mandate revoked in between leaves the call's record as decided (allowed) and ends it with outcome `not_executed` (`mandate_revoked`). No credential is minted and nothing is sent. If the mandate store cannot be read, the call ends the same way (`mandate_unavailable`): when in doubt, contact stops.
 - The credential's single use and ≤15 s life remain the backstop.
 
 ### 6. Evidence and audit

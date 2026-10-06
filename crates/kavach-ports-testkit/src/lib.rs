@@ -205,7 +205,7 @@ pub mod mandate_store {
     use kavach_domain::mandate::{
         DelegationRules, Mandate, MandateSource, MandateStatus, RevocationReason,
     };
-    use kavach_ports::{ErrorClass, MandateStore, StoredMandate};
+    use kavach_ports::{ErrorClass, MandateStore, StoredMandate, StoredRevocation};
 
     const TENANT: &str = "conformance";
 
@@ -280,7 +280,90 @@ pub mod mandate_store {
     pub async fn conformance<S: MandateStore + 'static>(store: Arc<S>) {
         insert_rules(&*store).await;
         ancestors_and_revoke_tree(&*store).await;
+        revocations(&*store).await;
         delegation_racing_revocation(store).await;
+    }
+
+    /// A root about `record_ref` of `system` (ADR-012).
+    fn root_about(id: &str, system: &str, record_ref: &str) -> StoredMandate {
+        let mut r = record(id, None, 0);
+        r.mandate.source.system = system.into();
+        r.mandate.source.record_ref = record_ref.into();
+        r
+    }
+
+    /// ADR-012: a loan's live roots are found by their record; a revoking
+    /// event's result is kept once and read back.
+    async fn revocations<S: MandateStore>(store: &S) {
+        for (id, system, record_ref) in [
+            ("loan-a-1", "lms", "loan-a"),
+            ("loan-a-2", "lms", "loan-a"),
+            ("loan-a-gone", "lms", "loan-a"),
+            ("loan-b-1", "lms", "loan-b"),
+            ("other-system", "crm", "loan-a"),
+        ] {
+            store
+                .insert(root_about(id, system, record_ref))
+                .await
+                .expect("root");
+        }
+        store
+            .insert_child(record("loan-a-child", Some("loan-a-1"), 1))
+            .await
+            .expect("child");
+        store
+            .revoke_tree(TENANT, "loan-a-gone", RevocationReason::Manual)
+            .await
+            .expect("revoked");
+        let mut live: Vec<String> = store
+            .live_roots_for_record(TENANT, "lms", "loan-a")
+            .await
+            .expect("live roots")
+            .into_iter()
+            .map(|r| r.mandate.id)
+            .collect();
+        live.sort();
+        assert_eq!(
+            live,
+            ["loan-a-1", "loan-a-2"],
+            "active roots of this system and record only: not children, revoked ones, other records or systems"
+        );
+
+        let revocation = StoredRevocation {
+            tenant_id: TENANT.into(),
+            system: "lms".into(),
+            event_id: "pay-1".into(),
+            content_sha256: "ab".repeat(32),
+            event_type: "loan.paid".into(),
+            record_ref: "loan-a".into(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 10, 1, 6, 0, 0).unwrap(),
+            revoked: vec!["loan-a-1".into(), "loan-a-child".into()],
+        };
+        store
+            .record_revocation(revocation.clone())
+            .await
+            .expect("recorded");
+        let again = store
+            .record_revocation(revocation.clone())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            again.class,
+            ErrorClass::Rejected,
+            "an event is recorded once"
+        );
+        assert_eq!(
+            store
+                .revocation_for_event(TENANT, "lms", "pay-1")
+                .await
+                .expect("read"),
+            Some(revocation)
+        );
+        assert!(store
+            .revocation_for_event(TENANT, "lms", "pay-2")
+            .await
+            .expect("read")
+            .is_none());
     }
 
     async fn insert_rules<S: MandateStore>(store: &S) {

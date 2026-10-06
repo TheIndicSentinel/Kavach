@@ -46,6 +46,8 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Revocation by system-of-record event (ADR-012, R1a).** A signed `loan.paid` or `loan.disputed` event on `POST /v1/sor/events` revokes every active mandate issued about that loan at or before the event, and every mandate delegated from them; the reply lists them (`revoked`). The event must come from a registered system-of-record issuer, verify, be fresh and pass the replay guard. A retry of the same event gets the stored result (`replayed: true`); the same event id with different content is refused (409). Each revocation is kept (append-only, migration 014) and audited.
+- **The gateway re-checks the mandate just before minting a credential.** A mandate revoked between the decision and the send ends the call `not_executed` (`mandate_revoked`): no credential, nothing sent.
 - `kavach simulate` S3: every run reconciles three records, its own ledger, Kavach's evidence bundle and the provider's inbox. The inbox is the one record Kavach does not write, so it gives the provider's own proof that each allowed message arrived exactly once (never twice), that nothing blocked or refused arrived, and that each message went to its borrower's own destination. Any finding fails the run. Built-in scenarios name the SECURITY_PROPERTIES.md rows they exercise (`covers:`), and a test fails if a row is renamed or removed.
 - `kavach simulate` S2:
   - **Adversarial agent:** makes the attack catalog's tool-call attacks (raw identifiers, another borrower, forged mandate, unregistered tools and values), on borrowers kept for it.

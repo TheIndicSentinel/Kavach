@@ -5,7 +5,9 @@ use std::future::{ready, Future};
 use std::sync::Mutex;
 
 use kavach_domain::mandate::{ConsentRecord, MandateStatus, RevocationReason};
-use kavach_ports::{ConsentSource, DomainEvent, EventBus, MandateStore, PortError, StoredMandate};
+use kavach_ports::{
+    ConsentSource, DomainEvent, EventBus, MandateStore, PortError, StoredMandate, StoredRevocation,
+};
 
 type Key = (String, String);
 
@@ -16,6 +18,8 @@ fn poisoned() -> PortError {
 #[derive(Debug, Default)]
 pub struct InMemoryMandateStore {
     records: Mutex<HashMap<Key, StoredMandate>>,
+    /// Revocations by (tenant, system, event id).
+    revocations: Mutex<HashMap<(String, String, String), StoredRevocation>>,
 }
 
 impl InMemoryMandateStore {
@@ -183,6 +187,75 @@ impl MandateStore for InMemoryMandateStore {
         reason: RevocationReason,
     ) -> impl Future<Output = Result<Vec<(String, RevocationReason)>, PortError>> + Send {
         ready(self.revoke_tree_sync(tenant_id, id, reason))
+    }
+
+    fn live_roots_for_record(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        record_ref: &str,
+    ) -> impl Future<Output = Result<Vec<StoredMandate>, PortError>> + Send {
+        let result = self.records.lock().map_err(|_| poisoned()).map(|records| {
+            let mut roots: Vec<StoredMandate> = records
+                .values()
+                .filter(|s| {
+                    s.mandate.tenant_id == tenant_id
+                        && s.mandate.parent_id.is_none()
+                        && s.status == MandateStatus::Active
+                        && s.mandate.source.system == system
+                        && s.mandate.source.record_ref == record_ref
+                })
+                .cloned()
+                .collect();
+            roots.sort_by_key(|s| s.mandate.nbf);
+            roots
+        });
+        ready(result)
+    }
+
+    fn record_revocation(
+        &self,
+        revocation: StoredRevocation,
+    ) -> impl Future<Output = Result<(), PortError>> + Send {
+        let result = self
+            .revocations
+            .lock()
+            .map_err(|_| poisoned())
+            .and_then(|mut all| {
+                let key = (
+                    revocation.tenant_id.clone(),
+                    revocation.system.clone(),
+                    revocation.event_id.clone(),
+                );
+                if all.contains_key(&key) {
+                    return Err(PortError::rejected(format!(
+                        "revocation event {} was recorded already",
+                        key.2
+                    )));
+                }
+                all.insert(key, revocation);
+                Ok(())
+            });
+        ready(result)
+    }
+
+    fn revocation_for_event(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        event_id: &str,
+    ) -> impl Future<Output = Result<Option<StoredRevocation>, PortError>> + Send {
+        let key = (
+            tenant_id.to_string(),
+            system.to_string(),
+            event_id.to_string(),
+        );
+        ready(
+            self.revocations
+                .lock()
+                .map_err(|_| poisoned())
+                .map(|all| all.get(&key).cloned()),
+        )
     }
 }
 

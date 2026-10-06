@@ -323,6 +323,18 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
         &self.config.tenant_id
     }
 
+    /// Whether `mandate_id` still authorises: its whole chain verified
+    /// again (signatures, stored status, expiry, every ancestor). The
+    /// gateway asks just before minting a credential, so a mandate revoked
+    /// after the decision was recorded gets no credential and nothing is
+    /// sent (ADR-012 §5).
+    pub async fn mandate_in_force(&self, mandate_id: &str) -> Result<(), PortError> {
+        self.verifier
+            .verify(&self.config.tenant_id, mandate_id)
+            .await
+            .map(|_| ())
+    }
+
     /// Trusted time now, and whether it is synced within the configured
     /// error (the gateway re-checks `send_by` just before forwarding).
     pub fn trusted_now(&self) -> Option<DateTime<Utc>> {
