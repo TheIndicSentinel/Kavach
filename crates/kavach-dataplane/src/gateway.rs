@@ -116,7 +116,8 @@ pub enum GatewayError {
     NotForwardable(String),
     /// The `request_id` was used for different content (409).
     Conflict,
-    /// A previous identical call has no final outcome (409; never re-run).
+    /// A previous identical call is still running: no outcome is recorded
+    /// yet (409; never re-run).
     InFlight,
 }
 
@@ -255,15 +256,19 @@ where
         return Ok(reply);
     }
 
-    // Forward-once ownership: only the creator proceeds.
+    // Forward-once ownership: only the creator proceeds. A retry never
+    // mints or sends: once the first call's outcome is recorded (even
+    // `unknown`), it gets that stored outcome, replayed, so an agent stops
+    // retrying and the case goes to reconciliation; while the first call
+    // is still running (nothing recorded yet), it is in flight.
     if !decided.created() {
         return match core.outcome(&grant.credential_id).await {
-            Ok(Some(stored)) if stored.outcome.is_final() => {
+            Ok(Some(stored)) => {
                 reply.outcome = Some(stored.outcome);
                 reply.outcome_reason = stored.reason;
                 Ok(reply)
             }
-            _ => Err(GatewayError::InFlight),
+            Ok(None) | Err(_) => Err(GatewayError::InFlight),
         };
     }
 

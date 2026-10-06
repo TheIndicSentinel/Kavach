@@ -1,10 +1,10 @@
 # After a lost response (outcome unknown) the agent sends the same request
-# again, same request id. Forward-once: the call has no final outcome, so
-# Kavach answers 409 in_flight and never sends it again; the retry is not
-# a new contact.
+# again, same request id. Forward-once: it gets the recorded outcome,
+# unknown, replayed (so it stops retrying), with no new credential and no
+# second send; the retry is not a new contact.
 version: 1
 name: retry-after-unknown
-description: A retry after an unknown outcome is refused as in flight, never sent twice.
+description: A retry after an unknown outcome gets it, replayed, and is never sent twice.
 covers: ["Gateway"]   # SECURITY_PROPERTIES.md rows
 seed: 37
 days: 1

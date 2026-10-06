@@ -73,7 +73,7 @@ pub const CODES: &[(&str, &str, &str)] = &[
     (
         "in_flight",
         "In flight",
-        "an identical earlier call has no final outcome; it is never run again",
+        "an identical earlier call is still running; it is never run again: send it again later for its outcome",
     ),
     (
         "no_passport",

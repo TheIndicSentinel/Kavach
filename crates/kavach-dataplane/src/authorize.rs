@@ -154,7 +154,8 @@ impl Decided {
     /// True only for the call that created the record (`Committed`).
     /// **Forward-once ownership:** only this call may resolve, obtain a
     /// credential and forward; a replay (including a concurrent duplicate)
-    /// returns the stored outcome or is refused as in flight.
+    /// returns the recorded outcome (even `unknown`), or is refused as in
+    /// flight while the first call is still running.
     #[must_use]
     pub fn created(&self) -> bool {
         self.status == CommitStatus::Committed

@@ -13,9 +13,11 @@
 //! - at most three contacts per borrower per IST day across all agents
 //!   (contacts Kavach allowed; a retry is not a new contact);
 //! - only the channels the mandate grants (WhatsApp and voice);
-//! - a retry (same request id) is never sent again: after a final outcome
-//!   (delivered, refused, failed) it gets the stored reply (`replayed`);
-//!   after an unknown one, 409 `in_flight` (the forward-once contract);
+//! - a retry (same request id) is never sent again: once the first call's
+//!   outcome is recorded (any outcome, `unknown` too) it gets the stored
+//!   reply, `replayed` (the forward-once contract; 409 `in_flight` only
+//!   while the first call is still running, which a run never retries
+//!   into);
 //! - the provider's outcome follows the borrower's destination, by the
 //!   agreed status contract (ADR-007): 2xx delivered, 4xx refused, a 5xx
 //!   or a lost response unknown (a 5xx does not prove it was not sent).
@@ -61,20 +63,12 @@ pub struct Expected {
     pub retry: Option<Retry>,
 }
 
-/// The answer to a call sent again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Retry {
-    /// The stored reply (`replayed`), with the first call's decision.
-    Stored { allowed: bool },
-    /// 409 `in_flight`: the first call has no final outcome.
-    InFlight,
-}
-
-/// The first call of a request id, as Kavach answered it.
-#[derive(Debug, Clone, Copy)]
-struct First {
-    allowed: bool,
-    unknown: bool,
+/// The answer to a call sent again: the stored reply (`replayed`), with
+/// the first call's decision and outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Retry {
+    pub allowed: bool,
+    pub outcome: Option<String>,
 }
 
 /// A plain reference: `ref:`, at most eight digits, nothing PAN-shaped.
@@ -110,7 +104,7 @@ pub struct Oracle {
     deliveries: BTreeMap<String, Delivery>,
     contacts: BTreeMap<(String, NaiveDate), u32>,
     /// How Kavach answered each first send, for its retries.
-    firsts: BTreeMap<u32, First>,
+    firsts: BTreeMap<u32, Retry>,
 }
 
 impl Oracle {
@@ -125,19 +119,12 @@ impl Oracle {
 
     pub fn judge(&mut self, call: &Entry) -> Expected {
         if let Some(first) = call.retry_of {
-            let first = self.firsts.get(&first).copied().unwrap_or(First {
+            let retry = self.firsts.get(&first).cloned().unwrap_or(Retry {
                 allowed: false,
-                unknown: false,
+                outcome: None,
             });
-            let retry = if first.allowed && first.unknown {
-                Retry::InFlight
-            } else {
-                Retry::Stored {
-                    allowed: first.allowed,
-                }
-            };
             return Expected {
-                allow: matches!(retry, Retry::Stored { allowed: true }),
+                allow: retry.allowed,
                 because: Vec::new(),
                 outcome: None,
                 retry: Some(retry),
@@ -145,9 +132,9 @@ impl Oracle {
         }
         self.firsts.insert(
             call.seq,
-            First {
+            Retry {
                 allowed: call.allowed(),
-                unknown: call.outcome.as_deref() == Some("unknown"),
+                outcome: call.outcome.clone(),
             },
         );
         let subject = call.params["subject_ref"].as_str().unwrap_or_default();
@@ -321,7 +308,13 @@ mod tests {
         assert_eq!(oracle.judge(&lost).outcome, Some("unknown"));
         let mut again = lost.clone();
         (again.seq, again.retry_of) = (8, Some(7));
-        assert_eq!(oracle.judge(&again).retry, Some(Retry::InFlight));
+        assert_eq!(
+            oracle.judge(&again).retry,
+            Some(Retry {
+                allowed: true,
+                outcome: Some("unknown".into())
+            })
+        );
         // After a final outcome, the stored reply.
         let mut done = call(600, "ref:a", "whatsapp", true);
         (done.seq, done.outcome) = (9, Some("delivered".into()));
@@ -330,7 +323,10 @@ mod tests {
         (again.seq, again.retry_of) = (10, Some(9));
         assert_eq!(
             oracle.judge(&again).retry,
-            Some(Retry::Stored { allowed: true })
+            Some(Retry {
+                allowed: true,
+                outcome: Some("delivered".into())
+            })
         );
         // Not a new contact: two more are allowed.
         let mut next = call(601, "ref:l", "whatsapp", true);

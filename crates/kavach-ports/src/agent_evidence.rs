@@ -275,8 +275,9 @@ impl Outcome {
         Self::ALL.into_iter().find(|o| o.as_str() == value)
     }
 
-    /// Final: a retry returns it. `Unknown` is not final for the agent (a
-    /// retry is refused as in flight).
+    /// Final: the provider settled it. `Unknown` is not final (the send may
+    /// or may not have happened; reconciliation decides), but a retry gets
+    /// it all the same, replayed, and nothing is sent again.
     #[must_use]
     pub fn is_final(self) -> bool {
         self != Self::Unknown

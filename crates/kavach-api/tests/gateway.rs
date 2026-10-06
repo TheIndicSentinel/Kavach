@@ -183,8 +183,8 @@ async fn futures_select<F: std::future::Future + Unpin>(
     .await
 }
 
-/// Each provider behaviour maps to the agreed outcome, and only final
-/// outcomes are returned on retry.
+/// Each provider behaviour maps to the agreed outcome, and a retry gets
+/// the recorded outcome (even `unknown`), replayed, never a second send.
 #[tokio::test]
 async fn outcomes_follow_the_provider_and_unknown_is_never_retried() {
     // Refused (422): final; a retry returns it.
@@ -200,15 +200,24 @@ async fn outcomes_follow_the_provider_and_unknown_is_never_retried() {
         (StatusCode::OK, Some("refused"))
     );
 
-    // Provider error (500): unknown; a retry is refused as in flight.
+    // Provider error (500): unknown; a retry gets that recorded outcome,
+    // replayed, and is not sent again.
     let gw = gateway(Some(ERROR_NUMBER), true).await;
     let (_, reply) = gw.remind("e-1").await;
     assert_eq!(
         (reply["outcome"].as_str(), reply["outcome_reason"].as_str()),
         (Some("unknown"), Some("provider_500"))
     );
-    let (status, body) = gw.remind("e-1").await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, again) = gw.remind("e-1").await;
+    assert_eq!(
+        (
+            status,
+            again["outcome"].as_str(),
+            again["replayed"].as_bool()
+        ),
+        (StatusCode::OK, Some("unknown"), Some(true)),
+        "{again}"
+    );
 
     // Delivered but the response is lost (timeout): unknown, not retried,
     // still exactly one delivery.
@@ -218,7 +227,16 @@ async fn outcomes_follow_the_provider_and_unknown_is_never_retried() {
         (reply["outcome"].as_str(), reply["outcome_reason"].as_str()),
         (Some("unknown"), Some("timeout_after_send"))
     );
-    assert_eq!(gw.remind("h-1").await.0, StatusCode::CONFLICT);
+    let (status, again) = gw.remind("h-1").await;
+    assert_eq!(
+        (
+            status,
+            again["outcome"].as_str(),
+            again["replayed"].as_bool()
+        ),
+        (StatusCode::OK, Some("unknown"), Some(true)),
+        "{again}"
+    );
     assert_eq!(gw.provider.inbox().len(), 1);
 
     // Provider down: nothing was sent.
@@ -241,6 +259,51 @@ async fn outcomes_follow_the_provider_and_unknown_is_never_retried() {
         (Some("not_executed"), Some("no_destination"))
     );
     assert!(gw.provider.inbox().is_empty());
+}
+
+/// A retry while the first call is still running is in flight (409); once
+/// the first call's outcome is recorded (here `unknown`: the response was
+/// lost), a retry gets it, replayed. Never a second credential or send.
+#[tokio::test]
+async fn a_retry_is_in_flight_while_the_first_call_runs_then_gets_its_outcome() {
+    let gw = gateway(Some(HANG_NUMBER), true).await;
+    let first = gw.remind("w-1");
+    let during = async {
+        // The first call is waiting on the provider (1.5 s timeout).
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        gw.remind("w-1").await
+    };
+    let ((status, reply), (during_status, during_body)) = tokio::join!(first, during);
+    assert_eq!(
+        (
+            status,
+            reply["outcome"].as_str(),
+            reply["replayed"].as_bool()
+        ),
+        (StatusCode::OK, Some("unknown"), Some(false)),
+        "{reply}"
+    );
+    assert_eq!(during_status, StatusCode::CONFLICT, "{during_body}");
+    assert_eq!(during_body["code"], "in_flight", "{during_body}");
+
+    let (status, after) = gw.remind("w-1").await;
+    assert_eq!(
+        (
+            status,
+            after["outcome"].as_str(),
+            after["replayed"].as_bool()
+        ),
+        (StatusCode::OK, Some("unknown"), Some(true)),
+        "{after}"
+    );
+    assert_eq!(after["outcome_reason"], "timeout_after_send");
+    assert_eq!(gw.provider.inbox().len(), 1, "sent once");
+    let metrics = gw.state.metrics().gather_text().unwrap();
+    assert_eq!(
+        stage_count(&metrics, "credential"),
+        1,
+        "minted once: {metrics}"
+    );
 }
 
 /// Refusals and malformed calls never reach the provider.
