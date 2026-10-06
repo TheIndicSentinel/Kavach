@@ -14,4 +14,6 @@ pub mod memory;
 mod service;
 
 pub use config::{MandateConfig, SorIssuer};
-pub use service::{IssuedMandate, MandateDeps, MandateService};
+pub use service::{
+    is_revoking_event, IssuedMandate, MandateDeps, MandateService, RevokedByEvent, REVOKING_EVENTS,
+};

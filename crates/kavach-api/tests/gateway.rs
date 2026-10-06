@@ -7,7 +7,7 @@
 mod agent_fixture;
 mod contract;
 
-use contract::agent_router;
+use contract::{agent_router, sor_router};
 use std::sync::Arc;
 
 use axum::http::StatusCode;
@@ -303,6 +303,44 @@ async fn a_retry_is_in_flight_while_the_first_call_runs_then_gets_its_outcome() 
         stage_count(&metrics, "credential"),
         1,
         "minted once: {metrics}"
+    );
+}
+
+/// ADR-012 end to end: a signed payment event for the loan revokes its
+/// mandate (200, the revoked ids); the same event again is answered with
+/// the same ids, replayed; the agent's next call is refused; nothing more
+/// reaches the provider.
+#[tokio::test]
+async fn a_payment_event_stops_contact_for_that_loan() {
+    let gw = gateway(Some(NUMBER), true).await;
+    assert_eq!(gw.remind("p-1").await.1["decision"], "PASS");
+    let paid = revocation_at("pay-1", "loan.paid", "lms:loan/L-1", gw.clock_now()).await;
+    let post = |event: String| {
+        send(
+            sor_router(gw.state.clone()),
+            "/v1/sor/events",
+            &[],
+            json!({ "event": event }),
+        )
+    };
+    let (status, body) = post(paid.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["revoked"], json!([gw.mandate]), "{body}");
+    assert_eq!(body["replayed"], false);
+    let (status, again) = post(paid).await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(
+        (again["revoked"].clone(), again["replayed"].clone()),
+        (body["revoked"].clone(), json!(true))
+    );
+
+    let (status, refused) = gw.remind("p-2").await;
+    assert_eq!(status, StatusCode::OK, "{refused}");
+    assert_eq!(refused["decision"], "BLOCK", "{refused}");
+    assert_eq!(
+        gw.provider.inbox().len(),
+        1,
+        "only the call before the payment"
     );
 }
 

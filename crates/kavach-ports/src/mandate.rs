@@ -14,6 +14,23 @@ pub struct StoredMandate {
     pub revoked_reason: Option<RevocationReason>,
 }
 
+/// A revocation made by a system-of-record event (ADR-012), kept so that
+/// the same event again is answered with the same result and the same id
+/// with other content is refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredRevocation {
+    pub tenant_id: String,
+    pub system: String,
+    pub event_id: String,
+    /// SHA-256 of the event's content, to tell a retry from a reuse.
+    pub content_sha256: String,
+    pub event_type: String,
+    pub record_ref: String,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+    /// Every mandate whose status changed (roots and their delegations).
+    pub revoked: Vec<String>,
+}
+
 /// Mandate persistence (ADR-004, ADR-006 §4).
 ///
 /// **Invariant:** a mandate is `Active` only if every ancestor is `Active`.
@@ -69,6 +86,30 @@ pub trait MandateStore: Send + Sync {
         id: &str,
         reason: RevocationReason,
     ) -> impl Future<Output = Result<Vec<(String, RevocationReason)>, PortError>> + Send;
+
+    /// The active root mandates issued from events of `system` about the
+    /// record `record_ref` (a loan), oldest first (ADR-012).
+    fn live_roots_for_record(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        record_ref: &str,
+    ) -> impl Future<Output = Result<Vec<StoredMandate>, PortError>> + Send;
+
+    /// Keeps a revocation's result. An existing `(tenant, system,
+    /// event_id)` → `Rejected`.
+    fn record_revocation(
+        &self,
+        revocation: StoredRevocation,
+    ) -> impl Future<Output = Result<(), PortError>> + Send;
+
+    /// The revocation event `event_id` of `system` made, if any.
+    fn revocation_for_event(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        event_id: &str,
+    ) -> impl Future<Output = Result<Option<StoredRevocation>, PortError>> + Send;
 }
 
 /// Domain events published for caches, credential revocation and audit.

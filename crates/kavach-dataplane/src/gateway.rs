@@ -347,6 +347,14 @@ where
     let Some(now) = core.trusted_now() else {
         return not_executed("trusted_time_unavailable");
     };
+    // Revoked (or expired) since the decision was recorded: no credential,
+    // nothing sent (ADR-012 §5).
+    if let Err(err) = core.mandate_in_force(&call.mandate_id).await {
+        return not_executed(match err.class {
+            ErrorClass::Unavailable => "mandate_unavailable",
+            ErrorClass::Rejected | ErrorClass::Invalid => "mandate_revoked",
+        });
+    }
     let started = Instant::now();
     let issued = deps
         .broker
