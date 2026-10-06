@@ -214,7 +214,13 @@ fn envelope(command: &str, status: Status, data: &Value) -> String {
 /// Fields that hold digests Kavach computed: printed whole, if well formed.
 /// Matched by field, never by pattern: a hex string anywhere else (where a
 /// caller could choose it) still goes through every masking rule.
-const DIGEST_FIELDS: [&str; 4] = ["input_digest", "cedar", "tools", "registry_sha256"];
+const DIGEST_FIELDS: [&str; 5] = [
+    "input_digest",
+    "cedar",
+    "tools",
+    "registry_sha256",
+    "subject_pseudonym",
+];
 
 /// Start and end of a span the output layer vouches for as a digest. Each
 /// carries a random per-process nonce, so text from anywhere else (input,
@@ -231,12 +237,20 @@ fn markers() -> &'static (String, String) {
 }
 
 /// A digest (`sha256:` optional, then 64 lowercase hex characters).
+fn lower_hex(text: &str) -> bool {
+    text.bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A digest (`[sha256:]` and 64 lowercase hex), or a subject pseudonym
+/// (`psn:` and up to 64 lowercase hex: an HMAC, never personal data;
+/// `why` shows a prefix of it).
 fn is_digest(text: &str) -> bool {
+    if let Some(hex) = text.strip_prefix("psn:") {
+        return (1..=64).contains(&hex.len()) && lower_hex(hex);
+    }
     let hex = text.strip_prefix("sha256:").unwrap_or(text);
-    hex.len() == 64
-        && hex
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    hex.len() == 64 && lower_hex(hex)
 }
 
 /// A value from a known digest field, for human output: printed whole if
@@ -369,6 +383,32 @@ mod tests {
             redact(&format!("digest {}", Digest(HEX))),
             format!("digest {HEX}")
         );
+    }
+
+    /// Subject pseudonyms (HMACs) can hold ten digits in a row too; they
+    /// print whole from their field, in JSON and as `why` shows them.
+    #[test]
+    fn subject_pseudonyms_print_whole() {
+        // Ten digits at the start, so the prefix `why` shows holds them.
+        let psn = format!("psn:9876543210ab{}", &HEX[12..]);
+        let printed = redact(&envelope(
+            "why",
+            Status::Ok,
+            &json!({ "record": { "subject_pseudonym": psn } }),
+        ));
+        assert!(printed.contains(&psn), "{printed}");
+        let short: String = psn.chars().take(16).collect();
+        assert!(
+            short.contains("9876543210"),
+            "the fixture has the run in the prefix"
+        );
+        assert_eq!(
+            redact(&format!("pseudonym {}", Digest(&short))),
+            format!("pseudonym {short}")
+        );
+        // Not a pseudonym's shape, or not in its field: masked as before.
+        assert!(!redact(&Digest("psn:+91 98765 43210").to_string()).contains("43210"));
+        assert!(!redact(&format!("note {psn}")).contains("9876543210"));
     }
 
     #[test]
