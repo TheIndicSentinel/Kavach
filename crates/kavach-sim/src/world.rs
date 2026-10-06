@@ -145,6 +145,16 @@ impl World {
             .collect()
     }
 
+    /// Each borrower's WhatsApp/SMS destination, by reference (to check
+    /// where messages arrived; never printed).
+    #[must_use]
+    pub fn destinations(&self) -> BTreeMap<String, String> {
+        self.borrowers
+            .iter()
+            .map(|b| (b.subject_ref.clone(), b.destination.clone()))
+            .collect()
+    }
+
     /// What the devkit writes: every agent eligible under the template.
     #[must_use]
     pub fn devkit(&self) -> kavach_devkit::World {

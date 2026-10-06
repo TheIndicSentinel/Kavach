@@ -3,6 +3,7 @@
 version: 1
 name: fourth-contact
 description: The daily cap (3 per borrower per IST day) blocks the fourth contact.
+covers: ["Agent authorization core (library):"]   # SECURITY_PROPERTIES.md rows
 seed: 13
 days: 1
 borrowers: 3

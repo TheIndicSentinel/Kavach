@@ -1329,6 +1329,20 @@ fn simulate_runs_every_builtin_as_expected() {
                 "{name} {list}: {doc}"
             );
         }
+        // The ledger, the evidence and the provider's inbox agree.
+        let rec = &doc["reconciliation"];
+        assert!(
+            rec["findings"].as_array().unwrap().is_empty(),
+            "{name}: {rec}"
+        );
+        assert_eq!(
+            rec["ledger_records"], rec["evidence_records"],
+            "{name}: {rec}"
+        );
+        assert!(
+            rec["inbox_messages"].as_u64() <= rec["outcomes"].as_u64(),
+            "{name}: {rec}"
+        );
     }
 }
 
@@ -1366,6 +1380,11 @@ fn simulate_shows_what_each_rule_does() {
         ],
     ));
     assert_eq!(doc["retries"], serde_json::json!([2, 2]), "{doc}");
+    // The provider's own record: retried calls arrived once each.
+    assert_eq!(
+        doc["reconciliation"]["inbox_messages"], doc["allowed"],
+        "{doc}"
+    );
     let doc = json(&kavach(
         &dir,
         &[

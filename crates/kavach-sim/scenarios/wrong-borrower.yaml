@@ -2,6 +2,7 @@
 version: 1
 name: wrong-borrower
 description: A borrower outside the mandate is refused.
+covers: ["Agent authorization core (library):"]   # SECURITY_PROPERTIES.md rows
 seed: 23
 days: 1
 borrowers: 2

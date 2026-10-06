@@ -45,6 +45,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- `kavach simulate` S3: every run reconciles three records, its own ledger, Kavach's evidence bundle and the provider's inbox. The inbox is the one record Kavach does not write, so it gives the provider's own proof that each allowed message arrived exactly once (never twice), that nothing blocked or refused arrived, and that each message went to its borrower's own destination. Any finding fails the run. Built-in scenarios name the SECURITY_PROPERTIES.md rows they exercise (`covers:`), and a test fails if a row is renamed or removed.
 - `kavach simulate` S2:
   - **Adversarial agent:** makes the attack catalog's tool-call attacks (raw identifiers, another borrower, forged mandate, unregistered tools and values), on borrowers kept for it.
   - **Retries:** agents can send the same request again after an unknown outcome (`retry_rate`).

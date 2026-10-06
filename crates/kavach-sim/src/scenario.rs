@@ -19,6 +19,9 @@ pub struct Scenario {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// The SECURITY_PROPERTIES.md rows (their bold titles) it exercises.
+    #[serde(default)]
+    pub covers: Vec<String>,
     pub seed: u64,
     pub days: u32,
     pub borrowers: u32,
@@ -355,6 +358,23 @@ mod tests {
         assert_eq!(minute_of_day("18:59"), Ok(1139));
         for bad in ["8:00", "24:00", "12:60", "noon", "12:00:00"] {
             assert!(minute_of_day(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// Every built-in names the SECURITY_PROPERTIES.md rows it exercises,
+    /// and each row is still there (a renamed or removed row fails here).
+    #[test]
+    fn every_builtin_covers_rows_that_exist() {
+        let properties = include_str!("../../../docs/SECURITY_PROPERTIES.md");
+        for (name, text) in BUILTINS {
+            let scenario = parse(text).unwrap();
+            assert!(!scenario.covers.is_empty(), "{name} covers no row");
+            for row in &scenario.covers {
+                assert!(
+                    properties.contains(&format!("| **{row}**")),
+                    "{name}: no SECURITY_PROPERTIES.md row **{row}**"
+                );
+            }
         }
     }
 }
