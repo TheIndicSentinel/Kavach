@@ -129,6 +129,7 @@ async fn evidence_is_append_only_even_for_its_owner() {
         "UPDATE agent_decisions SET sig = 'x'",
         "DELETE FROM agent_decisions",
         "TRUNCATE agent_decisions",
+        "UPDATE agent_decisions SET kind = 'mandate_revocation'",
         "UPDATE agent_outcomes SET outcome = 'failed'",
         "DELETE FROM agent_outcomes",
         "TRUNCATE agent_outcomes",
@@ -145,9 +146,10 @@ async fn evidence_is_append_only_even_for_its_owner() {
         );
     }
     // Even the owner is stopped by the append-only triggers (UPDATE, DELETE
-    // and TRUNCATE on records; outcomes are empty, so check records).
+    // and TRUNCATE on records, the kind too; outcomes are empty, so check
+    // records).
     let owner_pool = sqlx::PgPool::connect(&owner).await.unwrap();
-    for statement in &statements[..3] {
+    for statement in &statements[..4] {
         let err = sqlx::query(statement)
             .execute(&owner_pool)
             .await
@@ -229,4 +231,219 @@ async fn blocked_raw_identifier_leaves_no_trace_of_it() {
         "MAC of the number"
     );
     assert!(!text.contains("B-9382"), "raw subject reference");
+}
+
+/// One row of the chain written directly by the owner, to probe the table's
+/// constraints (R1b-1). `kind` is the column; `signed_kind` the payload's.
+#[allow(clippy::too_many_arguments)]
+async fn insert_row(
+    pool: &sqlx::PgPool,
+    seq: i64,
+    kind: &str,
+    signed_kind: &str,
+    request_id: Option<&str>,
+    source_system: Option<&str>,
+    event_id: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, prev_hash, \
+            hash, sig, key_id, payload, kind, agent_id, request_id, binding, \
+            returned_decision, source_system, event_id) \
+        VALUES ('kinds', 0, $1, $2, 'p', 'h', 's', 'k', $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(seq)
+    .bind(format!("kinds-{seq}-{kind}-{}", event_id.unwrap_or("none")))
+    .bind(serde_json::json!({ "kind": signed_kind }))
+    .bind(kind)
+    .bind(request_id.map(|_| "agent-1"))
+    .bind(request_id)
+    .bind(request_id.map(|_| serde_json::json!({})))
+    .bind(request_id.map(|_| "PASS"))
+    .bind(source_system)
+    .bind(event_id)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
+/// R1b-1: the chain holds more than one kind of record in one table. The
+/// kinds change no grant and no trigger, every record still takes one
+/// position, and each kind's required fields are enforced by the database.
+#[tokio::test(flavor = "multi_thread")]
+async fn record_kinds_keep_grants_triggers_and_one_record_per_position() {
+    let Some((owner, runtime)) = isolated_database_urls().await else {
+        return;
+    };
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .unwrap();
+    let owner_pool = sqlx::PgPool::connect(&owner).await.unwrap();
+
+    grants_and_triggers_are_unchanged(&owner_pool).await;
+
+    // A decision is written exactly as before, and is of kind agent_decision.
+    let store = pool.agent_evidence_store();
+    let signer = TestSigner::new("evidence-test", 9);
+    let clock = FakeClock::synced_at(chrono::Utc::now());
+    let mut req = request("kinds", "r-1", 3);
+    req.draft.send_by = None;
+    assert!(matches!(
+        store.commit(req, &clock, &signer).await.unwrap(),
+        CommitResult::Committed(_)
+    ));
+    let kinds: Vec<String> = sqlx::query_scalar("SELECT kind FROM agent_decisions")
+        .fetch_all(&owner_pool)
+        .await
+        .unwrap();
+    assert_eq!(kinds, ["agent_decision"]);
+
+    each_kind_is_enforced(&owner_pool).await;
+
+    // A revocation record is append-only too, for the runtime role and owner.
+    for statement in [
+        "UPDATE agent_decisions SET event_id = 'x' WHERE kind = 'mandate_revocation'",
+        "DELETE FROM agent_decisions WHERE kind = 'mandate_revocation'",
+    ] {
+        let err = sqlx::query(statement)
+            .execute(&pool.pool)
+            .await
+            .expect_err(statement);
+        assert!(
+            err.to_string().contains("permission denied"),
+            "{statement}: {err}"
+        );
+        let err = sqlx::query(statement)
+            .execute(&owner_pool)
+            .await
+            .expect_err(statement);
+        assert!(
+            err.to_string().contains("append-only"),
+            "{statement}: {err}"
+        );
+    }
+}
+
+/// The kinds changed no grant and no trigger: the runtime role may read and
+/// append, nothing more, and both append-only triggers are in place.
+async fn grants_and_triggers_are_unchanged(owner_pool: &sqlx::PgPool) {
+    // The runtime role may read and append, nothing more.
+    for (privilege, granted) in [
+        ("SELECT", true),
+        ("INSERT", true),
+        ("UPDATE", false),
+        ("DELETE", false),
+        ("TRUNCATE", false),
+    ] {
+        let has: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege('kavach_runtime', 'agent_decisions', $1)",
+        )
+        .bind(privilege)
+        .fetch_one(owner_pool)
+        .await
+        .unwrap();
+        assert_eq!(has, granted, "runtime {privilege}");
+    }
+    let mut triggers: Vec<String> = sqlx::query_scalar(
+        "SELECT tgname::text FROM pg_trigger \
+        WHERE tgrelid = 'agent_decisions'::regclass AND NOT tgisinternal",
+    )
+    .fetch_all(owner_pool)
+    .await
+    .unwrap();
+    triggers.sort();
+    assert_eq!(
+        triggers,
+        ["agent_decisions_append_only", "agent_decisions_no_truncate"]
+    );
+}
+
+/// Each kind's required fields, the signed kind, one record per position and
+/// one revocation record per event, enforced by the database.
+async fn each_kind_is_enforced(owner_pool: &sqlx::PgPool) {
+    let refused = |result: Result<(), sqlx::Error>, why: &str, expected: &str| {
+        let err = result.expect_err(why).to_string();
+        assert!(err.contains(expected), "{why}: {err}");
+    };
+    let rev = "mandate_revocation";
+    refused(
+        insert_row(
+            owner_pool,
+            2,
+            "agent_decision",
+            "agent_decision",
+            None,
+            None,
+            None,
+        )
+        .await,
+        "a decision without its request",
+        "agent_records_decision_fields",
+    );
+    refused(
+        insert_row(
+            owner_pool,
+            2,
+            rev,
+            rev,
+            Some("r-2"),
+            Some("lms"),
+            Some("e-1"),
+        )
+        .await,
+        "a revocation carrying decision fields",
+        "agent_records_revocation_fields",
+    );
+    refused(
+        insert_row(owner_pool, 2, rev, rev, None, None, None).await,
+        "a revocation without its event",
+        "agent_records_revocation_fields",
+    );
+    refused(
+        insert_row(
+            owner_pool,
+            2,
+            rev,
+            "agent_decision",
+            None,
+            Some("lms"),
+            Some("e-1"),
+        )
+        .await,
+        "a column kind other than the signed kind",
+        "agent_records_kind_is_signed",
+    );
+    refused(
+        insert_row(
+            owner_pool,
+            2,
+            "agent_state",
+            "agent_state",
+            None,
+            Some("lms"),
+            Some("e-1"),
+        )
+        .await,
+        "a kind this schema does not know",
+        "agent_records_kind_known",
+    );
+    refused(
+        insert_row(owner_pool, 1, rev, rev, None, Some("lms"), Some("e-1")).await,
+        "a second record at a taken position",
+        "duplicate key",
+    );
+    insert_row(owner_pool, 2, rev, rev, None, Some("lms"), Some("e-1"))
+        .await
+        .expect("a revocation record");
+    refused(
+        insert_row(owner_pool, 3, rev, rev, None, Some("lms"), Some("e-1")).await,
+        "a second record for one event",
+        "agent_records_one_per_revocation_event",
+    );
+    insert_row(owner_pool, 3, rev, rev, None, Some("lms"), Some("e-2"))
+        .await
+        .expect("another event, another record");
 }
