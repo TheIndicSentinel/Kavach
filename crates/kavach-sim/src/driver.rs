@@ -9,7 +9,7 @@ use std::future::Future;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 
-use crate::agents::{decide, Memory};
+use crate::agents::{decide, retries, Memory};
 use crate::calendar::slot;
 use crate::ledger::Entry;
 use crate::rng::Rng;
@@ -71,41 +71,95 @@ pub async fn run<S: Stack>(
             }
             for intent in decide(world, day, minute, &mut memory, &mut rng) {
                 let seq = u32::try_from(ledger.len() + 1).unwrap_or(u32::MAX);
-                let (agent, borrower) = (
-                    &world.agents[intent.agent],
-                    &world.borrowers[intent.borrower],
-                );
+                let borrower = &world.borrowers[intent.borrower];
                 let request_id = format!("sim-{}-{seq}", scenario.seed);
+                let mandate = if intent.forged_mandate {
+                    format!("forged-{}-{seq}", scenario.seed)
+                } else {
+                    mandates[&(intent.agent, intent.borrower)].clone()
+                };
                 let body = json!({
-                    "mandate_id": mandates[&(intent.agent, intent.borrower)],
+                    "mandate_id": mandate,
                     "request_id": request_id,
-                    "params": {
-                        "subject_ref": borrower.subject_ref,
-                        "channel": intent.channel,
-                        "template_id": "emi_reminder_v1",
-                    },
+                    "params": intent.params,
                 });
-                let (status, reply) = stack.call(&agent.id, intent.tool, body).await?;
-                ledger.push(Entry {
+                let call = Call {
                     seq,
                     day,
                     at,
-                    agent: agent.id.clone(),
+                    agent: world.agents[intent.agent].id.clone(),
                     borrower: borrower.subject_ref.clone(),
                     tool: intent.tool.into(),
-                    channel: intent.channel.into(),
+                    params: intent.params.clone(),
+                    mandate_for: (!intent.forged_mandate).then(|| borrower.subject_ref.clone()),
                     request_id,
-                    status,
-                    decision: reply["decision"].as_str().map(str::to_string),
-                    reasons: reasons(status, &reply),
-                    record_id: reply["record_id"].as_str().map(str::to_string),
-                    outcome: reply["outcome"].as_str().map(str::to_string),
-                    leak: leak(world, &reply),
-                });
+                    retry_of: None,
+                    attack: intent.attack.map(str::to_string),
+                };
+                let entry = send(stack, world, &call, &body).await?;
+                let lost = entry.outcome.as_deref() == Some("unknown");
+                ledger.push(entry);
+                // The same request again, after an outcome it cannot know.
+                if lost && retries(world, intent.agent, &mut rng) {
+                    let again = Call {
+                        seq: seq + 1,
+                        retry_of: Some(seq),
+                        ..call
+                    };
+                    ledger.push(send(stack, world, &again, &body).await?);
+                }
             }
         }
     }
     Ok(ledger)
+}
+
+/// One call as made (before its reply).
+struct Call {
+    seq: u32,
+    day: u32,
+    at: DateTime<Utc>,
+    agent: String,
+    borrower: String,
+    tool: String,
+    params: Value,
+    mandate_for: Option<String>,
+    request_id: String,
+    retry_of: Option<u32>,
+    attack: Option<String>,
+}
+
+async fn send<S: Stack>(
+    stack: &S,
+    world: &World,
+    call: &Call,
+    body: &Value,
+) -> Result<Entry, String> {
+    let (status, reply) = stack.call(&call.agent, &call.tool, body.clone()).await?;
+    Ok(Entry {
+        seq: call.seq,
+        day: call.day,
+        at: call.at,
+        agent: call.agent.clone(),
+        borrower: call.borrower.clone(),
+        tool: call.tool.clone(),
+        channel: call.params["channel"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        params: call.params.clone(),
+        mandate_for: call.mandate_for.clone(),
+        request_id: call.request_id.clone(),
+        retry_of: call.retry_of,
+        attack: call.attack.clone(),
+        status,
+        decision: reply["decision"].as_str().map(str::to_string),
+        reasons: reasons(status, &reply),
+        record_id: reply["record_id"].as_str().map(str::to_string),
+        outcome: reply["outcome"].as_str().map(str::to_string),
+        replayed: reply["replayed"].as_bool().unwrap_or(false),
+        leak: leak(world, &reply),
+    })
 }
 
 /// The decision's reasons, or a refusal's problem code.

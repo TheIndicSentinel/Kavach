@@ -52,10 +52,12 @@ pub fn list(ui: Ui) -> i32 {
         );
     }
     human.push_str(
-        "\nAgent types: compliant (keeps the hours and its own limit), eager (late, too often, wrong channel, by its rates).\n\
+        "\nAgent types: compliant (keeps the hours and its own limit), eager (late, too often, wrong channel, by its rates),\n\
+         adversarial (the attack catalog's tool-call attacks, on borrowers kept for it).\n\
          Run one: kavach simulate run --builtin <name>, or kavach simulate run <scenario.yaml>",
     );
-    let data = json!({ "scenarios": scenarios, "agent_types": ["compliant", "eager"] });
+    let data =
+        json!({ "scenarios": scenarios, "agent_types": ["compliant", "eager", "adversarial"] });
     ui.finish("simulate list", Status::Ok, &data, &human)
 }
 
@@ -199,6 +201,27 @@ fn text(ui: Ui, r: &Report, kept: Option<&Path>) -> String {
             format!(" ({})", reasons.join(", "))
         }
     );
+    if !r.attacks.is_empty() {
+        let tried: u32 = r.attacks.values().map(|(t, _)| t).sum();
+        let refused: u32 = r.attacks.values().map(|(_, n)| n).sum();
+        let kinds: Vec<String> = r
+            .attacks
+            .iter()
+            .map(|(id, (t, n))| format!("{id} {n}/{t}"))
+            .collect();
+        let _ = writeln!(
+            out,
+            "Attacks refused {refused} of {tried} ({})",
+            kinds.join(", ")
+        );
+    }
+    if r.retries.0 > 0 {
+        let _ = writeln!(
+            out,
+            "Retries after an unknown outcome {}: {} answered without a second send",
+            r.retries.0, r.retries.1
+        );
+    }
     for (agent, c) in &r.agents {
         let _ = writeln!(
             out,

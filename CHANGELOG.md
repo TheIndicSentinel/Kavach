@@ -45,6 +45,12 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- `kavach simulate` S2:
+  - **Adversarial agent:** makes the attack catalog's tool-call attacks (raw identifiers, another borrower, forged mandate, unregistered tools and values), on borrowers kept for it.
+  - **Retries:** agents can send the same request again after an unknown outcome (`retry_rate`).
+  - **Provider failures:** the first borrowers can be given a destination where the provider refuses (422), errs (500) or loses the response (`provider_failures`).
+  - **Oracle:** now judges the registry, plain references, the mandate's subject, forward-once retries (409 `in_flight` after an unknown outcome) and provider outcomes (a 5xx is unknown).
+  - **Six new built-in scenarios**, including `mixed-week`.
 - `kavach simulate` (pre-alpha, S1): synthetic agents over simulated days against a throwaway dev stack, judged by an oracle that shares nothing with the agents. Each agent has its own identity and seeded behaviour from the scenario file. Four built-in scenarios: `normal-day`, `after-hours`, `fourth-contact`, `two-agents-one-borrower` (the daily cap holds across two agents' own mandates). The stack's evidence is exported as it stops and verified. Reports list what is not covered first. Exit 0 as expected, 1 not, 2 inconclusive. New crate `kavach-sim`; the devkit can now write a project for any set of agents and borrowers, and `kavach init`'s output is unchanged. See `docs/SIMULATE.md`.
 - Release tooling (`.github/workflows/release.yml`, `docs/RELEASING.md`): `kavach` and `kavach-evidence` for Linux (x86_64, arm64) and macOS (Intel, Apple silicon), man pages and completions, one CycloneDX SBOM per binary and target, `SHA256SUMS`, and SLSA build provenance for every file. Pull requests that change the workflow, and manual runs, are dry runs. A `v<version>` tag creates a draft pre-release, never a published one. The workspace version is now `0.1.0-alpha.1`. Nothing is published until the name is cleared.
 - `kavach dev up --export-on-exit <dir>`: when the stack stops (Ctrl-C or SIGTERM), it writes its evidence chain as a bundle after a final checkpoint that covers every record. It works with the memory store, so no Postgres is needed. A killed stack writes nothing, and the bundle is signed with dev keys, so it verifies only as a development bundle.

@@ -39,8 +39,12 @@ agents:
   - type: compliant       # keeps the hours and its own daily limit, WhatsApp only
     count: 2
   - type: eager           # late, too often, wrong channel, by its rates
-    behaviour: { contacts_per_day: 3, late_rate: 0.5, extra_contact_rate: 0.5, wrong_channel_rate: 0.2 }
+    behaviour: { contacts_per_day: 3, late_rate: 0.5, extra_contact_rate: 0.5, wrong_channel_rate: 0.2,
+                 retry_rate: 1.0 }   # send the same request again after an unknown outcome
+  - type: adversarial     # the attack catalog's tool-call attacks, on a borrower kept for it
+    behaviour: { attack_rate: 0.5, attacks: [raw-phone-number, another-borrower] }   # default: all of them
 assignment: shared        # split (default): one agent per borrower; shared: every agent serves every borrower
+provider_failures: { refuse: 1, error: 1, lose: 1 }   # the first borrowers' destinations: 422, 500, lost response
 expect:                   # required: what passing means
   violations: 0
   mismatches: 0
@@ -53,10 +57,17 @@ Unknown keys are refused. `--seed`, `--days` and `--borrowers` override the file
 
 ## The oracle
 
-It models the product's rules, written independently of Kavach's policies:
-- contacts only from 08:00 to 19:00 IST (19:00 itself is out);
-- at most three contacts per borrower per IST day, **across all agents** (only contacts Kavach allowed count);
-- only the channels the mandate grants (WhatsApp, voice).
+It models the product's rules, written independently of Kavach's policies, and judges each call only by what was sent:
+- **the tool registry:** `send_reminder` only, with exactly `subject_ref`, `channel` (WhatsApp or SMS) and `template_id` (`emi_reminder_v1`);
+- **a plain reference:** at most eight digits and nothing PAN-shaped (ADR-004 §7);
+- **the mandate:** it was issued, and for that subject;
+- **contact hours:** only from 08:00 to 19:00 IST (19:00 itself is out);
+- **the daily cap:** at most three contacts per borrower per IST day, **across all agents**. Only contacts Kavach allowed count, and a retry is not a new contact;
+- **channels:** only those the mandate grants (WhatsApp, voice);
+- **forward-once:** a retry (same request id) is never sent again. After a final outcome it gets the stored reply (`replayed`); after an unknown one, 409 `in_flight`;
+- **provider outcomes** follow the agreed status contract (ADR-007): 2xx delivered, 4xx refused, and a 5xx or a lost response unknown (a 5xx does not prove the message was not sent).
+
+The adversarial agent's attacks are the attack catalog's own payloads (`kavach-attacks`). Each call's attack label is for the report only; the oracle never reads it, and a test checks that.
 
 Agents never see it, and two tests are mandatory:
 - **independence:** the agents and the oracle share no code;
@@ -85,6 +96,12 @@ The same seed gives the same digest over the ledger (who did what, when, and wha
 | `after-hours` | 18:55 allowed, 19:05 blocked by the contact-hours floor | Agent authorization core (08:00–19:00 IST floor) |
 | `fourth-contact` | The daily cap (3 per borrower per IST day) blocks the fourth contact | Agent authorization core (daily cap per borrower) |
 | `two-agents-one-borrower` | Two agents, each with its own mandate for one borrower: the cap holds across them | Agent authorization core (daily cap per borrower) |
+| `prompt-injection-raw-number` | Raw phone, PAN and Aadhaar numbers in place of a reference are refused | Agent authorization core (no raw identifiers) |
+| `wrong-borrower` | A borrower outside the mandate is refused (`subject-binding`) | Agent authorization core (the mandate's subject) |
+| `forged-mandate` | A mandate id that was never issued is refused | Agent authorization core (a mandate whose chain verifies) |
+| `provider-failures` | 422 is recorded as refused, and a 500 or a lost response as unknown | Credential broker / gateway (outcomes) |
+| `retry-after-unknown` | A retry after an unknown outcome gets 409 `in_flight` and is never sent again | Gateway (forward-once) |
+| `mixed-week` | All of the above, over three days | All of the above |
 
 ## Not covered yet
 
@@ -93,6 +110,6 @@ The same seed gives the same digest over the ledger (who did what, when, and wha
 - **Consent withdrawn mid-run:** needs runtime consent changes.
 - **Quarantining a rogue agent:** needs the kill switch.
 - **Trusted time lost:** the acceptance suite covers it.
-- **The provider's inbox reconciled against the evidence:** planned for S3.
+- **The provider's inbox reconciled against the evidence** (proof from the provider's side that nothing was sent twice): planned for S3. Until then, "never sent twice" rests on Kavach's replies and its evidence.
 - **Network isolation:** CI's isolation job.
 - **Performance:** `kavach-bench`.

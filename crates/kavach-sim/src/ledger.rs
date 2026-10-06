@@ -12,16 +12,29 @@ pub struct Entry {
     /// The stack's (fixed, simulated) time of the call.
     pub at: DateTime<Utc>,
     pub agent: String,
+    /// The borrower whose mandate the call was made under.
     pub borrower: String,
     pub tool: String,
+    /// The parameters as sent.
+    pub params: serde_json::Value,
+    /// `params.channel`, for reading.
     pub channel: String,
+    /// The borrower the mandate was issued for; `None` for a mandate id
+    /// that was never issued.
+    pub mandate_for: Option<String>,
     pub request_id: String,
+    /// This call sends call `retry_of` again (same request id).
+    pub retry_of: Option<u32>,
+    /// The attack catalog id, for the report only.
+    pub attack: Option<String>,
     /// HTTP status; a decision comes with 200.
     pub status: u16,
     pub decision: Option<String>,
     pub reasons: Vec<String>,
     pub record_id: Option<String>,
     pub outcome: Option<String>,
+    /// The reply was the stored one (`replayed: true`).
+    pub replayed: bool,
     /// A reply that held a destination, a token or another raw identifier.
     pub leak: Option<String>,
 }
@@ -41,14 +54,16 @@ pub fn digest(entries: &[Entry]) -> String {
     let mut hash = Sha256::new();
     for e in entries {
         hash.update(format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",
             e.seq,
             e.day,
             e.at.to_rfc3339(),
             e.agent,
             e.borrower,
             e.tool,
-            e.channel,
+            e.params,
+            e.retry_of.unwrap_or(0),
+            e.outcome.as_deref().unwrap_or("-"),
             e.status,
             e.decision.as_deref().unwrap_or("-"),
             e.reasons.join(",")
