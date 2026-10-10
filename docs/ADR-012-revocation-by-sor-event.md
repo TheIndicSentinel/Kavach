@@ -48,6 +48,11 @@ A resource credential is minted by the gateway inside the same request that forw
 ### 7. Revocations are evidence
 Each revocation is also a signed record in the agent evidence chain (kind `mandate_revocation`, as ADR-013 adds `agent_state`): the event id, the record, the reason and the revoked ids. It is exported and verified with the decisions.
 
+*Amended on acceptance (R1b):*
+- **The record** holds the event (system, id, type, content hash, `occurred_at`), the revoked ids, `revoked_at` (when Kavach revoked) and `recorded_at` (when the record was written). The loan is named only by a keyed pseudonym, under a key of its own.
+- **Revoke first, record second.** The request that revokes writes the record at once. It does not rely on the system of record retrying: a background reconciler pages through the stored revocations and writes any record still missing, idempotently by event id (one record per event, enforced by the database). Missing records are a metric and an alert.
+- **One table.** Records of every kind share the chain's positions (migration 015). A reader refuses a kind it does not know rather than skipping it.
+
 ### 8. Attacks (catalog version 4)
 - `forged-revocation`: a bad signature is refused.
 - `replayed-revocation`: the replay guard refuses it.

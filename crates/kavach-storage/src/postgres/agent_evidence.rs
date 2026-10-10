@@ -10,6 +10,7 @@ use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding, GENESIS,
 };
+use kavach_ports::chain_record::{seal_revocation, ChainRecord, RevocationDraft, RevocationRecord};
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
     CHAIN_AGENT_DECISIONS,
@@ -53,6 +54,63 @@ fn row_to_record(row: &sqlx::postgres::PgRow) -> Result<AgentDecisionRecord, Por
         hash: row.try_get("hash").map_err(|e| unavailable(&e))?,
         sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
     })
+}
+
+/// A stored record of any kind, read by the kind its payload states; a kind
+/// this build does not know is an error, never skipped.
+pub(super) fn row_to_chain_record(row: &sqlx::postgres::PgRow) -> Result<ChainRecord, PortError> {
+    let mut value: serde_json::Value = row.try_get("payload").map_err(|e| unavailable(&e))?;
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| PortError::invalid("stored payload is not an object"))?;
+    let hash: String = row.try_get("hash").map_err(|e| unavailable(&e))?;
+    let sig: String = row.try_get("sig").map_err(|e| unavailable(&e))?;
+    object.insert("hash".into(), hash.into());
+    object.insert("sig".into(), sig.into());
+    serde_json::from_value(value).map_err(|e| PortError::invalid(format!("stored record: {e}")))
+}
+
+fn row_to_revocation(row: &sqlx::postgres::PgRow) -> Result<RevocationRecord, PortError> {
+    match row_to_chain_record(row)? {
+        ChainRecord::Revocation(record) => Ok(record),
+        ChainRecord::Decision(_) => Err(PortError::invalid(
+            "a revocation row holds a decision payload",
+        )),
+    }
+}
+
+async fn find_revocation<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    tenant_id: &str,
+    source_system: &str,
+    event_id: &str,
+) -> Result<Option<RevocationRecord>, PortError> {
+    let row = sqlx::query(
+        "SELECT payload, hash, sig FROM agent_decisions \
+        WHERE kind = 'mandate_revocation' AND tenant_id = $1 AND source_system = $2 \
+            AND event_id = $3",
+    )
+    .bind(tenant_id)
+    .bind(source_system)
+    .bind(event_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(|e| unavailable(&e))?;
+    row.as_ref().map(row_to_revocation).transpose()
+}
+
+/// The stored revocation for this event, if it is this revocation.
+fn same_revocation(
+    stored: RevocationRecord,
+    draft: &RevocationDraft,
+) -> Result<RevocationRecord, PortError> {
+    if draft.matches(&stored) {
+        Ok(stored)
+    } else {
+        Err(PortError::rejected(
+            "this event's revocation is recorded with different content",
+        ))
+    }
 }
 
 async fn find<'e>(
@@ -233,6 +291,55 @@ impl PostgresAgentEvidenceStore {
         tx.commit().await?;
         Ok(CommitResult::Committed(Box::new(record)))
     }
+
+    /// One revocation record and the head it advances, in one transaction
+    /// under the partition lock (the same lock order as `commit`).
+    async fn append_revocation_once(
+        &self,
+        draft: &RevocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<RevocationRecord, sqlx::Error> {
+        let mut tx = self.pool.begin().await?;
+        let (head_seq, head_hash) = Self::lock_head(&mut tx, &draft.tenant_id, draft.partition_id)
+            .await
+            .map_err(|e| sqlx::Error::Protocol(e.message))?;
+        let payload = draft.complete(head_seq + 1, &head_hash, signer.key_id(), clock.now());
+        let record =
+            seal_revocation(payload, signer).map_err(|e| sqlx::Error::Protocol(e.message))?;
+        let p = &record.payload;
+        let advanced = sqlx::query(
+            "WITH inserted AS ( \
+                INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, \
+                    prev_hash, hash, sig, key_id, payload, kind, source_system, event_id) \
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'mandate_revocation', $10, $11) \
+                RETURNING tenant_id, partition_id, seq, hash) \
+            UPDATE agent_evidence_chains AS c SET head_seq = inserted.seq, \
+                head_hash = inserted.hash \
+            FROM inserted \
+            WHERE c.tenant_id = inserted.tenant_id AND c.partition_id = inserted.partition_id",
+        )
+        .bind(&p.tenant_id)
+        .bind(p.partition_id)
+        .bind(p.seq)
+        .bind(&p.record_id)
+        .bind(&p.prev_hash)
+        .bind(&record.hash)
+        .bind(&record.sig)
+        .bind(&p.key_id)
+        .bind(json(p).map_err(|e| sqlx::Error::Protocol(e.message))?)
+        .bind(&p.source_system)
+        .bind(&p.event_id)
+        .execute(&mut *tx)
+        .await?;
+        if advanced.rows_affected() != 1 {
+            return Err(sqlx::Error::Protocol(
+                "the partition head did not advance".into(),
+            ));
+        }
+        tx.commit().await?;
+        Ok(record)
+    }
 }
 
 impl AgentEvidenceStore for PostgresAgentEvidenceStore {
@@ -300,7 +407,8 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
     ) -> Result<Option<AgentDecisionRecord>, PortError> {
         let row = sqlx::query(
             "SELECT payload, hash, sig FROM agent_decisions \
-            WHERE tenant_id = $1 AND record_id = $2 AND mode = 'commit'",
+            WHERE tenant_id = $1 AND record_id = $2 AND kind = 'agent_decision' \
+                AND mode = 'commit'",
         )
         .bind(tenant_id)
         .bind(record_id)
@@ -380,7 +488,7 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         &self,
         tenant_id: &str,
         partition_id: i32,
-    ) -> Result<Vec<AgentDecisionRecord>, PortError> {
+    ) -> Result<Vec<ChainRecord>, PortError> {
         let rows = sqlx::query(
             "SELECT payload, hash, sig FROM agent_decisions \
             WHERE tenant_id = $1 AND partition_id = $2 ORDER BY seq",
@@ -390,7 +498,52 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         .fetch_all(&self.pool)
         .await
         .map_err(|e| unavailable(&e))?;
-        rows.iter().map(row_to_record).collect()
+        rows.iter().map(row_to_chain_record).collect()
+    }
+
+    async fn append_revocation(
+        &self,
+        draft: RevocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<RevocationRecord, PortError> {
+        if let Some(stored) = find_revocation(
+            &self.pool,
+            &draft.tenant_id,
+            &draft.source_system,
+            &draft.event_id,
+        )
+        .await?
+        {
+            return same_revocation(stored, &draft);
+        }
+        match self.append_revocation_once(&draft, clock, signer).await {
+            Ok(record) => Ok(record),
+            // Another writer (the API or the reconciler) recorded this event
+            // first; its record decides.
+            Err(err) if is_unique_violation(&err) => {
+                let stored = find_revocation(
+                    &self.pool,
+                    &draft.tenant_id,
+                    &draft.source_system,
+                    &draft.event_id,
+                )
+                .await?
+                .ok_or_else(|| unavailable(&err))?;
+                same_revocation(stored, &draft)
+            }
+            Err(sqlx::Error::Protocol(message)) => Err(PortError::unavailable(message)),
+            Err(err) => Err(unavailable(&err)),
+        }
+    }
+
+    async fn revocation_record(
+        &self,
+        tenant_id: &str,
+        source_system: &str,
+        event_id: &str,
+    ) -> Result<Option<RevocationRecord>, PortError> {
+        find_revocation(&self.pool, tenant_id, source_system, event_id).await
     }
 
     async fn contacts_on(

@@ -338,6 +338,9 @@ pub mod mandate_store {
             record_ref: "loan-a".into(),
             occurred_at: Utc.with_ymd_and_hms(2026, 10, 1, 6, 0, 0).unwrap(),
             revoked: vec!["loan-a-1".into(), "loan-a-child".into()],
+            // Microseconds survive storage.
+            revoked_at: Utc.with_ymd_and_hms(2026, 10, 1, 6, 0, 1).unwrap()
+                + chrono::TimeDelta::microseconds(123_456),
         };
         store
             .record_revocation(revocation.clone())
@@ -357,13 +360,62 @@ pub mod mandate_store {
                 .revocation_for_event(TENANT, "lms", "pay-1")
                 .await
                 .expect("read"),
-            Some(revocation)
+            Some(revocation.clone())
         );
         assert!(store
             .revocation_for_event(TENANT, "lms", "pay-2")
             .await
             .expect("read")
             .is_none());
+        revocations_page_in_time_order(store, &revocation).await;
+    }
+
+    /// The reconciler's view: every revocation, by time then tenant, system
+    /// and event id, resumed exactly after a cursor.
+    async fn revocations_page_in_time_order<S: MandateStore>(store: &S, first: &StoredRevocation) {
+        let at = |event_id: &str, revoked_at| StoredRevocation {
+            event_id: event_id.into(),
+            revoked_at,
+            ..first.clone()
+        };
+        let earlier = at("pay-0", first.revoked_at - chrono::TimeDelta::seconds(5));
+        let same_instant = at("pay-2", first.revoked_at);
+        let later = at(
+            "pay-3",
+            first.revoked_at + chrono::TimeDelta::microseconds(1),
+        );
+        for revocation in [&later, &same_instant, &earlier] {
+            store
+                .record_revocation(revocation.clone())
+                .await
+                .expect("recorded");
+        }
+        let all = store.revocations_after(None, 100).await.expect("page");
+        let ids: Vec<&str> = all.iter().map(|r| r.event_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["pay-0", "pay-1", "pay-2", "pay-3"],
+            "time, then event id"
+        );
+        assert_eq!(all[1], *first, "read back whole, to the microsecond");
+
+        let mut paged = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = store.revocations_after(cursor, 1).await.expect("page");
+            let Some(last) = page.last() else { break };
+            cursor = Some(last.cursor());
+            paged.extend(page);
+        }
+        assert_eq!(paged, all, "one at a time, nothing skipped or repeated");
+
+        let from = kavach_ports::RevocationCursor::at(first.revoked_at);
+        let tail = store
+            .revocations_after(Some(from), 100)
+            .await
+            .expect("page");
+        let ids: Vec<&str> = tail.iter().map(|r| r.event_id.as_str()).collect();
+        assert_eq!(ids, ["pay-1", "pay-2", "pay-3"], "from an instant on");
     }
 
     async fn insert_rules<S: MandateStore>(store: &S) {

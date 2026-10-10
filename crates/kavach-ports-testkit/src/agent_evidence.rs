@@ -8,11 +8,12 @@ use chrono::{Duration, NaiveDate, TimeZone, Utc};
 use ed25519_dalek::{Signer, SigningKey};
 use kavach_domain::Decision;
 use kavach_ports::agent_evidence::{
-    sign_outcome, verify_chain, Actor, AgentDecisionPayload, AgentEvidenceStore, CommitRequest,
-    CommitResult, ContactReservation, EvidenceSigner, Outcome, PolicyVersions, RequestBinding,
-    TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
+    sign_outcome, verify_chain, Actor, AgentDecisionPayload, AgentEvidenceStore, ChainEntry,
+    CommitRequest, CommitResult, ContactReservation, EvidenceSigner, Outcome, PolicyVersions,
+    RequestBinding, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
 };
-use kavach_ports::{KeyAlgorithm, PortError, PublicKey, SyncStatus};
+use kavach_ports::chain_record::{ChainRecord, RevocationDraft};
+use kavach_ports::{ErrorClass, KeyAlgorithm, PortError, PublicKey, SyncStatus};
 
 use crate::FakeClock;
 
@@ -163,7 +164,134 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     every_outcome_kind_is_stored(&*store, &clock, &signer).await;
     one_creator_per_request_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     duplicates_race_near_the_cap(Arc::clone(&store), TestSigner::new(KID, 9)).await;
+    revocations_in_the_chain(&*store, &clock, &signer).await;
+    one_record_per_revocation_event(Arc::clone(&store)).await;
     cap_holds_under_concurrency(store, signer).await;
+}
+
+/// A revocation by a system-of-record event (ADR-012 §7).
+#[must_use]
+pub fn revocation_draft(tenant: &str, event_id: &str) -> RevocationDraft {
+    RevocationDraft {
+        tenant_id: tenant.into(),
+        partition_id: 0,
+        source_system: "lms".into(),
+        event_id: event_id.into(),
+        event_sha256: "ab".repeat(32),
+        event_type: "loan.paid".into(),
+        record_pseudonym: "psn:loan".into(),
+        occurred_at: t0() - Duration::minutes(1),
+        revoked: vec!["m-1".into(), "m-1-child".into()],
+        revoked_at: t0(),
+    }
+}
+
+/// Revocation records take their place in the chain between decisions, are
+/// written once per event, and are never read as a decision.
+async fn revocations_in_the_chain<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+) {
+    let t = "ae-revocations";
+    let mut before = request(t, "before", 3);
+    before.contact = None;
+    before.draft.send_by = None;
+    store.commit(before, clock, signer).await.expect("commit");
+    let draft = revocation_draft(t, "pay-1");
+    let revocation = store
+        .append_revocation(draft.clone(), clock, signer)
+        .await
+        .expect("revocation recorded");
+    assert_eq!(revocation.payload.seq, 2);
+    assert_eq!(revocation.payload.recorded_at, t0());
+    let mut after = request(t, "after", 3);
+    after.contact = None;
+    after.draft.send_by = None;
+    store.commit(after, clock, signer).await.expect("commit");
+
+    let records = store.records(t, 0).await.unwrap();
+    let kinds: Vec<&str> = records.iter().map(ChainEntry::kind).collect();
+    assert_eq!(
+        kinds,
+        [
+            KIND_AGENT_DECISION,
+            "mandate_revocation",
+            KIND_AGENT_DECISION
+        ]
+    );
+    assert_eq!(records[1], ChainRecord::Revocation(revocation.clone()));
+    verify_chain(&records, &signer.keys(), None, &[], t0()).expect("one chain of both kinds");
+
+    // The same revocation again: the stored record, nothing new.
+    let again = store
+        .append_revocation(draft.clone(), clock, signer)
+        .await
+        .expect("idempotent");
+    assert_eq!(again, revocation);
+    // Other content for the same event: refused.
+    let mut other = draft;
+    other.revoked = vec!["m-2".into()];
+    let err = store
+        .append_revocation(other, clock, signer)
+        .await
+        .unwrap_err();
+    assert_eq!(err.class, ErrorClass::Rejected, "{err:?}");
+    assert_eq!(store.records(t, 0).await.unwrap().len(), 3);
+
+    assert_eq!(
+        store.revocation_record(t, "lms", "pay-1").await.unwrap(),
+        Some(revocation.clone())
+    );
+    assert_eq!(
+        store.revocation_record(t, "lms", "pay-2").await.unwrap(),
+        None
+    );
+    assert_eq!(
+        store.revocation_record(t, "crm", "pay-1").await.unwrap(),
+        None
+    );
+    assert_eq!(
+        store
+            .revocation_record("other", "lms", "pay-1")
+            .await
+            .unwrap(),
+        None
+    );
+    // The operator's read by record id is for decisions only.
+    assert_eq!(
+        store
+            .record(t, &revocation.payload.record_id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+/// The API and the reconciler may record one event at once: one record.
+async fn one_record_per_revocation_event<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
+    let t = "ae-revocation-race";
+    let signer = Arc::new(TestSigner::new(KID, 9));
+    let clock = Arc::new(FakeClock::synced_at(t0()));
+    let tasks: Vec<_> = (0..8)
+        .map(|_| {
+            let (store, signer, clock) =
+                (Arc::clone(&store), Arc::clone(&signer), Arc::clone(&clock));
+            tokio::spawn(async move {
+                store
+                    .append_revocation(revocation_draft(t, "pay-race"), &*clock, &*signer)
+                    .await
+            })
+        })
+        .collect();
+    let mut hashes = std::collections::BTreeSet::new();
+    for task in tasks {
+        hashes.insert(task.await.unwrap().expect("recorded or returned").hash);
+    }
+    assert_eq!(hashes.len(), 1, "every writer sees the one record");
+    let records = store.records(t, 0).await.unwrap();
+    assert_eq!(records.len(), 1);
+    verify_chain(&records, &signer.keys(), None, &[], t0()).expect("signed");
 }
 
 /// Duplicates of one request race distinct requests while the day's cap is
@@ -221,7 +349,11 @@ async fn duplicates_race_near_the_cap<S: AgentEvidenceStore + 'static>(
 
     let records = store.records(t, 0).await.unwrap();
     assert_eq!(records.len(), 2 + 1 + 12, "one record per request");
-    let allows = records.iter().filter(|r| r.is_allow()).count();
+    let allows = records
+        .iter()
+        .filter_map(ChainEntry::as_decision)
+        .filter(|r| r.is_allow())
+        .count();
     assert_eq!(allows, 3, "exactly the cap");
     assert_eq!(
         store.contacts_on(t, SUBJECT, day()).await.unwrap(),
@@ -543,4 +675,7 @@ async fn outcomes_once_per_allowed_record<S: AgentEvidenceStore>(
     .expect("chain verifies");
     assert_eq!(report.outcome_missing, vec!["cred-r-1".to_string()]);
     records
+        .into_iter()
+        .map(|r| r.into_decision().expect("a chain of decisions only"))
+        .collect()
 }

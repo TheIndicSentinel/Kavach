@@ -53,6 +53,9 @@ async fn records<S: AgentEvidenceStore>(
     let records = store.records(tenant, 0).await.expect("records");
     assert_eq!(records.len(), n);
     records
+        .into_iter()
+        .map(|r| r.into_decision().expect("a chain of decisions only"))
+        .collect()
 }
 
 /// A checkpoint of record `seq`, following `previous`.

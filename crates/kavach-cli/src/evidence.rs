@@ -150,6 +150,7 @@ pub async fn export_on_exit(
     let records = store
         .records(tenant, PARTITION)
         .await
+        .and_then(kavach_ports::chain_record::decisions_for_bundle_v1)
         .map_err(|e| fail(&e.message))?;
     let mut outcomes = Vec::new();
     for record in &records {

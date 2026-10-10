@@ -7,6 +7,7 @@
 pub mod agent_evidence;
 pub mod bundle;
 pub mod bundle_verify;
+pub mod chain_record;
 pub mod checkpoint;
 pub mod credential;
 mod error;
@@ -30,7 +31,8 @@ pub use evidence::{
 };
 pub use keys::{verify_ed25519, KeyAlgorithm, KeyProvider, PublicKey};
 pub use mandate::{
-    ConsentSource, DomainEvent, EventBus, MandateStore, StoredMandate, StoredRevocation,
+    ConsentSource, DomainEvent, EventBus, MandateStore, RevocationCursor, StoredMandate,
+    StoredRevocation,
 };
 pub use policy::PolicyEngine;
 pub use reference::ReferenceResolver;

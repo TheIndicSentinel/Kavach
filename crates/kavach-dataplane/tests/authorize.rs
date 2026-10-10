@@ -12,7 +12,8 @@ use chrono::{DateTime, Duration, Utc};
 use kavach_authz::AgentState;
 use kavach_dataplane::MandateVerifier as _;
 use kavach_dataplane::{
-    AgentIdentity, AuthorizeConfig, AuthorizeCore, CommitStatus, Mode, ToolCall,
+    reconcile_revocations, AgentIdentity, AuthorizeConfig, AuthorizeCore, CommitStatus, Mode,
+    ReconcileConfig, ToolCall,
 };
 use kavach_domain::mandate::RevocationReason;
 use kavach_domain::Decision;
@@ -995,4 +996,97 @@ async fn a_revocation_never_reaches_a_mandate_issued_after_it() {
         w.mandates.verify(TENANT, &mandate).await.is_ok(),
         "still live"
     );
+}
+
+/// ADR-012 §7: a revocation whose evidence record was never written (the
+/// request that revoked could not write it) is recorded by the reconciler,
+/// once settled, and never twice. The record names the loan only by its
+/// keyed pseudonym, and the chain verifies.
+#[tokio::test]
+async fn the_reconciler_records_a_revocation_the_request_could_not() {
+    let w = world();
+    w.mandate_for("B-9382").await;
+    w.at(ist(12, 0, 0));
+    let paid = revocation(&w.sor, "B-9382", "loan.paid", "pay-1", w.clock.now().utc).await;
+    // Revoked through the service alone: no evidence record yet.
+    let done = w.mandates.revoke_from_event(&paid).await.unwrap();
+    let store = w.core.store();
+    assert_eq!(
+        store
+            .revocation_record(TENANT, "lms", "pay-1")
+            .await
+            .unwrap(),
+        None
+    );
+
+    let config = ReconcileConfig::default();
+    let pass =
+        |watermark, now| reconcile_revocations(w.mandates.store(), &w.core, watermark, now, config);
+    // Not settled yet: left to the request that made it.
+    let first = pass(None, w.clock.now().utc).await;
+    assert_eq!((first.checked, first.watermark), (0, None), "{first:?}");
+
+    w.at(ist(12, 1, 0));
+    let second = pass(None, w.clock.now().utc).await;
+    assert_eq!(second.reconciled, ["pay-1"], "{second:?}");
+    assert!(second.missing.is_empty() && second.error.is_none());
+    assert_eq!(second.watermark, Some(done.stored.revoked_at));
+
+    let record = store
+        .revocation_record(TENANT, "lms", "pay-1")
+        .await
+        .unwrap()
+        .expect("recorded");
+    let p = &record.payload;
+    assert_eq!(p.revoked, done.revoked);
+    assert_eq!(p.revoked_at, done.stored.revoked_at);
+    assert!(
+        p.recorded_at > p.revoked_at,
+        "written later, by the reconciler"
+    );
+    assert!(p.record_pseudonym.starts_with("psn:"));
+    let json = serde_json::to_string(&record).unwrap();
+    assert!(
+        !json.contains("L-") && !json.contains("B-9382"),
+        "no reference: {json}"
+    );
+    let records = store.records(TENANT, 0).await.unwrap();
+    kavach_ports::agent_evidence::verify_chain(
+        &records,
+        &TestSigner::new("evidence-test", 9).keys(),
+        None,
+        &[],
+        w.clock.now().utc,
+    )
+    .expect("the chain verifies");
+
+    // The next pass sees it recorded and writes nothing.
+    let third = pass(second.watermark, w.clock.now().utc).await;
+    assert_eq!((third.checked, third.reconciled.len()), (1, 0), "{third:?}");
+    assert_eq!(store.records(TENANT, 0).await.unwrap().len(), records.len());
+}
+
+/// A record that cannot be written is reported missing, and the watermark
+/// never moves past it, so the next pass tries it again.
+#[tokio::test]
+async fn a_revocation_record_that_cannot_be_written_is_missing_and_retried() {
+    let w = world_with(TestSigner::failing("evidence-test"));
+    w.mandate_for("B-9382").await;
+    w.at(ist(12, 0, 0));
+    let paid = revocation(&w.sor, "B-9382", "loan.paid", "pay-1", w.clock.now().utc).await;
+    w.mandates.revoke_from_event(&paid).await.unwrap();
+    w.at(ist(12, 1, 0));
+    let report = reconcile_revocations(
+        w.mandates.store(),
+        &w.core,
+        None,
+        w.clock.now().utc,
+        ReconcileConfig::default(),
+    )
+    .await;
+    assert_eq!(report.checked, 1);
+    assert_eq!(report.missing.len(), 1, "{report:?}");
+    assert_eq!(report.missing[0].0, "pay-1");
+    assert!(report.reconciled.is_empty());
+    assert_eq!(report.watermark, None, "not past what is missing");
 }

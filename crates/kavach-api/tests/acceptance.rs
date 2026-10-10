@@ -450,7 +450,12 @@ fn auditor_material(
 /// store, signed with the auditor's export key.
 async fn export_from_memory(gw: &Gw, work: &std::path::Path, bundle: &std::path::Path) {
     let core = gw.state.dataplane().unwrap().core();
-    let records = core.store().records("default", 0).await.unwrap();
+    let records = core
+        .store()
+        .records("default", 0)
+        .await
+        .and_then(kavach_ports::chain_record::decisions_for_bundle_v1)
+        .unwrap();
     let mut writer = BundleWriter::create(bundle, SCENARIO_SCOPE, SegmentStart::GENESIS).unwrap();
     for record in &records {
         writer.record(record).unwrap();

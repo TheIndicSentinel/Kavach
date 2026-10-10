@@ -6,7 +6,8 @@ use std::sync::Mutex;
 
 use kavach_domain::mandate::{ConsentRecord, MandateStatus, RevocationReason};
 use kavach_ports::{
-    ConsentSource, DomainEvent, EventBus, MandateStore, PortError, StoredMandate, StoredRevocation,
+    ConsentSource, DomainEvent, EventBus, MandateStore, PortError, RevocationCursor, StoredMandate,
+    StoredRevocation,
 };
 
 type Key = (String, String);
@@ -256,6 +257,24 @@ impl MandateStore for InMemoryMandateStore {
                 .map_err(|_| poisoned())
                 .map(|all| all.get(&key).cloned()),
         )
+    }
+
+    fn revocations_after(
+        &self,
+        after: Option<RevocationCursor>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<StoredRevocation>, PortError>> + Send {
+        let result = self.revocations.lock().map_err(|_| poisoned()).map(|all| {
+            let mut page: Vec<StoredRevocation> = all
+                .values()
+                .filter(|r| after.as_ref().is_none_or(|after| r.cursor() > *after))
+                .cloned()
+                .collect();
+            page.sort_by_key(StoredRevocation::cursor);
+            page.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+            page
+        });
+        ready(result)
     }
 }
 

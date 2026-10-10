@@ -15,11 +15,14 @@ use kavach_domain::Decision;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::chain_record::{ChainRecord, RevocationDraft, RevocationRecord};
 use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
 use crate::time::{SyncStatus, TimeSource};
 
 pub const KIND_AGENT_DECISION: &str = "agent_decision";
+/// A revocation by a system-of-record event (ADR-012 §7).
+pub const KIND_MANDATE_REVOCATION: &str = "mandate_revocation";
 pub const HASH_ALG_V2: &str = "v2";
 pub const HASH_PREFIX: &[u8] = b"kavach-evidence-v2";
 pub const SIG_PREFIX: &[u8] = b"kavach-agent-evidence-sig-v1:";
@@ -155,12 +158,71 @@ pub fn is_allow(decision: Decision) -> bool {
 
 /// `v2` hash of a payload, as lowercase hex.
 pub fn payload_hash(payload: &AgentDecisionPayload) -> Result<String, PortError> {
+    content_hash(&payload.prev_hash, payload)
+}
+
+/// `v2` hash of any record's payload: SHA-256 over `kavach-evidence-v2` ‖
+/// `prev_hash` ‖ RFC 8785 JCS of the payload. The payload holds its `kind`,
+/// so a record of one kind never hashes like a record of another.
+pub fn content_hash<T: Serialize>(prev_hash: &str, payload: &T) -> Result<String, PortError> {
     let canonical = crate::jcs::to_vec(payload)?;
     let mut hasher = Sha256::new();
     hasher.update(HASH_PREFIX);
-    hasher.update(payload.prev_hash.as_bytes());
+    hasher.update(prev_hash.as_bytes());
     hasher.update(&canonical);
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+/// What every record of an agent chain has, whatever its kind: its place
+/// (`seq`, `prev_hash`), its key and time, and its hash and signature.
+pub trait ChainEntry {
+    /// The kind its signed payload states.
+    fn kind(&self) -> &str;
+    /// The kind a record of this type must state.
+    fn expected_kind(&self) -> &'static str;
+    fn seq(&self) -> i64;
+    fn prev_hash(&self) -> &str;
+    fn key_id(&self) -> &str;
+    fn time_sync(&self) -> &TimeSync;
+    fn hash(&self) -> &str;
+    fn sig(&self) -> &str;
+    /// The `v2` hash of its content; `None` if it cannot be serialised.
+    fn content_hash(&self) -> Option<String>;
+    /// The decision, when the record is one.
+    fn as_decision(&self) -> Option<&AgentDecisionRecord>;
+}
+
+impl ChainEntry for AgentDecisionRecord {
+    fn kind(&self) -> &str {
+        &self.payload.kind
+    }
+    fn expected_kind(&self) -> &'static str {
+        KIND_AGENT_DECISION
+    }
+    fn seq(&self) -> i64 {
+        self.payload.seq
+    }
+    fn prev_hash(&self) -> &str {
+        &self.payload.prev_hash
+    }
+    fn key_id(&self) -> &str {
+        &self.payload.key_id
+    }
+    fn time_sync(&self) -> &TimeSync {
+        &self.payload.time_sync
+    }
+    fn hash(&self) -> &str {
+        &self.hash
+    }
+    fn sig(&self) -> &str {
+        &self.sig
+    }
+    fn content_hash(&self) -> Option<String> {
+        payload_hash(&self.payload).ok()
+    }
+    fn as_decision(&self) -> Option<&AgentDecisionRecord> {
+        Some(self)
+    }
 }
 
 #[must_use]
@@ -404,14 +466,34 @@ pub trait AgentEvidenceStore: Send + Sync {
         credential_id: &str,
     ) -> impl Future<Output = Result<Option<OutcomeRecord>, PortError>> + Send;
 
-    /// All records of a partition in `seq` order (export / verification).
+    /// All records of a partition, of every kind, in `seq` order (export /
+    /// verification).
     fn records(
         &self,
         tenant_id: &str,
         partition_id: i32,
-    ) -> impl Future<Output = Result<Vec<AgentDecisionRecord>, PortError>> + Send;
+    ) -> impl Future<Output = Result<Vec<ChainRecord>, PortError>> + Send;
 
-    /// The committed record with `record_id`, if any (operator reads).
+    /// Appends the record of a revocation by a system-of-record event
+    /// (ADR-012 §7), at most once per event: appending the same revocation
+    /// again returns the stored record, and a different one for the same
+    /// event is `Rejected`. Its time is trusted time now (`recorded_at`).
+    fn append_revocation(
+        &self,
+        draft: RevocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<RevocationRecord, PortError>> + Send;
+
+    /// The record of a revocation event, if one was written.
+    fn revocation_record(
+        &self,
+        tenant_id: &str,
+        source_system: &str,
+        event_id: &str,
+    ) -> impl Future<Output = Result<Option<RevocationRecord>, PortError>> + Send;
+
+    /// The committed decision with `record_id`, if any (operator reads).
     fn record(
         &self,
         tenant_id: &str,
@@ -502,6 +584,8 @@ pub enum ChainError {
          evidence is not accepted (use verify_dev_chain for development stacks)"
     )]
     DevClock { seq: i64 },
+    #[error("record {seq}: kind {kind} is not the kind of this record")]
+    Kind { seq: i64, kind: String },
     #[error("record {seq}: expected seq {expected}")]
     Gap { seq: i64, expected: i64 },
     #[error("record {seq}: prev_hash does not link to the previous record")]
@@ -551,8 +635,8 @@ pub fn is_dev_key(key_id: &str) -> bool {
     key_id.starts_with(DEV_KEY_PREFIX)
 }
 
-pub fn verify_chain(
-    records: &[AgentDecisionRecord],
+pub fn verify_chain<R: ChainEntry>(
+    records: &[R],
     keys: &BTreeMap<String, PublicKey>,
     expected_head: Option<(i64, &str)>,
     outcomes: &[OutcomeRecord],
@@ -563,8 +647,8 @@ pub fn verify_chain(
 
 /// [`verify_chain`] for development stacks: also accepts evidence signed
 /// with `dev-` keys. Never use it to accept evidence from a deployment.
-pub fn verify_dev_chain(
-    records: &[AgentDecisionRecord],
+pub fn verify_dev_chain<R: ChainEntry>(
+    records: &[R],
     keys: &BTreeMap<String, PublicKey>,
     expected_head: Option<(i64, &str)>,
     outcomes: &[OutcomeRecord],
@@ -600,8 +684,8 @@ impl SegmentStart<'static> {
 /// [`verify_chain`] for a segment that starts after a checkpoint rather
 /// than at the first record (ADR-005 §10). The caller must have verified
 /// the checkpoint that supplies `start`; nothing before it is checked.
-pub fn verify_segment(
-    records: &[AgentDecisionRecord],
+pub fn verify_segment<R: ChainEntry>(
+    records: &[R],
     start: SegmentStart<'_>,
     keys: &BTreeMap<String, PublicKey>,
     expected_head: Option<(i64, &str)>,
@@ -623,54 +707,65 @@ pub fn verify_segment(
 /// One record of a chain: not dev-signed (unless allowed), the expected
 /// `seq`, linked to `prev`, hashing to its content and signed by a key in
 /// `keys`.
-pub fn check_record(
-    record: &AgentDecisionRecord,
+pub fn check_record<R: ChainEntry + ?Sized>(
+    record: &R,
     expected_seq: i64,
     prev: &str,
     keys: &BTreeMap<String, PublicKey>,
     allow_dev_keys: bool,
 ) -> Result<(), ChainError> {
-    let p = &record.payload;
-    if !allow_dev_keys && is_dev_key(&p.key_id) {
-        return Err(ChainError::DevKey {
-            seq: p.seq,
-            key_id: p.key_id.clone(),
+    let seq = record.seq();
+    if record.kind() != record.expected_kind() {
+        return Err(ChainError::Kind {
+            seq,
+            kind: record.kind().to_string(),
         });
     }
-    if !allow_dev_keys && p.time_sync.is_dev_fixed() {
-        return Err(ChainError::DevClock { seq: p.seq });
+    if !allow_dev_keys && is_dev_key(record.key_id()) {
+        return Err(ChainError::DevKey {
+            seq,
+            key_id: record.key_id().to_string(),
+        });
     }
-    if p.seq != expected_seq {
+    if !allow_dev_keys && record.time_sync().is_dev_fixed() {
+        return Err(ChainError::DevClock { seq });
+    }
+    if seq != expected_seq {
         return Err(ChainError::Gap {
-            seq: p.seq,
+            seq,
             expected: expected_seq,
         });
     }
-    if p.prev_hash != prev {
-        return Err(ChainError::Link { seq: p.seq });
+    if record.prev_hash() != prev {
+        return Err(ChainError::Link { seq });
     }
-    if payload_hash(p).ok().as_deref() != Some(record.hash.as_str()) {
-        return Err(ChainError::Hash { seq: p.seq });
+    if record.content_hash().as_deref() != Some(record.hash()) {
+        return Err(ChainError::Hash { seq });
     }
-    let signature = |reason: String| ChainError::Signature { seq: p.seq, reason };
+    let signature = |reason: String| ChainError::Signature { seq, reason };
     let key = keys
-        .get(&p.key_id)
-        .ok_or_else(|| signature(format!("unknown key {}", p.key_id)))?;
-    let sig = hex::decode(&record.sig).map_err(|_| signature("not hex".into()))?;
-    verify_ed25519(key, &signing_message(&record.hash), &sig).map_err(|e| signature(e.to_string()))
+        .get(record.key_id())
+        .ok_or_else(|| signature(format!("unknown key {}", record.key_id())))?;
+    let sig = hex::decode(record.sig()).map_err(|_| signature("not hex".into()))?;
+    verify_ed25519(key, &signing_message(record.hash()), &sig).map_err(|e| signature(e.to_string()))
 }
 
 /// One record on its own: its hash matches its content and its signature
 /// verifies with a key in `keys` (`dev-` keys only if allowed). This says
 /// **nothing about the chain**: not that the record is in it, nor that no
 /// record before or after it is missing. Verify a bundle for that.
-pub fn check_record_signature(
-    record: &AgentDecisionRecord,
+pub fn check_record_signature<R: ChainEntry + ?Sized>(
+    record: &R,
     keys: &BTreeMap<String, PublicKey>,
     allow_dev_keys: bool,
 ) -> Result<(), ChainError> {
-    let p = &record.payload;
-    check_record(record, p.seq, &p.prev_hash, keys, allow_dev_keys)
+    check_record(
+        record,
+        record.seq(),
+        record.prev_hash(),
+        keys,
+        allow_dev_keys,
+    )
 }
 
 /// Whether an outcome's signature (v1 or v2) verifies with a key in `keys`
@@ -690,8 +785,8 @@ pub fn outcome_verifies(outcome: &OutcomeRecord, keys: &BTreeMap<String, PublicK
     reason_ok && key.is_some_and(|k| verify_ed25519(k, &message, &sig).is_ok())
 }
 
-fn verify(
-    records: &[AgentDecisionRecord],
+fn verify<R: ChainEntry>(
+    records: &[R],
     keys: &BTreeMap<String, PublicKey>,
     expected_head: Option<(i64, &str)>,
     outcomes: &[OutcomeRecord],
@@ -709,8 +804,8 @@ fn verify(
     )
 }
 
-fn verify_from(
-    records: &[AgentDecisionRecord],
+fn verify_from<R: ChainEntry>(
+    records: &[R],
     start: SegmentStart<'_>,
     keys: &BTreeMap<String, PublicKey>,
     expected_head: Option<(i64, &str)>,
@@ -725,9 +820,9 @@ fn verify_from(
             .saturating_add(i64::try_from(index).unwrap_or(i64::MAX))
             .saturating_add(1);
         check_record(record, expected, &prev, keys, allow_dev_keys)?;
-        prev.clone_from(&record.hash);
+        prev = record.hash().to_string();
     }
-    let head_seq = records.last().map_or(start.seq, |r| r.payload.seq);
+    let head_seq = records.last().map_or(start.seq, ChainEntry::seq);
     if let Some((expected_seq, expected_hash)) = expected_head {
         if head_seq != expected_seq || prev != expected_hash {
             return Err(ChainError::Head {
@@ -756,6 +851,7 @@ fn verify_from(
     }
     let outcome_missing = records
         .iter()
+        .filter_map(ChainEntry::as_decision)
         .filter(|r| r.is_allow())
         .filter_map(|r| {
             let id = r.payload.credential_id.as_ref()?;
@@ -1150,5 +1246,113 @@ mod tests {
             ),
             Err(ChainError::Head { .. })
         ));
+    }
+
+    fn revocation_after(chain: &[AgentDecisionRecord], key: &Key) -> RevocationRecord {
+        let head = chain.last().unwrap();
+        let draft = RevocationDraft {
+            tenant_id: "t".into(),
+            partition_id: 0,
+            source_system: "lms".into(),
+            event_id: "pay-1".into(),
+            event_sha256: "ab".repeat(32),
+            event_type: "loan.paid".into(),
+            record_pseudonym: "psn:00".into(),
+            occurred_at: DateTime::from_timestamp(1_790_000_000, 0).unwrap(),
+            revoked: vec!["m".into()],
+            revoked_at: DateTime::from_timestamp(1_790_000_001, 0).unwrap(),
+        };
+        let now = crate::TrustedNow {
+            utc: DateTime::from_timestamp(1_790_000_002, 0).unwrap(),
+            sync: SyncStatus::Unknown,
+        };
+        let payload = draft.complete(head.payload.seq + 1, &head.hash, "ev-1", now);
+        crate::chain_record::seal_revocation(payload, key).unwrap()
+    }
+
+    /// ADR-012 §7: a revocation takes its place in the chain like a
+    /// decision, and the chain of both kinds verifies as one.
+    #[test]
+    fn decisions_and_revocations_form_one_chain() {
+        let key = Key(SigningKey::from_bytes(&[3u8; 32]));
+        let decisions = chain(2, &key);
+        let revocation = revocation_after(&decisions, &key);
+        assert_eq!(revocation.payload.kind, KIND_MANDATE_REVOCATION);
+        let mut records: Vec<ChainRecord> = decisions
+            .iter()
+            .cloned()
+            .map(ChainRecord::Decision)
+            .collect();
+        records.push(ChainRecord::Revocation(revocation.clone()));
+        let report = verify_chain(
+            &records,
+            &keys(&key),
+            Some((3, &revocation.hash)),
+            &[],
+            Utc::now(),
+        )
+        .expect("one chain");
+        assert_eq!((report.records, report.head_seq), (3, 3));
+
+        // Read back from JSON by its kind, whole.
+        let line = serde_json::to_string(&records[2]).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ChainRecord>(&line).unwrap(),
+            records[2]
+        );
+        let line = serde_json::to_string(&records[0]).unwrap();
+        assert_eq!(
+            serde_json::from_str::<ChainRecord>(&line).unwrap(),
+            records[0]
+        );
+
+        // Tampered: any change to its content breaks its hash.
+        let mut tampered = revocation.clone();
+        tampered.payload.revoked.clear();
+        records[2] = ChainRecord::Revocation(tampered);
+        assert_eq!(
+            verify_chain(&records, &keys(&key), None, &[], Utc::now()),
+            Err(ChainError::Hash { seq: 3 })
+        );
+    }
+
+    /// A record is only ever read as the kind it signed; another kind, or
+    /// one this build does not know, is refused, never skipped.
+    #[test]
+    fn a_record_is_never_read_as_another_kind() {
+        let key = Key(SigningKey::from_bytes(&[3u8; 32]));
+        let decisions = chain(1, &key);
+        let revocation = revocation_after(&decisions, &key);
+
+        let mut relabelled = serde_json::to_value(&revocation).unwrap();
+        relabelled["kind"] = "agent_state".into();
+        let err = serde_json::from_value::<ChainRecord>(relabelled).unwrap_err();
+        assert!(err.to_string().contains("does not know"), "{err}");
+        let err = serde_json::from_value::<ChainRecord>(serde_json::json!({"seq": 1})).unwrap_err();
+        assert!(err.to_string().contains("without a kind"), "{err}");
+
+        // A decision whose signed kind says otherwise fails the kind check.
+        let mut payload = payload(1, GENESIS);
+        payload.kind = KIND_MANDATE_REVOCATION.into();
+        let mislabelled = seal(payload, &key).unwrap();
+        assert_eq!(
+            check_record_signature(&mislabelled, &keys(&key), false),
+            Err(ChainError::Kind {
+                seq: 1,
+                kind: KIND_MANDATE_REVOCATION.into()
+            })
+        );
+
+        // Bundle format 1 refuses a segment holding a revocation, by name.
+        let segment = vec![
+            ChainRecord::Decision(decisions[0].clone()),
+            ChainRecord::Revocation(revocation),
+        ];
+        let err = crate::chain_record::decisions_for_bundle_v1(segment).unwrap_err();
+        assert!(
+            err.message.contains("record 2 is a mandate_revocation"),
+            "{}",
+            err.message
+        );
     }
 }

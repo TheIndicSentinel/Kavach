@@ -39,11 +39,12 @@ use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
 };
+use kavach_ports::chain_record::{ChainRecord, RevocationDraft, RevocationRecord};
 use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::CredentialBroker;
 use kavach_ports::{
     ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey, ReplayGuard,
-    StoredMandate, StoredRevocation, SyncStatus, TimeSource, TrustedNow,
+    RevocationCursor, StoredMandate, StoredRevocation, SyncStatus, TimeSource, TrustedNow,
 };
 use kavach_storage::{
     AuditInsert, MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, PostgresMandateStore,
@@ -260,6 +261,16 @@ impl MandateStore for MandateStoreBackend {
             Self::Postgres(s) => s.revocation_for_event(tenant_id, system, event_id).await,
         }
     }
+    async fn revocations_after(
+        &self,
+        after: Option<RevocationCursor>,
+        limit: u32,
+    ) -> Result<Vec<StoredRevocation>, PortError> {
+        match self {
+            Self::Memory(s) => s.revocations_after(after, limit).await,
+            Self::Postgres(s) => s.revocations_after(after, limit).await,
+        }
+    }
 }
 
 /// Development replay memory (single process); production uses Postgres.
@@ -347,10 +358,38 @@ impl AgentEvidenceStore for EvidenceBackend {
         &self,
         tenant_id: &str,
         partition_id: i32,
-    ) -> Result<Vec<AgentDecisionRecord>, PortError> {
+    ) -> Result<Vec<ChainRecord>, PortError> {
         match self {
             Self::Memory(s) => s.records(tenant_id, partition_id).await,
             Self::Postgres(s) => s.records(tenant_id, partition_id).await,
+        }
+    }
+    async fn append_revocation(
+        &self,
+        draft: RevocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<RevocationRecord, PortError> {
+        match self {
+            Self::Memory(s) => s.append_revocation(draft, clock, signer).await,
+            Self::Postgres(s) => s.append_revocation(draft, clock, signer).await,
+        }
+    }
+    async fn revocation_record(
+        &self,
+        tenant_id: &str,
+        source_system: &str,
+        event_id: &str,
+    ) -> Result<Option<RevocationRecord>, PortError> {
+        match self {
+            Self::Memory(s) => {
+                s.revocation_record(tenant_id, source_system, event_id)
+                    .await
+            }
+            Self::Postgres(s) => {
+                s.revocation_record(tenant_id, source_system, event_id)
+                    .await
+            }
         }
     }
     async fn record(
@@ -478,7 +517,7 @@ impl TokenBucket {
 pub struct Dataplane {
     dev_clock: Option<Arc<crate::dev_clock::DevClock>>,
     mandates: Arc<Mandates>,
-    core: AuthorizeCore<Arc<Mandates>, EvidenceBackend>,
+    core: Arc<AuthorizeCore<Arc<Mandates>, EvidenceBackend>>,
     checkpointer: Arc<Checkpointer<EvidenceBackend>>,
     agents: Arc<OidcVerifier>,
     passports: BTreeSet<(String, String)>,
@@ -579,7 +618,7 @@ impl Dataplane {
         Ok(Self {
             dev_clock: config.dev_clock.clone(),
             mandates,
-            core,
+            core: Arc::new(core),
             checkpointer,
             agents,
             passports,
@@ -616,7 +655,7 @@ impl Dataplane {
         &self.broker
     }
 
-    pub fn core(&self) -> &AuthorizeCore<Arc<Mandates>, EvidenceBackend> {
+    pub fn core(&self) -> &Arc<AuthorizeCore<Arc<Mandates>, EvidenceBackend>> {
         &self.core
     }
 
@@ -1439,6 +1478,19 @@ pub async fn sor_event(
 }
 
 /// ADR-012: revokes, audits, and answers a retry with the stored result.
+/// Writes a revocation's evidence-chain record (ADR-012 §7). The revocation
+/// already stands; if the record cannot be written now, the reconciler
+/// writes it (`revocation_evidence`), so a failure here is only logged.
+async fn record_revocation_evidence(dp: &Dataplane, stored: &StoredRevocation) {
+    if let Err(e) = dp.core.record_revocation(stored).await {
+        tracing::error!(
+            error = %e,
+            event_id = %stored.event_id,
+            "revocation evidence record not written now; the reconciler will write it"
+        );
+    }
+}
+
 async fn revoke_by_event(
     state: &AppState,
     dp: &Dataplane,
@@ -1475,10 +1527,15 @@ async fn revoke_by_event(
                 // missing audit entry is reported.
                 tracing::error!(error = %e, event_id = %done.event_id, "revocation not audited");
             }
+            record_revocation_evidence(dp, &done.stored).await;
             Ok(reply(done.revoked, false))
         }
         Err(err) => match dp.mandates.existing_revocation(event).await {
-            Ok(Some(stored)) => Ok(reply(stored.revoked, true)),
+            Ok(Some(stored)) => {
+                // A retry also writes a record that is still missing.
+                record_revocation_evidence(dp, &stored.stored).await;
+                Ok(reply(stored.revoked, true))
+            }
             Err(conflict)
                 if conflict.class == ErrorClass::Rejected
                     && conflict.message.contains("different content") =>

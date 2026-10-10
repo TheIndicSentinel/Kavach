@@ -26,6 +26,7 @@ pub mod problem;
 pub mod proto;
 pub mod registry;
 pub mod retention;
+pub mod revocation_evidence;
 pub mod signing;
 pub mod state;
 pub mod strict_json;
