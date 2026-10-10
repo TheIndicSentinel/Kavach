@@ -25,13 +25,14 @@ use std::iter::Peekable;
 use chrono::{DateTime, Utc};
 
 use crate::agent_evidence::{
-    check_record, is_dev_key, outcome_verifies, AgentDecisionRecord, ChainError, DevKeys, Outcome,
-    OutcomeRecord, GENESIS,
+    check_record, is_dev_key, outcome_verifies, AgentDecisionRecord, ChainEntry, ChainError,
+    DevKeys, Outcome, OutcomeRecord, GENESIS,
 };
 use crate::bundle::{
     verify_manifest, Manifest, ManifestError, ManifestSignature, Segment, CHECKPOINTS_FILE,
     OUTCOMES_FILE, RECORDS_FILE,
 };
+use crate::chain_record::ChainRecord;
 use crate::checkpoint::{check_one, Checkpoint, CheckpointError, Scope};
 use crate::keys::PublicKey;
 
@@ -528,6 +529,37 @@ fn take_outcome<O: Lines<OutcomeRecord>>(
     Ok(Some(outcome.outcome))
 }
 
+/// One record of the bundle: of its chain, of a kind its format version
+/// holds (version 1: decisions only), next in the chain after `previous`
+/// (`seq`, hash), signed by a trusted key within that key's validity.
+fn check_bundle_record(
+    record: &ChainRecord,
+    p: &crate::bundle::ManifestPayload,
+    (last_seq, prev): (i64, &str),
+    opts: &VerifyOptions<'_>,
+) -> Result<(), BundleFailure> {
+    let seq = record.seq();
+    if record.tenant_id() != p.tenant_id || record.partition_id() != p.partition_id {
+        return Err(BundleFailure::Segment(format!(
+            "record {seq} is of another chain"
+        )));
+    }
+    if p.version == 1 && record.as_decision().is_none() {
+        return Err(BundleFailure::Segment(format!(
+            "record {seq} is a {}; a version 1 bundle holds decisions only",
+            record.kind()
+        )));
+    }
+    let allow_dev_keys = opts.dev_keys == DevKeys::Accept;
+    check_record(record, last_seq + 1, prev, opts.keys, allow_dev_keys)?;
+    opts.within_validity(
+        || format!("record {seq}"),
+        record.key_id(),
+        seq,
+        record.ts(),
+    )
+}
+
 /// Verifies a bundle from its manifest and its three streams.
 ///
 /// - `outcomes` must be in the order of their records, and `checkpoints`
@@ -544,7 +576,7 @@ pub fn verify_bundle<R, O, C>(
     opts: &VerifyOptions<'_>,
 ) -> Result<BundleReport, BundleFailure>
 where
-    R: Lines<AgentDecisionRecord>,
+    R: Lines<ChainRecord>,
     O: Lines<OutcomeRecord>,
     C: Lines<Checkpoint>,
 {
@@ -568,7 +600,6 @@ where
     if let Some(kept) = opts.kept {
         check_one(kept, scope, opts.keys, opts.dev_keys)?;
     }
-    let allow_dev_keys = opts.dev_keys == DevKeys::Accept;
     let mut records = Numbered::new(records, RECORDS_FILE);
     let mut outcomes = Numbered::new(outcomes, OUTCOMES_FILE);
     let mut run = Run {
@@ -585,29 +616,27 @@ where
     let (mut missing, mut unknown) = (Tally::default(), Tally::default());
     run.checkpoints_through(last_seq, &prev)?;
     while let Some(record) = records.next()? {
-        let rp = &record.payload;
-        if rp.tenant_id != p.tenant_id || rp.partition_id != p.partition_id {
-            return Err(BundleFailure::Segment(format!(
-                "record {} is of another chain",
-                rp.seq
-            )));
-        }
-        check_record(&record, last_seq + 1, &prev, opts.keys, allow_dev_keys)?;
-        opts.within_validity(|| format!("record {}", rp.seq), &rp.key_id, rp.seq, rp.ts)?;
-        match take_outcome(&mut outcomes, &record, opts)? {
-            Some(Outcome::Unknown) => {
-                unknown.add(|| rp.credential_id.clone().unwrap_or_default());
-            }
-            Some(_) => {}
-            None => {
-                let expired = rp.credential_expires_at.is_none_or(|exp| exp <= opts.now);
-                if let (true, true, Some(id)) = (record.is_allow(), expired, &rp.credential_id) {
-                    missing.add(|| id.clone());
+        let seq = record.seq();
+        check_bundle_record(&record, p, (last_seq, &prev), opts)?;
+        if let Some(decision) = record.as_decision() {
+            let rp = &decision.payload;
+            match take_outcome(&mut outcomes, decision, opts)? {
+                Some(Outcome::Unknown) => {
+                    unknown.add(|| rp.credential_id.clone().unwrap_or_default());
+                }
+                Some(_) => {}
+                None => {
+                    let expired = rp.credential_expires_at.is_none_or(|exp| exp <= opts.now);
+                    if let (true, true, Some(id)) =
+                        (decision.is_allow(), expired, &rp.credential_id)
+                    {
+                        missing.add(|| id.clone());
+                    }
                 }
             }
         }
-        last_seq = rp.seq;
-        prev.clone_from(&record.hash);
+        last_seq = seq;
+        prev = record.hash().to_string();
         run.checkpoints_through(last_seq, &prev)?;
     }
 

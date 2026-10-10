@@ -450,17 +450,16 @@ fn auditor_material(
 /// store, signed with the auditor's export key.
 async fn export_from_memory(gw: &Gw, work: &std::path::Path, bundle: &std::path::Path) {
     let core = gw.state.dataplane().unwrap().core();
-    let records = core
-        .store()
-        .records("default", 0)
-        .await
-        .and_then(kavach_ports::chain_record::decisions_for_bundle_v1)
-        .unwrap();
+    let records = core.store().records("default", 0).await.unwrap();
     let mut writer = BundleWriter::create(bundle, SCENARIO_SCOPE, SegmentStart::GENESIS).unwrap();
     for record in &records {
         writer.record(record).unwrap();
     }
-    for record in records.iter().filter(|r| r.is_allow()) {
+    for record in records
+        .iter()
+        .filter_map(kavach_ports::agent_evidence::ChainEntry::as_decision)
+        .filter(|r| r.is_allow())
+    {
         let id = record.payload.credential_id.as_deref().unwrap();
         let outcome = core
             .outcome(id)

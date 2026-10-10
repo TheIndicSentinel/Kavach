@@ -1,5 +1,6 @@
 //! A small, fixed run of the agent chain: four records, two outcomes and
-//! two checkpoints, signed with test-only keys. Everything is
+//! two checkpoints (and, for bundle format 2, a revocation and a third
+//! checkpoint), signed with test-only keys. Everything is
 //! deterministic (fixed keys and times), so the bundle written from it is
 //! byte-for-byte reproducible.
 #![allow(dead_code)]
@@ -15,8 +16,9 @@ use kavach_ports::agent_evidence::{
     OutcomeRecord, PolicyVersions, TimeSync, GENESIS, HASH_ALG_V2, KIND_AGENT_DECISION,
 };
 use kavach_ports::bundle::Exporter;
+use kavach_ports::chain_record::{seal_revocation, ChainRecord, RevocationDraft, RevocationRecord};
 use kavach_ports::checkpoint::{sign_checkpoint, Checkpoint, Head, Scope, CHAIN_AGENT_DECISIONS};
-use kavach_ports::{KeyAlgorithm, PortError, PublicKey};
+use kavach_ports::{KeyAlgorithm, PortError, PublicKey, SyncStatus, TrustedNow};
 
 pub const TENANT: &str = "default";
 pub const SCOPE: Scope<'static> = Scope {
@@ -227,4 +229,65 @@ pub fn exporter() -> Exporter {
 /// A path in the system temporary directory that does not exist yet.
 pub fn scratch(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("kavach-{name}-{}", uuid::Uuid::new_v4().simple()))
+}
+
+/// Bundle format 2's run: the four decisions, then a payment that revoked
+/// their mandate (record 5, ADR-012 §7).
+pub fn revocation(records: &[AgentDecisionRecord]) -> RevocationRecord {
+    let head = records.last().unwrap();
+    let revoked_at = head.payload.ts + Duration::seconds(30);
+    let draft = RevocationDraft {
+        tenant_id: TENANT.into(),
+        partition_id: 0,
+        source_system: "lms".into(),
+        event_id: "pay-kat-1".into(),
+        event_sha256: "7d".repeat(32),
+        event_type: "loan.paid".into(),
+        record_pseudonym: "psn:3c4d5e6f708192a3".into(),
+        occurred_at: revoked_at - Duration::seconds(20),
+        revoked: vec!["ma-kat-root".into()],
+        revoked_at,
+    };
+    let now = TrustedNow {
+        utc: revoked_at,
+        sync: SyncStatus::Synced { max_error_ms: 12 },
+    };
+    let payload = draft.complete(head.payload.seq + 1, &head.hash, evidence_key().0, now);
+    seal_revocation(payload, &evidence_key()).unwrap()
+}
+
+/// The four decisions and the revocation, as one chain.
+pub fn chain_v2() -> Vec<ChainRecord> {
+    let records = records();
+    let revocation = revocation(&records);
+    records
+        .into_iter()
+        .map(ChainRecord::Decision)
+        .chain([ChainRecord::Revocation(revocation)])
+        .collect()
+}
+
+/// Checkpoints of records 2 and 3, and of the revocation (record 5).
+pub fn checkpoints_v2(chain: &[ChainRecord]) -> Vec<Checkpoint> {
+    use kavach_ports::agent_evidence::ChainEntry as _;
+    let decisions: Vec<AgentDecisionRecord> = chain
+        .iter()
+        .filter_map(|r| r.as_decision().cloned())
+        .collect();
+    let mut all = checkpoints(&decisions);
+    let last = chain.last().unwrap();
+    let fifth = sign_checkpoint(
+        Head {
+            scope: SCOPE,
+            seq: last.seq(),
+            hash: last.hash(),
+        },
+        all.last(),
+        last.ts() + Duration::seconds(5),
+        synced(),
+        &checkpoint_key(),
+    )
+    .unwrap();
+    all.push(fifth);
+    all
 }

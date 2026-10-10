@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 
 use chrono::Utc;
 use kavach_keys::Ed25519EvidenceSigner;
-use kavach_ports::agent_evidence::{AgentDecisionRecord, EvidenceSigner, OutcomeRecord};
+use kavach_ports::agent_evidence::{EvidenceSigner, OutcomeRecord};
 use kavach_ports::bundle::{is_export_key, Exporter, EXPORT_KEY_PREFIX};
-use kavach_ports::chain_record::decisions_for_bundle_v1;
+use kavach_ports::chain_record::ChainRecord;
 use kavach_ports::checkpoint::{Checkpoint, Scope, CHAIN_AGENT_DECISIONS};
 use kavach_ports::PortError;
 use kavach_storage::EvidenceSnapshot;
@@ -20,14 +20,8 @@ impl ExportSource for EvidenceSnapshot {
     async fn head(&mut self) -> Result<Option<(i64, String)>, PortError> {
         EvidenceSnapshot::head(self).await
     }
-    async fn records(
-        &mut self,
-        after_seq: i64,
-        limit: u32,
-    ) -> Result<Vec<AgentDecisionRecord>, PortError> {
-        EvidenceSnapshot::records(self, after_seq, limit)
-            .await
-            .and_then(decisions_for_bundle_v1)
+    async fn records(&mut self, after_seq: i64, limit: u32) -> Result<Vec<ChainRecord>, PortError> {
+        EvidenceSnapshot::records(self, after_seq, limit).await
     }
     async fn outcomes(
         &mut self,

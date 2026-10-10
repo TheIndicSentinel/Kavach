@@ -10,9 +10,10 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 use kavach_ports::agent_evidence::{
-    AgentDecisionRecord, EvidenceSigner, OutcomeRecord, SegmentStart, GENESIS,
+    ChainEntry, EvidenceSigner, OutcomeRecord, SegmentStart, GENESIS,
 };
 use kavach_ports::bundle::{Exporter, Manifest};
+use kavach_ports::chain_record::ChainRecord;
 use kavach_ports::checkpoint::{Checkpoint, Scope};
 use kavach_ports::PortError;
 
@@ -31,7 +32,7 @@ pub trait ExportSource {
         &mut self,
         after_seq: i64,
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<AgentDecisionRecord>, PortError>>;
+    ) -> impl Future<Output = Result<Vec<ChainRecord>, PortError>>;
 
     /// Outcomes of the records with `after_seq < seq <= through_seq`, each
     /// with its record's `seq`, in that order, at most `limit`.
@@ -54,7 +55,7 @@ pub trait ExportSource {
 /// in-memory development store) exports from.
 pub struct Snapshot {
     head: Option<(i64, String)>,
-    records: Vec<AgentDecisionRecord>,
+    records: Vec<ChainRecord>,
     /// Each outcome with its record's `seq`, in `seq` order.
     outcomes: Vec<(i64, OutcomeRecord)>,
     checkpoints: Vec<Checkpoint>,
@@ -65,13 +66,13 @@ impl Snapshot {
     /// their record's `seq`.
     #[must_use]
     pub fn new(
-        records: Vec<AgentDecisionRecord>,
+        records: Vec<ChainRecord>,
         mut outcomes: Vec<(i64, OutcomeRecord)>,
         checkpoints: Vec<Checkpoint>,
     ) -> Self {
         outcomes.sort_by_key(|(seq, _)| *seq);
         Self {
-            head: records.last().map(|r| (r.payload.seq, r.hash.clone())),
+            head: records.last().map(|r| (r.seq(), r.hash().to_string())),
             records,
             outcomes,
             checkpoints,
@@ -88,11 +89,11 @@ impl ExportSource for Snapshot {
         &mut self,
         after_seq: i64,
         limit: u32,
-    ) -> impl Future<Output = Result<Vec<AgentDecisionRecord>, PortError>> {
+    ) -> impl Future<Output = Result<Vec<ChainRecord>, PortError>> {
         let page = self
             .records
             .iter()
-            .filter(|r| r.payload.seq > after_seq)
+            .filter(|r| r.seq() > after_seq)
             .take(limit as usize)
             .cloned()
             .collect();
@@ -212,7 +213,7 @@ pub async fn export<S: ExportSource>(
         }
         for record in &records {
             writer.record(record)?;
-            last = record.payload.seq;
+            last = record.seq();
         }
     }
     if last != head_seq {

@@ -180,7 +180,12 @@ pub trait ChainEntry {
     fn kind(&self) -> &str;
     /// The kind a record of this type must state.
     fn expected_kind(&self) -> &'static str;
+    fn tenant_id(&self) -> &str;
+    fn partition_id(&self) -> i32;
     fn seq(&self) -> i64;
+    /// When it was written (a decision's `ts`, a revocation's
+    /// `recorded_at`).
+    fn ts(&self) -> DateTime<Utc>;
     fn prev_hash(&self) -> &str;
     fn key_id(&self) -> &str;
     fn time_sync(&self) -> &TimeSync;
@@ -199,8 +204,17 @@ impl ChainEntry for AgentDecisionRecord {
     fn expected_kind(&self) -> &'static str {
         KIND_AGENT_DECISION
     }
+    fn tenant_id(&self) -> &str {
+        &self.payload.tenant_id
+    }
+    fn partition_id(&self) -> i32 {
+        self.payload.partition_id
+    }
     fn seq(&self) -> i64 {
         self.payload.seq
+    }
+    fn ts(&self) -> DateTime<Utc> {
+        self.payload.ts
     }
     fn prev_hash(&self) -> &str {
         &self.payload.prev_hash
@@ -1341,18 +1355,6 @@ mod tests {
                 seq: 1,
                 kind: KIND_MANDATE_REVOCATION.into()
             })
-        );
-
-        // Bundle format 1 refuses a segment holding a revocation, by name.
-        let segment = vec![
-            ChainRecord::Decision(decisions[0].clone()),
-            ChainRecord::Revocation(revocation),
-        ];
-        let err = crate::chain_record::decisions_for_bundle_v1(segment).unwrap_err();
-        assert!(
-            err.message.contains("record 2 is a mandate_revocation"),
-            "{}",
-            err.message
         );
     }
 }

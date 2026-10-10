@@ -19,7 +19,7 @@ use chrono::Utc;
 use kavach_evidence_cli::export::{ExportRequest, Snapshot, DEFAULT_PAGE};
 use kavach_evidence_cli::postgres::{export_key, run_export, Signing, Target};
 use kavach_evidence_cli::verify::{load_trusted_keys, verify_dir, Verdict, VerifyRequest};
-use kavach_ports::agent_evidence::{is_dev_key, AgentEvidenceStore};
+use kavach_ports::agent_evidence::{is_dev_key, AgentEvidenceStore, ChainEntry};
 use kavach_ports::bundle::Exporter;
 use kavach_ports::checkpoint::{CheckpointStore, Scope, CHAIN_AGENT_DECISIONS};
 use serde_json::json;
@@ -150,10 +150,9 @@ pub async fn export_on_exit(
     let records = store
         .records(tenant, PARTITION)
         .await
-        .and_then(kavach_ports::chain_record::decisions_for_bundle_v1)
         .map_err(|e| fail(&e.message))?;
     let mut outcomes = Vec::new();
-    for record in &records {
+    for record in records.iter().filter_map(ChainEntry::as_decision) {
         if let Some(credential) = &record.payload.credential_id {
             if let Some(outcome) = store
                 .outcome(tenant, credential)

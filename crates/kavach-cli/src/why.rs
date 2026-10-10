@@ -25,6 +25,7 @@ use kavach_ports::agent_evidence::{
     check_record_signature, is_dev_key, outcome_verifies, AgentDecisionRecord, OutcomeRecord,
 };
 use kavach_ports::bundle::RECORDS_FILE;
+use kavach_ports::chain_record::ChainRecord;
 use serde_json::{json, Value};
 
 use crate::authorize::usage;
@@ -129,10 +130,23 @@ fn from_bundle(
         if !line.contains(record_id) {
             continue;
         }
-        let record: AgentDecisionRecord = serde_json::from_str(&line)
+        let record: ChainRecord = serde_json::from_str(&line)
             .map_err(|e| CliError::new(format!("{RECORDS_FILE} has a bad line"), e))?;
-        if record.payload.record_id == record_id {
-            return Ok((record, warnings));
+        match record {
+            ChainRecord::Decision(record) if record.payload.record_id == record_id => {
+                return Ok((record, warnings));
+            }
+            ChainRecord::Revocation(record) if record.payload.record_id == record_id => {
+                return Err(CliError::new(
+                    format!("{record_id} is not a decision"),
+                    format!(
+                        "it records mandates revoked by system-of-record event {}",
+                        record.payload.event_id
+                    ),
+                )
+                .fix("`kavach why` explains decisions; give a decision's record id"));
+            }
+            _ => {}
         }
     }
     Err(CliError::new(

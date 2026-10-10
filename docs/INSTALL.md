@@ -286,7 +286,7 @@ A certificate with no SAN, or several SANs, of the configured type gets 401. A b
 - **Revocation evidence.** Each revocation by a system-of-record event (`loan.paid`, `loan.disputed`) is also a signed record in the agent evidence chain. The request that revokes writes it at once. If it cannot (the evidence store is down), the revocation still stands and a background reconciler writes the record within about a minute, once per event.
   - **Watch it.** `kavach_revocation_records_missing` is the number of revocations still without their record after the last pass: alert when it is above 0. `kavach_revocation_records_reconciled_total` counts records the reconciler had to write. Alert when `time() - kavach_revocation_reconcile_last_pass_timestamp_seconds` exceeds a few minutes: that catches a reconciler that has stopped.
   - **Logs.** Missing records are logged as an error starting `ALERT revocation evidence missing`, with the event ids.
-  - **Export.** Until bundle format 2, `export` refuses a segment that holds a revocation record, naming it, rather than leave it out.
+  - **Export.** Revocation records are exported and verified with the decisions (bundle format 2, [EVIDENCE_BUNDLE.md](EVIDENCE_BUNDLE.md)). Bundles written before it (format 1) still verify; a verifier older than format 2 refuses a format 2 bundle rather than misread it.
 - **Agent credentials.** Agents send `Authorization: Bearer <agent token>`. `X-Kavach-Principal` is never accepted on agent routes, not even with `--insecure-dev`. Operator tokens are refused on agent routes, and agent tokens on operator routes.
 - **System-of-record events.**
   - The body is `{"event": "<signed JWS>"}`; a new event returns 201 with the mandate id.

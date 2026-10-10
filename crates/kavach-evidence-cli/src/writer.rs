@@ -15,9 +15,7 @@ use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
-use kavach_ports::agent_evidence::{
-    AgentDecisionRecord, EvidenceSigner, OutcomeRecord, SegmentStart,
-};
+use kavach_ports::agent_evidence::{ChainEntry, EvidenceSigner, OutcomeRecord, SegmentStart};
 use kavach_ports::bundle::{
     seal_manifest, Exporter, FileEntry, Files, Manifest, ManifestDraft, Segment, CHECKPOINTS_FILE,
     MANIFEST_FILE, OUTCOMES_FILE, RECORDS_FILE,
@@ -200,29 +198,32 @@ impl BundleWriter {
 
     /// The next record of the segment: the right chain, the next `seq`,
     /// linked to the record before it. All records come before any outcome.
-    pub fn record(&mut self, record: &AgentDecisionRecord) -> Result<(), BundleError> {
-        let p = &record.payload;
+    /// A record of any kind (bundle format 2).
+    pub fn record<R: ChainEntry + serde::Serialize>(
+        &mut self,
+        record: &R,
+    ) -> Result<(), BundleError> {
+        let seq = record.seq();
         if self.outcomes_begun {
             return inconsistent("records must all be written before outcomes");
         }
-        if p.tenant_id != self.tenant_id || p.partition_id != self.partition_id {
-            return inconsistent(format!("record {} is of another chain", p.seq));
+        if record.tenant_id() != self.tenant_id || record.partition_id() != self.partition_id {
+            return inconsistent(format!("record {seq} is of another chain"));
         }
-        if p.seq != self.last_seq + 1 {
+        if seq != self.last_seq + 1 {
             return inconsistent(format!(
-                "record {} does not follow record {}",
-                p.seq, self.last_seq
+                "record {seq} does not follow record {}",
+                self.last_seq
             ));
         }
-        if p.prev_hash != self.head_hash {
+        if record.prev_hash() != self.head_hash {
             return inconsistent(format!(
-                "record {} does not link to the record before it",
-                p.seq
+                "record {seq} does not link to the record before it"
             ));
         }
         self.records.line(record)?;
-        self.last_seq = p.seq;
-        self.head_hash.clone_from(&record.hash);
+        self.last_seq = seq;
+        self.head_hash = record.hash().to_string();
         Ok(())
     }
 
