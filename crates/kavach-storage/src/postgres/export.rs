@@ -10,7 +10,8 @@
 //! the agent evidence tables and nothing else. [`EvidenceSnapshot::can_write`]
 //! tells the caller when it was given a more powerful role.
 
-use kavach_ports::agent_evidence::{AgentDecisionRecord, Outcome, OutcomeRecord};
+use kavach_ports::agent_evidence::{Outcome, OutcomeRecord};
+use kavach_ports::chain_record::ChainRecord;
 use kavach_ports::checkpoint::{Checkpoint, CHAIN_AGENT_DECISIONS};
 use kavach_ports::PortError;
 use sqlx::postgres::{PgPoolOptions, PgRow};
@@ -20,16 +21,6 @@ use sqlx::{Postgres, Row, Transaction};
 
 fn unavailable(err: &sqlx::Error) -> PortError {
     PortError::unavailable(format!("evidence export: {err}"))
-}
-
-fn record(row: &PgRow) -> Result<AgentDecisionRecord, PortError> {
-    let payload: serde_json::Value = row.try_get("payload").map_err(|e| unavailable(&e))?;
-    Ok(AgentDecisionRecord {
-        payload: serde_json::from_value(payload)
-            .map_err(|e| PortError::invalid(format!("stored payload: {e}")))?,
-        hash: row.try_get("hash").map_err(|e| unavailable(&e))?,
-        sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
-    })
 }
 
 fn checkpoint(row: &PgRow) -> Result<Checkpoint, PortError> {
@@ -113,12 +104,13 @@ impl EvidenceSnapshot {
         )))
     }
 
-    /// Records with `seq > after_seq`, in `seq` order, at most `limit`.
+    /// Records of every kind with `seq > after_seq`, in `seq` order, at most
+    /// `limit`. A kind this build does not know is an error.
     pub async fn records(
         &mut self,
         after_seq: i64,
         limit: u32,
-    ) -> Result<Vec<AgentDecisionRecord>, PortError> {
+    ) -> Result<Vec<ChainRecord>, PortError> {
         let rows = sqlx::query(
             "SELECT payload, hash, sig FROM agent_decisions \
             WHERE tenant_id = $1 AND partition_id = $2 AND seq > $3 ORDER BY seq LIMIT $4",
@@ -130,7 +122,9 @@ impl EvidenceSnapshot {
         .fetch_all(&mut *self.tx)
         .await
         .map_err(|e| unavailable(&e))?;
-        rows.iter().map(record).collect()
+        rows.iter()
+            .map(super::agent_evidence::row_to_chain_record)
+            .collect()
     }
 
     /// Outcomes of the records with `after_seq < seq <= through_seq`, each

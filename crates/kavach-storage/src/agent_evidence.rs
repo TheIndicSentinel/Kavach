@@ -11,6 +11,7 @@ use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, OutcomeRecord, RequestBinding, GENESIS,
 };
+use kavach_ports::chain_record::{seal_revocation, ChainRecord, RevocationDraft, RevocationRecord};
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
     CHAIN_AGENT_DECISIONS,
@@ -23,6 +24,7 @@ type RequestKey = (String, String, String);
 struct State {
     heads: HashMap<(String, i32), (i64, String)>,
     records: Vec<AgentDecisionRecord>,
+    revocations: Vec<RevocationRecord>,
     requests: HashMap<RequestKey, (usize, RequestBinding)>,
     counters: HashMap<(String, String, NaiveDate), u32>,
     outcomes: HashMap<(String, String), OutcomeRecord>,
@@ -166,14 +168,74 @@ impl MemoryAgentEvidenceStore {
         &self,
         tenant_id: &str,
         partition_id: i32,
-    ) -> Result<Vec<AgentDecisionRecord>, PortError> {
+    ) -> Result<Vec<ChainRecord>, PortError> {
         let state = self.state.lock().map_err(poisoned)?;
-        Ok(state
+        let decisions = state
             .records
             .iter()
             .filter(|r| r.payload.tenant_id == tenant_id && r.payload.partition_id == partition_id)
+            .map(|r| (r.payload.seq, ChainRecord::Decision(r.clone())));
+        let revocations = state
+            .revocations
+            .iter()
+            .filter(|r| r.payload.tenant_id == tenant_id && r.payload.partition_id == partition_id)
+            .map(|r| (r.payload.seq, ChainRecord::Revocation(r.clone())));
+        let mut all: Vec<(i64, ChainRecord)> = decisions.chain(revocations).collect();
+        all.sort_by_key(|(seq, _)| *seq);
+        Ok(all.into_iter().map(|(_, record)| record).collect())
+    }
+
+    fn append_revocation_sync(
+        &self,
+        draft: &RevocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<RevocationRecord, PortError> {
+        let mut state = self.state.lock().map_err(poisoned)?;
+        if let Some(stored) = state.revocations.iter().find(|r| {
+            r.payload.tenant_id == draft.tenant_id
+                && r.payload.source_system == draft.source_system
+                && r.payload.event_id == draft.event_id
+        }) {
+            return if draft.matches(stored) {
+                Ok(stored.clone())
+            } else {
+                Err(PortError::rejected(
+                    "this event's revocation is recorded with different content",
+                ))
+            };
+        }
+        let head_key = (draft.tenant_id.clone(), draft.partition_id);
+        let (head_seq, head_hash) = state
+            .heads
+            .get(&head_key)
             .cloned()
-            .collect())
+            .unwrap_or((0, GENESIS.to_string()));
+        let payload = draft.complete(head_seq + 1, &head_hash, signer.key_id(), clock.now());
+        let record = seal_revocation(payload, signer)?;
+        state
+            .heads
+            .insert(head_key, (record.payload.seq, record.hash.clone()));
+        state.revocations.push(record.clone());
+        Ok(record)
+    }
+
+    fn revocation_record_sync(
+        &self,
+        tenant_id: &str,
+        source_system: &str,
+        event_id: &str,
+    ) -> Result<Option<RevocationRecord>, PortError> {
+        let state = self.state.lock().map_err(poisoned)?;
+        Ok(state
+            .revocations
+            .iter()
+            .find(|r| {
+                r.payload.tenant_id == tenant_id
+                    && r.payload.source_system == source_system
+                    && r.payload.event_id == event_id
+            })
+            .cloned())
     }
 
     fn contacts_on_sync(
@@ -218,6 +280,11 @@ impl MemoryAgentEvidenceStore {
         let p = &checkpoint.payload;
         let mut state = self.state.lock().map_err(poisoned)?;
         let covered = state.records.iter().any(|r| {
+            r.payload.tenant_id == p.tenant_id
+                && r.payload.partition_id == p.partition_id
+                && r.payload.seq == p.seq
+                && r.hash == p.head_hash
+        }) || state.revocations.iter().any(|r| {
             r.payload.tenant_id == p.tenant_id
                 && r.payload.partition_id == p.partition_id
                 && r.payload.seq == p.seq
@@ -328,8 +395,26 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         &self,
         tenant_id: &str,
         partition_id: i32,
-    ) -> impl Future<Output = Result<Vec<AgentDecisionRecord>, PortError>> + Send {
+    ) -> impl Future<Output = Result<Vec<ChainRecord>, PortError>> + Send {
         ready(self.records_sync(tenant_id, partition_id))
+    }
+
+    fn append_revocation(
+        &self,
+        draft: RevocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<RevocationRecord, PortError>> + Send {
+        ready(self.append_revocation_sync(&draft, clock, signer))
+    }
+
+    fn revocation_record(
+        &self,
+        tenant_id: &str,
+        source_system: &str,
+        event_id: &str,
+    ) -> impl Future<Output = Result<Option<RevocationRecord>, PortError>> + Send {
+        ready(self.revocation_record_sync(tenant_id, source_system, event_id))
     }
 
     fn record(

@@ -7,6 +7,7 @@ pub mod checkpointer;
 pub mod detect;
 pub mod gateway;
 pub mod resolve;
+pub mod revocation_evidence;
 pub mod tools;
 pub mod whatif;
 
@@ -22,5 +23,6 @@ pub use gateway::{
     Stage,
 };
 pub use resolve::FixtureResolver;
+pub use revocation_evidence::{reconcile_revocations, ReconcileConfig, ReconcileReport};
 pub use tools::{Refusal, RefusalCode, RegistryTrust, ToolRegistry, ToolRequest, Trust};
 pub use whatif::WhatIfStore;

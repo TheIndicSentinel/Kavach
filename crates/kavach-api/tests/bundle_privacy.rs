@@ -98,7 +98,11 @@ async fn a_bundle_of_a_real_run_holds_no_destination_and_no_raw_reference() {
     // Wait for the writer to checkpoint the head, so the bundle has one.
     let core = gw.state.dataplane().unwrap().core();
     let store = core.store().clone();
-    let records = store.records("default", 0).await.unwrap();
+    let records = store
+        .records("default", 0)
+        .await
+        .and_then(kavach_ports::chain_record::decisions_for_bundle_v1)
+        .unwrap();
     assert_eq!(records.len(), 3, "every call above is on the chain");
     for _ in 0..150 {
         if store

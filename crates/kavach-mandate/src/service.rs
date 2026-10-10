@@ -2,7 +2,7 @@
 
 use std::collections::BTreeSet;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, DurationRound, TimeDelta, Utc};
 use kavach_domain::mandate::{
     is_capability_ref, AgentPassport, DelegationRequest, Mandate, MandateSource, MandateStatus,
     MandateTemplate, RevocationReason, SorEvent, CONTACT_ACTIONS, MANDATE_FORMAT_VERSION,
@@ -51,6 +51,8 @@ pub struct RevokedByEvent {
     pub revoked: Vec<String>,
     /// The same event again: the stored result, nothing revoked now.
     pub replayed: bool,
+    /// The revocation as stored (its evidence-chain record is made from it).
+    pub stored: StoredRevocation,
 }
 
 /// Whether `event_token` names a revoking event type. Only routes the
@@ -73,6 +75,12 @@ pub fn is_revoking_event(event_token: &str) -> bool {
 
 /// SHA-256 of an event's content (a struct serializes in a fixed field
 /// order, its sets sorted): a retry has the same, a reuse of its id for
+/// Whole microseconds, as Postgres keeps a timestamp: the time stored and
+/// the time read back are the same.
+fn micros(t: DateTime<Utc>) -> DateTime<Utc> {
+    t.duration_trunc(TimeDelta::microseconds(1)).unwrap_or(t)
+}
+
 /// other content does not.
 fn content_sha256(event: &SorEvent) -> Result<String, PortError> {
     let bytes =
@@ -452,25 +460,25 @@ where
                 .await?;
             revoked.extend(outcome.revoked);
         }
-        self.deps
-            .store
-            .record_revocation(StoredRevocation {
-                tenant_id: event.tenant_id.clone(),
-                system: event.system.clone(),
-                event_id: event.event_id.clone(),
-                content_sha256: content_sha256(&event)?,
-                event_type: event.event_type.clone(),
-                record_ref: event.record_ref.clone(),
-                occurred_at: event.occurred_at,
-                revoked: revoked.clone(),
-            })
-            .await?;
+        let stored = StoredRevocation {
+            tenant_id: event.tenant_id.clone(),
+            system: event.system.clone(),
+            event_id: event.event_id.clone(),
+            content_sha256: content_sha256(&event)?,
+            event_type: event.event_type.clone(),
+            record_ref: event.record_ref.clone(),
+            occurred_at: event.occurred_at,
+            revoked: revoked.clone(),
+            revoked_at: micros(self.deps.clock.now().utc),
+        };
+        self.deps.store.record_revocation(stored.clone()).await?;
         Ok(RevokedByEvent {
             event_id: event.event_id,
             event_type: event.event_type,
             record_ref: event.record_ref,
             revoked,
             replayed: false,
+            stored,
         })
     }
 
@@ -505,11 +513,12 @@ where
             )));
         }
         Ok(Some(RevokedByEvent {
-            event_id: stored.event_id,
-            event_type: stored.event_type,
-            record_ref: stored.record_ref,
-            revoked: stored.revoked,
+            event_id: stored.event_id.clone(),
+            event_type: stored.event_type.clone(),
+            record_ref: stored.record_ref.clone(),
+            revoked: stored.revoked.clone(),
             replayed: true,
+            stored,
         }))
     }
 

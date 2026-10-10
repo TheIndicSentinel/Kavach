@@ -12,6 +12,7 @@ use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
 };
+use kavach_ports::chain_record::{ChainRecord, RevocationDraft, RevocationRecord};
 use kavach_ports::{PortError, TimeSource};
 
 const NOTHING_RECORDED: &str = "a what-if run records nothing";
@@ -61,8 +62,26 @@ impl AgentEvidenceStore for WhatIfStore {
         &self,
         _tenant_id: &str,
         _partition_id: i32,
-    ) -> impl Future<Output = Result<Vec<AgentDecisionRecord>, PortError>> + Send {
+    ) -> impl Future<Output = Result<Vec<ChainRecord>, PortError>> + Send {
         ready(Ok(Vec::new()))
+    }
+
+    fn append_revocation(
+        &self,
+        _draft: RevocationDraft,
+        _clock: &dyn TimeSource,
+        _signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<RevocationRecord, PortError>> + Send {
+        ready(Err(PortError::invalid(NOTHING_RECORDED)))
+    }
+
+    fn revocation_record(
+        &self,
+        _tenant_id: &str,
+        _source_system: &str,
+        _event_id: &str,
+    ) -> impl Future<Output = Result<Option<RevocationRecord>, PortError>> + Send {
+        ready(Ok(None))
     }
 
     fn record(
@@ -95,5 +114,10 @@ mod tests {
         assert!(store.records("t", 0).await.unwrap().is_empty());
         assert!(store.get_by_request("t", "a", "r").await.unwrap().is_none());
         assert!(store.outcome("t", "c").await.unwrap().is_none());
+        assert!(store
+            .revocation_record("t", "lms", "e")
+            .await
+            .unwrap()
+            .is_none());
     }
 }

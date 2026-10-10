@@ -29,7 +29,8 @@ use kavach_ports::agent_evidence::{
     CommitRequest, CommitResult, ContactReservation, EvidenceSigner, Outcome, OutcomeRecord,
     PolicyVersions, RequestBinding, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
 };
-use kavach_ports::{ErrorClass, PortError, TimeSource, TrustedNow};
+use kavach_ports::chain_record::{RevocationDraft, RevocationRecord};
+use kavach_ports::{ErrorClass, PortError, StoredRevocation, TimeSource, TrustedNow};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -311,6 +312,35 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
         Ok(written)
     }
 
+    /// Writes the evidence-chain record of a revocation by a system-of-record
+    /// event (ADR-012 §7), signed with the evidence key at trusted time, in
+    /// this core's partition. The loan is named only by its keyed pseudonym.
+    /// Idempotent by event: the same revocation again returns its record.
+    pub async fn record_revocation(
+        &self,
+        revocation: &StoredRevocation,
+    ) -> Result<RevocationRecord, PortError> {
+        let draft = RevocationDraft {
+            tenant_id: revocation.tenant_id.clone(),
+            partition_id: self.config.partition_id,
+            source_system: revocation.system.clone(),
+            event_id: revocation.event_id.clone(),
+            event_sha256: revocation.content_sha256.clone(),
+            event_type: revocation.event_type.clone(),
+            record_pseudonym: self.subject_keys.record_pseudonym(
+                &revocation.tenant_id,
+                &revocation.system,
+                &revocation.record_ref,
+            ),
+            occurred_at: revocation.occurred_at,
+            revoked: revocation.revoked.clone(),
+            revoked_at: revocation.revoked_at,
+        };
+        self.store
+            .append_revocation(draft, &*self.clock, &*self.signer)
+            .await
+    }
+
     /// The recorded outcome for a credential, if any.
     pub async fn outcome(&self, credential_id: &str) -> Result<Option<OutcomeRecord>, PortError> {
         self.store
@@ -333,6 +363,12 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
             .verify(&self.config.tenant_id, mandate_id)
             .await
             .map(|_| ())
+    }
+
+    /// The core's clock now, synced or not: what the evidence it writes is
+    /// stamped with (each record also states the clock's sync status).
+    pub fn clock_now(&self) -> DateTime<Utc> {
+        self.clock.now().utc
     }
 
     /// Trusted time now, and whether it is synced within the configured

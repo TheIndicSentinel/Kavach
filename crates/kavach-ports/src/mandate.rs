@@ -29,6 +29,44 @@ pub struct StoredRevocation {
     pub occurred_at: chrono::DateTime<chrono::Utc>,
     /// Every mandate whose status changed (roots and their delegations).
     pub revoked: Vec<String>,
+    /// When Kavach revoked them (trusted time, whole microseconds).
+    pub revoked_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl StoredRevocation {
+    /// Its place in [`MandateStore::revocations_after`] order.
+    #[must_use]
+    pub fn cursor(&self) -> RevocationCursor {
+        RevocationCursor {
+            revoked_at: self.revoked_at,
+            tenant_id: self.tenant_id.clone(),
+            system: self.system.clone(),
+            event_id: self.event_id.clone(),
+        }
+    }
+}
+
+/// A place in the order of revocations: by time, then tenant, system and
+/// event id. Ordered the same way, so paging resumes exactly after it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RevocationCursor {
+    pub revoked_at: chrono::DateTime<chrono::Utc>,
+    pub tenant_id: String,
+    pub system: String,
+    pub event_id: String,
+}
+
+impl RevocationCursor {
+    /// Before every revocation at or after `t`.
+    #[must_use]
+    pub fn at(t: chrono::DateTime<chrono::Utc>) -> Self {
+        Self {
+            revoked_at: t,
+            tenant_id: String::new(),
+            system: String::new(),
+            event_id: String::new(),
+        }
+    }
 }
 
 /// Mandate persistence (ADR-004, ADR-006 §4).
@@ -110,6 +148,14 @@ pub trait MandateStore: Send + Sync {
         system: &str,
         event_id: &str,
     ) -> impl Future<Output = Result<Option<StoredRevocation>, PortError>> + Send;
+
+    /// Revocations of every tenant strictly after `after` (all of them for
+    /// `None`), in cursor order, at most `limit` (the evidence reconciler).
+    fn revocations_after(
+        &self,
+        after: Option<RevocationCursor>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<StoredRevocation>, PortError>> + Send;
 }
 
 /// Domain events published for caches, credential revocation and audit.

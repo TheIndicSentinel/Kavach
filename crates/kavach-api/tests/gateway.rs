@@ -342,6 +342,34 @@ async fn a_payment_event_stops_contact_for_that_loan() {
         1,
         "only the call before the payment"
     );
+
+    // ADR-012 §7: the revocation is in the evidence chain, written by the
+    // request that revoked, naming the loan only by its pseudonym.
+    let store = gw.state.dataplane().unwrap().core().store();
+    let record = store
+        .revocation_record("default", "lms", "pay-1")
+        .await
+        .unwrap()
+        .expect("a revocation record");
+    assert_eq!(record.payload.revoked, vec![gw.mandate.clone()]);
+    assert_eq!(
+        record.payload.recorded_at, record.payload.revoked_at,
+        "written at once"
+    );
+    let json = serde_json::to_string(&record).unwrap();
+    assert!(!json.contains("L-1"), "no loan reference: {json}");
+    let kinds: Vec<String> = store
+        .records("default", 0)
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| kavach_ports::agent_evidence::ChainEntry::kind(r).to_string())
+        .collect();
+    assert_eq!(
+        kinds,
+        ["agent_decision", "mandate_revocation", "agent_decision"],
+        "the allowed call, the revocation, the refused call"
+    );
 }
 
 /// Refusals and malformed calls never reach the provider.

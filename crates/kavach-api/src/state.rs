@@ -478,6 +478,7 @@ fn start_metrics(
     let metrics = Metrics::new().map_err(|e| ApiError::Internal(format!("metrics: {e}")))?;
     metrics.set_model_pack_mismatch(model_pack_mismatch);
     crate::checkpoints::start(dataplane, &metrics);
+    crate::revocation_evidence::start(dataplane, &metrics);
     Ok(metrics)
 }
 

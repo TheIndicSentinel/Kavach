@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::agent_evidence::{
-    is_dev_key, AgentDecisionRecord, DevKeys, EvidenceSigner, SegmentStart, TimeSync, GENESIS,
+    is_dev_key, ChainEntry, DevKeys, EvidenceSigner, SegmentStart, TimeSync, GENESIS,
 };
 use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
@@ -276,8 +276,8 @@ impl<'a> ChainSegment<'a> {
     }
 
     #[must_use]
-    pub fn of_records(start: SegmentStart<'a>, records: &'a [AgentDecisionRecord]) -> Self {
-        Self::new(start, records.iter().map(|r| r.hash.as_str()).collect())
+    pub fn of_records<R: ChainEntry>(start: SegmentStart<'a>, records: &'a [R]) -> Self {
+        Self::new(start, records.iter().map(ChainEntry::hash).collect())
     }
 
     #[must_use]

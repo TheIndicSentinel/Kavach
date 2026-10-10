@@ -21,6 +21,7 @@ type HmacSha256 = Hmac<Sha256>;
 
 const PSEUDONYM_LABEL: &[u8] = b"kavach-subject-pseudonym-v1";
 const PARAMS_MAC_LABEL: &[u8] = b"kavach-params-mac-v1";
+const RECORD_PSEUDONYM_LABEL: &[u8] = b"kavach-record-pseudonym-v1";
 
 /// Ed25519 evidence signer holding its key in memory.
 pub struct Ed25519EvidenceSigner {
@@ -71,10 +72,12 @@ impl EvidenceSigner for Ed25519EvidenceSigner {
     }
 }
 
-/// Derives the subject pseudonym and the parameters MAC.
+/// Derives the subject pseudonym, the parameters MAC and the pseudonym of a
+/// system-of-record record (a loan), each under its own key.
 pub struct SubjectKeys {
     pseudonym: [u8; 32],
     params: [u8; 32],
+    record: [u8; 32],
 }
 
 impl std::fmt::Debug for SubjectKeys {
@@ -99,6 +102,7 @@ impl SubjectKeys {
         Self {
             pseudonym: hmac(&secret, &[PSEUDONYM_LABEL]),
             params: hmac(&secret, &[PARAMS_MAC_LABEL]),
+            record: hmac(&secret, &[RECORD_PSEUDONYM_LABEL]),
         }
     }
 
@@ -118,6 +122,24 @@ impl SubjectKeys {
             hex::encode(hmac(
                 &self.pseudonym,
                 &[tenant_id.as_bytes(), subject_ref.as_bytes()]
+            ))
+        )
+    }
+
+    /// `psn:<hex>` for a system-of-record record (`record_ref` of `system`)
+    /// within a tenant, under a key of its own: it never equals a subject's
+    /// pseudonym, and evidence never holds the reference itself (ADR-012 §7).
+    #[must_use]
+    pub fn record_pseudonym(&self, tenant_id: &str, system: &str, record_ref: &str) -> String {
+        format!(
+            "psn:{}",
+            hex::encode(hmac(
+                &self.record,
+                &[
+                    tenant_id.as_bytes(),
+                    system.as_bytes(),
+                    record_ref.as_bytes()
+                ]
             ))
         )
     }
@@ -155,6 +177,16 @@ mod tests {
             a,
             SubjectKeys::from_secret([8u8; 32]).pseudonym("t1", "ref:borrower:B-1")
         );
+        let loan = keys.record_pseudonym("t1", "lms", "lms:loan/L-1");
+        assert_eq!(loan, keys.record_pseudonym("t1", "lms", "lms:loan/L-1"));
+        assert_ne!(loan, keys.record_pseudonym("t2", "lms", "lms:loan/L-1"));
+        assert_ne!(loan, keys.record_pseudonym("t1", "crm", "lms:loan/L-1"));
+        assert_ne!(
+            loan,
+            keys.pseudonym("t1", "lms:loan/L-1"),
+            "a record and a subject never share a pseudonym"
+        );
+        assert!(!loan.contains("L-1"));
     }
 
     #[test]

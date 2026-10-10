@@ -15,7 +15,9 @@ use kavach_domain::Decision;
 use kavach_keys::SubjectKeys;
 use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus};
 use kavach_mandate::{MandateDeps, MandateService};
-use kavach_ports::agent_evidence::{verify_chain, AgentDecisionRecord, AgentEvidenceStore};
+use kavach_ports::agent_evidence::{
+    verify_chain, AgentDecisionRecord, AgentEvidenceStore, ChainEntry as _,
+};
 use kavach_ports_testkit::agent_evidence::TestSigner;
 use kavach_ports_testkit::FakeClock;
 use kavach_storage::testing::isolated_database_urls;
@@ -121,7 +123,8 @@ async fn reminders_on_postgres_as_the_runtime_role() {
     let records = core.store().records(TENANT, 0).await.unwrap();
     assert_eq!(records.len(), 4, "three allows and the refused fourth");
     verify_chain(&records, &keys, None, &[], ist(12, 0, 0)).expect("signed chain");
-    records_are_read_by_id(core.store().as_ref(), &records[3]).await;
+    let fourth = records[3].as_decision().expect("a decision");
+    records_are_read_by_id(core.store().as_ref(), fourth).await;
 }
 
 /// A record by its id (`kavach why`); nothing for an unknown id or another

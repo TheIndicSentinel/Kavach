@@ -234,6 +234,8 @@ kavach-evidence verify-bundle ./bundle-next --keys ~/kavach-trusted-keys.json \
 
 ## Exporting
 
+Bundle format 1 holds decisions only. A chain segment that contains another kind of record (a `mandate_revocation`, ADR-012 §7) is refused by `export`, naming the record, rather than left out: a bundle without it would not verify against the chain. Format 2 will carry every kind.
+
 ```sh
 export KAVACH_AUDITOR_DATABASE_URL='postgres://kavach_auditor:…@db.internal:5432/kavach'
 
