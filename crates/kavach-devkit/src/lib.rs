@@ -47,6 +47,10 @@ pub const AGENTS: [&str; 2] = ["collections-agent", "translation-agent"];
 pub const SUBJECT: &str = "ref:borrower:B-9382";
 /// Synthetic: `+910…` is never an Indian mobile number.
 pub const DESTINATION: &str = "+910000000001";
+/// The borrower `kavach attack` uses for the revocation attacks (catalog
+/// v4): its mandates are issued, revoked and replayed there, so the dev
+/// mandate for [`SUBJECT`] is never touched. Nothing is ever sent to it.
+pub const ATTACK_SUBJECT: &str = "ref:borrower:B-ATTACK";
 pub const PROVIDER_AUDIENCE: &str = "mock-messaging";
 
 pub const MANDATE_KID: &str = "dev-mandate-1";
@@ -105,11 +109,18 @@ impl Default for World {
         Self {
             agents: AGENTS.iter().map(ToString::to_string).collect(),
             eligible_agents: vec!["collections-agent".into()],
-            borrowers: vec![Borrower {
-                subject_ref: SUBJECT.into(),
-                destination: DESTINATION.into(),
-                voice: "+910000000002".into(),
-            }],
+            borrowers: vec![
+                Borrower {
+                    subject_ref: SUBJECT.into(),
+                    destination: DESTINATION.into(),
+                    voice: "+910000000002".into(),
+                },
+                Borrower {
+                    subject_ref: ATTACK_SUBJECT.into(),
+                    destination: "+910000000003".into(),
+                    voice: "+910000000004".into(),
+                },
+            ],
         }
     }
 }
@@ -550,6 +561,53 @@ be trusted outside this stack. Mount each directory only into the service it is\
 for: agents get agents/<id>.jwt and nothing else. auditor/ holds the export key\n\
 that signs evidence bundles: it belongs to whoever exports, never to Kavach.\n";
 
+/// The loan a development borrower holds: one per borrower, so a payment
+/// or a dispute on it reaches every mandate issued for that borrower.
+#[must_use]
+pub fn loan_ref(subject_ref: &str) -> String {
+    format!(
+        "lms:loan/{}",
+        subject_ref.rsplit(':').next().unwrap_or(subject_ref)
+    )
+}
+
+/// The system-of-record event types a development stack understands:
+/// one that assigns a borrower (and issues a mandate), and the two that
+/// revoke every mandate for the borrower's loan (ADR-012).
+pub const ASSIGNING_EVENT: &str = "loan.dpd30";
+pub const REVOKING_EVENTS: [&str; 2] = ["loan.paid", "loan.disputed"];
+
+/// A signed revoking event (`loan.paid`, `loan.disputed`) for the loan of
+/// `subject_ref`, as the system of record sends it.
+pub async fn revoking_event(
+    bundle: &Path,
+    event_id: &str,
+    subject_ref: &str,
+    event_type: &str,
+    occurred_at: DateTime<Utc>,
+) -> Result<String, String> {
+    if !REVOKING_EVENTS.contains(&event_type) {
+        return Err(format!("{event_type} is not a revoking event"));
+    }
+    let event = SorEvent {
+        event_id: event_id.into(),
+        tenant_id: TENANT.into(),
+        system: "lms".into(),
+        event_type: event_type.into(),
+        record_ref: loan_ref(subject_ref),
+        subject_ref: subject_ref.into(),
+        principal: "nbfc-collections-system".into(),
+        consent_refs: BTreeSet::new(),
+        assigned_agent: String::new(),
+        occurred_at,
+        nonce: format!("n-{event_id}"),
+    };
+    let keys = LocalFileKeyProvider::new(bundle.join("sor"));
+    kavach_mandate::jws::sign(&keys, SOR_KID, kavach_mandate::jws::TYP_SOR_EVENT, &event)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// A signed system-of-record event that assigns `agent` to `subject_ref`.
 pub async fn sor_event(
     bundle: &Path,
@@ -562,8 +620,8 @@ pub async fn sor_event(
         event_id: event_id.into(),
         tenant_id: TENANT.into(),
         system: "lms".into(),
-        event_type: "loan.dpd30".into(),
-        record_ref: format!("lms:loan/{event_id}"),
+        event_type: ASSIGNING_EVENT.into(),
+        record_ref: loan_ref(subject_ref),
         subject_ref: subject_ref.into(),
         principal: "nbfc-collections-system".into(),
         consent_refs: [consent_id(subject_ref)].into(),
@@ -617,7 +675,29 @@ mod tests {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     }
 
-    /// `kavach init`'s world is exactly what it was before worlds existed.
+    /// One loan per borrower, and only the revoking types are signed as
+    /// revocations, for that loan.
+    #[tokio::test]
+    async fn revoking_events_name_the_borrowers_loan() {
+        assert_eq!(loan_ref(SUBJECT), "lms:loan/B-9382");
+        assert_eq!(loan_ref(ATTACK_SUBJECT), "lms:loan/B-ATTACK");
+        let out = std::env::temp_dir().join(format!("kavach-devkit-revoke-{}", std::process::id()));
+        generate(&options(&out)).await.unwrap();
+        let refused = revoking_event(&out, "e", SUBJECT, ASSIGNING_EVENT, Utc::now()).await;
+        assert!(refused.is_err(), "an assignment is not a revocation");
+        let token = revoking_event(&out, "pay-1", SUBJECT, "loan.paid", Utc::now())
+            .await
+            .unwrap();
+        let payload = token.split('.').nth(1).unwrap();
+        let event: Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert_eq!(event["event_type"], "loan.paid");
+        assert_eq!(event["record_ref"], "lms:loan/B-9382");
+        assert_eq!(event["tenant_id"], TENANT);
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
+    /// `kavach init`'s world: the dev borrower and the attack borrower.
     #[tokio::test]
     async fn the_default_world_is_init_s() {
         let out =
@@ -638,14 +718,21 @@ mod tests {
             .filter_map(|p| p["agent_id"].as_str())
             .collect();
         assert_eq!(passports, AGENTS);
+        // The dev borrower, and the borrower kept for the revocation attacks.
         let consents = read(&k.join("consents.json"));
-        assert_eq!(consents.as_array().unwrap().len(), 1);
+        assert_eq!(consents.as_array().unwrap().len(), 2);
         assert_eq!(consents[0]["consent_id"], "C-dev-1");
         assert_eq!(consents[0]["subject_ref"], SUBJECT);
+        assert_eq!(consents[1]["consent_id"], "C-B-ATTACK");
+        assert_eq!(consents[1]["subject_ref"], ATTACK_SUBJECT);
         assert_eq!(
             read(&k.join("references.json")),
-            json!({ "references": [{ "tenant_id": TENANT, "subject_ref": SUBJECT,
-                "destinations": { "whatsapp": DESTINATION, "sms": DESTINATION, "voice": "+910000000002" } }] })
+            json!({ "references": [
+                { "tenant_id": TENANT, "subject_ref": SUBJECT,
+                  "destinations": { "whatsapp": DESTINATION, "sms": DESTINATION, "voice": "+910000000002" } },
+                { "tenant_id": TENANT, "subject_ref": ATTACK_SUBJECT,
+                  "destinations": { "whatsapp": "+910000000003", "sms": "+910000000003", "voice": "+910000000004" } }
+            ] })
         );
         for agent in AGENTS {
             assert!(out.join(format!("agents/{agent}.jwt")).is_file());

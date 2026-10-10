@@ -113,6 +113,100 @@ pub async fn sor_event(
     Ok(ui.finish("sor event", Status::Ok, &data, &human))
 }
 
+/// `kavach sor event --type loan.paid|loan.disputed`: the borrower's loan
+/// is paid or disputed, so every mandate issued for it up to now is
+/// revoked, with its delegations (ADR-012).
+pub async fn sor_revocation(
+    ui: &Ui,
+    dir: &Path,
+    event_type: &str,
+    subject: &str,
+    event_id: Option<&str>,
+) -> Result<i32, CliError> {
+    let project = Project::find(dir)?;
+    let run = RunFile::live(&project)?;
+    let event_id = event_id.map_or_else(|| fresh_id("evt"), str::to_string);
+    let event = kavach_devkit::revoking_event(
+        &project.bundle(),
+        &event_id,
+        subject,
+        event_type,
+        run.stack_now(&project).await?,
+    )
+    .await
+    .map_err(|e| CliError::new("cannot sign the event", e))?;
+    let response = client()?
+        .post(format!("http://{}/v1/sor/events", run.sor))
+        .json(&json!({ "event": event }))
+        .send()
+        .await
+        .map_err(|e| CliError::new("the SoR listener did not answer", e))?;
+    let status = response.status();
+    let body: Value = response.json().await.unwrap_or(Value::Null);
+    if !status.is_success() {
+        return Err(crate::problem::error(
+            "the stack refused the event",
+            status.as_u16(),
+            &body,
+        ));
+    }
+    let revoked: Vec<String> = body["revoked"]
+        .as_array()
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let replayed = body["replayed"].as_bool().unwrap_or(false);
+    let loan = kavach_devkit::loan_ref(subject);
+    let data = json!({
+        "event_type": event_type,
+        "event_id": event_id,
+        "subject": subject,
+        "loan": loan,
+        "revoked": revoked,
+        "replayed": replayed,
+    });
+    let mut human = if revoked.is_empty() {
+        format!(
+            "{} no mandate for {loan} was live",
+            ui.paint(Style::Ok, "Revoked nothing:")
+        )
+    } else {
+        let mut text = format!(
+            "{} {} mandate(s) for {loan}",
+            ui.paint(Style::Ok, "Revoked"),
+            revoked.len()
+        );
+        for id in &revoked {
+            let _ = write!(text, "\n  {id}");
+        }
+        text
+    };
+    let _ = write!(
+        human,
+        "\n  event     {event_type} {event_id}{}",
+        if replayed {
+            " (already seen: the stored result)"
+        } else {
+            ""
+        }
+    );
+    if !revoked.is_empty() {
+        let _ = write!(
+            human,
+            "\n\n{}",
+            ui.paint(
+                Style::Dim,
+                "A call under these mandates is now refused, and one allowed but not yet sent \
+                 is never sent."
+            )
+        );
+    }
+    Ok(ui.finish("sor event", Status::Ok, &data, &human))
+}
+
 /// What to call.
 pub struct CallAsk<'a> {
     pub tool: &'a str,

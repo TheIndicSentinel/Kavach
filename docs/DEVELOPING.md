@@ -208,7 +208,11 @@ The live path goes through the running stack, and the stack records it: mandates
 kavach sor event                                  # a signed SoR event; prints the mandate id
 kavach call send_reminder --mandate <id>          # through the gateway: decision, record id, outcome
 kavach call send_reminder --issue-mandate         # sends the event first, and says so
+kavach sor event --type loan.paid                 # the loan is paid: its mandates are revoked
+kavach sor event --type loan.disputed --subject ref:borrower:B-9382
 ```
+
+`--type` is `loan.dpd30` (the default: assigns the borrower and issues a mandate), `loan.paid` or `loan.disputed`. A payment or a dispute revokes every mandate issued for the borrower's loan up to now, and their delegations (ADR-012); the next call under them is refused, and one already allowed but not yet sent is never sent. Each development borrower holds one loan, `lms:loan/<id>`. Events are always dated now on the stack's clock; there is no option to backdate one. The default world also holds `ref:borrower:B-ATTACK`, which `kavach attack` uses for the revocation attacks; nothing is ever sent to it.
 
 `dev up` writes `.kavach/run.json`, readable by its owner only. It holds the process id, the listener addresses and the clock offset from `--at`, and never a token. Events are stamped on the stack's clock. The file is removed on Ctrl-C or SIGTERM. If a killed stack leaves it behind, `call` notices that nothing answers there.
 
