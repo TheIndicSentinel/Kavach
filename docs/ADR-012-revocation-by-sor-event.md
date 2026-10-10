@@ -52,6 +52,7 @@ Each revocation is also a signed record in the agent evidence chain (kind `manda
 - **The record** holds the event (system, id, type, content hash, `occurred_at`), the revoked ids, `revoked_at` (when Kavach revoked) and `recorded_at` (when the record was written). The loan is named only by a keyed pseudonym, under a key of its own.
 - **Revoke first, record second.** The request that revokes writes the record at once. It does not rely on the system of record retrying: a background reconciler pages through the stored revocations and writes any record still missing, idempotently by event id (one record per event, enforced by the database). Missing records are a metric and an alert.
 - **One table.** Records of every kind share the chain's positions (migration 015). A reader refuses a kind it does not know rather than skipping it.
+- **Bundle format 2** carries every kind; format 1 bundles (decisions only) still verify, and the format 1 test vector is kept byte-identical.
 
 ### 8. Attacks (catalog version 4)
 - `forged-revocation`: a bad signature is refused.

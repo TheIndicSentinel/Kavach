@@ -177,8 +177,10 @@ fn read_bundle(dir: &Path) -> Result<(Vec<Recorded>, BTreeMap<String, String>), 
             .collect()
     };
     let text = |v: &Value, key: &str| v[key].as_str().unwrap_or_default().to_string();
+    // Decisions only: other kinds (a revocation, ADR-012 §7) are not calls.
     let recorded = lines("records.jsonl")?
         .iter()
+        .filter(|r| r["kind"] == "agent_decision")
         .map(|r| Recorded {
             record_id: text(r, "record_id"),
             request_id: text(r, "request_id"),

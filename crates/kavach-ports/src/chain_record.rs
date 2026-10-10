@@ -148,8 +148,17 @@ impl ChainEntry for RevocationRecord {
     fn expected_kind(&self) -> &'static str {
         KIND_MANDATE_REVOCATION
     }
+    fn tenant_id(&self) -> &str {
+        &self.payload.tenant_id
+    }
+    fn partition_id(&self) -> i32 {
+        self.payload.partition_id
+    }
     fn seq(&self) -> i64 {
         self.payload.seq
+    }
+    fn ts(&self) -> DateTime<Utc> {
+        self.payload.recorded_at
     }
     fn prev_hash(&self) -> &str {
         &self.payload.prev_hash
@@ -197,25 +206,6 @@ impl ChainRecord {
     }
 }
 
-/// The decisions of a segment, for bundle format 1, which holds decisions
-/// only. A record of any other kind is refused by name, never dropped: a
-/// bundle that left it out would not verify against its chain.
-pub fn decisions_for_bundle_v1(
-    records: Vec<ChainRecord>,
-) -> Result<Vec<AgentDecisionRecord>, PortError> {
-    records
-        .into_iter()
-        .map(|record| match record {
-            ChainRecord::Decision(decision) => Ok(decision),
-            ChainRecord::Revocation(revocation) => Err(PortError::invalid(format!(
-                "record {} is a {}; bundle format 1 holds decisions only, so this segment \
-                 cannot be exported in it",
-                revocation.payload.seq, revocation.payload.kind
-            ))),
-        })
-        .collect()
-}
-
 impl<'de> Deserialize<'de> for ChainRecord {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let value = serde_json::Value::deserialize(deserializer)?;
@@ -251,10 +241,28 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.expected_kind(),
         }
     }
+    fn tenant_id(&self) -> &str {
+        match self {
+            Self::Decision(r) => r.tenant_id(),
+            Self::Revocation(r) => r.tenant_id(),
+        }
+    }
+    fn partition_id(&self) -> i32 {
+        match self {
+            Self::Decision(r) => r.partition_id(),
+            Self::Revocation(r) => r.partition_id(),
+        }
+    }
     fn seq(&self) -> i64 {
         match self {
             Self::Decision(r) => r.seq(),
             Self::Revocation(r) => r.seq(),
+        }
+    }
+    fn ts(&self) -> DateTime<Utc> {
+        match self {
+            Self::Decision(r) => r.ts(),
+            Self::Revocation(r) => r.ts(),
         }
     }
     fn prev_hash(&self) -> &str {

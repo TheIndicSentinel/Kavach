@@ -4,6 +4,7 @@
 
 mod common;
 
+use kavach_ports::chain_record::ChainRecord;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -74,7 +75,11 @@ impl Case<'_> {
         let keys = public_keys();
         verify_bundle(
             &manifest(self.start, self.records, self.signed),
-            self.records.iter().cloned().map(Ok),
+            self.records
+                .iter()
+                .cloned()
+                .map(ChainRecord::Decision)
+                .map(Ok),
             self.outcomes.iter().cloned().map(Ok),
             self.checkpoints.iter().cloned().map(Ok),
             &VerifyOptions {
@@ -96,7 +101,11 @@ fn verify_limited(
     let keys = public_keys();
     verify_bundle(
         &manifest(case.start, case.records, case.signed),
-        case.records.iter().cloned().map(Ok),
+        case.records
+            .iter()
+            .cloned()
+            .map(ChainRecord::Decision)
+            .map(Ok),
         case.outcomes.iter().cloned().map(Ok),
         case.checkpoints.iter().cloned().map(Ok),
         &VerifyOptions {
@@ -198,7 +207,7 @@ fn a_bundle_verifies_and_says_what_it_does_not_protect() {
     let keys = public_keys();
     let early = verify_bundle(
         &manifest(SegmentStart::GENESIS, &records, true),
-        records.iter().cloned().map(Ok),
+        records.iter().cloned().map(ChainRecord::Decision).map(Ok),
         outcomes.iter().cloned().map(Ok),
         checkpoints.iter().cloned().map(Ok),
         &VerifyOptions {
@@ -376,7 +385,11 @@ fn records_outcomes_and_checkpoints_that_do_not_belong_are_refused() {
     let keys = public_keys();
     let short = verify_bundle(
         &manifest(SegmentStart::GENESIS, &records, true),
-        records[..3].iter().cloned().map(Ok),
+        records[..3]
+            .iter()
+            .cloned()
+            .map(ChainRecord::Decision)
+            .map(Ok),
         outcomes.iter().cloned().map(Ok),
         checkpoints.iter().cloned().map(Ok),
         &VerifyOptions {
@@ -474,6 +487,7 @@ fn checkpoints_that_do_not_fit_the_records_and_unreadable_lines_are_refused() {
         records
             .iter()
             .cloned()
+            .map(ChainRecord::Decision)
             .map(Ok)
             .take(2)
             .chain([Err("expected value at line 1 column 1".to_string())]),

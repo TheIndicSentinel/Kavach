@@ -26,8 +26,11 @@ use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
 
 pub const BUNDLE_FORMAT: &str = "kavach-evidence-bundle";
-/// Format version; a verifier refuses versions it does not know.
-pub const BUNDLE_VERSION: u32 = 1;
+/// The format version an export writes. Version 2 (ADR-012 §7) carries
+/// records of every kind; version 1 carried decisions only.
+pub const BUNDLE_VERSION: u32 = 2;
+/// The versions a verifier reads; it refuses any other.
+pub const BUNDLE_VERSIONS: [u32; 2] = [1, 2];
 pub const BUNDLE_HASH_PREFIX: &[u8] = b"kavach-evidence-bundle-v1";
 pub const BUNDLE_SIG_PREFIX: &[u8] = b"kavach-evidence-bundle-v1:";
 
@@ -221,7 +224,7 @@ fn check_shape(p: &ManifestPayload) -> Result<(), ManifestError> {
     if p.format != BUNDLE_FORMAT {
         return format("not a Kavach evidence bundle");
     }
-    if p.version != BUNDLE_VERSION {
+    if !BUNDLE_VERSIONS.contains(&p.version) {
         return format("unknown bundle version");
     }
     let s = &p.segment;
@@ -488,7 +491,7 @@ mod tests {
             verify(&m)
         };
         for change in [
-            (|p| p.version = 2) as fn(&mut ManifestPayload),
+            (|p| p.version = 3) as fn(&mut ManifestPayload),
             |p| p.format = "something-else".into(),
             |p| p.segment.last_seq = -1,
             |p| p.files.records.count = 4,
