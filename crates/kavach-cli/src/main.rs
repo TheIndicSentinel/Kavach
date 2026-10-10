@@ -301,17 +301,34 @@ enum EvidenceCommand {
 
 #[derive(Subcommand)]
 enum SorCommand {
-    /// Send a signed event that assigns a borrower to an agent: the stack
-    /// issues (and stores) a mandate, and this prints its id.
+    /// Send a signed system-of-record event, dated now on the stack's clock.
+    /// `loan.dpd30` (the default) assigns a borrower to an agent: the stack
+    /// issues (and stores) a mandate, and this prints its id. `loan.paid`
+    /// and `loan.disputed` revoke every mandate issued for the borrower's
+    /// loan up to now, and their delegations, and print what was revoked.
+    #[command(after_help = "Examples:
+  kavach sor event                          # assigns: prints a mandate id
+  kavach sor event --type loan.paid         # the loan is paid: contact stops
+  kavach sor event --type loan.disputed --subject ref:borrower:B-9382")]
     Event {
-        /// The borrower.
+        /// The event type.
+        #[arg(
+            long = "type",
+            value_name = "TYPE",
+            default_value = kavach_devkit::ASSIGNING_EVENT,
+            value_parser = [kavach_devkit::ASSIGNING_EVENT, "loan.paid", "loan.disputed"]
+        )]
+        event_type: String,
+        /// The borrower (whose loan a payment or dispute is about).
         #[arg(long, default_value = authorize::DEFAULT_SUBJECT)]
         subject: String,
-        /// The agent the borrower is assigned to.
+        /// The agent the borrower is assigned to (`loan.dpd30` only).
         #[arg(long, default_value = authorize::DEFAULT_AGENT)]
         agent: String,
-        /// The event id (default: a fresh one). Resending an id with the
-        /// same content returns the same mandate.
+        /// The event id (default: a fresh one). The event is dated now on
+        /// the stack's clock, so an id reused later is different content
+        /// and is refused (409); under a fixed `--clock` the content is the
+        /// same, and the stack returns its stored result.
         #[arg(long, value_name = "ID")]
         event_id: Option<String>,
     },
@@ -380,6 +397,20 @@ fn main() {
 }
 
 /// Runs the command; returns its name (for the JSON envelope) and result.
+async fn sor_command(ui: &Ui, cli: &Cli, command: &SorCommand) -> Result<i32, CliError> {
+    let SorCommand::Event {
+        event_type,
+        subject,
+        agent,
+        event_id,
+    } = command;
+    if kavach_devkit::REVOKING_EVENTS.contains(&event_type.as_str()) {
+        live::sor_revocation(ui, &cli.project, event_type, subject, event_id.as_deref()).await
+    } else {
+        live::sor_event(ui, &cli.project, subject, agent, event_id.as_deref()).await
+    }
+}
+
 async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
     match &cli.command {
         Command::Init { dir } => (
@@ -442,14 +473,7 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
         ),
         Command::Evidence(command) => evidence_command(ui, cli, command).await,
         Command::Simulate(command) => simulate_command(ui, command).await,
-        Command::Sor(SorCommand::Event {
-            subject,
-            agent,
-            event_id,
-        }) => (
-            "sor event",
-            live::sor_event(&ui, &cli.project, subject, agent, event_id.as_deref()).await,
-        ),
+        Command::Sor(command) => ("sor event", sor_command(&ui, cli, command).await),
         Command::Call {
             tool,
             params,

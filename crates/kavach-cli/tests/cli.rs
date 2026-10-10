@@ -407,12 +407,89 @@ fn the_live_path_issues_mandates_and_records_calls() {
     // A business block: `why` points to offline exploration.
     why_explores_with_placeholders(&dir, doc["reply"]["record_id"].as_str().unwrap());
 
+    the_loan_is_paid_and_contact_stops(&dir, &mandate);
+
     // Killed without cleaning up: the stale file is detected.
     let _ = stack.0.kill();
     let _ = stack.0.wait();
     let stale = kavach(&dir, &["call", "send_reminder", "--mandate", &mandate]);
     assert_eq!(stale.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&stale.stderr).contains("nothing answers"));
+}
+
+/// `kavach sor event --type loan.paid` (ADR-012): every mandate for the
+/// borrower's loan is revoked and the next call is refused; its id reused
+/// for a later event is refused; a dispute with nothing live revokes nothing;
+/// a new assignment after the payment works again.
+fn the_loan_is_paid_and_contact_stops(dir: &Path, mandate: &str) {
+    let paid = kavach(
+        dir,
+        &[
+            "--json",
+            "sor",
+            "event",
+            "--type",
+            "loan.paid",
+            "--event-id",
+            "pay-cli-1",
+        ],
+    );
+    let doc = json(&paid);
+    assert_eq!(paid.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["loan"], "lms:loan/B-9382");
+    assert_eq!(doc["replayed"], false);
+    let revoked: Vec<&str> = doc["revoked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(revoked.contains(&mandate), "{doc}");
+
+    let refused = kavach(
+        dir,
+        &["--json", "call", "send_reminder", "--mandate", mandate],
+    );
+    let doc = json(&refused);
+    assert_eq!(refused.status.code(), Some(1), "{doc}");
+    assert_eq!(doc["decision"], "BLOCK", "{doc}");
+
+    let again = kavach(
+        dir,
+        &[
+            "--json",
+            "sor",
+            "event",
+            "--type",
+            "loan.paid",
+            "--event-id",
+            "pay-cli-1",
+        ],
+    );
+    // Signed now on a running clock: other content than the first, refused.
+    let doc = json(&again);
+    assert_eq!(again.status.code(), Some(1), "{doc}");
+    assert_eq!(doc["error"]["code"], "conflict", "{doc}");
+
+    let disputed = kavach(dir, &["sor", "event", "--type", "loan.disputed"]);
+    let text = String::from_utf8_lossy(&disputed.stdout);
+    assert_eq!(disputed.status.code(), Some(0), "{text}");
+    assert!(text.contains("Revoked nothing"), "{text}");
+
+    // No backdating from the CLI: only the three types, dated now.
+    let usage = kavach(dir, &["sor", "event", "--type", "loan.closed"]);
+    assert_eq!(usage.status.code(), Some(64));
+
+    // A new default after the payment: a new mandate, and contact works.
+    let issued = kavach(dir, &["--json", "sor", "event"]);
+    let fresh = json(&issued)["mandate_id"].as_str().unwrap().to_string();
+    let call = kavach(
+        dir,
+        &["--json", "call", "send_reminder", "--mandate", &fresh],
+    );
+    let doc = json(&call);
+    assert_eq!(call.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["decision"], "PASS", "{doc}");
 }
 
 #[test]
