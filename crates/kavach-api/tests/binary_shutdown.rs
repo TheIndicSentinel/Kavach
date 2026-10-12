@@ -111,3 +111,37 @@ fn the_binary_drains_and_exits_zero_on_sigterm() {
     assert!(output.contains("shutdown complete"), "{output}");
     assert!(!healthy(addr), "nothing is listening after the stop");
 }
+
+/// `--agent-only` serves the agent surfaces and nothing else, so it refuses
+/// to start without them (and says why) rather than serve an empty process.
+#[test]
+fn agent_only_without_agent_surfaces_refuses_to_start() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let (http, grpc) = (free_port(), free_port());
+    let output = Command::new(env!("CARGO_BIN_EXE_kavach-api"))
+        .args([
+            "--insecure-dev",
+            "--access-control",
+            "none",
+            "--agent-only",
+            "--pack",
+            root.join("packs/finance/v0.yaml").to_str().unwrap(),
+            "--model",
+            root.join("models/finance/credit-underwriting-v1.yaml")
+                .to_str()
+                .unwrap(),
+            "--listen",
+            &format!("127.0.0.1:{http}"),
+            "--grpc-listen",
+            &format!("127.0.0.1:{grpc}"),
+        ])
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("kavach-api runs");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        text.contains("--agent-only") && text.contains("agent surfaces"),
+        "{text}"
+    );
+}

@@ -136,6 +136,9 @@ services:
       - ./bundle/kavach:/etc/kavach:ro
     command:
       - --insecure-dev
+      # The agent path only: the stack this job proves is what a hosted
+      # build runs, with none of the credit track served.
+      - --agent-only
       - --listen
       - 172.30.20.10:8080
       - --grpc-listen
