@@ -6,10 +6,12 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
-- **Public specifications, `docs/specs/`** (evidence bundle format 2, credential format) and an **independent verifier**, `conformance/kavach_verify.py`: Python, standard library only, written from the specification text alone. It verifies the published bundle, checkpoint, JCS and credential vectors and refuses unknown record kinds; CI runs it as the job "Independent verifier".
+- **Public specifications, `docs/specs/`** (evidence bundle format 2, credential format, mandate and system-of-record event) and an **independent verifier**, `conformance/kavach_verify.py`: Python, standard library only, written from the specification text alone. It verifies the published bundle, checkpoint, JCS, credential, mandate and event vectors and refuses unknown record kinds; CI runs it as the job "Independent verifier".
 
 ### Changed
 
+- **Mandate verification re-checks the mandate's form** (`Mandate::check_form`): format version, capability-reference subject, delegation depth, parent/depth agreement, channels, contact window inside the 08:00–19:00 IST floor, contact actions with a window, ceilings in range, lifetime 1 s to 30 days. Kavach issues mandates that satisfy these, so nothing it wrote is refused; a signed token that breaks them now is.
+- `kavach_mandate::content_sha256` is public (the specification defines it; it is the `event_sha256` in revocation evidence).
 - **The bundle verifier refuses a member name used twice in one object** and a record whose `hash_alg` is not `v2` (both found by the independent verifier; the specification already required it). Bundles Kavach itself writes are unaffected.
 - **The system-of-record listener refuses an event for a tenant the stack does not serve** (400), before it is verified or acted on. Revocations were already scoped by the event's tenant; such an event used to be accepted and revoke nothing.
 - **Development fixture (`kavach init`):** each development borrower now holds one loan, `lms:loan/<borrower id>` (it was one per event), so a payment reaches every mandate issued for the borrower. The default world gains a second borrower, `ref:borrower:B-ATTACK` (its own consent and synthetic destinations), which `kavach attack` uses for the revocation attacks; nothing is ever sent to it. Projects made before this release need `kavach init --force`.

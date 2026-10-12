@@ -13,6 +13,7 @@ pure-Python big-integer arithmetic is not constant time.
     kavach_verify.py bundle DIR --keys KEYS.json [--expect-checkpoint FILE]
                                  [--now RFC3339] [--dev] [--allow-warnings]
     kavach_verify.py credential VECTOR.json [--now UNIX_SECONDS]
+    kavach_verify.py mandate VECTOR.json
     kavach_verify.py jcs VECTOR.json
     kavach_verify.py checkpoints VECTOR.json
 
@@ -28,7 +29,7 @@ import os
 import re
 import stat
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 MAX_LINE = 1_048_576
 MAX_SAFE = 2**53 - 1
@@ -962,6 +963,248 @@ def open_credential(token, provider_secret, provider_kid, signing_keys, audience
 
 
 # --------------------------------------------------------------------------
+# Mandates and system-of-record events (mandate-and-sor-event.md)
+# --------------------------------------------------------------------------
+
+TYP_MANDATE = "kavach-mandate+jws"
+TYP_SOR_EVENT = "kavach-sor-event+jws"
+MAX_TOKEN = 16 * 1024
+MAX_DEPTH = 4
+ALLOWED_CHANNELS = {"sms", "voice", "whatsapp"}
+CONTACT_ACTIONS = {"send_reminder", "place_call"}
+MAX_TTL = 30 * 24 * 3600
+EVENT_ORDER = ["event_id", "tenant_id", "system", "event_type", "record_ref", "subject_ref",
+               "principal", "consent_refs", "assigned_agent", "occurred_at", "nonce"]
+_SHORT_TIME = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.(\d{3}|\d{6}|\d{9}))?Z$")
+_CAP_PART = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+
+
+def shortest_time(text, what):
+    """A time written in the shortest exact form (spec section 1, Times)."""
+    m = _SHORT_TIME.match(text) if isinstance(text, str) else None
+    if not m:
+        raise Refused(f"{what}: {text!r} is not RFC 3339 UTC in the shortest form")
+    frac = m.group(1)
+    if frac is not None and len(frac) > 3 and frac.endswith("000"):
+        raise Refused(f"{what}: {text!r} has digits that are not needed")
+    if frac is not None and frac == "0" * len(frac):
+        raise Refused(f"{what}: {text!r} has a zero fraction")
+    return parse_time(text, what)
+
+
+def is_capability_ref(text):
+    if not isinstance(text, str) or not text.startswith("ref:"):
+        return False
+    parts = text[4:].split(":", 1)
+    return len(parts) == 2 and all(_CAP_PART.match(p) for p in parts)
+
+
+def verify_jws(token, typ, keys):
+    """Spec section 1. keys: kid -> 32-byte public key. Returns (kid, payload)."""
+    if len(token) > MAX_TOKEN:
+        raise Refused("the token is too long")
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise Refused("a token has three parts")
+    header_raw = b64url_decode(parts[0], "header")
+    header = loads(header_raw.decode("utf-8"))
+    _members(header, ["alg", "kid", "typ"], what="header")
+    if header["alg"] != "EdDSA":
+        raise Refused("alg must be EdDSA")
+    if header["typ"] != typ:
+        raise Refused(f"typ must be {typ}")
+    if jcs(header) != header_raw:
+        raise Refused("the header is not canonical")
+    key = keys.get(header["kid"])
+    if key is None:
+        raise Refused(f"key {header['kid']!r} is not known")
+    sig = b64url_decode(parts[2], "signature")
+    if not ed25519_verify(key, (parts[0] + "." + parts[1]).encode("ascii"), sig):
+        raise Refused("the signature does not verify")
+    payload_raw = b64url_decode(parts[1], "payload")
+    try:
+        payload = loads(payload_raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        raise Refused("the payload is not UTF-8") from None
+    if jcs(payload) != payload_raw:
+        raise Refused("the payload is not canonical")
+    return header["kid"], payload
+
+
+def _string_set(value, what):
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise Refused(f"{what} is not an array of strings")
+    if value != sorted(set(value), key=lambda v: v.encode("utf-16-be")):
+        raise Refused(f"{what} is not sorted without repeats")
+    return value
+
+
+def check_event(payload):
+    _members(payload, EVENT_ORDER, what="event")
+    for name in EVENT_ORDER:
+        if name not in ("consent_refs",):
+            _str(payload[name], f"event {name}")
+    _string_set(payload["consent_refs"], "consent_refs")
+    if not is_capability_ref(payload["subject_ref"]):
+        raise Refused("subject_ref is not a capability reference")
+    return shortest_time(payload["occurred_at"], "occurred_at")
+
+
+def event_content_sha256(event):
+    """SHA-256 of the compact JSON of the members in declaration order (section 5)."""
+    parts = []
+    for name in EVENT_ORDER:
+        value = event[name]
+        if name == "consent_refs":
+            text = "[" + ",".join(_jstr(v) for v in value) + "]"
+        else:
+            text = _jstr(value)
+        parts.append(_jstr(name) + ":" + text)
+    return hashlib.sha256(("{" + ",".join(parts) + "}").encode("utf-8")).hexdigest()
+
+
+MANDATE_MEMBERS = ["mv", "id", "tenant_id", "issuer", "source", "principal", "holder",
+                   "subject_ref", "purpose", "consent_refs", "actions", "data_fields", "channels",
+                   "window", "ceilings", "delegation", "parent_id", "depth", "nbf", "exp", "nonce"]
+
+
+def _window(value):
+    if value is None:
+        return None
+    _members(value, ["tz", "from_min", "to_min", "max_per_day"], what="window")
+    if value["tz"] != "Asia/Kolkata":
+        raise Refused("window tz must be Asia/Kolkata")
+    for name in ("from_min", "to_min", "max_per_day"):
+        _int(value[name], f"window {name}", 0)
+    if not (480 <= value["from_min"] < value["to_min"] <= 1140 and value["max_per_day"] > 0):
+        raise Refused("the contact window is outside the 08:00-19:00 floor")
+    return value
+
+
+def check_mandate(m):
+    """The member and form rules of section 3. Returns (nbf, exp)."""
+    _members(m, MANDATE_MEMBERS, what="mandate")
+    if _int(m["mv"], "mv") != 1:
+        raise Refused("unknown mandate version")
+    for name in ("id", "tenant_id", "issuer", "principal", "holder", "subject_ref", "purpose",
+                 "nonce"):
+        _str(m[name], f"mandate {name}")
+    _members(m["source"], ["system", "record_ref", "event_id"], what="source")
+    if not is_capability_ref(m["subject_ref"]):
+        raise Refused("subject_ref is not a capability reference")
+    for name in ("consent_refs", "actions", "data_fields", "channels"):
+        _string_set(m[name], name)
+    if not set(m["channels"]) <= ALLOWED_CHANNELS:
+        raise Refused("unknown channel")
+    window = _window(m["window"])
+    if window is None and set(m["actions"]) & CONTACT_ACTIONS:
+        raise Refused("contact actions without a contact window")
+    if not isinstance(m["ceilings"], dict):
+        raise Refused("ceilings is not an object")
+    for key, value in m["ceilings"].items():
+        _int(value, f"ceiling {key}")
+        if not 0 <= value <= (10_000 if key.endswith("_bps") else MAX_SAFE):
+            raise Refused(f"ceiling {key} is out of range")
+    _members(m["delegation"], ["max_depth", "allowed_agents"], what="delegation")
+    if not 0 <= _int(m["delegation"]["max_depth"], "max_depth") <= MAX_DEPTH:
+        raise Refused("delegation max_depth is above the limit")
+    _string_set(m["delegation"]["allowed_agents"], "allowed_agents")
+    depth = _int(m["depth"], "depth", 0)
+    if depth > MAX_DEPTH or (depth == 0) != (m["parent_id"] is None):
+        raise Refused("depth and parent_id disagree, or depth is above the limit")
+    if m["parent_id"] is not None:
+        _str(m["parent_id"], "parent_id")
+    nbf, exp = shortest_time(m["nbf"], "nbf"), shortest_time(m["exp"], "exp")
+    life = (exp - nbf).total_seconds()
+    if not 1 <= life <= MAX_TTL:
+        raise Refused("lifetime is not within 1 second to 30 days")
+    return nbf, exp
+
+
+def check_delegation(child, parent):
+    """Section 3, Delegation: raises Refused unless child only narrows parent."""
+    same = ["tenant_id", "subject_ref", "purpose", "consent_refs", "source", "issuer"]
+    if any(child[k] != parent[k] for k in same):
+        raise Refused("a child must keep tenant, subject, purpose, consents, source and issuer")
+    for name in ("actions", "data_fields", "channels"):
+        if not set(child[name]) <= set(parent[name]):
+            raise Refused(f"child {name} are not within the parent's")
+    cw, pw = child["window"], parent["window"]
+    if pw is not None:
+        if cw is None or not (cw["from_min"] >= pw["from_min"] and cw["to_min"] <= pw["to_min"]
+                              and cw["max_per_day"] <= pw["max_per_day"]):
+            raise Refused("the child window is not within the parent's")
+    for key, value in child["ceilings"].items():
+        if key not in parent["ceilings"] or value > parent["ceilings"][key]:
+            raise Refused(f"child ceiling {key} exceeds the parent's")
+    if shortest_time(child["exp"], "exp") > shortest_time(parent["exp"], "exp"):
+        raise Refused("the child outlives its parent")
+    if shortest_time(child["nbf"], "nbf") < shortest_time(parent["nbf"], "nbf"):
+        raise Refused("the child starts before its parent")
+    pd = parent["delegation"]
+    if (child["depth"] != parent["depth"] + 1 or child["depth"] > pd["max_depth"]
+            or child["parent_id"] != parent["id"] or child["holder"] not in pd["allowed_agents"]
+            or child["delegation"]["max_depth"] > pd["max_depth"]
+            or not set(child["delegation"]["allowed_agents"]) <= set(pd["allowed_agents"])):
+        raise Refused("the child is not a valid delegation of the parent")
+
+
+def run_mandate(path):
+    with open(path, "r", encoding="utf-8") as handle:
+        vector = loads(handle.read())
+    mkeys = {vector["mandate_key"]["kid"]: _jwk_bytes(vector["mandate_key"], "x")}
+    sor_keys, sor_system = {}, {}
+    for issuer in vector["sor_issuers"]:
+        sor_keys[issuer["key"]["kid"]] = _jwk_bytes(issuer["key"], "x")
+        sor_system[issuer["key"]["kid"]] = issuer["system"]
+    freshness = vector["freshness_seconds"]
+    decoded = {}
+    for item in vector["mandates"]:
+        _, payload = verify_jws(item["token"], TYP_MANDATE, mkeys)
+        check_mandate(payload)
+        if payload != item["payload"]:
+            raise Refused(f"mandate {item['name']}: payload differs from the vector's")
+        decoded[item["name"]] = payload
+    for item in vector["mandates"]:
+        if "parent" in item:
+            check_delegation(decoded[item["name"]], decoded[item["parent"]])
+    checks = []
+    for item in vector["events"]:
+        kid, payload = verify_jws(item["token"], TYP_SOR_EVENT, sor_keys)
+        occurred = check_event(payload)
+        if payload != item["payload"]:
+            raise Refused(f"event {item['name']}: payload differs from the vector's")
+        if sor_system[kid] != payload["system"]:
+            raise Refused(f"event {item['name']}: key not registered for its system")
+        if event_content_sha256(payload) != item["content_sha256"]:
+            raise Refused(f"event {item['name']}: content_sha256 differs")
+        if "signed_payload_sha256" in item and (
+                hashlib.sha256(jcs(payload)).hexdigest() != item["signed_payload_sha256"]):
+            raise Refused(f"event {item['name']}: signed_payload_sha256 differs")
+        at = datetime.fromtimestamp(item["fresh_at"], timezone.utc)
+        for delta, fresh in ((0, True), (freshness, True), (-freshness, True),
+                             (freshness + 1, False), (-freshness - 1, False)):
+            age = abs((at + timedelta(seconds=delta) - occurred).total_seconds())
+            if (age <= freshness) != fresh:
+                raise Refused(f"event {item['name']}: freshness is wrong at {delta:+d}s")
+        checks.append(item["name"])
+    refused = []
+    every = dict(mkeys, **sor_keys)
+    for case in vector["refused"]:
+        try:
+            _, payload = verify_jws(case["token"], case["typ"], every)
+            if case["typ"] == TYP_MANDATE:
+                check_mandate(payload)
+            else:
+                check_event(payload)
+        except (Refused, UnicodeDecodeError):
+            refused.append(case["name"])
+            continue
+        raise Refused(f"{case['name']} was accepted")
+    return {"result": "verified", "mandates": sorted(decoded), "events": checks, "refused": refused}
+
+
+# --------------------------------------------------------------------------
 # Command line
 # --------------------------------------------------------------------------
 
@@ -1055,7 +1298,7 @@ def main(argv=None):
     c = sub.add_parser("credential")
     c.add_argument("vector")
     c.add_argument("--now", type=int)
-    for name in ("jcs", "checkpoints"):
+    for name in ("jcs", "checkpoints", "mandate"):
         sub.add_parser(name).add_argument("vector")
     args = parser.parse_args(argv)
     try:
@@ -1066,6 +1309,8 @@ def main(argv=None):
             report = run_credential(args.vector, args.now)
         elif args.command == "jcs":
             report = run_jcs(args.vector)
+        elif args.command == "mandate":
+            report = run_mandate(args.vector)
         else:
             report = run_checkpoints(args.vector)
     except (Refused, OSError, KeyError, ValueError) as error:

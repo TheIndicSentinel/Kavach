@@ -91,10 +91,16 @@ fn micros(t: DateTime<Utc>) -> DateTime<Utc> {
     t.duration_trunc(TimeDelta::microseconds(1)).unwrap_or(t)
 }
 
-/// SHA-256 of an event's content (a struct serializes in a fixed field
-/// order, its sets sorted): a retry has the same, a reuse of its id for
-/// other content does not.
-fn content_sha256(event: &SorEvent) -> Result<String, PortError> {
+/// SHA-256 of an event's content: the compact JSON of the event's members
+/// in declaration order (`event_id`, `tenant_id`, `system`, `event_type`,
+/// `record_ref`, `subject_ref`, `principal`, `consent_refs` as a sorted
+/// array, `assigned_agent`, `occurred_at`, `nonce`; docs/specs/mandate-and-sor-event.md
+/// section 5). A retry has the same, a reuse of its id for other content
+/// does not. Recorded in the revocation's evidence record as `event_sha256`.
+///
+/// Not the JCS bytes that were signed: that is a property of the encoding
+/// the specification documents rather than a choice to make again.
+pub fn content_sha256(event: &SorEvent) -> Result<String, PortError> {
     let bytes =
         serde_json::to_vec(event).map_err(|e| PortError::invalid(format!("event content: {e}")))?;
     Ok(hex::encode(Sha256::digest(&bytes)))
@@ -337,6 +343,9 @@ where
                 stored.mandate.id
             )));
         }
+        decoded
+            .check_form()
+            .map_err(|rule| PortError::rejected(format!("mandate {}: {rule}", decoded.id)))?;
         if stored.status != MandateStatus::Active {
             return Err(PortError::rejected(format!(
                 "mandate {} is revoked",
