@@ -103,12 +103,15 @@ Mandates revoked by a system-of-record event (ADR-012 §7).
 | Member | Meaning |
 |---|---|
 | `source_system`, `event_id`, `event_type` | The event (`loan.paid`, `loan.disputed`) |
-| `event_sha256` | SHA-256 of the event as it was verified |
+| `event_digest` | The event's digest: `sha256-jcs-v1:` followed by 64 lowercase hex characters, the SHA-256 of the event's RFC 8785 bytes (the payload of the signed token; [mandate-and-sor-event.md](mandate-and-sor-event.md) section 5) |
+| `event_sha256` | **Legacy.** 64 lowercase hex characters. Written before `event_digest`; the digest of the event's members in the order of a Rust struct, which a second implementation cannot reproduce from this specification. Never written now; read and verified as an ordinary member |
 | `record_pseudonym` | A keyed pseudonym of the loan. A bundle never holds the loan reference |
 | `occurred_at` | When the event says it happened |
 | `revoked` | The mandate ids revoked (an array of strings) |
 | `revoked_at` | When Kavach revoked them |
 | `recorded_at` | When this record was written. Used as the record's time in §8.2 |
+
+A record MUST state **exactly one** of `event_digest` and `event_sha256`, well formed as above. A record with both, neither, a tag other than `sha256-jcs-v1:`, or hex that is short or upper case is refused (§9), even if its hash and signature are genuine. A bundle verifier cannot recompute either digest (it does not hold the event); it checks the form and that the signature covers it.
 
 ## 5. Outcomes
 
@@ -264,6 +267,7 @@ A script that tests only for success MUST treat *verified, with warnings* as not
 
 | Vector | Expected result |
 |---|---|
+| `crates/kavach-evidence-cli/tests/vectors/bundle-v2-digest` with `bundle-v2.keys.json` | The same run with the revocation stating its event by `event_digest`. Same warnings as `bundle-v2` |
 | `crates/kavach-evidence-cli/tests/vectors/bundle-v2` with `bundle-v2.keys.json` | Verified, with warnings: `no_kept_checkpoint`, `outcome_missing` (`cred-4`), `outcome_unknown` (`cred-3`). Five records, two outcomes, three checkpoints, the last covering record 5, so no uncovered records |
 | `crates/kavach-evidence-cli/tests/vectors/bundle-v1` with `bundle-v1.keys.json` | Verified, with warnings: `no_kept_checkpoint`, `outcome_missing` (`cred-4`), `outcome_unknown` (`cred-3`), and `uncovered_records` = 1 (four records; the last checkpoint covers record 3). Both keys files hold test-only keys that are not `dev-` keys, so no `--dev` flag is needed |
 | `crates/kavach-ports/tests/vectors/jcs-v1.json` | Canonicalization (§2.2) |

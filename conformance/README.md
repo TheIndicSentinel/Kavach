@@ -5,6 +5,7 @@
 ```
 python3 conformance/kavach_verify.py bundle DIR --keys KEYS.json [--expect-checkpoint FILE] [--now RFC3339] [--dev] [--allow-warnings]
 python3 conformance/kavach_verify.py credential VECTOR.json
+python3 conformance/kavach_verify.py mandate VECTOR.json
 python3 conformance/kavach_verify.py jcs VECTOR.json
 python3 conformance/kavach_verify.py checkpoints VECTOR.json
 ```
@@ -22,9 +23,11 @@ They check that every published vector verifies with the warnings the specificat
 ## What it is not
 
 - **Not for production secrets.** The credential command takes a provider's private key, and pure-Python big-integer arithmetic is not constant-time. It is for conformance checking and audit.
-- **Not a replacement for the Rust verifier** in a deployment: it is slower and covers the formats in `docs/specs/` only (bundle versions 1 and 2, checkpoints, credentials).
-- **Not yet covering** the mandate and system-of-record event formats; those specifications follow.
+- **Not a replacement for the Rust verifier** in a deployment: it is slower and covers the formats in `docs/specs/` only (bundle versions 1 and 2, checkpoints, credentials, mandates and system-of-record events).
+- **Not covering** mandate *status* (live or revoked) or the evidence record's own fields beyond the bundle spec: status lives in Kavach's store, not in a token.
 
 ## Found so far
 
 Writing this verifier from the specification found two places where the Rust verifier was looser than the specification: it accepted a member name used twice in one object (serde keeps the last), and it never read a record's `hash_alg`. Both are fixed in the Rust verifier and covered by tests there.
+
+The mandate specification found a third: token verification never re-checked a mandate's form (version, contact floor, depth, lifetime, channels, ceilings); those were enforced only when issuing. Verification now checks them.

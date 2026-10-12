@@ -243,6 +243,62 @@ impl ContactWindow {
     }
 }
 
+impl Mandate {
+    /// The form rules every mandate Kavach issues satisfies
+    /// (`docs/specs/mandate-and-sor-event.md` section 3). Checked again when
+    /// a token is verified, so a token that breaks them is refused even
+    /// though its signature is genuine. `Err` names the rule.
+    pub fn check_form(&self) -> Result<(), String> {
+        if self.mv != MANDATE_FORMAT_VERSION {
+            return Err(format!("unknown mandate version {}", self.mv));
+        }
+        if !is_capability_ref(&self.subject_ref) {
+            return Err("subject_ref is not a capability reference".into());
+        }
+        if self.depth > MAX_DELEGATION_DEPTH || self.delegation.max_depth > MAX_DELEGATION_DEPTH {
+            return Err("delegation depth is above the limit".into());
+        }
+        if (self.depth == 0) != self.parent_id.is_none() {
+            return Err("depth and parent_id disagree".into());
+        }
+        if let Some(c) = self
+            .channels
+            .iter()
+            .find(|c| !ALLOWED_CHANNELS.contains(&c.as_str()))
+        {
+            return Err(format!("unknown channel {c:?}"));
+        }
+        match self.window {
+            Some(w) if !w.within_floor() => {
+                return Err("contact window is outside the 08:00-19:00 IST floor".into());
+            }
+            None if self
+                .actions
+                .iter()
+                .any(|a| CONTACT_ACTIONS.contains(&a.as_str())) =>
+            {
+                return Err("contact actions without a contact window".into());
+            }
+            _ => {}
+        }
+        for (key, value) in &self.ceilings {
+            let max = if key.ends_with("_bps") {
+                MAX_BPS
+            } else {
+                i64::MAX
+            };
+            if !(0..=max).contains(value) {
+                return Err(format!("ceiling {key} is out of range"));
+            }
+        }
+        let life = (self.exp - self.nbf).num_seconds();
+        if !(1..=MAX_MANDATE_TTL_SECONDS).contains(&life) {
+            return Err("lifetime is not within 1 second to 30 days".into());
+        }
+        Ok(())
+    }
+}
+
 /// Returns true when `s` is a well-formed capability reference
 /// (`ref:<type>:<opaque>`), with no wildcard characters.
 pub fn is_capability_ref(s: &str) -> bool {
@@ -279,6 +335,130 @@ mod tests {
             "ref:borrower",
         ] {
             assert!(!is_capability_ref(bad), "{bad}");
+        }
+    }
+
+    fn sample() -> Mandate {
+        let at = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        Mandate {
+            mv: MANDATE_FORMAT_VERSION,
+            id: "m".into(),
+            tenant_id: "t".into(),
+            issuer: "i".into(),
+            source: MandateSource {
+                system: "lms".into(),
+                record_ref: "r".into(),
+                event_id: "e".into(),
+            },
+            principal: "p".into(),
+            holder: "h".into(),
+            subject_ref: "ref:borrower:B-1".into(),
+            purpose: "loan_recovery".into(),
+            consent_refs: BTreeSet::new(),
+            actions: BTreeSet::from(["send_reminder".to_string()]),
+            data_fields: BTreeSet::new(),
+            channels: BTreeSet::from(["sms".to_string()]),
+            window: Some(ContactWindow {
+                tz: TimeZoneId::AsiaKolkata,
+                from_min: 9 * 60,
+                to_min: 18 * 60,
+                max_per_day: 2,
+            }),
+            ceilings: BTreeMap::from([("waiver_bps".to_string(), 500)]),
+            delegation: DelegationRules {
+                max_depth: 1,
+                allowed_agents: BTreeSet::new(),
+            },
+            parent_id: None,
+            depth: 0,
+            nbf: at,
+            exp: at + chrono::Duration::days(1),
+            nonce: "n".into(),
+        }
+    }
+
+    #[test]
+    fn form_rules_refuse_what_an_issuer_never_writes() {
+        assert_eq!(sample().check_form(), Ok(()));
+        let broken: Vec<(&str, Mandate)> = vec![
+            ("version", Mandate { mv: 2, ..sample() }),
+            (
+                "raw subject",
+                Mandate {
+                    subject_ref: "9876543210".into(),
+                    ..sample()
+                },
+            ),
+            (
+                "depth",
+                Mandate {
+                    depth: 5,
+                    parent_id: Some("p".into()),
+                    ..sample()
+                },
+            ),
+            (
+                "orphan",
+                Mandate {
+                    depth: 1,
+                    ..sample()
+                },
+            ),
+            (
+                "channel",
+                Mandate {
+                    channels: BTreeSet::from(["fax".to_string()]),
+                    ..sample()
+                },
+            ),
+            (
+                "no window",
+                Mandate {
+                    window: None,
+                    ..sample()
+                },
+            ),
+            (
+                "night",
+                Mandate {
+                    window: Some(ContactWindow {
+                        from_min: 60,
+                        ..sample().window.unwrap()
+                    }),
+                    ..sample()
+                },
+            ),
+            (
+                "bps",
+                Mandate {
+                    ceilings: BTreeMap::from([("waiver_bps".to_string(), 10_001)]),
+                    ..sample()
+                },
+            ),
+            (
+                "negative",
+                Mandate {
+                    ceilings: BTreeMap::from([("cap".to_string(), -1)]),
+                    ..sample()
+                },
+            ),
+            (
+                "backwards",
+                Mandate {
+                    exp: sample().nbf,
+                    ..sample()
+                },
+            ),
+            (
+                "too long",
+                Mandate {
+                    exp: sample().nbf + chrono::Duration::days(31),
+                    ..sample()
+                },
+            ),
+        ];
+        for (what, mandate) in broken {
+            assert!(mandate.check_form().is_err(), "{what} was accepted");
         }
     }
 

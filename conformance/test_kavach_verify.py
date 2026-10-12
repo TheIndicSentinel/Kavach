@@ -19,6 +19,7 @@ import kavach_verify as kv  # noqa: E402
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BUNDLES = os.path.join(ROOT, "crates/kavach-evidence-cli/tests/vectors")
 PORTS = os.path.join(ROOT, "crates/kavach-ports/tests/vectors")
+MANDATE = os.path.join(ROOT, "crates/kavach-mandate/tests/vectors/mandate-v1.json")
 CRED = os.path.join(ROOT, "crates/kavach-credential/tests/vectors/credential-v1.json")
 NOW = kv.parse_time("2026-10-02T07:00:00Z")
 
@@ -47,6 +48,14 @@ class Vectors(unittest.TestCase):
         r = kv.verify_bundle(f"{BUNDLES}/bundle-v2", f"{BUNDLES}/bundle-v2.keys.json", now=NOW)
         self.assertEqual(kinds(r), ["no_kept_checkpoint", "outcome_missing", "outcome_unknown"])
         self.assertEqual(r["records"], 5)
+
+
+class DigestForms(unittest.TestCase):
+    def test_bundle_with_a_tagged_event_digest(self):
+        r = kv.verify_bundle(f"{BUNDLES}/bundle-v2-digest", f"{BUNDLES}/bundle-v2.keys.json",
+                             now=NOW)
+        self.assertEqual(r["records"], 5)
+        self.assertEqual(kinds(r), ["no_kept_checkpoint", "outcome_missing", "outcome_unknown"])
 
 
 class Mutations(unittest.TestCase):
@@ -190,6 +199,25 @@ class Mutations(unittest.TestCase):
             with self.assertRaises(kv.Refused):
                 kv.verify_bundle(self.bundle, self.keys, now=NOW)
 
+    def test_a_revocation_states_exactly_one_digest(self):
+        legacy = "ab" * 32
+        for what, edit in {
+            "both": lambda r: r.update(event_sha256=legacy, event_digest=kv.EVENT_DIGEST_PREFIX + legacy),
+            "neither": lambda r: (r.pop("event_sha256", None), r.pop("event_digest", None)),
+            "short": lambda r: (r.pop("event_sha256", None), r.update(event_digest="sha256-jcs-v1:ab")),
+            "unknown tag": lambda r: (r.pop("event_sha256", None), r.update(event_digest="sha512:" + legacy)),
+            "upper case": lambda r: (r.pop("event_sha256", None),
+                                     r.update(event_digest=kv.EVENT_DIGEST_PREFIX + legacy.upper())),
+        }.items():
+            with self.subTest(what):
+                shutil.rmtree(self.bundle)
+                shutil.copytree(f"{BUNDLES}/bundle-v2", self.bundle)
+                rows = self.rows("records.jsonl")
+                edit(rows[4])
+                self.reseal(rows)
+                with self.structural():
+                    self.refuse("exactly one well-formed event digest")
+
     def test_hash_alg_must_be_v2(self):
         rows = self.rows("records.jsonl")
         rows[0]["hash_alg"] = "v1"
@@ -215,6 +243,79 @@ class Mutations(unittest.TestCase):
             h.write("\n".join(lines))
         with self.assertRaises(kv.Refused):
             kv.verify_bundle(self.bundle, self.keys, now=NOW)
+
+
+class Mandates(unittest.TestCase):
+    def setUp(self):
+        with open(MANDATE, encoding="utf-8") as h:
+            self.v = json.load(h)
+        self.root = copy.deepcopy(self.v["mandates"][0]["payload"])
+        self.child = copy.deepcopy(self.v["mandates"][1]["payload"])
+
+    def test_vector(self):
+        r = kv.run_mandate(MANDATE)
+        self.assertEqual(r["events"], ["issuing", "revoking"])
+        self.assertEqual(len(r["refused"]), len(self.v["refused"]))
+
+    def test_digest_is_of_the_signed_bytes_and_tagged(self):
+        e = self.v["events"][0]
+        self.assertTrue(e["event_digest"].startswith("sha256-jcs-v1:"))
+        self.assertNotEqual(e["event_digest"].split(":")[1], e["legacy_content_sha256"])
+
+    def test_form_rules(self):
+        kv.check_mandate(self.root)
+        edits = {
+            "version": ({"mv": 2}, "unknown mandate version"),
+            "raw subject": ({"subject_ref": "9876543210"}, "capability reference"),
+            "night window": ({"window": dict(self.root["window"], from_min=60)}, "08:00-19:00"),
+            "unknown channel": ({"channels": ["fax"]}, "unknown channel"),
+            "depth": ({"depth": 5, "parent_id": "p"}, "above the limit"),
+            "orphan": ({"depth": 1}, "disagree"),
+            "bps": ({"ceilings": {"waiver_bps": 10001}}, "out of range"),
+            "unsorted": ({"actions": ["send_reminder", "read_fields"]}, "not sorted"),
+            "too long": ({"exp": "2026-12-01T05:30:00Z"}, "lifetime"),
+            "extra member": ({"note": "x"}, "must not have"),
+        }
+        for name, (change, why) in edits.items():
+            with self.assertRaisesRegex(kv.Refused, why, msg=name):
+                kv.check_mandate(dict(self.root, **change))
+
+    def test_times_are_in_the_shortest_form(self):
+        for ok in ("2026-10-01T05:30:00Z", "2026-10-01T05:30:00.500Z", "2026-10-01T05:30:00.123456Z"):
+            kv.shortest_time(ok, "t")
+        for bad in ("2026-10-01T05:30:00.000Z", "2026-10-01T05:30:00.500000Z",
+                    "2026-10-01T05:30:00+00:00", "2026-10-01T05:30:00.5Z"):
+            with self.assertRaises(kv.Refused, msg=bad):
+                kv.shortest_time(bad, "t")
+
+    def test_delegation_only_narrows(self):
+        kv.check_delegation(self.child, self.root)
+        wider = {
+            "actions": {"actions": ["place_call", "read_fields", "teleport"]},
+            "channels": {"channels": ["sms", "voice"]},
+            "window": {"window": dict(self.root["window"], max_per_day=5)},
+            "ceiling": {"ceilings": {"waiver_bps": 5000}},
+            "later": {"exp": "2026-10-09T05:30:00Z"},
+            "earlier": {"nbf": "2026-10-01T05:00:00Z"},
+            "holder": {"holder": "rogue-agent"},
+            "depth": {"depth": 2},
+            "another purpose": {"purpose": "marketing"},
+        }
+        why = {
+            "actions": "actions are not within", "channels": "channels are not within",
+            "window": "window is not within", "ceiling": "ceiling waiver_bps exceeds",
+            "later": "outlives", "earlier": "starts before", "holder": "not a valid delegation",
+            "depth": "not a valid delegation", "another purpose": "must keep",
+        }
+        for name, change in wider.items():
+            with self.assertRaisesRegex(kv.Refused, why[name], msg=name):
+                kv.check_delegation(dict(self.child, **change), self.root)
+
+    def test_digest_does_not_depend_on_member_order(self):
+        e = self.v["events"][1]
+        shuffled = dict(reversed(list(e["payload"].items())))
+        self.assertEqual(kv.event_digest(shuffled), e["event_digest"])
+        self.assertEqual(kv.legacy_content_sha256(shuffled), e["legacy_content_sha256"])
 
 
 class Credential(unittest.TestCase):

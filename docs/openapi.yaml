@@ -1456,7 +1456,6 @@ components:
         - key_id
         - source_system
         - event_id
-        - event_sha256
         - event_type
         - record_pseudonym
         - occurred_at
@@ -1477,7 +1476,8 @@ components:
         key_id: { type: string }
         source_system: { type: string }
         event_id: { type: string }
-        event_sha256: { type: string }
+        event_digest: { type: string, description: "sha256-jcs-v1:<64 hex>. Exactly one of event_digest and event_sha256 is present." }
+        event_sha256: { type: string, description: "Legacy: 64 hex, from records written before event_digest." }
         event_type: { type: string }
         record_pseudonym: { type: string }
         occurred_at: { $ref: "#/components/schemas/DateTime" }

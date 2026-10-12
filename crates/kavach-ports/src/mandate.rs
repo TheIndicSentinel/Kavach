@@ -22,8 +22,9 @@ pub struct StoredRevocation {
     pub tenant_id: String,
     pub system: String,
     pub event_id: String,
-    /// SHA-256 of the event's content, to tell a retry from a reuse.
-    pub content_sha256: String,
+    /// The event's digest (`sha256-jcs-v1:<hex>`; a bare 64-hex SHA-256 in
+    /// a row written before that form), to tell a retry from a reuse.
+    pub event_digest: String,
     pub event_type: String,
     pub record_ref: String,
     pub occurred_at: chrono::DateTime<chrono::Utc>,

@@ -45,15 +45,18 @@ fn vectors() -> PathBuf {
 }
 
 fn write_bundle(out: &Path) {
-    let chain = chain_v2();
+    write_chain(out, &chain_v2());
+}
+
+fn write_chain(out: &Path, chain: &[ChainRecord]) {
     let mut writer = BundleWriter::create(out, SCOPE, SegmentStart::GENESIS).unwrap();
-    for record in &chain {
+    for record in chain {
         writer.record(record).unwrap();
     }
     for outcome in outcomes(&records()) {
         writer.outcome(&outcome).unwrap();
     }
-    for checkpoint in checkpoints_v2(&chain) {
+    for checkpoint in checkpoints_v2(chain) {
         writer.checkpoint(&checkpoint).unwrap();
     }
     writer
@@ -361,4 +364,41 @@ fn a_repeated_member_name_is_refused() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("duplicate member name"), "{err}");
+}
+
+/// `bundle-v2-digest`: format 2 with the revocation stating its event by a
+/// tagged digest, the form written now. `bundle-v2` (the legacy
+/// `event_sha256`) is untouched. Same keys file.
+#[test]
+#[ignore = "regenerates the checked-in vector; run only on a deliberate format change"]
+fn generate_digest() {
+    let bundle = vectors().join("bundle-v2-digest");
+    let _ = fs::remove_dir_all(&bundle);
+    write_chain(&bundle, &chain_v2_digest());
+}
+
+#[test]
+fn a_revocation_with_a_tagged_event_digest_verifies() {
+    let bundle = vectors().join("bundle-v2-digest");
+    let report =
+        kavach_evidence_cli::verify::verify_dir(&kavach_evidence_cli::verify::VerifyRequest {
+            bundle: &bundle,
+            keys: &vectors().join("bundle-v2.keys.json"),
+            expect_checkpoint: None,
+            dev: false,
+            now: exported_at(),
+        })
+        .expect("the bundle verifies");
+    assert_eq!((report.records, report.last_seq), (5, 5));
+    let text = fs::read_to_string(bundle.join(RECORDS_FILE)).unwrap();
+    let last: Value = serde_json::from_str(text.lines().last().unwrap()).unwrap();
+    assert!(last["event_digest"]
+        .as_str()
+        .unwrap()
+        .starts_with("sha256-jcs-v1:"));
+    assert!(last.get("event_sha256").is_none());
+    // The legacy vector keeps its legacy member and is still byte-identical.
+    let old = fs::read_to_string(vectors().join("bundle-v2").join(RECORDS_FILE)).unwrap();
+    let old_last: Value = serde_json::from_str(old.lines().last().unwrap()).unwrap();
+    assert!(old_last.get("event_sha256").is_some() && old_last.get("event_digest").is_none());
 }

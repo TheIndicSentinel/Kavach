@@ -333,7 +333,7 @@ pub mod mandate_store {
             tenant_id: TENANT.into(),
             system: "lms".into(),
             event_id: "pay-1".into(),
-            content_sha256: "ab".repeat(32),
+            event_digest: format!("sha256-jcs-v1:{}", "ab".repeat(32)),
             event_type: "loan.paid".into(),
             record_ref: "loan-a".into(),
             occurred_at: Utc.with_ymd_and_hms(2026, 10, 1, 6, 0, 0).unwrap(),

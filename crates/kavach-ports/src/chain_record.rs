@@ -35,8 +35,18 @@ pub struct RevocationPayload {
     /// The system of record and its event.
     pub source_system: String,
     pub event_id: String,
-    /// SHA-256 of the event as it was verified.
-    pub event_sha256: String,
+    /// The event's digest, `sha256-jcs-v1:` and 64 hex characters: SHA-256
+    /// of the event's RFC 8785 bytes, which are the payload of the signed
+    /// token (docs/specs/mandate-and-sor-event.md section 5). Exactly one
+    /// of this and `event_sha256` is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_digest: Option<String>,
+    /// **Legacy**, written before `event_digest`: SHA-256 (64 hex
+    /// characters) of the event's members in struct declaration order. It
+    /// cannot be recomputed without that order, so it is kept readable and
+    /// never written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_sha256: Option<String>,
     pub event_type: String,
     /// Keyed pseudonym of the record (loan) the event is about.
     pub record_pseudonym: String,
@@ -68,12 +78,39 @@ pub struct RevocationDraft {
     pub partition_id: i32,
     pub source_system: String,
     pub event_id: String,
-    pub event_sha256: String,
+    /// The event's digest: `sha256-jcs-v1:<hex>`, or a legacy bare 64-hex
+    /// SHA-256 for a revocation stored before that form existed. A legacy
+    /// value is written to the record as `event_sha256`, so a record
+    /// rebuilt from an old row is the record that row always had.
+    pub event_digest: String,
     pub event_type: String,
     pub record_pseudonym: String,
     pub occurred_at: DateTime<Utc>,
     pub revoked: Vec<String>,
     pub revoked_at: DateTime<Utc>,
+}
+
+/// Prefix of the digest of an event (version 1: SHA-256 over JCS bytes).
+pub const EVENT_DIGEST_PREFIX: &str = "sha256-jcs-v1:";
+
+fn is_lower_hex_64(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+impl RevocationPayload {
+    /// The digest this record states, in the form a draft carries it, if
+    /// the record has exactly one well-formed digest.
+    #[must_use]
+    pub fn digest(&self) -> Option<&str> {
+        match (&self.event_digest, &self.event_sha256) {
+            (Some(d), None) => d
+                .strip_prefix(EVENT_DIGEST_PREFIX)
+                .filter(|h| is_lower_hex_64(h))
+                .map(|_| d.as_str()),
+            (None, Some(h)) if is_lower_hex_64(h) => Some(h.as_str()),
+            _ => None,
+        }
+    }
 }
 
 impl RevocationDraft {
@@ -97,7 +134,12 @@ impl RevocationDraft {
             key_id: key_id.to_string(),
             source_system: self.source_system.clone(),
             event_id: self.event_id.clone(),
-            event_sha256: self.event_sha256.clone(),
+            event_digest: self
+                .event_digest
+                .starts_with(EVENT_DIGEST_PREFIX)
+                .then(|| self.event_digest.clone()),
+            event_sha256: (!self.event_digest.starts_with(EVENT_DIGEST_PREFIX))
+                .then(|| self.event_digest.clone()),
             event_type: self.event_type.clone(),
             record_pseudonym: self.record_pseudonym.clone(),
             occurred_at: micros(self.occurred_at),
@@ -116,7 +158,7 @@ impl RevocationDraft {
         p.tenant_id == self.tenant_id
             && p.source_system == self.source_system
             && p.event_id == self.event_id
-            && p.event_sha256 == self.event_sha256
+            && p.digest() == Some(self.event_digest.as_str())
             && p.revoked == self.revoked
     }
 }
@@ -147,6 +189,11 @@ impl ChainEntry for RevocationRecord {
     }
     fn hash_alg(&self) -> &str {
         &self.payload.hash_alg
+    }
+    fn form(&self) -> Result<(), &'static str> {
+        self.payload.digest().map(|_| ()).ok_or(
+            "exactly one well-formed event digest (event_digest or event_sha256) is required",
+        )
     }
     fn expected_kind(&self) -> &'static str {
         KIND_MANDATE_REVOCATION
@@ -242,6 +289,12 @@ impl ChainEntry for ChainRecord {
         match self {
             Self::Decision(r) => r.hash_alg(),
             Self::Revocation(r) => r.hash_alg(),
+        }
+    }
+    fn form(&self) -> Result<(), &'static str> {
+        match self {
+            Self::Decision(r) => r.form(),
+            Self::Revocation(r) => r.form(),
         }
     }
     fn expected_kind(&self) -> &'static str {

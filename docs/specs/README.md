@@ -6,8 +6,7 @@ Normative definitions of what Kavach writes and what a verifier must check, writ
 |---|---|---|
 | [evidence-bundle.md](evidence-bundle.md) | The evidence chain: records and their kinds, outcomes, checkpoints, the bundle manifest, and how to verify them | `crates/kavach-evidence-cli/tests/vectors/` (`bundle-v1`, `bundle-v2`), `crates/kavach-ports/tests/vectors/` (`checkpoint-v1.json`, `jcs-v1.json`) |
 | [credential-format.md](credential-format.md) | The resource credential a provider receives and what it must check | `crates/kavach-credential/tests/vectors/credential-v1.json` |
-
-Not yet specified normatively: the Task Mandate and the system-of-record event (ADR-004 is the design record; vectors do not exist yet).
+| [mandate-and-sor-event.md](mandate-and-sor-event.md) | The Task Mandate and the system-of-record event tokens, delegation narrowing, revocation by event | `crates/kavach-mandate/tests/vectors/mandate-v1.json` |
 
 ## Conventions
 - **MUST, MUST NOT, SHOULD, MAY** are used as in RFC 2119.

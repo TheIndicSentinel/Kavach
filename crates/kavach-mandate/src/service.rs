@@ -91,13 +91,34 @@ fn micros(t: DateTime<Utc>) -> DateTime<Utc> {
     t.duration_trunc(TimeDelta::microseconds(1)).unwrap_or(t)
 }
 
-/// SHA-256 of an event's content (a struct serializes in a fixed field
-/// order, its sets sorted): a retry has the same, a reuse of its id for
-/// other content does not.
-fn content_sha256(event: &SorEvent) -> Result<String, PortError> {
+/// The digest of an event: `sha256-jcs-v1:` and the hex SHA-256 of the
+/// event's RFC 8785 bytes, which are the payload of the token it arrived in
+/// (docs/specs/mandate-and-sor-event.md section 5). A retry has the same,
+/// a reuse of its id for other content does not. Recorded in the
+/// revocation's evidence record as `event_digest`.
+pub fn event_digest(event: &SorEvent) -> Result<String, PortError> {
+    let bytes = kavach_ports::jcs::to_vec(event)?;
+    Ok(format!(
+        "{}{}",
+        kavach_ports::chain_record::EVENT_DIGEST_PREFIX,
+        hex::encode(Sha256::digest(&bytes))
+    ))
+}
+
+/// **Legacy** digest of an event, written before [`event_digest`]: SHA-256
+/// of its members as compact JSON in struct declaration order. Kept only to
+/// recognise a revocation stored in that form, so that its retry is still a
+/// retry; never written.
+pub fn legacy_content_sha256(event: &SorEvent) -> Result<String, PortError> {
     let bytes =
         serde_json::to_vec(event).map_err(|e| PortError::invalid(format!("event content: {e}")))?;
     Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+/// Whether `stored` (a digest as kept in a revocation row) is `event`'s,
+/// in the current form or the legacy one.
+fn same_event(stored: &str, event: &SorEvent) -> Result<bool, PortError> {
+    Ok(stored == event_digest(event)? || stored == legacy_content_sha256(event)?)
 }
 
 /// Adapters the service depends on (ADR-006).
@@ -337,6 +358,9 @@ where
                 stored.mandate.id
             )));
         }
+        decoded
+            .check_form()
+            .map_err(|rule| PortError::rejected(format!("mandate {}: {rule}", decoded.id)))?;
         if stored.status != MandateStatus::Active {
             return Err(PortError::rejected(format!(
                 "mandate {} is revoked",
@@ -476,7 +500,7 @@ where
             tenant_id: event.tenant_id.clone(),
             system: event.system.clone(),
             event_id: event.event_id.clone(),
-            content_sha256: content_sha256(&event)?,
+            event_digest: event_digest(&event)?,
             event_type: event.event_type.clone(),
             record_ref: event.record_ref.clone(),
             occurred_at: event.occurred_at,
@@ -518,7 +542,7 @@ where
         else {
             return Ok(None);
         };
-        if stored.content_sha256 != content_sha256(&event)? {
+        if !same_event(&stored.event_digest, &event)? {
             return Err(PortError::rejected(format!(
                 "event {} was already used with different content",
                 event.event_id

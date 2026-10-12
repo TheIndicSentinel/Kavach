@@ -166,7 +166,8 @@ A `mandate_revocation` record holds, besides the fields every record has (`recor
 | Field | Meaning |
 |---|---|
 | `source_system`, `event_id`, `event_type` | The system-of-record event (`loan.paid`, `loan.disputed`) |
-| `event_sha256` | SHA-256 of the event as it was verified |
+| `event_digest` | The event's digest, `sha256-jcs-v1:<hex>`: SHA-256 of the event's RFC 8785 bytes (the signed token's payload). Written now |
+| `event_sha256` | Legacy, bare 64-hex: the digest of the event's members in struct order. Records written before `event_digest` carry it; a record has exactly one of the two, and a verifier refuses one with both, neither or a malformed value |
 | `record_pseudonym` | A keyed pseudonym of the loan the event is about. A bundle never holds the loan reference |
 | `occurred_at` | When the event says it happened: mandates issued after it stay live |
 | `revoked` | The mandate ids it revoked, roots and their delegations |

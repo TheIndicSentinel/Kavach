@@ -299,7 +299,7 @@ impl MandateStore for PostgresMandateStore {
         .bind(&revocation.tenant_id)
         .bind(&revocation.system)
         .bind(&revocation.event_id)
-        .bind(&revocation.content_sha256)
+        .bind(&revocation.event_digest)
         .bind(&revocation.event_type)
         .bind(&revocation.record_ref)
         .bind(revocation.occurred_at)
@@ -368,7 +368,7 @@ fn row_to_revocation(row: &sqlx::postgres::PgRow) -> Result<StoredRevocation, Po
         tenant_id: row.try_get("tenant_id").map_err(|e| unavailable(&e))?,
         system: row.try_get("source_system").map_err(|e| unavailable(&e))?,
         event_id: row.try_get("event_id").map_err(|e| unavailable(&e))?,
-        content_sha256: row.try_get("content_sha256").map_err(|e| unavailable(&e))?,
+        event_digest: row.try_get("content_sha256").map_err(|e| unavailable(&e))?,
         event_type: row.try_get("event_type").map_err(|e| unavailable(&e))?,
         record_ref: row.try_get("record_ref").map_err(|e| unavailable(&e))?,
         occurred_at: row.try_get("occurred_at").map_err(|e| unavailable(&e))?,

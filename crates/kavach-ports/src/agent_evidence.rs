@@ -180,6 +180,12 @@ pub trait ChainEntry {
     fn kind(&self) -> &str;
     /// The hash algorithm its payload states (`v2`).
     fn hash_alg(&self) -> &str;
+    /// Rules on the shape of the payload that a hash and a signature do not
+    /// establish (a record whose signer wrote an unreadable form is not
+    /// evidence of anything). `Err` names the rule.
+    fn form(&self) -> Result<(), &'static str> {
+        Ok(())
+    }
     /// The kind a record of this type must state.
     fn expected_kind(&self) -> &'static str;
     fn tenant_id(&self) -> &str;
@@ -605,6 +611,8 @@ pub enum ChainError {
     DevClock { seq: i64 },
     #[error("record {seq}: kind {kind} is not the kind of this record")]
     Kind { seq: i64, kind: String },
+    #[error("record {seq}: malformed record: {reason}")]
+    Form { seq: i64, reason: &'static str },
     #[error("record {seq}: hash_alg {hash_alg} is not one this verifier knows")]
     HashAlg { seq: i64, hash_alg: String },
     #[error("record {seq}: expected seq {expected}")]
@@ -741,6 +749,9 @@ pub fn check_record<R: ChainEntry + ?Sized>(
             seq,
             kind: record.kind().to_string(),
         });
+    }
+    if let Err(reason) = record.form() {
+        return Err(ChainError::Form { seq, reason });
     }
     if record.hash_alg() != HASH_ALG_V2 {
         return Err(ChainError::HashAlg {
@@ -1282,7 +1293,7 @@ mod tests {
             partition_id: 0,
             source_system: "lms".into(),
             event_id: "pay-1".into(),
-            event_sha256: "ab".repeat(32),
+            event_digest: format!("sha256-jcs-v1:{}", "ab".repeat(32)),
             event_type: "loan.paid".into(),
             record_pseudonym: "psn:00".into(),
             occurred_at: DateTime::from_timestamp(1_790_000_000, 0).unwrap(),
@@ -1341,6 +1352,63 @@ mod tests {
             verify_chain(&records, &keys(&key), None, &[], Utc::now()),
             Err(ChainError::Hash { seq: 3 })
         );
+    }
+
+    /// A revocation states its event by exactly one well-formed digest: the
+    /// tagged `event_digest`, or the legacy `event_sha256` of records written
+    /// before it. Both, neither or a malformed one is refused even though
+    /// the signature is genuine.
+    #[test]
+    fn a_revocation_states_exactly_one_digest() {
+        let key = Key(SigningKey::from_bytes(&[3u8; 32]));
+        let decisions = chain(1, &key);
+        let good = revocation_after(&decisions, &key);
+        let keys = keys(&key);
+        assert_eq!(check_record_signature(&good, &keys, false), Ok(()));
+        assert!(good.payload.event_digest.is_some());
+
+        let legacy_hex = "ab".repeat(32);
+        let reseal = |edit: &dyn Fn(&mut crate::chain_record::RevocationPayload)| {
+            let mut payload = good.payload.clone();
+            edit(&mut payload);
+            crate::chain_record::seal_revocation(payload, &key).unwrap()
+        };
+        // The legacy form, as it was written, is still accepted.
+        let legacy = reseal(&|p| {
+            p.event_digest = None;
+            p.event_sha256 = Some(legacy_hex.clone());
+        });
+        assert_eq!(check_record_signature(&legacy, &keys, false), Ok(()));
+
+        let tag = |hex: String| Some(format!("sha256-jcs-v1:{hex}"));
+        let edits: Vec<(&str, Option<String>, Option<String>)> = vec![
+            (
+                "both",
+                good.payload.event_digest.clone(),
+                Some("ab".repeat(32)),
+            ),
+            ("neither", None, None),
+            ("short", tag("ab".into()), None),
+            (
+                "unknown tag",
+                Some(format!("sha512:{}", "ab".repeat(32))),
+                None,
+            ),
+            ("upper case", tag("AB".repeat(32)), None),
+        ];
+        for (what, digest, sha) in edits {
+            let record = reseal(&|p| {
+                p.event_digest.clone_from(&digest);
+                p.event_sha256.clone_from(&sha);
+            });
+            assert!(
+                matches!(
+                    check_record_signature(&record, &keys, false),
+                    Err(ChainError::Form { seq: 2, .. })
+                ),
+                "{what}"
+            );
+        }
     }
 
     /// A record that states a hash algorithm this verifier does not know is

@@ -15,6 +15,6 @@ mod service;
 
 pub use config::{MandateConfig, SorIssuer};
 pub use service::{
-    claimed_tenant, is_revoking_event, IssuedMandate, MandateDeps, MandateService, RevokedByEvent,
-    REVOKING_EVENTS,
+    claimed_tenant, event_digest, is_revoking_event, legacy_content_sha256, IssuedMandate,
+    MandateDeps, MandateService, RevokedByEvent, REVOKING_EVENTS,
 };
