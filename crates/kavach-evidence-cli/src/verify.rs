@@ -26,8 +26,8 @@ use kavach_ports::bundle_verify::{
 };
 use kavach_ports::checkpoint::Checkpoint;
 use kavach_ports::{KeyAlgorithm, PublicKey};
-use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::de::{DeserializeOwned, MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer};
 use sha2::{Digest, Sha256};
 
 /// Exit status: verified, nothing to report.
@@ -122,8 +122,7 @@ pub fn load_trusted_keys(path: &Path, bundle: &Path) -> Result<TrustedKeys, Veri
         ));
     }
     let text = fs::read_to_string(path).map_err(io(path.display().to_string()))?;
-    let file: KeysFile =
-        serde_json::from_str(&text).map_err(|e| VerifyError::Keys(e.to_string()))?;
+    let file: KeysFile = parse_strict(text.as_bytes()).map_err(VerifyError::Keys)?;
     let mut keys = BTreeMap::new();
     let mut validity = BTreeMap::new();
     for entry in file.keys {
@@ -230,6 +229,74 @@ impl<T> JsonLines<T> {
     }
 }
 
+/// Parses `bytes` as JSON and refuses an object that names a member twice
+/// (docs/specs/evidence-bundle.md section 2.1). serde keeps the last value
+/// of a repeated name and says nothing, so a second reader (or the same
+/// reader after a refactor) could read another value than the one signed.
+fn parse_strict<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, String> {
+    struct NoDuplicates;
+    impl<'de> Deserialize<'de> for NoDuplicates {
+        fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+            struct V;
+            impl<'de> Visitor<'de> for V {
+                type Value = NoDuplicates;
+                fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    f.write_str("JSON")
+                }
+                fn visit_bool<E>(self, _: bool) -> Result<NoDuplicates, E> {
+                    Ok(NoDuplicates)
+                }
+                fn visit_i64<E>(self, _: i64) -> Result<NoDuplicates, E> {
+                    Ok(NoDuplicates)
+                }
+                fn visit_u64<E>(self, _: u64) -> Result<NoDuplicates, E> {
+                    Ok(NoDuplicates)
+                }
+                fn visit_f64<E>(self, _: f64) -> Result<NoDuplicates, E> {
+                    Ok(NoDuplicates)
+                }
+                fn visit_str<E>(self, _: &str) -> Result<NoDuplicates, E> {
+                    Ok(NoDuplicates)
+                }
+                fn visit_unit<E>(self) -> Result<NoDuplicates, E> {
+                    Ok(NoDuplicates)
+                }
+                fn visit_none<E>(self) -> Result<NoDuplicates, E> {
+                    Ok(NoDuplicates)
+                }
+                fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<NoDuplicates, D::Error> {
+                    NoDuplicates::deserialize(d)
+                }
+                fn visit_seq<A: SeqAccess<'de>>(
+                    self,
+                    mut seq: A,
+                ) -> Result<NoDuplicates, A::Error> {
+                    while seq.next_element::<NoDuplicates>()?.is_some() {}
+                    Ok(NoDuplicates)
+                }
+                fn visit_map<A: MapAccess<'de>>(
+                    self,
+                    mut map: A,
+                ) -> Result<NoDuplicates, A::Error> {
+                    let mut seen = std::collections::BTreeSet::new();
+                    while let Some(key) = map.next_key::<String>()? {
+                        if !seen.insert(key.clone()) {
+                            return Err(serde::de::Error::custom(format!(
+                                "duplicate member name {key:?}"
+                            )));
+                        }
+                        map.next_value::<NoDuplicates>()?;
+                    }
+                    Ok(NoDuplicates)
+                }
+            }
+            d.deserialize_any(V)
+        }
+    }
+    serde_json::from_slice::<NoDuplicates>(bytes).map_err(|e| e.to_string())?;
+    serde_json::from_slice(bytes).map_err(|e| e.to_string())
+}
+
 impl<T: DeserializeOwned> Iterator for JsonLines<T> {
     type Item = Result<T, String>;
 
@@ -239,7 +306,7 @@ impl<T: DeserializeOwned> Iterator for JsonLines<T> {
         }
         let item = match read_line(&mut self.reader, &mut self.buffer) {
             Ok(false) => return None,
-            Ok(true) => serde_json::from_slice(&self.buffer).map_err(|e| e.to_string()),
+            Ok(true) => parse_strict(&self.buffer),
             Err(reason) => Err(reason),
         };
         self.failed = item.is_err();
@@ -307,7 +374,7 @@ fn read_manifest(dir: &Path) -> Result<Manifest, VerifyError> {
         return Err(VerifyError::Layout(format!("{MANIFEST_FILE} is too large")));
     }
     let bytes = fs::read(&path).map_err(io(path.display().to_string()))?;
-    serde_json::from_slice(&bytes).map_err(|e| VerifyError::Layout(format!("{MANIFEST_FILE}: {e}")))
+    parse_strict(&bytes).map_err(|e| VerifyError::Layout(format!("{MANIFEST_FILE}: {e}")))
 }
 
 /// What to verify and against what.

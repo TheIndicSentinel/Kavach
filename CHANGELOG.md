@@ -4,8 +4,13 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
+### Added
+
+- **Public specifications, `docs/specs/`** (evidence bundle format 2, credential format) and an **independent verifier**, `conformance/kavach_verify.py`: Python, standard library only, written from the specification text alone. It verifies the published bundle, checkpoint, JCS and credential vectors and refuses unknown record kinds; CI runs it as the job "Independent verifier".
+
 ### Changed
 
+- **The bundle verifier refuses a member name used twice in one object** and a record whose `hash_alg` is not `v2` (both found by the independent verifier; the specification already required it). Bundles Kavach itself writes are unaffected.
 - **The system-of-record listener refuses an event for a tenant the stack does not serve** (400), before it is verified or acted on. Revocations were already scoped by the event's tenant; such an event used to be accepted and revoke nothing.
 - **Development fixture (`kavach init`):** each development borrower now holds one loan, `lms:loan/<borrower id>` (it was one per event), so a payment reaches every mandate issued for the borrower. The default world gains a second borrower, `ref:borrower:B-ATTACK` (its own consent and synthetic destinations), which `kavach attack` uses for the revocation attacks; nothing is ever sent to it. Projects made before this release need `kavach init --force`.
 - **Evidence bundle format 2 (R1b-3, ADR-012 §7).** `export` writes version 2, which carries records of every kind in `records.jsonl`: decisions and `mandate_revocation` records, in one chain, with checkpoints covering both. Verifiers (`kavach-evidence verify-bundle`, `kavach evidence verify`, `kavach why --bundle`) read versions 1 and 2. They refuse a kind they do not know, by file and line, and never skip it; a version 1 bundle may hold decisions only. Bundles written before (version 1) still verify; a verifier older than this release refuses a version 2 bundle. `kavach why` on a revocation's record id says it is not a decision. New test vector `bundle-v2`; `bundle-v1` is unchanged.
