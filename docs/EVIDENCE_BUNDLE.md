@@ -86,7 +86,7 @@ A checkpoint dated before the one preceding it is a warning (the clock stepped b
 - The checkpoint is dated by trusted time, under the same clock-error bound as decisions. If trusted time is unavailable the checkpoint is skipped and counted; it is never dated by a guess.
 - If records stay uncovered past the stall threshold (default 10 minutes), an alert is logged and shown in `/v1/runtime` and the metrics. `/health` and decisions are unaffected.
 - The task is restarted if it ever exits, and a panic is logged.
-- The server has no graceful shutdown yet, so no final checkpoint is written when it stops. Records written after the last checkpoint are covered after the next start.
+- On SIGTERM or Ctrl-C the server stops accepting, waits for the gateway calls in flight and writes a final checkpoint, so nothing recorded is left uncovered. A process that is killed (SIGKILL, a crash) writes none: its records are covered after the next start.
 - The checkpoint key is separate from every other key by id and from the evidence key by material. By default it sits in a directory beside the other keys, so the separation only becomes a real boundary when keys move to a KMS or HSM.
 
 ## Bundle format, version 2

@@ -111,6 +111,54 @@ pub async fn serve_http_on(
     Ok(())
 }
 
+/// [`serve_http_on`] that stops when `stop` resolves: no new connection is
+/// accepted, and requests in flight finish. With TLS the connections are
+/// closed after `drain` at the latest; without it the caller bounds the
+/// wait (a timeout around this future).
+pub async fn serve_http_on_until(
+    app: Router,
+    listener: std::net::TcpListener,
+    tls: Option<&TlsConfig>,
+    stop: impl std::future::Future<Output = ()> + Send + 'static,
+    drain: std::time::Duration,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    listener.set_nonblocking(true)?;
+    match tls {
+        None => {
+            axum::serve(tokio::net::TcpListener::from_std(listener)?, app)
+                .with_graceful_shutdown(stop)
+                .await?;
+        }
+        Some(config) => {
+            let rustls = build_rustls_config(config).await?;
+            let handle = axum_server::Handle::new();
+            let on_stop = handle.clone();
+            tokio::spawn(async move {
+                stop.await;
+                on_stop.graceful_shutdown(Some(drain));
+            });
+            axum_server::from_tcp(listener)
+                .acceptor(PeerCertAcceptor::new(rustls))
+                .handle(handle)
+                .serve(app.into_make_service())
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// [`serve_http`] that stops when `stop` resolves (see
+/// [`serve_http_on_until`]).
+pub async fn serve_http_until(
+    app: Router,
+    addr: SocketAddr,
+    tls: Option<&TlsConfig>,
+    stop: impl std::future::Future<Output = ()> + Send + 'static,
+    drain: std::time::Duration,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    serve_http_on_until(app, std::net::TcpListener::bind(addr)?, tls, stop, drain).await
+}
+
 pub async fn grpc_server_tls_config(
     tls: Option<&TlsConfig>,
 ) -> Result<Option<tonic::transport::ServerTlsConfig>, Box<dyn std::error::Error + Send + Sync>> {
