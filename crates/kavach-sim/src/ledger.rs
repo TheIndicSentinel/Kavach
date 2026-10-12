@@ -22,6 +22,8 @@ pub struct Entry {
     /// The borrower the mandate was issued for; `None` for a mandate id
     /// that was never issued.
     pub mandate_for: Option<String>,
+    /// When the mandate was issued (the simulator's own record).
+    pub mandate_issued_at: Option<DateTime<Utc>>,
     pub request_id: String,
     /// This call sends call `retry_of` again (same request id).
     pub retry_of: Option<u32>,
@@ -39,6 +41,22 @@ pub struct Entry {
     pub leak: Option<String>,
 }
 
+/// A system-of-record event the run sent (ADR-012).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SorEntry {
+    pub day: u32,
+    pub at: DateTime<Utc>,
+    pub event_id: String,
+    pub event_type: String,
+    pub borrower: String,
+    pub status: u16,
+    /// What Kavach says it revoked.
+    pub revoked: Vec<String>,
+    /// What the simulator's own record says should be: the borrower's
+    /// mandates issued at or before the event and not revoked before it.
+    pub expected: Vec<String>,
+}
+
 impl Entry {
     /// Kavach allowed it (PASS or ALERT).
     #[must_use]
@@ -50,8 +68,19 @@ impl Entry {
 /// What a seed must reproduce: who did what, when, and what was decided.
 /// Not the ids or signatures, which are random by design.
 #[must_use]
-pub fn digest(entries: &[Entry]) -> String {
+pub fn digest(entries: &[Entry], events: &[SorEntry]) -> String {
     let mut hash = Sha256::new();
+    for e in events {
+        hash.update(format!(
+            "event|{}|{}|{}|{}|{}|{}\n",
+            e.day,
+            e.at.to_rfc3339(),
+            e.event_id,
+            e.event_type,
+            e.borrower,
+            e.status
+        ));
+    }
     for e in entries {
         hash.update(format!(
             "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}\n",

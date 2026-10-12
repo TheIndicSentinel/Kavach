@@ -4,13 +4,21 @@
 //! record Kavach does not write: it is the provider's own proof that
 //! nothing was sent twice and nothing blocked was sent at all.
 //!
+//! Payments and disputes (ADR-012) are reconciled too: what Kavach said it
+//! revoked against the simulator's own record of the mandates, each event
+//! against its one signed record in the evidence, and the inbox against
+//! the revocations: nothing may arrive under a revoked mandate from the
+//! event on.
+//!
 //! Findings name borrower references and record ids, never destinations.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use crate::ledger::Entry;
+use chrono::{DateTime, Utc};
+
+use crate::ledger::{Entry, SorEntry};
 use crate::world::Delivery;
 
 /// One record from the evidence bundle (`records.jsonl`).
@@ -20,6 +28,15 @@ pub struct Recorded {
     pub request_id: String,
     pub returned_decision: String,
     pub credential_id: Option<String>,
+    /// When Kavach decided (the record's signed time).
+    pub ts: Option<DateTime<Utc>>,
+}
+
+/// A `mandate_revocation` record from the evidence bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedRevocation {
+    pub event_id: String,
+    pub revoked: Vec<String>,
 }
 
 /// One message in the provider's inbox.
@@ -28,6 +45,8 @@ pub struct Arrived {
     pub record_id: String,
     pub jti: String,
     pub destination: String,
+    /// The mandate the message was sent under, as the provider saw it.
+    pub mandate_id: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -37,7 +56,87 @@ pub struct Reconciliation {
     pub evidence_records: usize,
     pub outcomes: usize,
     pub inbox_messages: usize,
+    /// Payments and disputes the run sent, and their evidence records.
+    pub revocation_events: usize,
+    pub revocation_records: usize,
     pub findings: Vec<String>,
+}
+
+fn sorted(ids: &[String]) -> Vec<&str> {
+    let mut ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    ids.sort_unstable();
+    ids
+}
+
+/// The run's payments and disputes against Kavach's replies, the evidence
+/// and the inbox.
+#[must_use]
+pub fn reconcile_revocations(
+    sent: &[SorEntry],
+    recorded: &[RecordedRevocation],
+    inbox: &[Arrived],
+    decided: &[Recorded],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    let records: BTreeMap<&str, &RecordedRevocation> =
+        recorded.iter().map(|r| (r.event_id.as_str(), r)).collect();
+    for event in sent {
+        let who = format!(
+            "{} {} for {}",
+            event.event_type, event.event_id, event.borrower
+        );
+        if event.status != 200 {
+            findings.push(format!("{who}: refused ({})", event.status));
+            continue;
+        }
+        if sorted(&event.revoked) != sorted(&event.expected) {
+            findings.push(format!(
+                "{who}: revoked {} mandate(s), but the run held {} issued before it",
+                event.revoked.len(),
+                event.expected.len()
+            ));
+        }
+        match records.get(event.event_id.as_str()) {
+            None => findings.push(format!("{who}: no revocation record in the evidence")),
+            Some(record) if sorted(&record.revoked) != sorted(&event.expected) => findings.push(
+                format!("{who}: the evidence record names other mandates than were revoked"),
+            ),
+            Some(_) => {}
+        }
+    }
+    let ours: BTreeSet<&str> = sent.iter().map(|e| e.event_id.as_str()).collect();
+    for record in recorded {
+        if !ours.contains(record.event_id.as_str()) {
+            findings.push(format!(
+                "a revocation record for event {}, which the run never sent",
+                record.event_id
+            ));
+        }
+    }
+    // The inbox, against the revocations: a message under a revoked
+    // mandate, decided at or after its event, must not exist.
+    let when: BTreeMap<&str, Option<DateTime<Utc>>> = decided
+        .iter()
+        .map(|r| (r.record_id.as_str(), r.ts))
+        .collect();
+    for message in inbox {
+        for event in sent
+            .iter()
+            .filter(|e| e.expected.contains(&message.mandate_id))
+        {
+            let at = when.get(message.record_id.as_str()).copied().flatten();
+            if at.is_none_or(|at| at >= event.at) {
+                findings.push(format!(
+                    "record {}: delivered to {} under a mandate its {} at {} revoked",
+                    message.record_id,
+                    event.borrower,
+                    event.event_type,
+                    event.at.to_rfc3339()
+                ));
+            }
+        }
+    }
+    findings
 }
 
 /// What the inbox shows for one recorded call: arrived exactly once if it
@@ -97,6 +196,7 @@ fn arrivals(
 
 /// Reconciles a run. `destinations` and `deliveries` describe the world;
 /// `outcomes` are the bundle's outcomes by credential id.
+#[allow(clippy::too_many_arguments)]
 pub fn reconcile(
     ledger: &[Entry],
     recorded: &[Recorded],
@@ -104,6 +204,8 @@ pub fn reconcile(
     inbox: &[Arrived],
     destinations: &BTreeMap<String, String>,
     deliveries: &BTreeMap<String, Delivery>,
+    sent: &[SorEntry],
+    revocations: &[RecordedRevocation],
 ) -> Reconciliation {
     let mut findings = Vec::new();
     let by_record: BTreeMap<&str, &Recorded> =
@@ -173,11 +275,14 @@ pub fn reconcile(
             ));
         }
     }
+    findings.extend(reconcile_revocations(sent, revocations, inbox, recorded));
     Reconciliation {
         ledger_records: firsts.len(),
         evidence_records: recorded.len(),
         outcomes: outcomes.len(),
         inbox_messages: inbox.len(),
+        revocation_events: sent.len(),
+        revocation_records: revocations.len(),
         findings,
     }
 }
@@ -198,6 +303,7 @@ mod tests {
             params: serde_json::json!({}),
             channel: "whatsapp".into(),
             mandate_for: Some(borrower.into()),
+            mandate_issued_at: None,
             request_id: format!("sim-1-{seq}"),
             retry_of: None,
             attack: None,
@@ -217,6 +323,7 @@ mod tests {
             request_id: e.request_id.clone(),
             returned_decision: e.decision.clone().unwrap(),
             credential_id: e.allowed().then(|| format!("cred-{}", e.seq)),
+            ts: Some(e.at),
         }
     }
 
@@ -227,6 +334,8 @@ mod tests {
         inbox: Vec<Arrived>,
         destinations: BTreeMap<String, String>,
         deliveries: BTreeMap<String, Delivery>,
+        sent: Vec<SorEntry>,
+        revocations: Vec<RecordedRevocation>,
     }
 
     impl Run {
@@ -248,6 +357,7 @@ mod tests {
                     record_id: format!("adr:default:0:{seq}"),
                     jti: format!("cred-{seq}"),
                     destination: (*dest).into(),
+                    mandate_id: "m-other".into(),
                 })
                 .collect();
             Self {
@@ -260,6 +370,8 @@ mod tests {
                     ("ref:b".to_string(), "+910000100002".to_string()),
                 ]),
                 deliveries: BTreeMap::new(),
+                sent: Vec::new(),
+                revocations: Vec::new(),
             }
         }
 
@@ -271,6 +383,8 @@ mod tests {
                 &self.inbox,
                 &self.destinations,
                 &self.deliveries,
+                &self.sent,
+                &self.revocations,
             )
             .findings
         }
@@ -300,6 +414,7 @@ mod tests {
             record_id: "adr:default:0:3".into(),
             jti: "cred-3".into(),
             destination: "+910000100001".into(),
+            mandate_id: "m-other".into(),
         });
         assert!(run.findings().iter().any(|f| f.contains("was blocked")));
     }
@@ -345,5 +460,97 @@ mod tests {
             .any(|f| f.contains("refused or failed")));
         run.inbox.remove(1);
         assert_eq!(run.findings(), Vec::<String>::new());
+    }
+
+    /// A payment for ref:a at 12:00 that revoked m-a, recorded once, and
+    /// one message for ref:a decided before it.
+    fn paid() -> (
+        Vec<SorEntry>,
+        Vec<RecordedRevocation>,
+        Vec<Arrived>,
+        Vec<Recorded>,
+    ) {
+        let event = SorEntry {
+            day: 1,
+            at: slot(1, 720),
+            event_id: "sim-1-ev0-0".into(),
+            event_type: "loan.paid".into(),
+            borrower: "ref:a".into(),
+            status: 200,
+            revoked: vec!["m-a".into()],
+            expected: vec!["m-a".into()],
+        };
+        let record = RecordedRevocation {
+            event_id: "sim-1-ev0-0".into(),
+            revoked: vec!["m-a".into()],
+        };
+        let before = Recorded {
+            record_id: "adr:default:0:1".into(),
+            request_id: "sim-1-1".into(),
+            returned_decision: "PASS".into(),
+            credential_id: Some("cred-1".into()),
+            ts: Some(slot(1, 600)),
+        };
+        let message = Arrived {
+            record_id: "adr:default:0:1".into(),
+            jti: "cred-1".into(),
+            destination: "+910000100001".into(),
+            mandate_id: "m-a".into(),
+        };
+        (vec![event], vec![record], vec![message], vec![before])
+    }
+
+    #[test]
+    fn a_payment_reconciles_with_its_record_and_the_inbox() {
+        let (sent, recorded, inbox, decided) = paid();
+        assert_eq!(
+            reconcile_revocations(&sent, &recorded, &inbox, &decided),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn a_delivery_after_the_payment_is_caught_by_the_inbox() {
+        let (sent, recorded, mut inbox, mut decided) = paid();
+        decided.push(Recorded {
+            record_id: "adr:default:0:2".into(),
+            request_id: "sim-1-2".into(),
+            returned_decision: "PASS".into(),
+            credential_id: Some("cred-2".into()),
+            ts: Some(slot(1, 1080)),
+        });
+        inbox.push(Arrived {
+            record_id: "adr:default:0:2".into(),
+            jti: "cred-2".into(),
+            destination: "+910000100001".into(),
+            mandate_id: "m-a".into(),
+        });
+        let findings = reconcile_revocations(&sent, &recorded, &inbox, &decided);
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("adr:default:0:2"), "{findings:?}");
+        assert!(!findings[0].contains("+91"), "no destinations in findings");
+    }
+
+    #[test]
+    fn missing_wrong_and_stray_revocation_records_are_caught() {
+        let (sent, mut recorded, inbox, decided) = paid();
+        let check = |recorded: &[RecordedRevocation], sent: &[SorEntry], expect: &str| {
+            let findings = reconcile_revocations(sent, recorded, &inbox, &decided);
+            assert!(
+                findings.iter().any(|f| f.contains(expect)),
+                "{expect}: {findings:?}"
+            );
+        };
+        check(&[], &sent, "no revocation record");
+        recorded[0].revoked = vec!["m-b".into()];
+        check(&recorded, &sent, "other mandates");
+        let stray = vec![RecordedRevocation {
+            event_id: "never-sent".into(),
+            revoked: vec![],
+        }];
+        check(&stray, &[], "never sent");
+        let mut wrong = sent.clone();
+        wrong[0].revoked = vec![];
+        check(&paid().1, &wrong, "revoked 0 mandate(s)");
     }
 }

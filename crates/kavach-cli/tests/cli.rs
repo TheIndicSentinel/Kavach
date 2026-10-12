@@ -1449,6 +1449,8 @@ fn simulate_runs_every_builtin_as_expected() {
             "prompt-injection-raw-number",
             "wrong-borrower",
             "forged-mandate",
+            "payment-stops-contact",
+            "dispute-stops-contact",
             "provider-failures",
             "retry-after-unknown",
             "mixed-week",
@@ -1464,11 +1466,12 @@ fn simulate_runs_every_builtin_as_expected() {
         assert_eq!(doc["evidence"]["state"], "verified", "{doc}");
         assert_eq!(doc["evidence"]["signed_with"], "dev-export-1");
         // Every call is a record, except malformed ones (400: nothing is
-        // recorded) and retries (answered without a new record).
-        assert!(
-            doc["evidence"]["records"].as_u64() <= doc["calls"].as_u64(),
-            "{doc}"
-        );
+        // recorded) and retries (answered without a new record); each
+        // payment or dispute adds its revocation record.
+        let records = doc["evidence"]["records"].as_u64().unwrap();
+        let calls = doc["calls"].as_u64().unwrap();
+        let revocations = doc["revocation_events"].as_u64().unwrap();
+        assert!(records <= calls + revocations, "{doc}");
         for list in ["violations", "mismatches", "leaks", "expectations_unmet"] {
             assert!(
                 doc[list].as_array().unwrap().is_empty(),
@@ -1490,6 +1493,39 @@ fn simulate_runs_every_builtin_as_expected() {
             "{name}: {rec}"
         );
     }
+}
+
+/// A payment stops contact in a simulated run (ADR-012), judged by the
+/// oracle and reconciled against the evidence and the provider's inbox.
+#[test]
+fn simulate_a_payment_stops_contact() {
+    let dir = scratch("simulate-payment");
+    // A payment stops contact (ADR-012): the paid borrowers' later calls
+    // are refused, each payment is one revocation record naming exactly
+    // the mandates the run held, and the inbox has nothing after it; the
+    // seed reproduces the run, events included.
+    let payment = |dir: &Path| {
+        json(&kavach(
+            dir,
+            &[
+                "--json",
+                "simulate",
+                "run",
+                "--builtin",
+                "payment-stops-contact",
+            ],
+        ))
+    };
+    let doc = payment(&dir);
+    assert_eq!(doc["blocked_by_reason"]["mandate_invalid"], 7, "{doc}");
+    assert_eq!(doc["revocation_events"], 2, "{doc}");
+    assert_eq!(doc["reconciliation"]["revocation_events"], 2, "{doc}");
+    assert_eq!(doc["reconciliation"]["revocation_records"], 2, "{doc}");
+    assert!(doc["reconciliation"]["findings"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert_eq!(payment(&dir)["digest"], doc["digest"]);
 }
 
 /// What the built-ins show in detail: the cap across agents, attacks

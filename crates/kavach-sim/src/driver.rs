@@ -11,9 +11,9 @@ use serde_json::{json, Value};
 
 use crate::agents::{decide, retries, Memory};
 use crate::calendar::slot;
-use crate::ledger::Entry;
+use crate::ledger::{Entry, SorEntry};
 use crate::rng::Rng;
-use crate::scenario::Scenario;
+use crate::scenario::{minute_of_day, EventSpec, Scenario};
 use crate::world::World;
 
 pub trait Stack {
@@ -30,6 +30,81 @@ pub trait Stack {
     ) -> impl Future<Output = Result<(u16, Value), String>>;
     /// Moves the stack's fixed clock forward to `at`.
     fn move_clock(&self, at: DateTime<Utc>) -> impl Future<Output = Result<(), String>>;
+    /// A revoking system-of-record event (`loan.paid`, `loan.disputed`)
+    /// for `subject_ref`'s loan, at the stack's time: status and body.
+    fn revoke(
+        &self,
+        event_type: &str,
+        event_id: &str,
+        subject_ref: &str,
+    ) -> impl Future<Output = Result<(u16, Value), String>>;
+}
+
+/// A run's record: every call, and every system-of-record event it sent.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Run {
+    pub calls: Vec<Entry>,
+    pub events: Vec<SorEntry>,
+}
+
+/// One mandate the run obtained, in the simulator's own record.
+struct Held {
+    borrower: usize,
+    id: String,
+    issued_at: DateTime<Utc>,
+    revoked: bool,
+}
+
+/// The mandates the run holds, and which each pair acts under now.
+#[derive(Default)]
+struct Mandates {
+    all: Vec<Held>,
+    current: BTreeMap<(usize, usize), usize>,
+}
+
+impl Mandates {
+    async fn issue<S: Stack>(
+        &mut self,
+        stack: &S,
+        world: &World,
+        (agent, borrower): (usize, usize),
+        at: DateTime<Utc>,
+    ) -> Result<(), String> {
+        let id = stack
+            .issue(
+                &world.agents[agent].id,
+                &world.borrowers[borrower].subject_ref,
+            )
+            .await
+            .map_err(|e| format!("issuing a mandate: {e}"))?;
+        self.all.push(Held {
+            borrower,
+            id,
+            issued_at: at,
+            revoked: false,
+        });
+        self.current.insert((agent, borrower), self.all.len() - 1);
+        Ok(())
+    }
+
+    fn current(&self, pair: (usize, usize)) -> &Held {
+        &self.all[self.current[&pair]]
+    }
+
+    /// What an event for `borrower` at `at` must revoke: its mandates
+    /// issued at or before it, not revoked before. Marks them revoked.
+    fn revoke(&mut self, borrower: usize, at: DateTime<Utc>) -> Vec<String> {
+        let mut ids = Vec::new();
+        for held in self
+            .all
+            .iter_mut()
+            .filter(|h| h.borrower == borrower && !h.revoked && h.issued_at <= at)
+        {
+            held.revoked = true;
+            ids.push(held.id.clone());
+        }
+        ids
+    }
 }
 
 /// When the stack's clock must start: the first slot of day 1.
@@ -39,29 +114,18 @@ pub fn start_time(scenario: &Scenario) -> Result<DateTime<Utc>, String> {
 }
 
 /// Runs `scenario` on `stack`, whose clock is at [`start_time`].
-pub async fn run<S: Stack>(
-    stack: &S,
-    scenario: &Scenario,
-    world: &World,
-) -> Result<Vec<Entry>, String> {
-    let mut mandates = BTreeMap::new();
-    for &(agent, borrower) in &world.assignments {
-        let id = stack
-            .issue(
-                &world.agents[agent].id,
-                &world.borrowers[borrower].subject_ref,
-            )
-            .await
-            .map_err(|e| format!("issuing a mandate: {e}"))?;
-        mandates.insert((agent, borrower), id);
+pub async fn run<S: Stack>(stack: &S, scenario: &Scenario, world: &World) -> Result<Run, String> {
+    let start = start_time(scenario)?;
+    let mut mandates = Mandates::default();
+    for &pair in &world.assignments {
+        mandates.issue(stack, world, pair, start).await?;
     }
 
-    let (mut rng, mut memory, mut ledger) =
-        (Rng::new(scenario.seed), Memory::default(), Vec::new());
+    let (mut rng, mut memory, mut out) =
+        (Rng::new(scenario.seed), Memory::default(), Run::default());
     let slots = scenario.slots()?;
-    let start = start_time(scenario)?;
     for day in 1..=scenario.days {
-        for &minute in &slots {
+        for minute in timeline(scenario, day, &slots)? {
             let at = slot(day, minute);
             if at != start {
                 stack
@@ -69,15 +133,36 @@ pub async fn run<S: Stack>(
                     .await
                     .map_err(|e| format!("moving the clock: {e}"))?;
             }
+            // The system of record first, then the agents.
+            for event in scenario.events.iter().filter(|e| e.day == day) {
+                if minute_of_day(&event.at)? == minute {
+                    let n = out.events.len();
+                    send_event(
+                        stack,
+                        scenario,
+                        world,
+                        &mut mandates,
+                        event,
+                        at,
+                        n,
+                        &mut out,
+                    )
+                    .await?;
+                }
+            }
+            if !slots.contains(&minute) {
+                continue;
+            }
             for intent in decide(world, day, minute, &mut memory, &mut rng) {
-                let seq = u32::try_from(ledger.len() + 1).unwrap_or(u32::MAX);
+                let seq = u32::try_from(out.calls.len() + 1).unwrap_or(u32::MAX);
                 let borrower = &world.borrowers[intent.borrower];
                 let request_id = format!("sim-{}-{seq}", scenario.seed);
-                let mandate = if intent.forged_mandate {
-                    format!("forged-{}-{seq}", scenario.seed)
-                } else {
-                    mandates[&(intent.agent, intent.borrower)].clone()
-                };
+                let held = (!intent.forged_mandate)
+                    .then(|| mandates.current((intent.agent, intent.borrower)));
+                let mandate = held.map_or_else(
+                    || format!("forged-{}-{seq}", scenario.seed),
+                    |h| h.id.clone(),
+                );
                 let body = json!({
                     "mandate_id": mandate,
                     "request_id": request_id,
@@ -91,14 +176,15 @@ pub async fn run<S: Stack>(
                     borrower: borrower.subject_ref.clone(),
                     tool: intent.tool.into(),
                     params: intent.params.clone(),
-                    mandate_for: (!intent.forged_mandate).then(|| borrower.subject_ref.clone()),
+                    mandate_for: held.map(|_| borrower.subject_ref.clone()),
+                    mandate_issued_at: held.map(|h| h.issued_at),
                     request_id,
                     retry_of: None,
                     attack: intent.attack.map(str::to_string),
                 };
                 let entry = send(stack, world, &call, &body).await?;
                 let lost = entry.outcome.as_deref() == Some("unknown");
-                ledger.push(entry);
+                out.calls.push(entry);
                 // The same request again, after an outcome it cannot know.
                 if lost && retries(world, intent.agent, &mut rng) {
                     let again = Call {
@@ -106,12 +192,83 @@ pub async fn run<S: Stack>(
                         retry_of: Some(seq),
                         ..call
                     };
-                    ledger.push(send(stack, world, &again, &body).await?);
+                    out.calls.push(send(stack, world, &again, &body).await?);
                 }
             }
         }
     }
-    Ok(ledger)
+    Ok(out)
+}
+
+/// The minutes of `day` at which something happens: the schedule's slots
+/// and the day's events, in order (the clock only moves forward).
+fn timeline(scenario: &Scenario, day: u32, slots: &[u32]) -> Result<Vec<u32>, String> {
+    let mut minutes: Vec<u32> = slots.to_vec();
+    for event in scenario.events.iter().filter(|e| e.day == day) {
+        minutes.push(minute_of_day(&event.at)?);
+    }
+    minutes.sort_unstable();
+    minutes.dedup();
+    Ok(minutes)
+}
+
+/// One event, for each of its borrowers: a payment or dispute revokes
+/// (and is recorded with what it must revoke), a new default assigns the
+/// borrower again.
+#[allow(clippy::too_many_arguments)]
+async fn send_event<S: Stack>(
+    stack: &S,
+    scenario: &Scenario,
+    world: &World,
+    mandates: &mut Mandates,
+    event: &EventSpec,
+    at: DateTime<Utc>,
+    n: usize,
+    out: &mut Run,
+) -> Result<(), String> {
+    for (k, borrower) in world
+        .event_borrowers(event.borrowers)
+        .into_iter()
+        .enumerate()
+    {
+        if !event.kind.revokes() {
+            let pairs: Vec<(usize, usize)> = world
+                .assignments
+                .iter()
+                .copied()
+                .filter(|&(_, b)| b == borrower)
+                .collect();
+            for pair in pairs {
+                mandates.issue(stack, world, pair, at).await?;
+            }
+            continue;
+        }
+        let subject = &world.borrowers[borrower].subject_ref;
+        let event_id = format!("sim-{}-ev{n}-{k}", scenario.seed);
+        let (status, reply) = stack
+            .revoke(event.kind.as_str(), &event_id, subject)
+            .await
+            .map_err(|e| format!("sending {}: {e}", event.kind.as_str()))?;
+        let revoked = reply["revoked"]
+            .as_array()
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.events.push(SorEntry {
+            day: event.day,
+            at,
+            event_id,
+            event_type: event.kind.as_str().into(),
+            borrower: subject.clone(),
+            status,
+            revoked,
+            expected: mandates.revoke(borrower, at),
+        });
+    }
+    Ok(())
 }
 
 /// One call as made (before its reply).
@@ -124,6 +281,7 @@ struct Call {
     tool: String,
     params: Value,
     mandate_for: Option<String>,
+    mandate_issued_at: Option<DateTime<Utc>>,
     request_id: String,
     retry_of: Option<u32>,
     attack: Option<String>,
@@ -149,6 +307,7 @@ async fn send<S: Stack>(
             .to_string(),
         params: call.params.clone(),
         mandate_for: call.mandate_for.clone(),
+        mandate_issued_at: call.mandate_issued_at,
         request_id: call.request_id.clone(),
         retry_of: call.retry_of,
         attack: call.attack.clone(),

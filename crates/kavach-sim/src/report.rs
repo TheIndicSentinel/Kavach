@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::ledger::{digest, Entry};
+use crate::ledger::{digest, Entry, SorEntry};
 use crate::oracle::{Oracle, Retry, Rules};
 use crate::scenario::Scenario;
 
@@ -19,7 +19,6 @@ pub const NOT_COVERED: &[&str] = &[
     "real providers, real numbers, real networks: synthetic data and the mock provider only",
     "network isolation (proved by CI's isolation job, not here)",
     "high availability, load and performance (kavach-bench)",
-    "revocation by payment or dispute (needs R1)",
     "delegation to sub-agents (needs an agent delegation API)",
     "consent withdrawn mid-run (needs runtime consent changes)",
     "quarantining a rogue agent (needs the kill switch)",
@@ -59,6 +58,8 @@ pub struct Report {
     pub borrowers: u32,
     pub agents: BTreeMap<String, AgentCounts>,
     pub calls: usize,
+    /// Payments and disputes sent to the stack.
+    pub revocation_events: usize,
     pub allowed: usize,
     pub blocked: usize,
     pub blocked_by_reason: BTreeMap<String, u32>,
@@ -148,11 +149,13 @@ impl Report {
         scenario: &Scenario,
         world: &crate::world::World,
         ledger: &[Entry],
+        events: &[SorEntry],
         evidence: Bundle,
         reconciliation: Option<crate::reconcile::Reconciliation>,
         rules: Rules,
     ) -> Self {
-        let mut oracle = Oracle::new(rules, world.deliveries());
+        let mut oracle =
+            Oracle::new(rules, world.deliveries()).with_revocations(world.revocations(scenario));
         let (mut violations, mut mismatches, mut leaks) = (Vec::new(), Vec::new(), Vec::new());
         let mut agents: BTreeMap<String, AgentCounts> = world
             .agents
@@ -221,6 +224,7 @@ impl Report {
             borrowers: scenario.borrowers,
             agents,
             calls,
+            revocation_events: events.len(),
             allowed,
             blocked: calls - allowed,
             blocked_by_reason,
@@ -235,7 +239,7 @@ impl Report {
             leaks,
             evidence,
             reconciliation,
-            digest: digest(ledger),
+            digest: digest(ledger, events),
             expectations_unmet: Vec::new(),
         };
         report.expectations_unmet = report.unmet(scenario);
@@ -310,6 +314,7 @@ mod tests {
                 "channel": "whatsapp", "template_id": "emi_reminder_v1" }),
             channel: "whatsapp".into(),
             mandate_for: Some("ref:borrower:S-0001".into()),
+            mandate_issued_at: None,
             request_id: format!("sim-17-{seq}"),
             retry_of: None,
             attack: None,
@@ -356,6 +361,7 @@ mod tests {
             &scenario,
             &world,
             &shared_cap(),
+            &[],
             verified(),
             Some(crate::reconcile::Reconciliation::default()),
             Rules::default(),
@@ -384,6 +390,7 @@ mod tests {
             &scenario,
             &world,
             &shared_cap(),
+            &[],
             verified(),
             Some(crate::reconcile::Reconciliation::default()),
             weak,
@@ -398,6 +405,7 @@ mod tests {
             &scenario,
             &world,
             &allowed,
+            &[],
             verified(),
             Some(crate::reconcile::Reconciliation::default()),
             Rules::default(),
@@ -417,6 +425,7 @@ mod tests {
             &scenario,
             &world,
             &shared_cap(),
+            &[],
             missing,
             Some(crate::reconcile::Reconciliation::default()),
             Rules::default(),
@@ -429,6 +438,7 @@ mod tests {
             &scenario,
             &world,
             &shared_cap(),
+            &[],
             failed,
             Some(crate::reconcile::Reconciliation::default()),
             Rules::default(),

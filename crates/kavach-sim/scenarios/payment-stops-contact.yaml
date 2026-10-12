@@ -1,0 +1,26 @@
+# A payment stops contact (ADR-012). One compliant agent means to contact
+# each of four borrowers three times a day. At 12:00 on day 1 the loans of
+# the first two are paid: their mandates are revoked, so every later call
+# for them is refused. At 09:00 on day 2 the first one defaults again and
+# is assigned a new mandate: contact resumes for that borrower only.
+version: 1
+name: payment-stops-contact
+description: A payment revokes the loan's mandates at once; a new default after it assigns the borrower again.
+covers: ["Revocation by system-of-record event (ADR-012):"]   # SECURITY_PROPERTIES.md rows
+seed: 11
+days: 2
+borrowers: 4
+schedule: ["09:00", "12:00", "15:00"]
+agents:
+  - type: compliant
+    behaviour: { contacts_per_day: 3 }
+assignment: split
+events:
+  - { day: 1, at: "12:00", type: loan.paid, borrowers: 2 }
+  - { day: 2, at: "09:00", type: loan.dpd30, borrowers: 1 }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 12
+  blocked_at_least: { mandate_invalid: 7 }

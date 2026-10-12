@@ -20,13 +20,18 @@
 //!   into);
 //! - the provider's outcome follows the borrower's destination, by the
 //!   agreed status contract (ADR-007): 2xx delivered, 4xx refused, a 5xx
-//!   or a lost response unknown (a 5xx does not prove it was not sent).
+//!   or a lost response unknown (a 5xx does not prove it was not sent);
+//! - a payment or a dispute of the borrower's loan ends every mandate
+//!   issued for it at or before the event (ADR-012): a call under one is
+//!   refused from the event on (an event at a call's time comes first). A
+//!   mandate issued after it (a new default) is not touched. The events
+//!   come from the scenario, never from Kavach's replies.
 //!
-//! Not modelled: revocation, consent changes, delegation, other tools.
+//! Not modelled: consent changes, delegation, other tools.
 
 use std::collections::BTreeMap;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 
 use crate::calendar::ist;
 use crate::ledger::Entry;
@@ -105,6 +110,8 @@ pub struct Oracle {
     contacts: BTreeMap<(String, NaiveDate), u32>,
     /// How Kavach answered each first send, for its retries.
     firsts: BTreeMap<u32, Retry>,
+    /// Payments and disputes: the borrower and when.
+    revocations: Vec<(String, DateTime<Utc>)>,
 }
 
 impl Oracle {
@@ -115,6 +122,23 @@ impl Oracle {
             deliveries,
             ..Self::default()
         }
+    }
+
+    /// The run's payments and disputes (borrower, time), from the scenario.
+    #[must_use]
+    pub fn with_revocations(mut self, revocations: Vec<(String, DateTime<Utc>)>) -> Self {
+        self.revocations = revocations;
+        self
+    }
+
+    /// Whether a payment or dispute for `subject` ended a mandate issued at
+    /// `issued`, by `at`.
+    fn revoked(&self, subject: &str, issued: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool {
+        issued.is_some_and(|issued| {
+            self.revocations
+                .iter()
+                .any(|(who, when)| who == subject && issued <= *when && *when <= at)
+        })
     }
 
     pub fn judge(&mut self, call: &Entry) -> Expected {
@@ -155,6 +179,8 @@ impl Oracle {
             because.push("no such mandate");
         } else if call.mandate_for.as_deref() != Some(subject) {
             because.push("another borrower than the mandate's");
+        } else if self.revoked(subject, call.mandate_issued_at, call.at) {
+            because.push("the loan was paid or disputed");
         }
         if !(self.rules.hours.0..self.rules.hours.1).contains(&minute) {
             because.push("outside contact hours");
@@ -203,6 +229,7 @@ mod tests {
                 "template_id": "emi_reminder_v1" }),
             channel: channel.into(),
             mandate_for: Some(borrower.into()),
+            mandate_issued_at: None,
             request_id: "r".into(),
             retry_of: None,
             attack: None,
@@ -228,6 +255,34 @@ mod tests {
                 "{minute}"
             );
         }
+    }
+
+    /// A payment at 12:00 ends mandates issued up to 12:00, from 12:00 on;
+    /// a mandate issued after it is not touched.
+    #[test]
+    fn a_payment_ends_the_mandates_issued_before_it() {
+        let paid = slot(1, 720);
+        let judge = |issued: u32, at: u32| {
+            let mut oracle = Oracle::default().with_revocations(vec![("ref:p".to_string(), paid)]);
+            let mut c = call(at, "ref:p", "whatsapp", false);
+            c.mandate_issued_at = Some(slot(1, issued));
+            oracle.judge(&c)
+        };
+        assert!(judge(540, 660).allow, "before the payment");
+        assert_eq!(judge(540, 1080).because, ["the loan was paid or disputed"]);
+        assert!(
+            !judge(540, 720).allow,
+            "the event comes before a call at its time"
+        );
+        assert!(
+            !judge(720, 1080).allow,
+            "issued at the same instant: revoked"
+        );
+        assert!(judge(750, 1080).allow, "a new default after the payment");
+        let mut other = Oracle::default().with_revocations(vec![("ref:p".to_string(), paid)]);
+        let mut c = call(1080, "ref:q", "whatsapp", false);
+        c.mandate_issued_at = Some(slot(1, 540));
+        assert!(other.judge(&c).allow, "another borrower's loan");
     }
 
     #[test]
