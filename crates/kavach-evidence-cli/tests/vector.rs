@@ -325,3 +325,40 @@ fn an_unknown_kind_or_a_revocation_in_format_1_is_refused() {
         "{err}"
     );
 }
+
+/// A member name used twice in one object is refused, even when both values
+/// agree (docs/specs/evidence-bundle.md section 2.1): serde would keep the
+/// last one, and an independent reader might keep the first.
+#[test]
+fn a_repeated_member_name_is_refused() {
+    let out = scratch("duplicate-name");
+    write_bundle(&out);
+    let path = out.join(RECORDS_FILE);
+    let text = fs::read_to_string(&path).unwrap();
+    let (first, rest) = text.split_once('\n').unwrap();
+    let first = format!("{},\"seq\":1}}", first.strip_suffix('}').unwrap());
+    let text = format!("{first}\n{rest}");
+    fs::write(&path, &text).unwrap();
+    let mut manifest: Manifest =
+        serde_json::from_slice(&fs::read(out.join(MANIFEST_FILE)).unwrap()).unwrap();
+    manifest.payload.files.records.sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+    manifest.sig = None;
+    manifest.payload.key_id = None;
+    manifest.hash = kavach_ports::bundle::manifest_hash(&manifest.payload).unwrap();
+    fs::write(
+        out.join(MANIFEST_FILE),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let err =
+        kavach_evidence_cli::verify::verify_dir(&kavach_evidence_cli::verify::VerifyRequest {
+            bundle: &out,
+            keys: &vectors().join("bundle-v2.keys.json"),
+            expect_checkpoint: None,
+            dev: false,
+            now: exported_at(),
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("duplicate member name"), "{err}");
+}

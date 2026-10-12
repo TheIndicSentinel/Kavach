@@ -178,6 +178,8 @@ pub fn content_hash<T: Serialize>(prev_hash: &str, payload: &T) -> Result<String
 pub trait ChainEntry {
     /// The kind its signed payload states.
     fn kind(&self) -> &str;
+    /// The hash algorithm its payload states (`v2`).
+    fn hash_alg(&self) -> &str;
     /// The kind a record of this type must state.
     fn expected_kind(&self) -> &'static str;
     fn tenant_id(&self) -> &str;
@@ -200,6 +202,9 @@ pub trait ChainEntry {
 impl ChainEntry for AgentDecisionRecord {
     fn kind(&self) -> &str {
         &self.payload.kind
+    }
+    fn hash_alg(&self) -> &str {
+        &self.payload.hash_alg
     }
     fn expected_kind(&self) -> &'static str {
         KIND_AGENT_DECISION
@@ -600,6 +605,8 @@ pub enum ChainError {
     DevClock { seq: i64 },
     #[error("record {seq}: kind {kind} is not the kind of this record")]
     Kind { seq: i64, kind: String },
+    #[error("record {seq}: hash_alg {hash_alg} is not one this verifier knows")]
+    HashAlg { seq: i64, hash_alg: String },
     #[error("record {seq}: expected seq {expected}")]
     Gap { seq: i64, expected: i64 },
     #[error("record {seq}: prev_hash does not link to the previous record")]
@@ -733,6 +740,12 @@ pub fn check_record<R: ChainEntry + ?Sized>(
         return Err(ChainError::Kind {
             seq,
             kind: record.kind().to_string(),
+        });
+    }
+    if record.hash_alg() != HASH_ALG_V2 {
+        return Err(ChainError::HashAlg {
+            seq,
+            hash_alg: record.hash_alg().to_string(),
         });
     }
     if !allow_dev_keys && is_dev_key(record.key_id()) {
@@ -1327,6 +1340,23 @@ mod tests {
         assert_eq!(
             verify_chain(&records, &keys(&key), None, &[], Utc::now()),
             Err(ChainError::Hash { seq: 3 })
+        );
+    }
+
+    /// A record that states a hash algorithm this verifier does not know is
+    /// refused, not hashed as `v2` and then judged by chance.
+    #[test]
+    fn an_unknown_hash_algorithm_is_refused() {
+        let key = Key(SigningKey::from_bytes(&[3u8; 32]));
+        let mut payload = payload(1, GENESIS);
+        payload.hash_alg = "v9".into();
+        let record = seal(payload, &key).unwrap();
+        assert_eq!(
+            check_record_signature(&record, &keys(&key), false),
+            Err(ChainError::HashAlg {
+                seq: 1,
+                hash_alg: "v9".into()
+            })
         );
     }
 
