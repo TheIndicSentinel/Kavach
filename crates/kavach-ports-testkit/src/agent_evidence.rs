@@ -177,7 +177,7 @@ pub fn revocation_draft(tenant: &str, event_id: &str) -> RevocationDraft {
         partition_id: 0,
         source_system: "lms".into(),
         event_id: event_id.into(),
-        event_sha256: "ab".repeat(32),
+        event_digest: format!("sha256-jcs-v1:{}", "ab".repeat(32)),
         event_type: "loan.paid".into(),
         record_pseudonym: "psn:loan".into(),
         occurred_at: t0() - Duration::minutes(1),

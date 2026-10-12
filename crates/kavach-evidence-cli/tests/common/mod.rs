@@ -234,6 +234,12 @@ pub fn scratch(name: &str) -> PathBuf {
 /// Bundle format 2's run: the four decisions, then a payment that revoked
 /// their mandate (record 5, ADR-012 §7).
 pub fn revocation(records: &[AgentDecisionRecord]) -> RevocationRecord {
+    // The legacy form: bundle-v2 stays byte-identical.
+    revocation_with_digest(records, &"7d".repeat(32))
+}
+
+/// The same revocation stating its event by `digest`.
+pub fn revocation_with_digest(records: &[AgentDecisionRecord], digest: &str) -> RevocationRecord {
     let head = records.last().unwrap();
     let revoked_at = head.payload.ts + Duration::seconds(30);
     let draft = RevocationDraft {
@@ -241,7 +247,7 @@ pub fn revocation(records: &[AgentDecisionRecord]) -> RevocationRecord {
         partition_id: 0,
         source_system: "lms".into(),
         event_id: "pay-kat-1".into(),
-        event_sha256: "7d".repeat(32),
+        event_digest: digest.to_string(),
         event_type: "loan.paid".into(),
         record_pseudonym: "psn:3c4d5e6f708192a3".into(),
         occurred_at: revoked_at - Duration::seconds(20),
@@ -258,8 +264,18 @@ pub fn revocation(records: &[AgentDecisionRecord]) -> RevocationRecord {
 
 /// The four decisions and the revocation, as one chain.
 pub fn chain_v2() -> Vec<ChainRecord> {
+    chain_with(revocation(&records()))
+}
+
+/// As [`chain_v2`], with the revocation stating its event by a tagged
+/// digest (`sha256-jcs-v1:`), the form written now.
+pub fn chain_v2_digest() -> Vec<ChainRecord> {
+    let digest = format!("sha256-jcs-v1:{}", "7d".repeat(32));
+    chain_with(revocation_with_digest(&records(), &digest))
+}
+
+fn chain_with(revocation: RevocationRecord) -> Vec<ChainRecord> {
     let records = records();
-    let revocation = revocation(&records);
     records
         .into_iter()
         .map(ChainRecord::Decision)

@@ -19,11 +19,10 @@ use kavach_domain::mandate::{
     MANDATE_FORMAT_VERSION,
 };
 use kavach_keys::InMemoryKeyProvider;
-use kavach_mandate::content_sha256;
 use kavach_mandate::jws::{self, KeySet, TYP_MANDATE, TYP_SOR_EVENT};
+use kavach_mandate::{event_digest, legacy_content_sha256};
 use kavach_ports::{KeyProvider, PublicKey};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 const PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/vectors/mandate-v1.json");
 const MANDATE_KID: &str = "kavach-mandate-kat";
@@ -174,22 +173,16 @@ fn token_of<T: serde::Serialize>(p: &InMemoryKeyProvider, kid: &str, typ: &str, 
     tokio_block(jws::sign(p, kid, typ, v)).unwrap()
 }
 
-fn build() -> Value {
-    let (p, m, s, o) = provider();
-    let jwk =
-        |k: &PublicKey| json!({"kty": "OKP", "crv": "Ed25519", "kid": k.kid, "x": b64(&k.bytes)});
-    let root_token = token_of(&p, MANDATE_KID, TYP_MANDATE, &root());
-    let child_token = token_of(&p, MANDATE_KID, TYP_MANDATE, &child());
-    let dpd = event("evt-dpd30-1", "loan.dpd30", t0(), "n-1");
-    let paid = event(
-        "evt-paid-1",
-        "loan.paid",
-        t0() + chrono::Duration::days(2),
-        "n-2",
-    );
-    let dpd_token = token_of(&p, SOR_KID, TYP_SOR_EVENT, &dpd);
-    let paid_token = token_of(&p, SOR_KID, TYP_SOR_EVENT, &paid);
-
+/// The event, and a mandate, in forms that must be refused: each signed by
+/// the right key so that only the named rule is wrong.
+fn refused_cases(
+    p: &InMemoryKeyProvider,
+    root_token: &str,
+    dpd_token: &str,
+    dpd: &SorEvent,
+) -> Value {
+    let (p, dpd_token) = (p, dpd_token.to_string());
+    let (root_token, dpd) = (root_token.to_string(), dpd.clone());
     // The same event in non-canonical or malformed forms, signed by the
     // right key so that only the form is wrong.
     let good = serde_json::to_value(&dpd).unwrap();
@@ -219,36 +212,60 @@ fn build() -> Value {
     };
     let mut repeated = good.clone();
     repeated["consent_refs"] = json!(["C-1", "C-1"]);
+    // Signed over the padded text, so only the padding is wrong.
     let padded = {
-        let mut parts: Vec<String> = dpd_token.split('.').map(String::from).collect();
-        parts[1].push('=');
-        parts.join(".")
+        let input = format!(
+            "{}.{}=",
+            b64(&header(SOR_KID, TYP_SOR_EVENT)),
+            b64(&jcs(&good))
+        );
+        let sig = tokio_block(p.sign(SOR_KID, input.as_bytes())).unwrap();
+        format!("{input}.{}", b64(&sig))
     };
-    let refused = json!([
-        {"name": "bad-signature", "typ": TYP_SOR_EVENT, "token": flipped},
-        {"name": "wrong-typ", "typ": TYP_SOR_EVENT, "token": root_token},
-        {"name": "unknown-key", "typ": TYP_SOR_EVENT,
-         "token": raw(&p, SOR_KID, &header("unknown-kat", TYP_SOR_EVENT), &jcs(&good))},
-        {"name": "payload-not-canonical", "typ": TYP_SOR_EVENT,
-         "token": raw(&p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), reordered.as_bytes())},
-        {"name": "header-not-canonical", "typ": TYP_SOR_EVENT,
-         "token": raw(&p, SOR_KID, br#"{"typ":"kavach-sor-event+jws","alg":"EdDSA","kid":"lms-issuer-kat"}"#, &jcs(&good))},
-        {"name": "unknown-member", "typ": TYP_SOR_EVENT,
-         "token": raw(&p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), &jcs(&extra))},
-        {"name": "time-with-offset", "typ": TYP_SOR_EVENT,
-         "token": raw(&p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), &jcs(&offset))},
-        {"name": "time-with-zero-fraction", "typ": TYP_SOR_EVENT,
-         "token": raw(&p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), &jcs(&fraction))},
-        {"name": "non-integer-number", "typ": TYP_MANDATE,
-         "token": raw(&p, MANDATE_KID, &header(MANDATE_KID, TYP_MANDATE), float_text.as_bytes())},
-        {"name": "duplicate-member-name", "typ": TYP_SOR_EVENT,
-         "token": raw(&p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), duplicated.as_bytes())},
-        {"name": "set-with-repeat", "typ": TYP_SOR_EVENT,
-         "token": raw(&p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), &jcs(&repeated))},
-        {"name": "four-parts", "typ": TYP_SOR_EVENT, "token": format!("{dpd_token}.AAAA")},
-        {"name": "padded-base64", "typ": TYP_SOR_EVENT,
+    json!([
+        {"name": "bad-signature", "rule": "signature", "typ": TYP_SOR_EVENT, "token": flipped},
+        {"name": "wrong-typ", "rule": "typ", "typ": TYP_SOR_EVENT, "token": root_token},
+        {"name": "unknown-key", "rule": "key", "typ": TYP_SOR_EVENT,
+         "token": raw(p, SOR_KID, &header("unknown-kat", TYP_SOR_EVENT), &jcs(&good))},
+        {"name": "payload-not-canonical", "rule": "canonical-payload", "typ": TYP_SOR_EVENT,
+         "token": raw(p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), reordered.as_bytes())},
+        {"name": "header-not-canonical", "rule": "canonical-header", "typ": TYP_SOR_EVENT,
+         "token": raw(p, SOR_KID, br#"{"typ":"kavach-sor-event+jws","alg":"EdDSA","kid":"lms-issuer-kat"}"#, &jcs(&good))},
+        {"name": "unknown-member", "rule": "member", "typ": TYP_SOR_EVENT,
+         "token": raw(p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), &jcs(&extra))},
+        {"name": "time-with-offset", "rule": "canonical-payload", "typ": TYP_SOR_EVENT,
+         "token": raw(p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), &jcs(&offset))},
+        {"name": "time-with-zero-fraction", "rule": "canonical-payload", "typ": TYP_SOR_EVENT,
+         "token": raw(p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), &jcs(&fraction))},
+        {"name": "non-integer-number", "rule": "number", "typ": TYP_MANDATE,
+         "token": raw(p, MANDATE_KID, &header(MANDATE_KID, TYP_MANDATE), float_text.as_bytes())},
+        {"name": "duplicate-member-name", "rule": "duplicate", "typ": TYP_SOR_EVENT,
+         "token": raw(p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), duplicated.as_bytes())},
+        {"name": "set-with-repeat", "rule": "canonical-payload", "typ": TYP_SOR_EVENT,
+         "token": raw(p, SOR_KID, &header(SOR_KID, TYP_SOR_EVENT), &jcs(&repeated))},
+        {"name": "four-parts", "rule": "parts", "typ": TYP_SOR_EVENT, "token": format!("{dpd_token}.AAAA")},
+        {"name": "padded-base64", "rule": "base64", "typ": TYP_SOR_EVENT,
          "token": padded}
-    ]);
+    ])
+}
+
+fn build() -> Value {
+    let (p, m, s, o) = provider();
+    let jwk =
+        |k: &PublicKey| json!({"kty": "OKP", "crv": "Ed25519", "kid": k.kid, "x": b64(&k.bytes)});
+    let root_token = token_of(&p, MANDATE_KID, TYP_MANDATE, &root());
+    let child_token = token_of(&p, MANDATE_KID, TYP_MANDATE, &child());
+    let dpd = event("evt-dpd30-1", "loan.dpd30", t0(), "n-1");
+    let paid = event(
+        "evt-paid-1",
+        "loan.paid",
+        t0() + chrono::Duration::days(2),
+        "n-2",
+    );
+    let dpd_token = token_of(&p, SOR_KID, TYP_SOR_EVENT, &dpd);
+    let paid_token = token_of(&p, SOR_KID, TYP_SOR_EVENT, &paid);
+
+    let refused = refused_cases(&p, &root_token, &dpd_token, &dpd);
 
     json!({
         "description": "Kavach mandate and system-of-record event tokens v1: compact JWS, EdDSA, RFC 8785 canonical header and payload. Test keys only.",
@@ -265,11 +282,12 @@ fn build() -> Value {
         ],
         "events": [
             {"name": "issuing", "token": dpd_token, "payload": decode_payload(&dpd_token),
-             "content_sha256": content_sha256(&dpd).unwrap(),
-             "signed_payload_sha256": hex::encode(Sha256::digest(jcs(&good))),
+             "event_digest": event_digest(&dpd).unwrap(),
+             "legacy_content_sha256": legacy_content_sha256(&dpd).unwrap(),
              "fresh_at": t0().timestamp()},
             {"name": "revoking", "token": paid_token, "payload": decode_payload(&paid_token),
-             "content_sha256": content_sha256(&paid).unwrap(),
+             "event_digest": event_digest(&paid).unwrap(),
+             "legacy_content_sha256": legacy_content_sha256(&paid).unwrap(),
              "fresh_at": (t0() + chrono::Duration::days(2)).timestamp(),
              "revokes": {"mandate": "root", "reason": "payment"},
              "spares_issued_after": true},
@@ -324,7 +342,11 @@ fn the_checked_in_tokens_verify_to_the_expected_content() {
         let token = item["token"].as_str().unwrap();
         let (_, event): (String, SorEvent) = jws::verify(token, TYP_SOR_EVENT, &sor).unwrap();
         assert_eq!(serde_json::to_value(&event).unwrap(), item["payload"]);
-        assert_eq!(content_sha256(&event).unwrap(), item["content_sha256"]);
+        assert_eq!(event_digest(&event).unwrap(), item["event_digest"]);
+        assert_eq!(
+            legacy_content_sha256(&event).unwrap(),
+            item["legacy_content_sha256"]
+        );
     }
 }
 
@@ -333,8 +355,29 @@ fn the_generator_is_deterministic_and_matches_the_file() {
     assert_eq!(build(), vector());
 }
 
+/// The rule a refusal is for, from the error's text.
+fn rule_of(message: &str) -> &'static str {
+    [
+        ("three parts", "parts"),
+        ("invalid base64url", "base64"),
+        ("unexpected typ", "typ"),
+        ("unknown signing key", "key"),
+        ("header is not canonical", "canonical-header"),
+        ("payload is not canonical", "canonical-payload"),
+        ("duplicate field", "duplicate"),
+        ("unknown field", "member"),
+        ("floating point", "number"),
+        ("signature", "signature"),
+    ]
+    .iter()
+    .find(|(text, _)| message.contains(text))
+    .map_or("other", |(_, rule)| rule)
+}
+
+/// Each token is refused, and for the rule it names: a second
+/// implementation is tested on that rule, not on whichever check came first.
 #[test]
-fn every_negative_vector_is_refused() {
+fn every_negative_vector_is_refused_for_its_own_rule() {
     let v = vector();
     let all = KeySet::new(
         [
@@ -350,11 +393,17 @@ fn every_negative_vector_is_refused() {
             case["token"].as_str().unwrap(),
             case["typ"].as_str().unwrap(),
         );
-        let refused = if typ == TYP_MANDATE {
-            jws::verify::<Mandate>(token, typ, &all).is_err()
+        let err = if typ == TYP_MANDATE {
+            jws::verify::<Mandate>(token, typ, &all).err()
         } else {
-            jws::verify::<SorEvent>(token, typ, &all).is_err()
-        };
-        assert!(refused, "{} was accepted", case["name"]);
+            jws::verify::<SorEvent>(token, typ, &all).err()
+        }
+        .unwrap_or_else(|| panic!("{} was accepted", case["name"]));
+        assert_eq!(
+            rule_of(&err.to_string()),
+            case["rule"].as_str().unwrap(),
+            "{}: {err}",
+            case["name"]
+        );
     }
 }

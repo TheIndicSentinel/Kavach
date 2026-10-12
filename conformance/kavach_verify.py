@@ -34,11 +34,17 @@ from datetime import datetime, timedelta, timezone
 MAX_LINE = 1_048_576
 MAX_SAFE = 2**53 - 1
 GENESIS = "0" * 64
+EVENT_DIGEST_PREFIX = "sha256-jcs-v1:"
 ZERO_HASH = GENESIS
 
 
 class Refused(Exception):
-    """The input does not verify, or is malformed."""
+    """The input does not verify, or is malformed. `rule` names the rule that
+    refused it, for the vectors that say which rule a token breaks."""
+
+    def __init__(self, message, rule=None):
+        super().__init__(message)
+        self.rule = rule
 
 
 # --------------------------------------------------------------------------
@@ -49,13 +55,13 @@ def _pairs(items):
     out = {}
     for key, value in items:
         if key in out:
-            raise Refused(f"duplicate member name {key!r}")
+            raise Refused(f"duplicate member name {key!r}", "duplicate")
         out[key] = value
     return out
 
 
 def _no_number(text):
-    raise Refused(f"number {text} is not an integer")
+    raise Refused(f"number {text} is not an integer", "number")
 
 
 def _check_numbers(value):
@@ -63,7 +69,7 @@ def _check_numbers(value):
         return
     if isinstance(value, int):
         if abs(value) > MAX_SAFE:
-            raise Refused(f"integer {value} is outside the safe range")
+            raise Refused(f"integer {value} is outside the safe range", "number")
     elif isinstance(value, list):
         for item in value:
             _check_numbers(item)
@@ -191,12 +197,12 @@ def six_digit_time(when):
 
 def b64url_decode(text, what="base64url"):
     if not isinstance(text, str) or not re.match(r"^[A-Za-z0-9_-]*$", text):
-        raise Refused(f"{what}: not base64url without padding")
+        raise Refused(f"{what}: not base64url without padding", "base64")
     if len(text) % 4 == 1:
-        raise Refused(f"{what}: impossible length")
+        raise Refused(f"{what}: impossible length", "base64")
     raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
     if base64.urlsafe_b64encode(raw).decode().rstrip("=") != text:
-        raise Refused(f"{what}: non-zero trailing bits")
+        raise Refused(f"{what}: non-zero trailing bits", "base64")
     return raw
 
 
@@ -493,10 +499,10 @@ def _members(obj, required, optional=(), what="object"):
         raise Refused(f"{what} is not an object")
     missing = [m for m in required if m not in obj]
     if missing:
-        raise Refused(f"{what} lacks {missing}")
+        raise Refused(f"{what} lacks {missing}", "member")
     extra = [m for m in obj if m not in required and m not in optional]
     if extra:
-        raise Refused(f"{what} has members it must not have: {extra}")
+        raise Refused(f"{what} has members it must not have: {extra}", "member")
 
 
 def _int(value, what, low=None):
@@ -674,11 +680,28 @@ class Verifier:
                 for member in ("credential_id", "returned_decision", "credential_expires_at"):
                     if member not in rec:
                         raise Refused(f"{where}: lacks {member}")
+            if kind == "mandate_revocation":
+                self._event_digest(rec, where)
             prev, expected_seq = rec["hash"], expected_seq + 1
             out.append(rec)
         if prev != seg["head_hash"] or expected_seq - 1 != seg["last_seq"]:
             raise Refused("records.jsonl: the records do not end at the manifest's head")
         return out
+
+    @staticmethod
+    def _event_digest(rec, where):
+        """Exactly one well-formed digest: event_digest (tagged) or legacy event_sha256."""
+        tagged, legacy = rec.get("event_digest"), rec.get("event_sha256")
+        ok = False
+        if (tagged is None) != (legacy is None):
+            if tagged is not None:
+                ok = (isinstance(tagged, str) and tagged.startswith(EVENT_DIGEST_PREFIX)
+                      and is_hash(tagged[len(EVENT_DIGEST_PREFIX):]))
+            else:
+                ok = is_hash(legacy)
+        if not ok:
+            raise Refused(f"{where}: malformed record: exactly one well-formed event digest "
+                          "(event_digest or event_sha256) is required")
 
     # -- outcomes ------------------------------------------------------------
     def outcomes(self, lines, records, manifest):
@@ -983,12 +1006,12 @@ def shortest_time(text, what):
     """A time written in the shortest exact form (spec section 1, Times)."""
     m = _SHORT_TIME.match(text) if isinstance(text, str) else None
     if not m:
-        raise Refused(f"{what}: {text!r} is not RFC 3339 UTC in the shortest form")
+        raise Refused(f"{what}: {text!r} is not RFC 3339 UTC in the shortest form", "canonical-payload")
     frac = m.group(1)
     if frac is not None and len(frac) > 3 and frac.endswith("000"):
-        raise Refused(f"{what}: {text!r} has digits that are not needed")
+        raise Refused(f"{what}: {text!r} has digits that are not needed", "canonical-payload")
     if frac is not None and frac == "0" * len(frac):
-        raise Refused(f"{what}: {text!r} has a zero fraction")
+        raise Refused(f"{what}: {text!r} has a zero fraction", "canonical-payload")
     return parse_time(text, what)
 
 
@@ -1005,29 +1028,29 @@ def verify_jws(token, typ, keys):
         raise Refused("the token is too long")
     parts = token.split(".")
     if len(parts) != 3:
-        raise Refused("a token has three parts")
+        raise Refused("a token has three parts", "parts")
     header_raw = b64url_decode(parts[0], "header")
     header = loads(header_raw.decode("utf-8"))
     _members(header, ["alg", "kid", "typ"], what="header")
     if header["alg"] != "EdDSA":
-        raise Refused("alg must be EdDSA")
+        raise Refused("alg must be EdDSA", "alg")
     if header["typ"] != typ:
-        raise Refused(f"typ must be {typ}")
+        raise Refused(f"typ must be {typ}", "typ")
     if jcs(header) != header_raw:
-        raise Refused("the header is not canonical")
+        raise Refused("the header is not canonical", "canonical-header")
     key = keys.get(header["kid"])
     if key is None:
-        raise Refused(f"key {header['kid']!r} is not known")
+        raise Refused(f"key {header['kid']!r} is not known", "key")
     sig = b64url_decode(parts[2], "signature")
     if not ed25519_verify(key, (parts[0] + "." + parts[1]).encode("ascii"), sig):
-        raise Refused("the signature does not verify")
+        raise Refused("the signature does not verify", "signature")
     payload_raw = b64url_decode(parts[1], "payload")
     try:
         payload = loads(payload_raw.decode("utf-8"))
     except UnicodeDecodeError:
         raise Refused("the payload is not UTF-8") from None
     if jcs(payload) != payload_raw:
-        raise Refused("the payload is not canonical")
+        raise Refused("the payload is not canonical", "canonical-payload")
     return header["kid"], payload
 
 
@@ -1035,7 +1058,7 @@ def _string_set(value, what):
     if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
         raise Refused(f"{what} is not an array of strings")
     if value != sorted(set(value), key=lambda v: v.encode("utf-16-be")):
-        raise Refused(f"{what} is not sorted without repeats")
+        raise Refused(f"{what} is not sorted without repeats", "canonical-payload")
     return value
 
 
@@ -1050,8 +1073,14 @@ def check_event(payload):
     return shortest_time(payload["occurred_at"], "occurred_at")
 
 
-def event_content_sha256(event):
-    """SHA-256 of the compact JSON of the members in declaration order (section 5)."""
+def event_digest(event):
+    """The event's digest (section 5): SHA-256 of its RFC 8785 bytes, tagged."""
+    return EVENT_DIGEST_PREFIX + hashlib.sha256(jcs(event)).hexdigest()
+
+
+def legacy_content_sha256(event):
+    """The digest written before event_digest: compact JSON in declaration order.
+    Only to recognise records and rows of that form."""
     parts = []
     for name in EVENT_ORDER:
         value = event[name]
@@ -1176,11 +1205,10 @@ def run_mandate(path):
             raise Refused(f"event {item['name']}: payload differs from the vector's")
         if sor_system[kid] != payload["system"]:
             raise Refused(f"event {item['name']}: key not registered for its system")
-        if event_content_sha256(payload) != item["content_sha256"]:
-            raise Refused(f"event {item['name']}: content_sha256 differs")
-        if "signed_payload_sha256" in item and (
-                hashlib.sha256(jcs(payload)).hexdigest() != item["signed_payload_sha256"]):
-            raise Refused(f"event {item['name']}: signed_payload_sha256 differs")
+        if event_digest(payload) != item["event_digest"]:
+            raise Refused(f"event {item['name']}: event_digest differs")
+        if legacy_content_sha256(payload) != item["legacy_content_sha256"]:
+            raise Refused(f"event {item['name']}: legacy_content_sha256 differs")
         at = datetime.fromtimestamp(item["fresh_at"], timezone.utc)
         for delta, fresh in ((0, True), (freshness, True), (-freshness, True),
                              (freshness + 1, False), (-freshness - 1, False)):
@@ -1197,7 +1225,14 @@ def run_mandate(path):
                 check_mandate(payload)
             else:
                 check_event(payload)
-        except (Refused, UnicodeDecodeError):
+        except Refused as error:
+            if error.rule != case["rule"]:
+                raise Refused(
+                    f"{case['name']} was refused for {error.rule!r} ({error}), "
+                    f"not for its own rule {case['rule']!r}") from None
+            refused.append(case["name"])
+            continue
+        except UnicodeDecodeError:
             refused.append(case["name"])
             continue
         raise Refused(f"{case['name']} was accepted")

@@ -325,7 +325,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
             partition_id: self.config.partition_id,
             source_system: revocation.system.clone(),
             event_id: revocation.event_id.clone(),
-            event_sha256: revocation.content_sha256.clone(),
+            event_digest: revocation.event_digest.clone(),
             event_type: revocation.event_type.clone(),
             record_pseudonym: self.subject_keys.record_pseudonym(
                 &revocation.tenant_id,
