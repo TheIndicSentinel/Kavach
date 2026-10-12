@@ -662,6 +662,40 @@ async fn startup_refuses_development_keys_outside_insecure_dev() {
     AppState::from_config(&cfg).await.expect("dev stack starts");
 }
 
+/// A decision event holds the input's digest, never the input. Field names
+/// are words, which random hex and timestamps cannot contain, so they are
+/// substring checks; values are numbers, which hex and timestamps can ("740"
+/// sits in a microsecond timestamp now and then), so they are looked for as
+/// JSON values, not as substrings of the body.
+fn assert_holds_no_input(body: &str, doc: &Value) {
+    fn holds_number(value: &Value, wanted: i64) -> bool {
+        match value {
+            Value::Number(n) => n.as_i64() == Some(wanted),
+            Value::String(text) => text == &wanted.to_string(),
+            Value::Array(items) => items.iter().any(|v| holds_number(v, wanted)),
+            Value::Object(map) => map.values().any(|v| holds_number(v, wanted)),
+            _ => false,
+        }
+    }
+    for raw in ["credit_score", "income", "debt_ratio", "loan_amount"] {
+        assert!(!body.contains(raw), "raw input {raw} in {body}");
+    }
+    for raw in [85_000, 740] {
+        assert!(!holds_number(doc, raw), "raw input {raw} in {body}");
+    }
+    let mut fields: Vec<&str> = doc["event"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    fields.sort_unstable();
+    assert!(
+        fields.contains(&"input_digest") && !fields.contains(&"input"),
+        "the event holds the input's digest, never the input: {fields:?}"
+    );
+}
+
 /// `GET /v1/decision-events/{evidence_id}` (`kavach why` for evaluate
 /// decisions): admins only, every read audited, the input only as its
 /// digest, and a tombstoned event redacted as export views show it.
@@ -708,36 +742,7 @@ async fn decision_event_reads_are_admin_only_audited_and_hold_no_input() {
     assert_eq!(doc["tombstoned"], false);
     assert_eq!(doc["event"]["evidence_id"], id.as_str());
     assert!(doc["event"]["input_digest"].is_string());
-    // The input's field names are words, which random hex and timestamps
-    // cannot contain; its values are numbers, which they can ("740" sits in
-    // a microsecond timestamp now and then), so those are looked for as JSON
-    // values, not as substrings of the body.
-    for raw in ["credit_score", "income", "debt_ratio", "loan_amount"] {
-        assert!(!body.contains(raw), "raw input {raw} in {body}");
-    }
-    fn holds_number(value: &Value, wanted: i64) -> bool {
-        match value {
-            Value::Number(n) => n.as_i64() == Some(wanted),
-            Value::String(text) => text == &wanted.to_string(),
-            Value::Array(items) => items.iter().any(|v| holds_number(v, wanted)),
-            Value::Object(map) => map.values().any(|v| holds_number(v, wanted)),
-            _ => false,
-        }
-    }
-    for raw in [85_000, 740] {
-        assert!(!holds_number(&doc, raw), "raw input {raw} in {body}");
-    }
-    let mut fields: Vec<&str> = doc["event"]
-        .as_object()
-        .unwrap()
-        .keys()
-        .map(String::as_str)
-        .collect();
-    fields.sort_unstable();
-    assert!(
-        fields.contains(&"input_digest") && !fields.contains(&"input"),
-        "the event holds the input's digest, never the input: {fields:?}"
-    );
+    assert_holds_no_input(&body, &doc);
 
     let viewer = token(
         "kavach-api",
