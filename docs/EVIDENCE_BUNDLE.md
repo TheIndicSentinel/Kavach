@@ -2,6 +2,8 @@
 
 How Kavach's agent evidence is checkpointed, exported and verified offline. The decisions are in [ADR-005](ADR-005-evidence-v2.md) §13.
 
+> **The normative format specification is [specs/evidence-bundle.md](specs/evidence-bundle.md)**, checked by an independent verifier ([conformance/](../conformance/)). This document describes how Kavach's own tools produce and use bundles; where the two differ, the specification wins and this document is wrong.
+
 ## Status
 
 | Part | Status |

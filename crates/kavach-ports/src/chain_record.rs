@@ -145,6 +145,9 @@ impl ChainEntry for RevocationRecord {
     fn kind(&self) -> &str {
         &self.payload.kind
     }
+    fn hash_alg(&self) -> &str {
+        &self.payload.hash_alg
+    }
     fn expected_kind(&self) -> &'static str {
         KIND_MANDATE_REVOCATION
     }
@@ -233,6 +236,12 @@ impl ChainEntry for ChainRecord {
         match self {
             Self::Decision(r) => r.kind(),
             Self::Revocation(r) => r.kind(),
+        }
+    }
+    fn hash_alg(&self) -> &str {
+        match self {
+            Self::Decision(r) => r.hash_alg(),
+            Self::Revocation(r) => r.hash_alg(),
         }
     }
     fn expected_kind(&self) -> &'static str {
