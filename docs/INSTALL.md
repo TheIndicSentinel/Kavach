@@ -294,6 +294,7 @@ A certificate with no SAN, or several SANs, of the configured type gets 401. A b
   - A retry of the same event returns 200 with the same mandate id. The same event id with other content returns 409.
   - An event for a tenant other than the one the stack serves is refused (400) before it is verified or acted on.
   - The evidence record of a revocation is read like an agent record: `GET /v1/agent-revocations/{system}/{event_id}` on the operator listener, for `read_evidence` holders only, rate limited, and audited before anything is returned.
+- **Alerts and a dashboard.** Prometheus rules and a Grafana dashboard for these metrics ship in [`deploy/monitoring/`](../deploy/monitoring/README.md); a test keeps them in step with the code.
 - **Stopping.** On SIGTERM or Ctrl-C `kavach-api` stops accepting connections at once, lets requests in flight finish, waits for every gateway call that has started, then writes a final checkpoint and exits.
   - **Deadline:** `--shutdown-grace-seconds` (default 30, 1–600). It must exceed the provider timeout, which bounds a gateway call.
   - **Exit status:** 0 when every listener drained, every call finished and the evidence is covered. Otherwise 1, after an `ALERT shutdown was not clean` log line. A call cut off between send and outcome is reported as `outcome_missing`.

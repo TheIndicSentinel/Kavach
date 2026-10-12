@@ -1,0 +1,144 @@
+# Prometheus alert rules for kavach-api.
+#
+# Starting points, not tuned values: the thresholds are conservative guesses
+# for a pilot and should be set from your own traffic. Every metric named
+# here exists (a test, `kavach-api/tests/monitoring.rs`, fails if one is
+# renamed or removed). How to scrape: README.md in this directory.
+groups:
+  - name: kavach-evidence
+    rules:
+      - alert: KavachCheckpointStalled
+        expr: kavach_checkpoint_stalled == 1
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: Agent evidence has had no checkpoint for longer than the stall threshold
+          description: >-
+            Records are being written but no signed checkpoint covers them, so a chain
+            truncated or rewritten by someone holding the keys would go unnoticed for
+            that span. Look for `ALERT evidence checkpoints stalled` in the logs and at
+            `kavach_checkpoints_skipped_total{reason}`; usual causes are unsynced trusted
+            time or an unavailable checkpoint key.
+      - alert: KavachCheckpointLagging
+        expr: time() - kavach_checkpoint_last_covered_timestamp_seconds > 900
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: The newest agent record has been uncovered by a checkpoint for over 15 minutes
+          description: >-
+            Also fires when the checkpoint writer has stopped: it is restarted if it
+            exits, and logs a panic. Compare `kavach_checkpoint_uncovered_records`.
+      - alert: KavachCheckpointsSkipped
+        expr: increase(kavach_checkpoints_skipped_total[15m]) > 0
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: 'Due checkpoints were not written (reason: {{ $labels.reason }})'
+          description: >-
+            The `reason` label is a fixed vocabulary. A checkpoint is never dated by a
+            guess: if trusted time is unavailable it is skipped and counted.
+      - alert: KavachRevocationRecordMissing
+        expr: kavach_revocation_records_missing > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: A revocation has no evidence record
+          description: >-
+            Contact for the loan has stopped (the revocation stands), but its signed
+            record is not in the evidence chain and the reconciler cannot write it. See
+            `ALERT revocation evidence missing` in the logs for the event ids and why.
+      - alert: KavachRevocationReconcilerStopped
+        expr: time() - kavach_revocation_reconcile_last_pass_timestamp_seconds > 300
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: The revocation evidence reconciler has not completed a pass for 5 minutes
+          description: >-
+            It runs every 30 seconds and is restarted if it exits. A pass that cannot read
+            the revocations or the evidence store does not count as complete.
+
+  - name: kavach-gateway
+    rules:
+      - alert: KavachOutcomeWriteFailures
+        expr: increase(kavach_gateway_outcome_write_failures_total[10m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: A call's outcome could not be recorded
+          description: >-
+            The provider was contacted but the outcome did not reach the evidence store;
+            the allow will be reported as missing an outcome. Check the evidence store.
+      - alert: KavachCredentialIdConflict
+        expr: increase(kavach_gateway_jti_conflicts_total[10m]) > 0
+        labels: { severity: critical }
+        annotations:
+          summary: A credential id was minted twice
+          description: >-
+            A credential is issued at most once per record. A conflict should not happen:
+            treat it as a possible integrity problem and investigate before anything else.
+      - alert: KavachUnknownOutcomesHigh
+        expr: >-
+          sum(rate(kavach_gateway_calls_total{outcome="unknown"}[15m]))
+          / clamp_min(sum(rate(kavach_gateway_calls_total{decision=~"PASS|ALERT"}[15m])), 0.001)
+          > 0.05
+        for: 15m
+        labels: { severity: warning }
+        annotations:
+          summary: More than 5% of allowed calls ended with an unknown outcome
+          description: >-
+            Sent, result not known (a timeout or a 5xx from the provider). An unknown
+            outcome is never retried; it is settled by reconciliation with the provider.
+      - alert: KavachCommitSlow
+        expr: >-
+          histogram_quantile(0.99,
+            sum by (le) (rate(kavach_gateway_stage_seconds_bucket{stage="commit"}[5m]))) > 0.25
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: Recording decisions takes over 250 ms at p99
+          description: >-
+            Decisions of one tenant are recorded in order under one lock; this is the
+            stage that grows when the evidence store is slow or a tenant's rate rises.
+      - alert: KavachGatewayMalformedSpike
+        expr: increase(kavach_gateway_malformed_total[10m]) > 100
+        labels: { severity: warning }
+        annotations:
+          summary: Many malformed gateway calls
+          description: >-
+            Malformed calls are refused (400) and not recorded. A spike can be a broken
+            agent or probing.
+
+  - name: kavach-service
+    rules:
+      - alert: KavachDown
+        expr: up{job="kavach-api"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: kavach-api cannot be scraped
+          description: >-
+            Set `job` to your scrape job's name. The metrics endpoint is on the operator
+            listener and needs an operator token (README.md).
+      - alert: KavachIncidentWriteFailures
+        expr: increase(kavach_incident_write_failures_total[10m]) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: A shadow-mode incident could not be recorded
+          description: >-
+            Shadow sync must not disrupt the lender's flow, so the caller still got PASS;
+            this counter and an `ALERT` log line are the only signal.
+      - alert: KavachModelPackMismatch
+        expr: kavach_model_pack_mismatch == 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: A governed model runs under a different pack than the one it was written for
+          description: Reported, not blocked (ADR-010 section 4). Review before the next change.
+      - alert: KavachEvaluateErrors
+        expr: >-
+          sum(rate(kavach_evaluate_requests_total{status_class="5xx"}[5m]))
+          / clamp_min(sum(rate(kavach_evaluate_requests_total[5m])), 0.001) > 0.01
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: More than 1% of evaluate requests fail with a server error
+          description: Decision Governance track (the frozen credit path).
