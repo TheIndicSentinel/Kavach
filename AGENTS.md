@@ -53,9 +53,10 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`), plus Postgres tests, c
 ## Phase
 
 - **Done:** Partner pilot Phases 1–3; MVP M0 (docs, hardening) and M1.1–M1.5 (ports, governed startup, signed packs, mandates, agent authz, CI proofs) — see [PRD.md](docs/PRD.md)
-- **Done:** Hardening track H0–H4; H5a (clock sync, Postgres mandates, tracked migrations, signed agent evidence, authorization core, agent surfaces); H5b-1 steps 1–7 (`kavach-jws`, agent listener, signed tool registry, credential broker, reference resolver, mock provider)
-- **In progress:** H5b-1 step 8 (gateway `POST /v1/tools/{tool}`), then step 9 (end-to-end) and H5b-2 (network isolation)
-- **Next:** v0.1 developer preview (CLI first: `kavach init`, `dev up`, offline `authorize`/`why`, `attack`); TUI in v0.2. Open core boundary: [OPEN_CORE.md](OPEN_CORE.md)
+- **Done:** Hardening track H0–H5b (clock sync, Postgres mandates, tracked migrations, signed agent evidence, authorization core, agent listener, signed tool registry, credential broker, gateway, network isolation); evidence E1–E4 (checkpoints, signed bundles, offline verification); Postgres TLS; HSM-backed signing keys with rotation
+- **Done:** CLI v0.1 (`init`, `dev up`, `authorize`, `call`, `why`, `attack`, `demo`, `simulate` S1–S3, `evidence`, release tooling); revocation by system-of-record event (ADR-012): evidence records, bundle format 2, attack catalog v4, simulated payments and disputes
+- **In progress:** Phase 0 hygiene (docs, graceful shutdown, alert rules), then the agent kill switch (ADR-013)
+- **Next:** pilot blockers (real-provider mode, a HUMAN_REVIEW resolution path, consent and reference stores, an HA reference, the reference-machine benchmark, a DR drill), then a managed single-tenant SaaS foundation. Pre-alpha. Open core boundary: [OPEN_CORE.md](OPEN_CORE.md)
 - **Security claims:** [SECURITY_PROPERTIES.md](docs/SECURITY_PROPERTIES.md) — updated in the same PR as any guarantee change
 
 See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md), [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md), and [docs/PARTNER_PILOT.md](docs/PARTNER_PILOT.md).

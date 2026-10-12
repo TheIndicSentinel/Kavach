@@ -71,6 +71,7 @@ export KAVACH_DATABASE_URL="postgres://kavach_runtime:runtime-secret@db.internal
   - On the server: `ssl = on` with a certificate and key, and `hostssl` (not `host`) lines in `pg_hba.conf`, so Postgres itself refuses plaintext clients. `deploy/postgres/pg_hba.conf` and `deploy/postgres/tls-entrypoint.sh` do this for the official Postgres image; the pilot stack uses them with a certificate from `scripts/pilot-db-tls.sh`.
 - On start, `kavach-api` applies pending migrations as the owner, then serves as `kavach_runtime` and never migrates with it. Applied migrations are tracked with checksums (`_sqlx_migrations`), so each runs once and an edited migration is refused. A database created by an earlier release adopts tracking on its first start.
 - Migrations grant `kavach_runtime` only what the application uses. Evidence and audit tables (`decision_events`, `admin_audit_log`, `evaluate_incidents`, `evidence_tombstones`) are insert-only. Nothing gets `TRUNCATE`, and the runtime role cannot alter tables or drop the immutability triggers.
+- Contributors: how a migration is written (grants, append-only triggers, `NOT VALID` then `VALIDATE`) is in [MIGRATIONS.md](MIGRATIONS.md).
 - If you create `kavach_runtime` **after** migrations already ran, grant it: `psql -U kavach -d kavach -c 'SELECT kavach_grant_runtime();'`.
 - `kavach-batch` never migrates unless given `--migration-database-url`; start `kavach-api` first.
 - **Development only:** with just `KAVACH_DATABASE_URL` (no migration URL), one role both migrates and serves, and it owns its tables.
