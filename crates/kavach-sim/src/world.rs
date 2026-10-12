@@ -155,6 +155,36 @@ impl World {
             .collect()
     }
 
+    /// The scenario's payments and disputes, as the oracle reads them: the
+    /// borrower and when, from the scenario alone.
+    #[must_use]
+    pub fn revocations(&self, scenario: &Scenario) -> Vec<(String, chrono::DateTime<chrono::Utc>)> {
+        let mut out = Vec::new();
+        for event in scenario.events.iter().filter(|e| e.kind.revokes()) {
+            let Ok(minute) = crate::scenario::minute_of_day(&event.at) else {
+                continue;
+            };
+            let at = crate::calendar::slot(event.day, minute);
+            for b in self.event_borrowers(event.borrowers) {
+                out.push((self.borrowers[b].subject_ref.clone(), at));
+            }
+        }
+        out
+    }
+
+    /// The borrowers an event is for: the first `count` whose messages are
+    /// delivered and that are not kept for attacks.
+    #[must_use]
+    pub fn event_borrowers(&self, count: u32) -> Vec<usize> {
+        self.borrowers
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| !b.for_attacks && b.delivery == Delivery::Delivers)
+            .map(|(i, _)| i)
+            .take(count as usize)
+            .collect()
+    }
+
     /// What the devkit writes: every agent eligible under the template.
     #[must_use]
     pub fn devkit(&self) -> kavach_devkit::World {

@@ -13,7 +13,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use kavach_sim::driver::{self, Stack};
 use kavach_sim::oracle::Rules;
-use kavach_sim::reconcile::{reconcile, Arrived, Recorded};
+use kavach_sim::reconcile::{reconcile, Arrived, Recorded, RecordedRevocation};
 use kavach_sim::report::{Bundle, Report};
 use kavach_sim::scenario::{self, Scenario, BUILTINS};
 use kavach_sim::world::World;
@@ -114,7 +114,7 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     let inbox = live.inbox().await;
     // Stopped either way: the bundle is written as it stops.
     let clean = scene.stop_gracefully(Duration::from_secs(60));
-    let ledger = ledger.map_err(|e| {
+    let run = ledger.map_err(|e| {
         CliError::new("the simulation could not run", e)
             .fix("run again with --keep, and read .kavach/dev-up.log in the kept directory")
     })?;
@@ -122,14 +122,16 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     let bundle = check_evidence(&project, &evidence, clean);
     let reconciliation = match &bundle {
         Bundle::Verified { .. } => {
-            let (recorded, outcomes) = read_bundle(&evidence)?;
+            let (recorded, outcomes, revocations) = read_bundle(&evidence)?;
             Some(reconcile(
-                &ledger,
+                &run.calls,
                 &recorded,
                 &outcomes,
                 &inbox,
                 &world.destinations(),
                 &world.deliveries(),
+                &run.events,
+                &revocations,
             ))
         }
         _ => None,
@@ -137,7 +139,8 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     let report = Report::build(
         &scenario,
         &world,
-        &ledger,
+        &run.calls,
+        &run.events,
         bundle,
         reconciliation,
         Rules::default(),
@@ -147,8 +150,10 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
         serde_json::to_value(&report).map_err(|e| CliError::new("cannot write the report", e))?;
     data["kept"] = json!(ask.keep.then(|| scene.dir.display().to_string()));
     if let Some(path) = ask.report {
-        let text = serde_json::to_string_pretty(&json!({ "report": data, "ledger": ledger }))
-            .unwrap_or_default();
+        let text = serde_json::to_string_pretty(
+            &json!({ "report": data, "ledger": run.calls, "events": run.events }),
+        )
+        .unwrap_or_default();
         std::fs::write(path, text + "\n")
             .map_err(|e| CliError::new(format!("cannot write {}", path.display()), e))?;
     }
@@ -163,8 +168,15 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     Ok(code)
 }
 
-/// The bundle's records and outcomes (it verified first).
-fn read_bundle(dir: &Path) -> Result<(Vec<Recorded>, BTreeMap<String, String>), CliError> {
+/// The bundle's decisions, outcomes and revocation records (it verified
+/// first).
+type Read = (
+    Vec<Recorded>,
+    BTreeMap<String, String>,
+    Vec<RecordedRevocation>,
+);
+
+fn read_bundle(dir: &Path) -> Result<Read, CliError> {
     let lines = |file: &str| -> Result<Vec<Value>, CliError> {
         std::fs::read_to_string(dir.join(file))
             .map_err(|e| CliError::new(format!("cannot read {file}"), e))?
@@ -177,8 +189,9 @@ fn read_bundle(dir: &Path) -> Result<(Vec<Recorded>, BTreeMap<String, String>), 
             .collect()
     };
     let text = |v: &Value, key: &str| v[key].as_str().unwrap_or_default().to_string();
-    // Decisions only: other kinds (a revocation, ADR-012 §7) are not calls.
-    let recorded = lines("records.jsonl")?
+    let records = lines("records.jsonl")?;
+    // Decisions are calls; revocations (ADR-012 §7) are reconciled apart.
+    let recorded = records
         .iter()
         .filter(|r| r["kind"] == "agent_decision")
         .map(|r| Recorded {
@@ -186,13 +199,29 @@ fn read_bundle(dir: &Path) -> Result<(Vec<Recorded>, BTreeMap<String, String>), 
             request_id: text(r, "request_id"),
             returned_decision: text(r, "returned_decision"),
             credential_id: r["credential_id"].as_str().map(str::to_string),
+            ts: r["ts"].as_str().and_then(|t| t.parse().ok()),
+        })
+        .collect();
+    let revocations = records
+        .iter()
+        .filter(|r| r["kind"] == "mandate_revocation")
+        .map(|r| RecordedRevocation {
+            event_id: text(r, "event_id"),
+            revoked: r["revoked"]
+                .as_array()
+                .map(|ids| {
+                    ids.iter()
+                        .filter_map(|id| id.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default(),
         })
         .collect();
     let outcomes = lines("outcomes.jsonl")?
         .iter()
         .map(|o| (text(o, "credential_id"), text(o, "outcome")))
         .collect();
-    Ok((recorded, outcomes))
+    Ok((recorded, outcomes, revocations))
 }
 
 /// The bundle the stack wrote as it stopped, verified with the auditor's
@@ -259,6 +288,13 @@ fn evidence_lines(out: &mut String, r: &Report) {
             rec.inbox_messages,
             if rec.findings.is_empty() { "consistent".to_string() } else { format!("{} FINDINGS", rec.findings.len()) }
         );
+        if rec.revocation_events > 0 {
+            let _ = writeln!(
+                out,
+                "Revocations: {} sent · {} recorded in the evidence",
+                rec.revocation_events, rec.revocation_records
+            );
+        }
         for finding in &rec.findings {
             let _ = writeln!(out, "  reconciliation: {finding}");
         }
@@ -291,6 +327,13 @@ fn text(ui: Ui, r: &Report, kept: Option<&Path>) -> String {
             format!(" ({})", reasons.join(", "))
         }
     );
+    if r.revocation_events > 0 {
+        let _ = writeln!(
+            out,
+            "Payments and disputes sent {} (each must revoke the loan's mandates issued before it)",
+            r.revocation_events
+        );
+    }
     if !r.attacks.is_empty() {
         let tried: u32 = r.attacks.values().map(|(t, _)| t).sum();
         let refused: u32 = r.attacks.values().map(|(_, n)| n).sum();
@@ -406,6 +449,7 @@ impl Live {
                 record_id: m["record_id"].as_str().unwrap_or_default().into(),
                 jti: m["jti"].as_str().unwrap_or_default().into(),
                 destination: m["destination"].as_str().unwrap_or_default().into(),
+                mandate_id: m["mandate_id"].as_str().unwrap_or_default().into(),
             })
             .collect())
     }
@@ -418,13 +462,10 @@ impl Live {
     }
 }
 
-impl Stack for Live {
-    async fn issue(&self, agent: &str, subject_ref: &str) -> Result<String, String> {
-        let event_id = format!("sim-evt-{}", uuid::Uuid::new_v4());
-        let event =
-            kavach_devkit::sor_event(&self.bundle, &event_id, subject_ref, agent, self.time())
-                .await?;
-        // The SoR listener is rate-limited: wait out a 429 and send again.
+impl Live {
+    /// Sends a signed event. The SoR listener is rate-limited: a 429 is
+    /// waited out and the event sent again.
+    async fn post_event(&self, event: &str) -> Result<(u16, Value), String> {
         for _ in 0..60 {
             let response = self
                 .client
@@ -435,23 +476,51 @@ impl Stack for Live {
                 .map_err(|e| e.to_string())?;
             let status = response.status().as_u16();
             let body: Value = response.json().await.unwrap_or(Value::Null);
-            match status {
-                200 | 201 => {
-                    return body["mandate_id"]
-                        .as_str()
-                        .map(str::to_string)
-                        .ok_or_else(|| "no mandate_id in the reply".into())
-                }
-                429 => tokio::time::sleep(Duration::from_secs(1)).await,
-                _ => {
-                    return Err(format!(
-                        "{status} {}",
-                        crate::problem::detail(status, &body)
-                    ))
-                }
+            if status == 429 {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                continue;
             }
+            return Ok((status, body));
         }
         Err("the SoR listener stayed rate-limited".into())
+    }
+}
+
+impl Stack for Live {
+    async fn issue(&self, agent: &str, subject_ref: &str) -> Result<String, String> {
+        let event_id = format!("sim-evt-{}", uuid::Uuid::new_v4());
+        let event =
+            kavach_devkit::sor_event(&self.bundle, &event_id, subject_ref, agent, self.time())
+                .await?;
+        let (status, body) = self.post_event(&event).await?;
+        if matches!(status, 200 | 201) {
+            body["mandate_id"]
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "no mandate_id in the reply".into())
+        } else {
+            Err(format!(
+                "{status} {}",
+                crate::problem::detail(status, &body)
+            ))
+        }
+    }
+
+    async fn revoke(
+        &self,
+        event_type: &str,
+        event_id: &str,
+        subject_ref: &str,
+    ) -> Result<(u16, Value), String> {
+        let event = kavach_devkit::revoking_event(
+            &self.bundle,
+            event_id,
+            subject_ref,
+            event_type,
+            self.time(),
+        )
+        .await?;
+        self.post_event(&event).await
     }
 
     async fn call(&self, agent: &str, tool: &str, body: Value) -> Result<(u16, Value), String> {

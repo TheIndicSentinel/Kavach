@@ -31,7 +31,9 @@ kavach simulate run my-scenario.yaml --seed 42 --report report.json --keep
    - every record came from a call;
    - an allowed, deliverable call arrived **exactly once**: the provider's proof that nothing was sent twice;
    - a blocked call, or one the provider refused or failed, never arrived;
-   - each message went to that borrower's own destination, with the credential the evidence names.
+   - each message went to that borrower's own destination, with the credential the evidence names;
+   - **payments and disputes:** Kavach's reply revoked exactly the borrower's mandates issued before the event (the simulator's own record), the evidence holds exactly one signed revocation record per event naming the same mandates, and no record for an event the run never sent;
+   - **the inbox against the revocations:** nothing arrived under a revoked mandate from its event on. The inbox's own mandate id and the evidence's signed decision time decide this, not the simulator's ledger.
 
    Any finding fails the run. Findings name borrowers and record ids, never destinations.
 
@@ -54,6 +56,9 @@ agents:
     behaviour: { attack_rate: 0.5, attacks: [raw-phone-number, another-borrower] }   # default: all of them
 assignment: shared        # split (default): one agent per borrower; shared: every agent serves every borrower
 provider_failures: { refuse: 1, error: 1, lose: 1 }   # the first borrowers' destinations: 422, 500, lost response
+events:                   # system-of-record events (ADR-012), for the first N borrowers whose messages are delivered
+  - { day: 1, at: "12:00", type: loan.paid, borrowers: 2 }     # or loan.disputed: revokes their mandates
+  - { day: 2, at: "09:00", type: loan.dpd30, borrowers: 1 }    # a new default: assigned again, new mandates
 expect:                   # required: what passing means
   violations: 0
   mismatches: 0
@@ -62,7 +67,7 @@ expect:                   # required: what passing means
   blocked_at_least: { contact-daily-cap: 1 }
 ```
 
-Unknown keys are refused. `--seed`, `--days` and `--borrowers` override the file. A scenario may name the SECURITY_PROPERTIES.md rows it exercises in `covers:`. Every built-in does, and a test fails if one of those rows is renamed or removed.
+Unknown keys are refused. An event at a slot's time comes before that slot's calls, and every event is dated on the stack's clock (there is no backdating). Events never go to borrowers kept for attacks or set up to fail. `--seed`, `--days` and `--borrowers` override the file. A scenario may name the SECURITY_PROPERTIES.md rows it exercises in `covers:`. Every built-in does, and a test fails if one of those rows is renamed or removed.
 
 ## The oracle
 
@@ -74,7 +79,8 @@ It models the product's rules, written independently of Kavach's policies, and j
 - **the daily cap:** at most three contacts per borrower per IST day, **across all agents**. Only contacts Kavach allowed count, and a retry is not a new contact;
 - **channels:** only those the mandate grants (WhatsApp, voice);
 - **forward-once:** a retry (same request id) is never sent again. Once the first call's outcome is recorded, `unknown` included, it gets the stored reply (`replayed`). Only while the first call is still running is it 409 `in_flight`, and a run never retries into that;
-- **provider outcomes** follow the agreed status contract (ADR-007): 2xx delivered, 4xx refused, and a 5xx or a lost response unknown (a 5xx does not prove the message was not sent).
+- **provider outcomes** follow the agreed status contract (ADR-007): 2xx delivered, 4xx refused, and a 5xx or a lost response unknown (a 5xx does not prove the message was not sent);
+- **payments and disputes** (ADR-012): a mandate issued at or before a borrower's `loan.paid` or `loan.disputed` is refused from the event on. A mandate issued after it (a new default) is not touched. The oracle takes the events from the scenario, never from Kavach's replies, and the issue time of each mandate from the simulator's own record.
 
 The adversarial agent's attacks are the attack catalog's own payloads (`kavach-attacks`). Each call's attack label is for the report only; the oracle never reads it, and a test checks that.
 
@@ -109,12 +115,13 @@ The same seed gives the same digest over the ledger (who did what, when, and wha
 | `wrong-borrower` | A borrower outside the mandate is refused (`subject-binding`) | Agent authorization core (the mandate's subject) |
 | `forged-mandate` | A mandate id that was never issued is refused | Agent authorization core (a mandate whose chain verifies) |
 | `provider-failures` | 422 is recorded as refused, and a 500 or a lost response as unknown | Credential broker / gateway (outcomes) |
+| `payment-stops-contact` | A payment at 12:00 revokes two borrowers' mandates: their later calls are refused, one revocation record each, nothing delivered after it. A new default on day 2 assigns one again, and contact resumes for it only | Revocation by system-of-record event (ADR-012) |
+| `dispute-stops-contact` | Two agents share each borrower: one dispute revokes both agents' mandates, and neither reaches that borrower again | Revocation by system-of-record event (ADR-012) |
 | `retry-after-unknown` | A retry after an unknown outcome gets it back, replayed, and is never sent again | Gateway (forward-once) |
-| `mixed-week` | All of the above, over three days | All of the above |
+| `mixed-week` | All of the above, with a payment on day 2, over three days | All of the above |
 
 ## Not covered yet
 
-- **Revocation by payment or dispute:** needs R1.
 - **Delegation to sub-agents:** needs an agent delegation API.
 - **Consent withdrawn mid-run:** needs runtime consent changes.
 - **Quarantining a rogue agent:** needs the kill switch.

@@ -34,7 +34,55 @@ pub struct Scenario {
     /// numbers (the first ones, in this order: refuse, error, lose).
     #[serde(default)]
     pub provider_failures: ProviderFailures,
+    /// System-of-record events during the run (ADR-012).
+    #[serde(default)]
+    pub events: Vec<EventSpec>,
     pub expect: Expect,
+}
+
+/// A system-of-record event during a run, for the first `borrowers`
+/// borrowers whose messages are delivered (never those kept for attacks
+/// or set up to fail). At a slot's time it comes before that slot's calls.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EventSpec {
+    pub day: u32,
+    /// HH:MM, IST.
+    pub at: String,
+    #[serde(rename = "type")]
+    pub kind: EventKind,
+    #[serde(default = "one")]
+    pub borrowers: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventKind {
+    /// The loan is paid: every mandate issued for it up to now is revoked.
+    #[serde(rename = "loan.paid")]
+    Paid,
+    /// The loan is disputed: the same.
+    #[serde(rename = "loan.disputed")]
+    Disputed,
+    /// A new default: the borrower is assigned again (new mandates).
+    #[serde(rename = "loan.dpd30")]
+    Assigned,
+}
+
+impl EventKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Paid => "loan.paid",
+            Self::Disputed => "loan.disputed",
+            Self::Assigned => "loan.dpd30",
+        }
+    }
+
+    /// Revokes the borrower's mandates (a payment or a dispute).
+    #[must_use]
+    pub fn revokes(self) -> bool {
+        matches!(self, Self::Paid | Self::Disputed)
+    }
 }
 
 /// How many borrowers get each failure: refused by the recipient (422), a
@@ -264,6 +312,22 @@ impl Scenario {
                     .into(),
             );
         }
+        let delivering = self.borrowers - (f.refuse + f.error + f.lose);
+        for event in &self.events {
+            if !(1..=self.days).contains(&event.day) {
+                return Err(format!(
+                    "an event on day {}: the run has {} day(s)",
+                    event.day, self.days
+                ));
+            }
+            minute_of_day(&event.at)?;
+            if !(1..=delivering).contains(&event.borrowers) {
+                return Err(format!(
+                    "an event for {} borrower(s): it needs 1–{delivering} (borrowers whose messages are delivered)",
+                    event.borrowers
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -296,6 +360,14 @@ pub const BUILTINS: &[(&str, &str)] = &[
     (
         "forged-mandate",
         include_str!("../scenarios/forged-mandate.yaml"),
+    ),
+    (
+        "payment-stops-contact",
+        include_str!("../scenarios/payment-stops-contact.yaml"),
+    ),
+    (
+        "dispute-stops-contact",
+        include_str!("../scenarios/dispute-stops-contact.yaml"),
     ),
     (
         "provider-failures",

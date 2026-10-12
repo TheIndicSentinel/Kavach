@@ -1,10 +1,10 @@
 # Everything at once, over three days: compliant and eager agents sharing
 # a book of borrowers, an adversarial agent trying every agent attack,
-# provider failures, and retries after lost responses.
+# provider failures, retries after lost responses, and a payment on day 2.
 version: 1
 name: mixed-week
-description: Compliant, eager and adversarial agents, provider failures and retries, over three days.
-covers: ["Agent authorization core (library):", "Agent tool registry:", "Gateway"]   # SECURITY_PROPERTIES.md rows
+description: Compliant, eager and adversarial agents, provider failures, retries and a payment, over three days.
+covers: ["Agent authorization core (library):", "Agent tool registry:", "Gateway", "Revocation by system-of-record event (ADR-012):"]   # SECURITY_PROPERTIES.md rows
 seed: 41
 days: 3
 borrowers: 8
@@ -21,6 +21,8 @@ agents:
       attack_rate: 0.5
 assignment: shared
 provider_failures: { refuse: 1, error: 1, lose: 1 }
+events:
+  - { day: 2, at: "12:00", type: loan.paid }
 expect:
   violations: 0
   mismatches: 0
