@@ -17,7 +17,10 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::time::Duration;
 
-use kavach_attacks::{Attack, Report, Target, Verdict, CATALOG, CATALOG_VERSION, SUBJECT};
+use kavach_attacks::{
+    Attack, Loan, Report, SorKey, SorSpec, Target, Verdict, ATTACK_SUBJECT, CATALOG,
+    CATALOG_VERSION, SUBJECT,
+};
 use serde_json::{json, Value};
 
 use crate::output::{CliError, Status, Style, Ui};
@@ -205,6 +208,96 @@ impl Target for Live {
         self.run.clock == Some(kavach_api::dev_clock::DevClockKind::Fixed)
     }
 
+    fn has_attack_borrower(&self) -> bool {
+        std::fs::read_to_string(self.project.kavach_dir().join("consents.json"))
+            .is_ok_and(|consents| consents.contains(&format!("\"{ATTACK_SUBJECT}\"")))
+    }
+
+    async fn assign_attack_borrower(&self) -> Result<String, String> {
+        let event = kavach_devkit::sor_event(
+            &self.project.bundle(),
+            &format!("attack-assign-{}", uuid::Uuid::new_v4().simple()),
+            ATTACK_SUBJECT,
+            "collections-agent",
+            self.run
+                .stack_now(&self.project)
+                .await
+                .map_err(|e| e.what)?,
+        )
+        .await?;
+        let (status, reply) = self.post_sor_event(&event).await?;
+        reply["mandate_id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("no mandate for {ATTACK_SUBJECT} ({status}: {reply})"))
+    }
+
+    async fn sign_sor_event(&self, spec: &SorSpec) -> Result<String, String> {
+        let now = self
+            .run
+            .stack_now(&self.project)
+            .await
+            .map_err(|e| e.what)?;
+        kavach_devkit::attack_event(
+            &self.project.bundle(),
+            &kavach_devkit::AttackEvent {
+                event_id: spec.event_id.clone(),
+                event_type: spec.event_type.into(),
+                tenant_id: if spec.other_tenant {
+                    "attack-other-tenant".into()
+                } else {
+                    kavach_devkit::TENANT.into()
+                },
+                subject_ref: match spec.loan {
+                    Loan::Attack => ATTACK_SUBJECT.into(),
+                    Loan::Unused => "ref:borrower:B-UNUSED".into(),
+                },
+                occurred_at: now + chrono::Duration::seconds(spec.offset_seconds),
+                forged: spec.key == SorKey::Unregistered,
+            },
+        )
+        .await
+    }
+
+    async fn post_sor_event(&self, token: &str) -> Result<(u16, Value), String> {
+        let response = self
+            .http
+            .post(format!("http://{}/v1/sor/events", self.run.sor))
+            .json(&json!({ "event": token }))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        Ok((status, response.json().await.unwrap_or(Value::Null)))
+    }
+
+    async fn revocation_record(&self, event_id: &str) -> Result<Option<String>, String> {
+        // The audited operator read. It is rate limited: a 429 is waited
+        // out, never skipped.
+        for _ in 0..20 {
+            let response = self
+                .http
+                .get(format!(
+                    "http://{}/v1/agent-revocations/lms/{event_id}",
+                    self.run.operator
+                ))
+                .bearer_auth(&self.operator)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            match response.status().as_u16() {
+                404 => return Ok(None),
+                200 => {
+                    let body: Value = response.json().await.map_err(|e| e.to_string())?;
+                    return Ok(body["record"]["hash"].as_str().map(str::to_string));
+                }
+                429 => tokio::time::sleep(Duration::from_millis(250)).await,
+                status => return Err(format!("the evidence read answered {status}")),
+            }
+        }
+        Err("the evidence read stayed rate limited".into())
+    }
+
     async fn move_clock(&self, hour: u32, minute: u32, fresh_day: bool) -> Result<(), String> {
         let now = self
             .run
@@ -372,25 +465,50 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
         provider: client(Some(&project.kavach_dir().join("tls/ca.pem")))?,
         run,
     };
+    if let Some(exit) = ready(ui, &live).await? {
+        return Ok(exit);
+    }
+    let report = kavach_attacks::run(&live, &CATALOG).await;
+    Ok(finish(*ui, &report))
+}
+
+/// A legitimate pre-check must be allowed before the run can be judged. On
+/// a fixed development clock the run moves it into contact hours, or to a
+/// fresh day when an earlier run used the day's contacts (the daily-cap
+/// attack's declared setup does). `Some(exit)`: inconclusive, and why.
+async fn ready(ui: &Ui, live: &Live) -> Result<Option<i32>, CliError> {
     let mut baseline = live.baseline().await?;
     let outside_hours = |b: &Value| {
         let reasons = b["reasons"].to_string();
         reasons.contains("contact-window") || reasons.contains("contact-hours-floor")
     };
-    if baseline["decision"] != "PASS" && outside_hours(&baseline) && live.clock_control() {
-        // A fixed development clock: move it into contact hours instead.
-        live.move_clock(11, 0, false)
-            .await
-            .map_err(|e| CliError::new("cannot move the development clock", e))?;
-        baseline = live.baseline().await?;
+    let cap_used = |b: &Value| b["reasons"].to_string().contains("contact-daily-cap");
+    if baseline["decision"] != "PASS" && live.clock_control() {
+        // A fixed development clock: move it into contact hours, or to a
+        // fresh day when an earlier run used the day's contacts (the
+        // daily-cap attack's declared setup does).
+        let fresh_day = cap_used(&baseline);
+        if fresh_day || outside_hours(&baseline) {
+            live.move_clock(11, 0, fresh_day)
+                .await
+                .map_err(|e| CliError::new("cannot move the development clock", e))?;
+            baseline = live.baseline().await?;
+        }
     }
     if baseline["decision"] != "PASS" {
         let reasons = baseline["reasons"].to_string();
-        return Ok(if reasons.contains("trusted_time_unavailable") {
+        return Ok(Some(if reasons.contains("trusted_time_unavailable") {
             inconclusive(
                 *ui,
                 "trusted time is unsynced: every decision would BLOCK for that reason",
                 "sync the clock (or restart `kavach dev up`)",
+            )
+        } else if reasons.contains("contact-daily-cap") {
+            inconclusive(
+                *ui,
+                "today's contacts for the dev borrower are used up (an earlier run's daily-cap attack \
+                 uses them on purpose), so decisions would BLOCK for the cap",
+                "run again tomorrow, or start the stack with `kavach dev up --clock 11:00`",
             )
         } else if reasons.contains("contact-window") || reasons.contains("contact-hours-floor") {
             inconclusive(
@@ -404,11 +522,9 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
                 &format!("the stack is unhealthy: a legitimate call is not allowed ({reasons})"),
                 "run `kavach doctor`",
             )
-        });
+        }));
     }
-
-    let report = kavach_attacks::run(&live, &CATALOG).await;
-    Ok(finish(*ui, &report))
+    Ok(None)
 }
 
 fn finish(ui: Ui, report: &Report) -> i32 {
@@ -423,6 +539,7 @@ fn finish(ui: Ui, report: &Report) -> i32 {
             Verdict::Succeeded => ui.paint(Style::Fail, "SUCCEEDED"),
             Verdict::Error => ui.paint(Style::Warn, "error"),
             Verdict::Skipped => ui.paint(Style::Dim, "skipped (needs dev up --clock)"),
+            Verdict::Inconclusive => ui.paint(Style::Warn, "inconclusive"),
         };
         let _ = writeln!(human, "  {:<30} {word}", o.id);
         if !matches!(o.verdict, Verdict::Refused | Verdict::Skipped) {
@@ -448,7 +565,24 @@ fn finish(ui: Ui, report: &Report) -> i32 {
             "  {skipped} attack(s) skipped: they need a fixed development clock (kavach dev up --clock 11:00)"
         );
     }
-    let status = if report.passed() {
+    let inconclusive = report.inconclusive();
+    let otherwise_passed = !report.breached()
+        && report.outcomes.iter().all(|o| {
+            matches!(
+                o.verdict,
+                Verdict::Refused | Verdict::Skipped | Verdict::Inconclusive
+            )
+        });
+    let status = if inconclusive > 0 && otherwise_passed {
+        let _ = write!(
+            human,
+            "\nInconclusive: {inconclusive} attack(s) could not run, because the project has no \
+             {ATTACK_SUBJECT} (made before catalog version 4).\n  {} kavach init --force (it \
+             rewrites the development bundle), then restart `kavach dev up`",
+            ui.paint(Style::Dim, "fix:")
+        );
+        Status::Warnings
+    } else if report.passed() {
         let _ = write!(
             human,
             "\nAll {} attacks that ran were refused. That shows these known attacks fail; it is not a \

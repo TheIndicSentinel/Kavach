@@ -40,6 +40,8 @@ pub const KID: &str = "test-key-1";
 pub const IDP_SEED: [u8; 32] = [42u8; 32];
 pub const TOOL_SEED: [u8; 32] = [7u8; 32];
 pub const SUBJECT: &str = "ref:borrower:B-9382";
+/// The borrower the revocation attacks use (catalog v4); never contacted.
+pub const ATTACK_SUBJECT: &str = "ref:borrower:B-ATTACK";
 
 pub fn repo(path: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -264,14 +266,18 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         .to_string(),
     )
     .unwrap();
-    let consents = vec![ConsentRecord {
-        consent_id: "C-7f3a".into(),
+    let consent = |id: &str, subject: &str| ConsentRecord {
+        consent_id: id.into(),
         tenant_id: "default".into(),
-        subject_ref: SUBJECT.into(),
+        subject_ref: subject.into(),
         purposes: set(&["loan_recovery"]),
         expires_at: chrono::Utc::now() + chrono::Duration::days(30),
         active: true,
-    }];
+    };
+    let consents = vec![
+        consent("C-7f3a", SUBJECT),
+        consent("C-attack", ATTACK_SUBJECT),
+    ];
     std::fs::write(
         dir.join("consents.json"),
         serde_json::to_string(&consents).unwrap(),
@@ -389,6 +395,47 @@ pub async fn event_at(
         assigned_agent: "collections-agent".into(),
         occurred_at: at,
         nonce: format!("n-{event_id}-{record_ref}"),
+    };
+    kavach_mandate::jws::sign(
+        &sor,
+        "lms-issuer-1",
+        kavach_mandate::jws::TYP_SOR_EVENT,
+        &event,
+    )
+    .await
+    .unwrap()
+}
+
+/// Any system-of-record event, as an attacker or a system of record might
+/// sign it: `forged` signs under the registered key id with another key.
+pub struct AnyEvent<'a> {
+    pub event_id: &'a str,
+    pub event_type: &'a str,
+    pub tenant_id: &'a str,
+    pub subject_ref: &'a str,
+    pub record_ref: &'a str,
+    pub consent_refs: &'a [&'a str],
+    pub assigned_agent: &'a str,
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub forged: bool,
+}
+
+pub async fn any_event(e: &AnyEvent<'_>) -> String {
+    let mut sor = InMemoryKeyProvider::new();
+    let seed = if e.forged { [77u8; 32] } else { [2u8; 32] };
+    sor.insert_seed("lms-issuer-1", seed).unwrap();
+    let event = SorEvent {
+        event_id: e.event_id.into(),
+        tenant_id: e.tenant_id.into(),
+        system: "lms".into(),
+        event_type: e.event_type.into(),
+        record_ref: e.record_ref.into(),
+        subject_ref: e.subject_ref.into(),
+        principal: "nbfc-collections-system".into(),
+        consent_refs: set(e.consent_refs),
+        assigned_agent: e.assigned_agent.into(),
+        occurred_at: e.at,
+        nonce: format!("n-{}", e.event_id),
     };
     kavach_mandate::jws::sign(
         &sor,

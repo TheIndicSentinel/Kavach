@@ -61,6 +61,15 @@ Each revocation is also a signed record in the agent evidence chain (kind `manda
 - `revocation-for-another-tenant`: changes nothing.
 - `revocation-reaches-forward`: an old `loan.paid` against a newer mandate leaves it live.
 
+*Amended on acceptance (R1c):*
+- **Three more attacks:**
+  - `future-revocation`: dated beyond the freshness window, refused.
+  - `unknown-event-type`: a validly signed event of an unregistered type, refused and revokes nothing.
+  - `revocation-wrong-loan`: a valid payment for another loan leaves the attack mandate live.
+- **Ground truth:** every attack is judged on the attack mandate (a pre-check) and on the evidence chain, not only the reply. A refused event adds no `mandate_revocation` record, and the replay adds no second one. An accepted event that should have been refused is a breach, whatever it revoked.
+- **`revocation-for-another-tenant`:** the tenant is part of the signed event and every revocation is scoped by it. A stack serves one tenant and now refuses an event for any other (400) before acting on it.
+- **`replayed-revocation`:** the replay returns the stored result (`replayed: true`); the replay guard is not what answers a retry.
+
 ## Consequences
 
 - **The pay-and-stop case works end to end.** `kavach simulate` gains its scenarios 4 (payment) and 5 (dispute), and the oracle models revocation.

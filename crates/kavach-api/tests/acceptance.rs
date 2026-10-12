@@ -102,6 +102,7 @@ on_both_stores!(
     scenario11_partial_bypass_attempts_fail,
     scenario12_partial_unavailable_dependencies_fail_safe,
     catalog_attacks_are_refused,
+    revocation_attacks_hold_across_midnight_ist,
 );
 
 fn at(gw: &Gw, ist_hour: i64, minutes: i64, seconds: i64) {
@@ -706,6 +707,43 @@ async fn catalog_attacks_are_refused(store: Store) {
     assert_eq!(gw.provider.inbox().len(), 3);
 }
 
+/// The revocation attacks (catalog v4) on a fixed clock either side of
+/// midnight IST: at 23:58 the future-dated event falls on the next IST day,
+/// at 00:05 the stale one on the day before. The freshness window is
+/// measured in time, not in calendar days, so every attack is refused the
+/// same way, and nothing is minted or sent (outside contact hours, too).
+async fn revocation_attacks_hold_across_midnight_ist(store: Store) {
+    let Some(gw) = world(store, Some(NUMBER), true).await else {
+        return;
+    };
+    let target = InProcess(&gw);
+    let revocations: Vec<kavach_attacks::Attack> = kavach_attacks::CATALOG
+        .iter()
+        .filter(|a| a.group == "revocation")
+        .copied()
+        .collect();
+    assert_eq!(revocations.len(), 8);
+    for (hour, minute) in [(23, 58), (0, 5)] {
+        let now = gw.clock.now().utc;
+        gw.clock.advance(next_ist(now, hour, minute, false) - now);
+        let report = kavach_attacks::run(&target, &revocations).await;
+        for outcome in &report.outcomes {
+            assert_eq!(
+                outcome.verdict,
+                kavach_attacks::Verdict::Refused,
+                "{} at {hour:02}:{minute:02} IST: {}",
+                outcome.id,
+                outcome.observed
+            );
+        }
+        assert_eq!(
+            (report.credentials_minted, report.messages_delivered),
+            (0, 0)
+        );
+    }
+    assert!(gw.provider.inbox().is_empty());
+}
+
 /// The acceptance world as an attack target.
 struct InProcess<'a>(&'a Gw);
 
@@ -810,6 +848,95 @@ impl kavach_attacks::Target for InProcess<'_> {
 
     fn clock_control(&self) -> bool {
         true
+    }
+
+    fn has_attack_borrower(&self) -> bool {
+        true
+    }
+
+    async fn assign_attack_borrower(&self) -> Result<String, String> {
+        let event = any_event(&AnyEvent {
+            event_id: &format!("attack-assign-{}", uuid::Uuid::new_v4().simple()),
+            event_type: "loan.dpd30",
+            tenant_id: "default",
+            subject_ref: ATTACK_SUBJECT,
+            record_ref: "lms:loan/B-ATTACK",
+            consent_refs: &["C-attack"],
+            assigned_agent: "collections-agent",
+            at: self.0.clock.now().utc,
+            forged: false,
+        })
+        .await;
+        let (status, reply) = self.post_sor_event(&event).await?;
+        reply["mandate_id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or_else(|| format!("no attack mandate ({status}: {reply})"))
+    }
+
+    async fn sign_sor_event(&self, spec: &kavach_attacks::SorSpec) -> Result<String, String> {
+        let (subject, record) = match spec.loan {
+            kavach_attacks::Loan::Attack => (ATTACK_SUBJECT, "lms:loan/B-ATTACK"),
+            kavach_attacks::Loan::Unused => ("ref:borrower:B-UNUSED", "lms:loan/B-UNUSED"),
+        };
+        Ok(any_event(&AnyEvent {
+            event_id: &spec.event_id,
+            event_type: spec.event_type,
+            tenant_id: if spec.other_tenant {
+                "attack-other-tenant"
+            } else {
+                "default"
+            },
+            subject_ref: subject,
+            record_ref: record,
+            consent_refs: &[],
+            assigned_agent: "",
+            at: self.0.clock.now().utc + chrono::Duration::seconds(spec.offset_seconds),
+            forged: spec.key == kavach_attacks::SorKey::Unregistered,
+        })
+        .await)
+    }
+
+    async fn post_sor_event(&self, token: &str) -> Result<(u16, Value), String> {
+        let (status, reply) = send(
+            contract::sor_router(self.0.state.clone()),
+            "/v1/sor/events",
+            &[],
+            json!({ "event": token }),
+        )
+        .await;
+        Ok((status.as_u16(), reply))
+    }
+
+    async fn revocation_record(&self, event_id: &str) -> Result<Option<String>, String> {
+        // The audited operator read; a 429 (reads are rate limited per
+        // process) is waited out, never skipped.
+        for _ in 0..20 {
+            let response = tower::ServiceExt::oneshot(
+                contract::router(self.0.state.clone()),
+                axum::http::Request::get(format!("/v1/agent-revocations/lms/{event_id}"))
+                    .header("authorization", format!("Bearer {}", operator_token()))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let status = response.status().as_u16();
+            let bytes = http_body_util::BodyExt::collect(response.into_body())
+                .await
+                .map_err(|e| e.to_string())?
+                .to_bytes();
+            match status {
+                404 => return Ok(None),
+                200 => {
+                    let body: Value = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+                    return Ok(body["record"]["hash"].as_str().map(str::to_string));
+                }
+                429 => tokio::time::sleep(std::time::Duration::from_millis(250)).await,
+                other => return Err(format!("the evidence read answered {other}")),
+            }
+        }
+        Err("the evidence read stayed rate limited".into())
     }
 
     fn move_clock(

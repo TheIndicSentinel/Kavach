@@ -59,6 +59,19 @@ pub struct RevokedByEvent {
 /// request: the event is fully verified by whichever path handles it.
 #[must_use]
 pub fn is_revoking_event(event_token: &str) -> bool {
+    claimed(event_token, "event_type")
+        .is_some_and(|t| REVOKING_EVENTS.iter().any(|(name, _)| *name == t))
+}
+
+/// The tenant an event claims, **unverified**. Only to refuse an event for
+/// a tenant the stack does not serve before anything else: a claim that
+/// is refused on can never be used to accept an event.
+#[must_use]
+pub fn claimed_tenant(event_token: &str) -> Option<String> {
+    claimed(event_token, "tenant_id")
+}
+
+fn claimed(event_token: &str, field: &str) -> Option<String> {
     use base64::Engine as _;
     event_token
         .split('.')
@@ -69,18 +82,17 @@ pub fn is_revoking_event(event_token: &str) -> bool {
                 .ok()
         })
         .and_then(|bytes: Vec<u8>| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|event| event["event_type"].as_str().map(str::to_string))
-        .is_some_and(|t| REVOKING_EVENTS.iter().any(|(name, _)| *name == t))
+        .and_then(|event| event[field].as_str().map(str::to_string))
 }
 
-/// SHA-256 of an event's content (a struct serializes in a fixed field
-/// order, its sets sorted): a retry has the same, a reuse of its id for
 /// Whole microseconds, as Postgres keeps a timestamp: the time stored and
 /// the time read back are the same.
 fn micros(t: DateTime<Utc>) -> DateTime<Utc> {
     t.duration_trunc(TimeDelta::microseconds(1)).unwrap_or(t)
 }
 
+/// SHA-256 of an event's content (a struct serializes in a fixed field
+/// order, its sets sorted): a retry has the same, a reuse of its id for
 /// other content does not.
 fn content_sha256(event: &SorEvent) -> Result<String, PortError> {
     let bytes =

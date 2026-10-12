@@ -21,11 +21,17 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+mod revocation;
+
 /// Bumped whenever an attack is added, removed or its expectation changes.
-pub const CATALOG_VERSION: &str = "3";
+pub const CATALOG_VERSION: &str = "4";
 
 /// The borrower the dev mandate covers, and one it does not.
 pub const SUBJECT: &str = "ref:borrower:B-9382";
+/// The borrower the revocation attacks (v4) issue, revoke and replay
+/// mandates for, so the dev mandate is never touched. Nothing is sent to
+/// it: its mandates are only pre-checked.
+pub const ATTACK_SUBJECT: &str = "ref:borrower:B-ATTACK";
 const OTHER_SUBJECT: &str = "ref:borrower:B-1";
 
 /// How a request authenticates (or fails to).
@@ -78,6 +84,63 @@ pub enum Probe {
     /// three allowed reminders are made as declared setup (not judged, and
     /// reported), then the fourth is judged (needs a development clock).
     DailyCap,
+    /// A system-of-record event against the attack borrower's mandates
+    /// (ADR-012). Its declared setup assigns the borrower (a mandate);
+    /// ground truth is that mandate, pre-checked, and the evidence chain.
+    Revocation(RevocationAttack),
+}
+
+/// The revocation attacks (catalog v4, ADR-012 §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevocationAttack {
+    /// A payment signed with a key no system of record is registered with.
+    Forged,
+    /// A payment dated 15 minutes ago: outside the freshness window.
+    Stale,
+    /// A payment dated 15 minutes ahead: outside the freshness window.
+    Future,
+    /// A validly signed event of a type no template or revocation knows.
+    UnknownType,
+    /// A validly signed payment for the same loan, for another tenant.
+    OtherTenant,
+    /// A validly signed payment for another loan.
+    WrongLoan,
+    /// A validly signed payment dated before the attack mandate was issued.
+    ReachesForward,
+    /// A payment that revoked one mandate, sent again after a new mandate
+    /// was issued for the same loan.
+    Replayed,
+}
+
+/// Which key signs a system-of-record event.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SorKey {
+    /// The issuer key registered for the system (`lms`).
+    Registered,
+    /// A key nobody registered.
+    Unregistered,
+}
+
+/// Which loan a system-of-record event names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Loan {
+    /// The attack borrower's loan.
+    Attack,
+    /// A loan no mandate was ever issued for.
+    Unused,
+}
+
+/// A system-of-record event for the target to sign: dated
+/// `offset_seconds` from the stack's own clock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SorSpec {
+    pub event_id: String,
+    pub event_type: &'static str,
+    pub key: SorKey,
+    /// For a tenant other than the one the stack serves.
+    pub other_tenant: bool,
+    pub loan: Loan,
+    pub offset_seconds: i64,
 }
 
 impl Probe {
@@ -102,6 +165,15 @@ pub enum Expect {
     Status { status: u16 },
     /// The replayed event returns the existing mandate, marked replayed.
     SameMandate,
+    /// The event is refused (any 4xx), the attack mandate stays live and
+    /// no revocation is recorded for the event.
+    EventRefused,
+    /// The event is accepted and revokes nothing: the attack mandate stays
+    /// live.
+    RevokesNothing,
+    /// The event again returns the first result, marked replayed: the
+    /// mandate issued since stays live and no second record is written.
+    StoredRevocation,
     /// Any 4xx from the provider.
     Refused,
 }
@@ -132,10 +204,11 @@ const BACKENDS: &str = "Credential-accepting backends";
 const UNSEEN_IDENTIFIER: &str = "An identifier the detectors do not see, in a tool parameter";
 const STOLEN_TOKEN: &str = "An agent token stolen before it expires";
 const SOR_KEY: &str = "A system of record with a valid issuer key";
+const REVOCATION: &str = "Revocation by system-of-record event (ADR-012):";
 const AROUND: &str = "A resource the agent reaches without the gateway";
 
 /// The catalog, in the order it runs.
-pub const CATALOG: [Attack; 22] = [
+pub const CATALOG: [Attack; 30] = [
     Attack {
         id: "raw-phone-number",
         group: "identifiers",
@@ -449,6 +522,78 @@ pub const CATALOG: [Attack; 22] = [
         security_property: BACKENDS,
         bypass: Some(AROUND),
     },
+    Attack {
+        id: "forged-revocation",
+        group: "revocation",
+        tries: "a payment signed with a key no system of record is registered with",
+        probe: Probe::Revocation(RevocationAttack::Forged),
+        expect: Expect::EventRefused,
+        security_property: REVOCATION,
+        bypass: None,
+    },
+    Attack {
+        id: "stale-revocation",
+        group: "revocation",
+        tries: "a validly signed payment dated 15 minutes ago, outside the freshness window",
+        probe: Probe::Revocation(RevocationAttack::Stale),
+        expect: Expect::EventRefused,
+        security_property: REVOCATION,
+        bypass: Some(SOR_KEY),
+    },
+    Attack {
+        id: "future-revocation",
+        group: "revocation",
+        tries: "a validly signed payment dated 15 minutes ahead, outside the freshness window",
+        probe: Probe::Revocation(RevocationAttack::Future),
+        expect: Expect::EventRefused,
+        security_property: REVOCATION,
+        bypass: Some(SOR_KEY),
+    },
+    Attack {
+        id: "unknown-event-type",
+        group: "revocation",
+        tries: "a validly signed event of a type nothing is registered for",
+        probe: Probe::Revocation(RevocationAttack::UnknownType),
+        expect: Expect::EventRefused,
+        security_property: REVOCATION,
+        bypass: Some(SOR_KEY),
+    },
+    Attack {
+        id: "revocation-for-another-tenant",
+        group: "revocation",
+        tries: "a validly signed payment for the same loan, for another tenant",
+        probe: Probe::Revocation(RevocationAttack::OtherTenant),
+        expect: Expect::EventRefused,
+        security_property: REVOCATION,
+        bypass: Some(SOR_KEY),
+    },
+    Attack {
+        id: "revocation-wrong-loan",
+        group: "revocation",
+        tries: "a validly signed payment for another loan, to reach this borrower's mandate",
+        probe: Probe::Revocation(RevocationAttack::WrongLoan),
+        expect: Expect::RevokesNothing,
+        security_property: REVOCATION,
+        bypass: Some(SOR_KEY),
+    },
+    Attack {
+        id: "revocation-reaches-forward",
+        group: "revocation",
+        tries: "a validly signed payment dated before the mandate was issued",
+        probe: Probe::Revocation(RevocationAttack::ReachesForward),
+        expect: Expect::RevokesNothing,
+        security_property: REVOCATION,
+        bypass: Some(SOR_KEY),
+    },
+    Attack {
+        id: "replayed-revocation",
+        group: "revocation",
+        tries: "an old payment sent again, to revoke the mandate issued after it",
+        probe: Probe::Revocation(RevocationAttack::Replayed),
+        expect: Expect::StoredRevocation,
+        security_property: REVOCATION,
+        bypass: Some(SOR_KEY),
+    },
 ];
 
 /// The agent token of the attack that uses one, changed as `auth` asks.
@@ -542,6 +687,22 @@ pub trait Target {
     fn pause(&self) -> impl Future<Output = ()>;
     /// Whether this stack's clock can be moved (a fixed development clock).
     fn clock_control(&self) -> bool;
+    /// Whether the stack holds [`ATTACK_SUBJECT`] (projects made before
+    /// catalog v4 do not: `kavach init --force`).
+    fn has_attack_borrower(&self) -> bool;
+    /// Assigns [`ATTACK_SUBJECT`] to the holder agent with a fresh event:
+    /// the new mandate's id.
+    fn assign_attack_borrower(&self) -> impl Future<Output = Result<String, String>>;
+    /// Signs a system-of-record event to `spec`.
+    fn sign_sor_event(&self, spec: &SorSpec) -> impl Future<Output = Result<String, String>>;
+    /// Sends a signed system-of-record event: status and body.
+    fn post_sor_event(&self, token: &str) -> impl Future<Output = Result<(u16, Value), String>>;
+    /// The hash of the evidence-chain record of the revocation by
+    /// `event_id` (system `lms`), if one was written.
+    fn revocation_record(
+        &self,
+        event_id: &str,
+    ) -> impl Future<Output = Result<Option<String>, String>>;
     /// Moves the stack's clock forward to the next `hour:minute` IST; with
     /// `fresh_day`, to that time on a later IST day than any so far.
     fn move_clock(
@@ -569,6 +730,9 @@ pub enum Verdict {
     Error,
     /// Not run: it needs a development clock this stack does not have.
     Skipped,
+    /// Not run: the stack lacks what it needs (the attack borrower), so
+    /// nothing can be concluded. Never a pass.
+    Inconclusive,
 }
 
 /// One attack's result.
@@ -629,6 +793,15 @@ impl Report {
                 .all(|o| matches!(o.verdict, Verdict::Refused | Verdict::Skipped))
     }
 
+    /// Attacks that could not be run on this stack (never a pass).
+    #[must_use]
+    pub fn inconclusive(&self) -> usize {
+        self.outcomes
+            .iter()
+            .filter(|o| o.verdict == Verdict::Inconclusive)
+            .count()
+    }
+
     /// Attacks skipped for want of a development clock.
     #[must_use]
     pub fn skipped(&self) -> usize {
@@ -676,8 +849,23 @@ fn judge(expect: Expect, status: u16, body: &Value) -> Verdict {
                 Verdict::RefusedUnexpectedly
             }
         }
-        Expect::SameMandate | Expect::Refused => Verdict::Error,
+        Expect::SameMandate
+        | Expect::Refused
+        | Expect::EventRefused
+        | Expect::RevokesNothing
+        | Expect::StoredRevocation => Verdict::Error,
     }
+}
+
+/// A suffix no earlier run used: the wall clock's nanoseconds and a counter
+/// (two runs in the same nanosecond still differ).
+fn unique() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{nanos:x}{:x}", COUNTER.fetch_add(1, Ordering::Relaxed))
 }
 
 /// Ground truth now: allowed calls (credentials minted), messages delivered.
@@ -685,13 +873,72 @@ async fn ground<T: Target>(target: &T) -> (Result<u64, String>, Result<usize, St
     (target.allowed().await, target.delivered().await)
 }
 
+/// A revocation attack judged, with what it minted and sent (nothing, if
+/// the stack holds: ground truth overrides the reply).
+struct Judged {
+    verdict: Verdict,
+    observed: Value,
+    setup: Option<Value>,
+    minted: u64,
+    sent: usize,
+}
+
+async fn revocation_with_ground_truth<T: Target>(
+    target: &T,
+    kind: RevocationAttack,
+    expect: Expect,
+    n: &str,
+) -> Judged {
+    let (before_allowed, before_delivered) = ground(target).await;
+    let (verdict, observed, setup) = if target.has_attack_borrower() {
+        crate::revocation::run(target, kind, expect, n).await
+    } else {
+        (
+            Verdict::Inconclusive,
+            json!({
+                "inconclusive": format!("the project has no {ATTACK_SUBJECT}"),
+                "fix": "kavach init --force (it rewrites the development bundle)",
+            }),
+            None,
+        )
+    };
+    // Nothing may be minted or sent, setup included.
+    let (after_allowed, after_delivered) = ground(target).await;
+    let minted = match (&before_allowed, &after_allowed) {
+        (Ok(b), Ok(a)) => a.saturating_sub(*b),
+        _ => 0,
+    };
+    let sent = match (&before_delivered, &after_delivered) {
+        (Ok(b), Ok(a)) => a.abs_diff(*b),
+        _ => 0,
+    };
+    let verdict = if minted > 0 || sent > 0 {
+        Verdict::Succeeded
+    } else {
+        verdict
+    };
+    Judged {
+        verdict,
+        observed,
+        setup,
+        minted,
+        sent,
+    }
+}
+
 /// Runs `attacks` against `target`, judging each on its reply and on
 /// ground truth (credentials minted, messages delivered).
 pub async fn run<T: Target>(target: &T, attacks: &[Attack]) -> Report {
+    // Every id a run sends (request ids, event ids) carries this: a stack
+    // keeps every id it has seen, and another run's content under the same
+    // id would be refused as a conflict, not judged.
+    let run_id = unique();
     let mut outcomes = Vec::new();
     let (mut minted_total, mut delivered_total) = (0u64, 0usize);
     let (mut setup_minted, mut setup_delivered) = (0u64, 0usize);
-    for (n, attack) in attacks.iter().enumerate() {
+    for (index, attack) in attacks.iter().enumerate() {
+        let n = format!("{index}-{run_id}");
+        let n = n.as_str();
         target.pause().await;
         let outcome = |verdict, observed, setup| Outcome {
             id: attack.id,
@@ -710,6 +957,13 @@ pub async fn run<T: Target>(target: &T, attacks: &[Attack]) -> Report {
                 json!({ "skipped": "needs a development clock: kavach dev up --clock" }),
                 None,
             ));
+            continue;
+        }
+        if let Probe::Revocation(kind) = attack.probe {
+            let judged = revocation_with_ground_truth(target, kind, attack.expect, n).await;
+            minted_total += judged.minted;
+            delivered_total += judged.sent;
+            outcomes.push(outcome(judged.verdict, judged.observed, judged.setup));
             continue;
         }
         // Declared setup first, outside the judged window.
@@ -762,7 +1016,7 @@ type Setup = Option<(u64, usize, Value)>;
 
 /// An attack's declared setup, before its judged window: what it allowed
 /// and delivered on purpose, and a description.
-async fn prepare<T: Target>(target: &T, attack: &Attack, n: usize) -> Result<Setup, String> {
+async fn prepare<T: Target>(target: &T, attack: &Attack, n: &str) -> Result<Setup, String> {
     match attack.probe {
         Probe::OutOfHours => {
             target.move_clock(20, 30, false).await?;
@@ -831,7 +1085,7 @@ fn decision_reply(expect: Expect, status: u16, reply: &Value) -> (Verdict, Value
     )
 }
 
-async fn probe<T: Target>(target: &T, attack: &Attack, n: usize) -> (Verdict, Value) {
+async fn probe<T: Target>(target: &T, attack: &Attack, n: &str) -> (Verdict, Value) {
     let request_id = format!("attack-{}-{n}", attack.id);
     match attack.probe {
         Probe::ToolCall {
@@ -915,19 +1169,28 @@ async fn probe<T: Target>(target: &T, attack: &Attack, n: usize) -> (Verdict, Va
                 Err(e) => (Verdict::Error, json!({ "error": e })),
             }
         }
-        Probe::ProviderDirect => match target.post_provider().await {
-            Ok(status) => {
-                let verdict = if (400..500).contains(&status) {
-                    Verdict::Refused
-                } else if (200..300).contains(&status) {
-                    Verdict::Succeeded
-                } else {
-                    Verdict::RefusedUnexpectedly
-                };
-                (verdict, json!({ "status": status }))
-            }
-            Err(e) => (Verdict::Error, json!({ "error": e })),
-        },
+        Probe::Revocation(_) => (
+            Verdict::Error,
+            json!({ "error": "a revocation attack is run on its own" }),
+        ),
+        Probe::ProviderDirect => provider_direct(target).await,
+    }
+}
+
+/// A message straight to the provider: any 4xx is the refusal.
+async fn provider_direct<T: Target>(target: &T) -> (Verdict, Value) {
+    match target.post_provider().await {
+        Ok(status) => {
+            let verdict = if (400..500).contains(&status) {
+                Verdict::Refused
+            } else if (200..300).contains(&status) {
+                Verdict::Succeeded
+            } else {
+                Verdict::RefusedUnexpectedly
+            };
+            (verdict, json!({ "status": status }))
+        }
+        Err(e) => (Verdict::Error, json!({ "error": e })),
     }
 }
 

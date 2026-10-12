@@ -1445,6 +1445,15 @@ pub async fn sor_event(
     if !allowed {
         return Err(refuse(StatusCode::TOO_MANY_REQUESTS, "event rate limit"));
     }
+    // One stack serves one tenant: an event for another is refused before
+    // it is verified or acted on (the tenant is part of the signed event,
+    // and every revocation is scoped by it as well).
+    if kavach_mandate::claimed_tenant(&body.event).is_some_and(|t| t != dp.tenant) {
+        return Err(refuse(
+            StatusCode::BAD_REQUEST,
+            "the event is for a tenant this stack does not serve",
+        ));
+    }
     if kavach_mandate::is_revoking_event(&body.event) {
         return revoke_by_event(&state, dp, &body.event).await;
     }
@@ -1477,7 +1486,6 @@ pub async fn sor_event(
     }
 }
 
-/// ADR-012: revokes, audits, and answers a retry with the stored result.
 /// Writes a revocation's evidence-chain record (ADR-012 §7). The revocation
 /// already stands; if the record cannot be written now, the reconciler
 /// writes it (`revocation_evidence`), so a failure here is only logged.
@@ -1491,6 +1499,7 @@ async fn record_revocation_evidence(dp: &Dataplane, stored: &StoredRevocation) {
     }
 }
 
+/// ADR-012: revokes, audits, and answers a retry with the stored result.
 async fn revoke_by_event(
     state: &AppState,
     dp: &Dataplane,

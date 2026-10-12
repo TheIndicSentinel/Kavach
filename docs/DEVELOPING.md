@@ -127,7 +127,7 @@ Without Postgres, `kavach dev up --export-on-exit <dir>` writes the same kind of
 
 ### Known attacks (`kavach attack`)
 
-`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 3, 22 attacks) is the same one the acceptance suite runs in CI.
+`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 4, 30 attacks) is the same one the acceptance suite runs in CI.
 
 ```bash
 kavach attack --list            # the scope: every attack, nothing run
@@ -138,6 +138,12 @@ kavach attack                   # exit 0 all refused, 1 an attack succeeded or d
 - **Ground truth:** an attack **succeeded** if a credential was minted (an allowed gateway call, read from `/metrics`) or the mock provider's inbox changed, whatever the reply said.
 - **Drift:** an attack refused for a reason the catalog doesn't expect fails the run too. The catalog no longer matches the policies.
 - **Inconclusive (exit 2):** the stack is unhealthy, its trusted time is unsynced, or its clock is outside contact hours and can't be moved (`--at`, or no dev clock). The output says which. With `--clock`, the run moves the clock to 11:00 itself.
+- **Revocation attacks (version 4, ADR-012 §8):** eight system-of-record events against the mandates of `ref:borrower:B-ATTACK`, a borrower kept for them (the dev mandate is never touched and nothing is sent). Each first assigns that borrower (**declared setup**: a mandate). Its event is then judged on the reply and on ground truth: the attack mandate must still authorise (a pre-check, which records nothing, names no `mandate_invalid`), and an event that was refused must have left no revocation record in the evidence chain (read through the audited `GET /v1/agent-revocations/{system}/{event_id}`).
+  - **refused:** a payment signed with an unregistered key, dated 15 minutes ago or ahead (outside the freshness window), of an unknown type, or for another tenant. A stack serves one tenant and refuses events for any other.
+  - **accepted, revoking nothing:** a valid payment for another loan, and one dated before the mandate was issued.
+  - **replayed:** a payment that revoked a mandate, sent again after a new mandate for the loan: the stored result, the new mandate live, one record.
+  - **A project made before version 4** has no attack borrower: those eight are **inconclusive** and the run exits 2 with the fix, `kavach init --force`. Never a pass.
+- **Runs again:** every request and event id carries a per-run suffix, so the same stack can be attacked again. On a fixed clock, a run that finds the day's contacts used up (an earlier run's daily-cap setup) moves the clock to a fresh day.
 - **Clock attacks:** two attacks need a fixed clock (`dev up --clock`).
   - **out of hours:** the clock moves to 20:30 for the call, then on to 11:00.
   - **daily cap:** the clock moves to 11:00 on a fresh day, three allowed reminders are made as **declared setup**, and only the fourth call is judged. The setup is reported separately and sends three messages to the synthetic destination.

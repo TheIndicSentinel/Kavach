@@ -708,3 +708,108 @@ async fn evidence_reads_are_admin_only_audited_and_hold_no_secrets() {
     );
     assert_eq!(reads.len(), 2, "refused requests read nothing: {reads:?}");
 }
+
+/// One stack serves one tenant: a validly signed payment for the same loan
+/// but another tenant is refused before it is acted on, and the mandate
+/// still works. A revocation's evidence record is read like an agent
+/// record (`GET /v1/agent-revocations/{system}/{event_id}`): admins only,
+/// every read audited, and it never holds the loan reference.
+#[tokio::test]
+async fn another_tenants_event_is_refused_and_revocation_reads_are_audited() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let gw = gateway(Some(NUMBER), true).await;
+    let post = |event: String| {
+        send(
+            sor_router(gw.state.clone()),
+            "/v1/sor/events",
+            &[],
+            json!({ "event": event }),
+        )
+    };
+    let foreign = any_event(&AnyEvent {
+        event_id: "pay-other",
+        event_type: "loan.paid",
+        tenant_id: "another-tenant",
+        subject_ref: SUBJECT,
+        record_ref: "lms:loan/L-1",
+        consent_refs: &[],
+        assigned_agent: "",
+        at: gw.clock_now(),
+        forged: false,
+    })
+    .await;
+    let (status, body) = post(foreign).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        body["detail"].as_str().unwrap().contains("tenant"),
+        "{body}"
+    );
+    assert_eq!(gw.remind("tenant-1").await.1["decision"], "PASS");
+
+    let paid = revocation_at("pay-1", "loan.paid", "lms:loan/L-1", gw.clock_now()).await;
+    assert_eq!(post(paid).await.0, StatusCode::OK);
+
+    let read = |path: String, token: Option<String>| {
+        let app = contract::router(gw.state.clone());
+        async move {
+            let mut request = Request::get(format!("/v1/agent-revocations/{path}"));
+            if let Some(t) = token {
+                request = request.header("authorization", format!("Bearer {t}"));
+            }
+            let response = app
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+    let (status, body) = read("lms/pay-1".into(), Some(operator_token())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let doc: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(doc["record"]["kind"], "mandate_revocation");
+    assert_eq!(doc["record"]["event_id"], "pay-1");
+    assert_eq!(doc["record"]["revoked"], json!([gw.mandate]));
+    for secret in ["L-1", "B-9382", SUBJECT, "+91"] {
+        assert!(!body.contains(secret), "{secret} in {body}");
+    }
+    let viewer = token(
+        "kavach-api",
+        json!({ "sub": "viewer-1", "groups": ["viewers"] }),
+    );
+    assert_eq!(
+        read("lms/pay-1".into(), Some(viewer)).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        read("lms/pay-1".into(), None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        read("lms/a%20b".into(), Some(operator_token())).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        read("lms/pay-other".into(), Some(operator_token())).await.0,
+        StatusCode::NOT_FOUND,
+        "the refused event left no record"
+    );
+
+    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    let reads: Vec<_> = audit
+        .iter()
+        .filter(|e| e.action == "read_evidence" && e.resource_type == "mandate_revocation")
+        .map(|e| (e.resource_id.as_str(), e.payload["found"].clone()))
+        .collect();
+    assert_eq!(reads.len(), 2, "refused requests read nothing: {reads:?}");
+    assert!(reads.contains(&("lms/pay-1", json!(true))), "{reads:?}");
+    assert!(
+        reads.contains(&("lms/pay-other", json!(false))),
+        "{reads:?}"
+    );
+}

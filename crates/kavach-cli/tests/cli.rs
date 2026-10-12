@@ -896,6 +896,19 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
     for o in outcomes {
         assert_eq!(o["verdict"], "refused", "{o}");
     }
+    assert_eq!(doc["catalog_version"], "4");
+    // Again on the same stack: nothing a run sends is reused by the next.
+    let again = kavach(&dir, &["--json", "attack"]);
+    let doc = json(&again);
+    assert_eq!(again.status.code(), Some(0), "{doc}");
+    assert!(
+        doc["outcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| o["verdict"] == "refused"),
+        "{doc}"
+    );
     drop(stack);
 
     // Outside contact hours on a clock it cannot move: inconclusive (2).
@@ -911,6 +924,62 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
             .contains("contact hours"),
         "{doc}"
     );
+}
+
+/// A project made before catalog v4 has no attack borrower: the revocation
+/// attacks cannot run, so `kavach attack` is inconclusive (exit 2) with the
+/// fix, never a pass, and every other attack still runs and is refused.
+#[test]
+fn attack_without_the_attack_borrower_is_inconclusive() {
+    let dir = scratch("attack-old");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    use_free_ports(&dir);
+    let consents = find_file(&dir, "consents.json").expect("the project's consents");
+    let list: Vec<Value> =
+        serde_json::from_str(&std::fs::read_to_string(&consents).unwrap()).unwrap();
+    let old: Vec<Value> = list
+        .into_iter()
+        .filter(|c| c["subject_ref"] != "ref:borrower:B-ATTACK")
+        .collect();
+    std::fs::write(&consents, serde_json::to_string(&old).unwrap()).unwrap();
+
+    let _stack = dev_up(&dir, &["--clock", "11:00"]);
+    let out = kavach(&dir, &["--json", "attack"]);
+    let doc = json(&out);
+    assert_eq!(out.status.code(), Some(2), "{doc}");
+    assert_eq!(doc["breached"], false);
+    let outcomes = doc["outcomes"].as_array().unwrap();
+    let inconclusive: Vec<&Value> = outcomes
+        .iter()
+        .filter(|o| o["verdict"] == "inconclusive")
+        .collect();
+    assert_eq!(inconclusive.len(), 8, "{doc}");
+    assert!(inconclusive[0]["observed"]["fix"]
+        .as_str()
+        .unwrap()
+        .contains("kavach init --force"));
+    assert!(outcomes
+        .iter()
+        .filter(|o| o["verdict"] != "inconclusive")
+        .all(|o| o["verdict"] == "refused"));
+    let human = kavach(&dir, &["attack"]);
+    let text = String::from_utf8_lossy(&human.stdout);
+    assert!(text.contains("kavach init --force"), "{text}");
+}
+
+/// The first file named `name` under `dir`.
+fn find_file(dir: &Path, name: &str) -> Option<std::path::PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file(&path, name) {
+                return Some(found);
+            }
+        } else if path.file_name().is_some_and(|n| n == name) {
+            return Some(path);
+        }
+    }
+    None
 }
 
 /// One raw HTTP/1.1 request; returns the status code.
