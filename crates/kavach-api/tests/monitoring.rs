@@ -15,10 +15,7 @@ fn root() -> &'static Path {
 /// Every `kavach_…` metric name the code registers, read from the source:
 /// a labelled metric has no sample (and so no line in a scrape) until used.
 fn registered() -> BTreeSet<String> {
-    let mut sources = String::new();
-    for file in ["crates/kavach-api/src/metrics.rs"] {
-        sources.push_str(&std::fs::read_to_string(root().join(file)).unwrap());
-    }
+    let sources = std::fs::read_to_string(root().join("crates/kavach-api/src/metrics.rs")).unwrap();
     let mut names = BTreeSet::new();
     for part in sources.split('"') {
         if part.starts_with("kavach_")
