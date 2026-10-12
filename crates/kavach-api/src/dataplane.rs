@@ -527,6 +527,9 @@ pub struct Dataplane {
     resolver: FixtureResolver,
     forwarder: crate::forward::HttpForwarder,
     keys: KeySources,
+    /// Gateway calls that have started and not finished (an orderly stop
+    /// waits for them).
+    in_flight: Arc<crate::shutdown::InFlight>,
 }
 
 impl Dataplane {
@@ -632,7 +635,14 @@ impl Dataplane {
             resolver,
             forwarder,
             keys: sources,
+            in_flight: crate::shutdown::InFlight::new(),
         })
+    }
+
+    /// Gateway calls in flight: an orderly stop drains them before its
+    /// final checkpoint.
+    pub fn in_flight(&self) -> &Arc<crate::shutdown::InFlight> {
+        &self.in_flight
     }
 
     /// Which signing roles use the HSM and whether it answers now; `None`
@@ -1587,13 +1597,6 @@ pub async fn tool_call(
         metrics.observe_gateway_malformed();
         return Err(refuse_tool(refusal));
     }
-    let deps = GatewayDeps {
-        core: &dp.core,
-        resolver: &dp.resolver,
-        broker: &dp.broker,
-        forwarder: &dp.forwarder,
-        observer: metrics,
-    };
     // Log the registry's tool name, never the caller's path text.
     let tool_label = dp
         .core
@@ -1601,7 +1604,40 @@ pub async fn tool_call(
         .tool(&tool)
         .map_or("unknown", |t| t.name.as_str())
         .to_string();
-    let result = execute(&deps, &agent, &tool, request).await;
+    // The call runs in a task of its own and is counted while it runs. Once
+    // its decision is recorded it completes (forward, outcome) even if the
+    // client disconnects or the process is told to stop: a request that
+    // is dropped halfway would leave an allow with no outcome, and its
+    // retry would be refused as in flight for good.
+    let guard = dp.in_flight.enter();
+    let task_state = Arc::clone(&state);
+    let (task_agent, task_tool) = (agent.clone(), tool.clone());
+    let started = tokio::spawn(async move {
+        let _counted = guard;
+        let Some(dp) = task_state.dataplane() else {
+            return Err(GatewayError::Invalid(
+                "agent surfaces are not configured".into(),
+            ));
+        };
+        let deps = GatewayDeps {
+            core: &dp.core,
+            resolver: &dp.resolver,
+            broker: &dp.broker,
+            forwarder: &dp.forwarder,
+            observer: task_state.metrics(),
+        };
+        execute(&deps, &task_agent, &task_tool, request).await
+    });
+    let result = match started.await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::error!(tool = %tool_label, error = %error, "gateway call task failed");
+            return Err(crate::problem::Problem::for_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ));
+        }
+    };
     match &result {
         Ok(reply) => {
             tracing::info!(

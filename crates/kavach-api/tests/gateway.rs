@@ -813,3 +813,152 @@ async fn another_tenants_event_is_refused_and_revocation_reads_are_audited() {
         "{reads:?}"
     );
 }
+
+/// A call outlives its client. Once its decision is recorded the call
+/// completes (forward, outcome) even when the client disconnects, so it
+/// never ends as an allow with no outcome, and its retry gets the stored
+/// reply instead of being refused as in flight for good.
+#[tokio::test]
+async fn a_call_completes_when_its_client_goes_away() {
+    use std::time::Duration;
+
+    let gw = gateway(Some(HANG_NUMBER), true).await;
+    let dp = gw.state.dataplane().unwrap();
+    let headers = [(
+        "authorization",
+        format!("Bearer {}", agent_token("collections-agent")),
+    )];
+    let client = send(
+        agent_router(gw.state.clone()),
+        "/v1/tools/send_reminder",
+        &headers,
+        reminder(&gw.mandate, "gone-1"),
+    );
+    // The client gives up the moment its call is under way (what a closed
+    // connection does to the handler: its future is dropped).
+    let started = async {
+        while dp.in_flight().current() == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    };
+    tokio::select! {
+        _ = client => panic!("the call finished before its client could give up"),
+        () = started => {}
+    }
+    assert_eq!(
+        dp.in_flight().current(),
+        1,
+        "it carries on without its client"
+    );
+
+    // It completes: sent once, and its outcome is recorded.
+    assert_eq!(dp.in_flight().drain(Duration::from_secs(15)).await, 0);
+    assert_eq!(
+        gw.stored_outcome("gone-1").await,
+        Some((Outcome::Unknown, Some("timeout_after_send".into()))),
+        "an outcome, never a missing one"
+    );
+    assert_eq!(gw.provider.inbox().len(), 1);
+
+    // The retry gets the stored reply, and nothing is sent again.
+    let (status, again) = gw.remind("gone-1").await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(
+        (again["outcome"].as_str(), again["replayed"].as_bool()),
+        (Some("unknown"), Some(true)),
+        "{again}"
+    );
+    assert_eq!(gw.provider.inbox().len(), 1, "never sent twice");
+}
+
+/// An orderly stop (SIGTERM): the listener stops accepting at once, a call
+/// in flight finishes with its outcome, every call that started is waited
+/// for, and a final checkpoint covers everything recorded. Run on a real
+/// listener, so a new connection is really refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_orderly_stop_finishes_calls_in_flight_then_checkpoints() {
+    use std::time::Duration;
+
+    use kavach_ports::checkpoint::{CheckpointStore, Scope, CHAIN_AGENT_DECISIONS};
+
+    let gw = gateway(Some(HANG_NUMBER), true).await;
+    let dp = gw.state.dataplane().unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let stop = Arc::new(tokio::sync::Notify::new());
+    let stopper = Arc::clone(&stop);
+    let server = tokio::spawn(kavach_api::serve_http_on_until(
+        agent_router(gw.state.clone()),
+        listener,
+        None,
+        async move { stopper.notified().await },
+        Duration::from_secs(20),
+    ));
+
+    // A call is under way: the provider holds it until its timeout.
+    let call = tokio::spawn({
+        let url = format!("http://{addr}/v1/tools/send_reminder");
+        let body = reminder(&gw.mandate, "stop-1");
+        async move {
+            let response = reqwest::Client::new()
+                .post(url)
+                .bearer_auth(agent_token("collections-agent"))
+                .json(&body)
+                .send()
+                .await
+                .expect("the call was accepted before the stop");
+            (
+                response.status().as_u16(),
+                response.json::<Value>().await.unwrap(),
+            )
+        }
+    });
+    while dp.in_flight().current() == 0 {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    // SIGTERM: no new connection from here on.
+    stop.notify_one();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let refused = reqwest::Client::new()
+        .get(format!("http://{addr}/health"))
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await;
+    assert!(refused.is_err(), "a stopped listener accepts nothing");
+
+    // The call in flight finishes, with its outcome, and the listener ends.
+    let (status, reply) = call.await.unwrap();
+    assert_eq!(status, 200, "{reply}");
+    assert_eq!(reply["outcome"], "unknown", "{reply}");
+    assert_eq!(reply["outcome_recorded"], true, "{reply}");
+    server.await.unwrap().expect("the listener drained");
+
+    // Everything started is waited for; a final checkpoint covers it.
+    let finish =
+        kavach_api::shutdown::drain_and_checkpoint(Some(dp), Duration::from_secs(10)).await;
+    assert!(finish.clean(), "{finish:?}");
+    let core = dp.core();
+    let records = core.store().records("default", 0).await.unwrap();
+    for record in records.iter().filter_map(|r| {
+        kavach_ports::agent_evidence::ChainEntry::as_decision(r).filter(|d| d.is_allow())
+    }) {
+        let id = record.payload.credential_id.as_deref().unwrap();
+        assert!(
+            core.outcome(id).await.unwrap().is_some(),
+            "{id} has an outcome: none is missing"
+        );
+    }
+    let head = i64::try_from(records.len()).unwrap();
+    let scope = Scope {
+        tenant_id: "default",
+        partition_id: 0,
+        chain: CHAIN_AGENT_DECISIONS,
+    };
+    let checkpoints = core.store().list(scope, 0, 100).await.unwrap();
+    assert_eq!(
+        checkpoints.last().map(|c| c.payload.seq),
+        Some(head),
+        "the final checkpoint covers the last record"
+    );
+}
