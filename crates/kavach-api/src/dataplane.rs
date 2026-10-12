@@ -84,6 +84,11 @@ pub struct DataplaneConfig {
     /// Consent fixture (JSON list of consent records; PRD D7).
     pub consents: PathBuf,
     pub tenant_id: String,
+    /// Serve the agent surfaces and the evidence reads only: no evaluate,
+    /// pack, model, retention, incident or batch routes, no console, no
+    /// gRPC evaluate, and no change request of the credit track. For hosted
+    /// builds, where the Decision Governance track is frozen.
+    pub agent_only: bool,
     /// System-of-record events accepted per second (token bucket).
     pub sor_rate_per_second: u32,
     /// Agent tool registry (YAML, signed: `<path>.sig`).
@@ -530,6 +535,7 @@ pub struct Dataplane {
     /// Gateway calls that have started and not finished (an orderly stop
     /// waits for them).
     in_flight: Arc<crate::shutdown::InFlight>,
+    agent_only: bool,
 }
 
 impl Dataplane {
@@ -636,7 +642,14 @@ impl Dataplane {
             forwarder,
             keys: sources,
             in_flight: crate::shutdown::InFlight::new(),
+            agent_only: config.agent_only,
         })
+    }
+
+    /// Whether only the agent surfaces and the evidence reads are served
+    /// ([`DataplaneConfig::agent_only`]).
+    pub fn agent_only(&self) -> bool {
+        self.agent_only
     }
 
     /// Gateway calls in flight: an orderly stop drains them before its

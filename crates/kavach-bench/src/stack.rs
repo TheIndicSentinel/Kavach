@@ -206,6 +206,7 @@ fn api_config(
             subject_pseudonym_key: kavach.join("pseudonym.key"),
             consents: kavach.join("consents.json"),
             tenant_id: TENANT.into(),
+            agent_only: false,
             sor_rate_per_second: 1_000_000,
             tool_registry: kavach.join("tools/agent-tools.yaml"),
             tool_registry_sha256: None,

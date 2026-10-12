@@ -127,6 +127,11 @@ struct AgentArgs {
     /// Gateway → provider total timeout (ms; below the 15 s credential lifetime).
     #[arg(long, env = "KAVACH_PROVIDER_TIMEOUT_MS", default_value_t = 5000)]
     provider_timeout_ms: u64,
+    /// Serve the agent surfaces and the evidence reads only: no evaluate,
+    /// pack, model, retention, incident or batch routes, no console and no
+    /// gRPC evaluate. For hosted builds (the credit track is frozen).
+    #[arg(long, env = "KAVACH_AGENT_ONLY")]
+    agent_only: bool,
     /// Listener for agents (`/v1/authorize`, tools): the only listener to
     /// attach to the agent network.
     #[arg(long, env = "KAVACH_AGENT_LISTEN", default_value = "127.0.0.1:8091")]
@@ -162,6 +167,13 @@ impl AgentArgs {
     ) -> Result<Option<kavach_api::dataplane::DataplaneConfig>, String> {
         let hsm = self.hsm_config()?;
         let Some(audience) = self.agent_oidc_audience else {
+            if self.agent_only {
+                return Err(
+                    "--agent-only serves the agent surfaces and nothing else: it needs them \
+                     (--agent-oidc-audience and the agent flags)"
+                        .into(),
+                );
+            }
             return Ok(None);
         };
         let operator = operator.ok_or(
@@ -206,6 +218,7 @@ impl AgentArgs {
             subject_pseudonym_key: need(self.subject_pseudonym_key, "--subject-pseudonym-key")?,
             consents: need(self.consents, "--consents")?,
             tenant_id: self.tenant_id,
+            agent_only: self.agent_only,
             sor_rate_per_second: self.sor_rate_per_second,
             tool_registry: need(self.tool_registry, "--tool-registry")?,
             tool_registry_sha256: self.tool_registry_sha256,
@@ -519,6 +532,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let sor_listen = cli.agents.sor_listen;
     let agent_listen = cli.agents.agent_listen;
     let grace = std::time::Duration::from_secs(cli.agents.shutdown_grace_seconds);
+    let agent_only = cli.agents.agent_only;
     let config = cli
         .into_config()
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
@@ -547,15 +561,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     print_banner(&config, http_listen, grpc_listen, &pack_sha256);
 
-    if let Some(tools) = &tools_sha256 {
-        tracing::info!(
-            "agent surfaces enabled: agents on {agent_listen} (the only listener for the agent \
-             network), /v1/sor/events on {sor_listen} (backend network only); tool registry \
-             {tools}"
-        );
-    } else {
-        tracing::info!("agent surfaces disabled (no --agent-oidc-audience)");
-    }
+    log_agent_surfaces(
+        agent_only,
+        tools_sha256.as_deref(),
+        agent_listen,
+        sor_listen,
+    );
 
     let tls_ref = config.tls.as_ref();
     // One signal stops every listener. A listener stops accepting at once
@@ -589,6 +600,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             },
             async move {
+                // The evaluate service is the credit track's: not served.
+                if agent_only {
+                    return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+                }
                 let mut builder = Server::builder();
                 if let Some(server_tls) = grpc_server_tls_config(tls_ref).await? {
                     builder = builder.tls_config(server_tls)?;
@@ -616,6 +631,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     shutdown::stop_and_checkpoint(servers.as_mut(), &stop_tx, grace, stopping.dataplane())
         .await
         .map_err(Into::into)
+}
+
+/// What the agent surfaces serve, once, at startup.
+fn log_agent_surfaces(
+    agent_only: bool,
+    tools: Option<&str>,
+    agent_listen: SocketAddr,
+    sor_listen: SocketAddr,
+) {
+    if agent_only {
+        tracing::info!(
+            "agent-only mode: the evaluate, pack, model, retention, incident and batch routes, \
+             the console and the gRPC evaluate service are not served"
+        );
+    }
+    if let Some(tools) = tools {
+        tracing::info!(
+            "agent surfaces enabled: agents on {agent_listen} (the only listener for the agent \
+             network), /v1/sor/events on {sor_listen} (backend network only); tool registry \
+             {tools}"
+        );
+    } else {
+        tracing::info!("agent surfaces disabled (no --agent-oidc-audience)");
+    }
 }
 
 /// Startup summary and warnings for unsafe development settings.

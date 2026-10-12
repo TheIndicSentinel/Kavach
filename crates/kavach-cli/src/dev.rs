@@ -244,6 +244,7 @@ pub(crate) fn dataplane_config(project: &Project, clock: Option<Arc<DevClock>>) 
         subject_pseudonym_key: kavach.join("pseudonym.key"),
         consents: kavach.join("consents.json"),
         tenant_id: kavach_devkit::TENANT.into(),
+        agent_only: false,
         sor_rate_per_second: 20,
         tool_registry: kavach.join("tools/agent-tools.yaml"),
         tool_registry_sha256: None,
