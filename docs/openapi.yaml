@@ -443,6 +443,44 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /v1/agent-revocations/{system}/{event_id}:
+    get:
+      operationId: getRevocationRecord
+      tags: [evidence]
+      summary: The evidence record of a revocation by a system-of-record event (admins; audited).
+      description: >-
+        ADR-012 §7. The signed `mandate_revocation` record the event produced, if one was
+        written. It names the loan only by a keyed pseudonym. Same protections as agent
+        decision records: `read_evidence`, a rate limit, and an audit entry before anything
+        is returned.
+      parameters:
+        - name: system
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" }
+        - name: event_id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" }
+      responses:
+        "200":
+          description: The signed revocation record.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [record]
+                properties:
+                  record: { $ref: "#/components/schemas/RevocationRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /v1/decision-events/{evidence_id}:
     get:
       operationId: getDecisionEvent
@@ -1400,6 +1438,59 @@ components:
             status: { type: string, enum: [synced, unsynced, unknown, dev_fixed] }
             max_error_ms: { type: [integer, "null"] }
         ts: { $ref: "#/components/schemas/DateTime" }
+        hash: { type: string }
+        sig: { type: string }
+
+    RevocationRecord:
+      type: object
+      additionalProperties: false
+      description: A signed revocation by a system-of-record event, in the agent chain (ADR-012 §7).
+      required:
+        - record_id
+        - tenant_id
+        - partition_id
+        - seq
+        - prev_hash
+        - kind
+        - hash_alg
+        - key_id
+        - source_system
+        - event_id
+        - event_sha256
+        - event_type
+        - record_pseudonym
+        - occurred_at
+        - revoked
+        - revoked_at
+        - recorded_at
+        - time_sync
+        - hash
+        - sig
+      properties:
+        record_id: { type: string }
+        tenant_id: { type: string }
+        partition_id: { type: integer }
+        seq: { type: integer }
+        prev_hash: { type: string }
+        kind: { type: string, enum: [mandate_revocation] }
+        hash_alg: { type: string }
+        key_id: { type: string }
+        source_system: { type: string }
+        event_id: { type: string }
+        event_sha256: { type: string }
+        event_type: { type: string }
+        record_pseudonym: { type: string }
+        occurred_at: { $ref: "#/components/schemas/DateTime" }
+        revoked: { type: array, items: { type: string } }
+        revoked_at: { $ref: "#/components/schemas/DateTime" }
+        recorded_at: { $ref: "#/components/schemas/DateTime" }
+        time_sync:
+          type: object
+          additionalProperties: false
+          required: [status, max_error_ms]
+          properties:
+            status: { type: string, enum: [synced, unsynced, unknown, dev_fixed] }
+            max_error_ms: { type: [integer, "null"] }
         hash: { type: string }
         sig: { type: string }
 

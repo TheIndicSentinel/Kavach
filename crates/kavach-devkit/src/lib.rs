@@ -608,6 +608,47 @@ pub async fn revoking_event(
         .map_err(|e| e.to_string())
 }
 
+/// An event `kavach attack` sends (catalog v4): anything a system of
+/// record could sign, including what the stack must refuse.
+#[derive(Debug, Clone)]
+pub struct AttackEvent {
+    pub event_id: String,
+    pub event_type: String,
+    pub tenant_id: String,
+    pub subject_ref: String,
+    pub occurred_at: DateTime<Utc>,
+    /// Signed under the registered key id with a key nobody registered.
+    pub forged: bool,
+}
+
+/// Signs an [`AttackEvent`] for the loan of its subject.
+pub async fn attack_event(bundle: &Path, spec: &AttackEvent) -> Result<String, String> {
+    let event = SorEvent {
+        event_id: spec.event_id.clone(),
+        tenant_id: spec.tenant_id.clone(),
+        system: "lms".into(),
+        event_type: spec.event_type.clone(),
+        record_ref: loan_ref(&spec.subject_ref),
+        subject_ref: spec.subject_ref.clone(),
+        principal: "nbfc-collections-system".into(),
+        consent_refs: BTreeSet::new(),
+        assigned_agent: String::new(),
+        occurred_at: spec.occurred_at,
+        nonce: format!("n-{}", spec.event_id),
+    };
+    let typ = kavach_mandate::jws::TYP_SOR_EVENT;
+    if spec.forged {
+        let mut keys = kavach_keys::InMemoryKeyProvider::new();
+        keys.insert_seed(SOR_KID, random32()?)
+            .map_err(|e| e.to_string())?;
+        kavach_mandate::jws::sign(&keys, SOR_KID, typ, &event).await
+    } else {
+        let keys = LocalFileKeyProvider::new(bundle.join("sor"));
+        kavach_mandate::jws::sign(&keys, SOR_KID, typ, &event).await
+    }
+    .map_err(|e| e.to_string())
+}
+
 /// A signed system-of-record event that assigns `agent` to `subject_ref`.
 pub async fn sor_event(
     bundle: &Path,

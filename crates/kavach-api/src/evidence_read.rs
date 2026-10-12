@@ -175,6 +175,58 @@ pub async fn read_agent_decision(
     Json(json!({ "record": record, "outcome": outcome })).into_response()
 }
 
+/// A system-of-record name or event id: what the SoR listener accepts in
+/// an event, bounded.
+fn valid_event_part(part: &str) -> bool {
+    (1..=128).contains(&part.len())
+        && part
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b':'))
+}
+
+/// `GET /v1/agent-revocations/{system}/{event_id}`: the evidence-chain
+/// record of a revocation by a system-of-record event (ADR-012 §7), if one
+/// was written. Same protections as agent records: `read_evidence`, the
+/// rate limit, an audit entry per read. It names the loan only by its
+/// pseudonym.
+pub async fn read_revocation_record(
+    State(state): State<Arc<AppState>>,
+    credentials: Credentials,
+    Path((system, event_id)): Path<(String, String)>,
+) -> Response {
+    let reader = match admit(
+        &state,
+        &credentials,
+        valid_event_part(&system) && valid_event_part(&event_id),
+        "system and event_id must be 1-128 of A-Z a-z 0-9 . _ - :",
+    ) {
+        Ok(reader) => reader,
+        Err(refused) => return *refused,
+    };
+    let Some(dp) = state.dataplane() else {
+        return refuse(StatusCode::NOT_FOUND, "agent surfaces are not configured");
+    };
+    let core = dp.core();
+    let Ok(record) = core
+        .store()
+        .revocation_record(core.tenant_id(), &system, &event_id)
+        .await
+    else {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "evidence store unavailable",
+        );
+    };
+    let id = format!("{system}/{event_id}");
+    if let Err(refused) = audit(&state, "mandate_revocation", &id, reader, record.is_some()).await {
+        return *refused;
+    }
+    match record {
+        Some(record) => Json(json!({ "record": record })).into_response(),
+        None => refuse(StatusCode::NOT_FOUND, "no revocation record for this event"),
+    }
+}
+
 /// A canonical (lowercase) UUID, as evidence ids are.
 fn valid_evidence_id(id: &str) -> bool {
     id.len() == 36
