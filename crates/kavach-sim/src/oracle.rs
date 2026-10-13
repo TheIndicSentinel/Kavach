@@ -27,7 +27,16 @@
 //!   mandate issued after it (a new default) is not touched. The events
 //!   come from the scenario, never from Kavach's replies.
 //!
-//! Not modelled: consent changes, delegation, other tools.
+//! - an operator's stop or reinstatement of an agent (ADR-013): a
+//!   restricted agent may not contact, a quarantined or revoked one may
+//!   do nothing; a stop only ever holds an agent back further, a
+//!   reinstatement frees a restricted or quarantined agent (with its same
+//!   mandates), and a revoked agent stays revoked. The changes come from
+//!   the scenario, never from Kavach's replies.
+//!
+//! Not modelled: consent changes, delegation (so a delegated mandate's
+//! suspension through its parent's holder is not exercised here), other
+//! tools.
 
 use std::collections::BTreeMap;
 
@@ -52,6 +61,86 @@ impl Default for Rules {
             hours: (8 * 60, 19 * 60),
             daily_cap: 3,
             channels: &["whatsapp", "voice"],
+        }
+    }
+}
+
+/// What an operator does to an agent's state (ADR-013). The simulator's
+/// own words for it: it shares nothing with Kavach's types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verb {
+    Restrict,
+    Quarantine,
+    Revoke,
+    Reinstate,
+}
+
+impl Verb {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Restrict => "restrict",
+            Self::Quarantine => "quarantine",
+            Self::Revoke => "revoke",
+            Self::Reinstate => "reinstate",
+        }
+    }
+}
+
+/// How much an agent is held back, in the oracle's own words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Standing {
+    #[default]
+    Free,
+    /// May read; may not contact (the only tool the registry has contacts).
+    Restricted,
+    /// May do nothing, and its mandates wait.
+    Quarantined,
+    /// May do nothing, and never again.
+    Revoked,
+}
+
+impl Standing {
+    /// Where an operator's verb leaves an agent that stood here: a stop only
+    /// ever holds an agent back further, a reinstatement frees a restricted
+    /// or quarantined one, and a revoked agent stays revoked.
+    #[must_use]
+    pub fn after(self, verb: Verb) -> Self {
+        let to = match verb {
+            Verb::Restrict => Self::Restricted,
+            Verb::Quarantine => Self::Quarantined,
+            Verb::Revoke => Self::Revoked,
+            Verb::Reinstate => {
+                return if self == Self::Revoked {
+                    Self::Revoked
+                } else {
+                    Self::Free
+                };
+            }
+        };
+        if to.rank() > self.rank() {
+            to
+        } else {
+            self
+        }
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            Self::Free => 0,
+            Self::Restricted => 1,
+            Self::Quarantined => 2,
+            Self::Revoked => 3,
+        }
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Free => "active",
+            Self::Restricted => "restricted",
+            Self::Quarantined => "quarantined",
+            Self::Revoked => "revoked",
         }
     }
 }
@@ -112,6 +201,8 @@ pub struct Oracle {
     firsts: BTreeMap<u32, Retry>,
     /// Payments and disputes: the borrower and when.
     revocations: Vec<(String, DateTime<Utc>)>,
+    /// Operators' changes of agents' states: the agent, what, and when.
+    agent_events: Vec<(String, Verb, DateTime<Utc>)>,
 }
 
 impl Oracle {
@@ -129,6 +220,26 @@ impl Oracle {
     pub fn with_revocations(mut self, revocations: Vec<(String, DateTime<Utc>)>) -> Self {
         self.revocations = revocations;
         self
+    }
+
+    /// The run's changes of agents' states (agent, verb, time), from the
+    /// scenario, in time order.
+    #[must_use]
+    pub fn with_agent_events(mut self, events: Vec<(String, Verb, DateTime<Utc>)>) -> Self {
+        self.agent_events = events;
+        self
+    }
+
+    /// How `agent` stands at `at`: every change up to then, in order (a
+    /// change at a call's time comes first).
+    #[must_use]
+    pub fn standing(&self, agent: &str, at: DateTime<Utc>) -> Standing {
+        self.agent_events
+            .iter()
+            .filter(|(who, _, when)| who == agent && *when <= at)
+            .fold(Standing::Free, |standing, (_, verb, _)| {
+                standing.after(*verb)
+            })
     }
 
     /// Whether a payment or dispute for `subject` ended a mandate issued at
@@ -181,6 +292,11 @@ impl Oracle {
             because.push("another borrower than the mandate's");
         } else if self.revoked(subject, call.mandate_issued_at, call.at) {
             because.push("the loan was paid or disputed");
+        }
+        match self.standing(&call.agent, call.at) {
+            Standing::Free => {}
+            Standing::Restricted => because.push("the agent is restricted"),
+            Standing::Quarantined | Standing::Revoked => because.push("the agent is stopped"),
         }
         if !(self.rules.hours.0..self.rules.hours.1).contains(&minute) {
             because.push("outside contact hours");
@@ -389,5 +505,60 @@ mod tests {
         next.at = slot(1, 602);
         assert!(oracle.judge(&next).allow);
         assert!(!oracle.judge(&call(603, "ref:l", "whatsapp", false)).allow);
+    }
+
+    /// ADR-013 as the oracle models it: a stop holds an agent back and
+    /// never lets it go; a reinstatement frees a restricted or quarantined
+    /// one (its same mandates) and never a revoked one; a change at a call's
+    /// time comes first; and another agent is untouched.
+    #[test]
+    fn a_stopped_agent_does_nothing_until_it_is_reinstated() {
+        let events = || {
+            vec![
+                ("a".to_string(), Verb::Quarantine, slot(1, 720)),
+                ("a".to_string(), Verb::Reinstate, slot(2, 540)),
+            ]
+        };
+        let judge = |agent: &str, day: u32, at: u32| {
+            let mut oracle = Oracle::default().with_agent_events(events());
+            let mut c = call(at, "ref:b", "whatsapp", false);
+            c.agent = agent.into();
+            c.at = slot(day, at);
+            oracle.judge(&c)
+        };
+        assert!(judge("a", 1, 660).allow, "before the quarantine");
+        assert_eq!(judge("a", 1, 720).because, ["the agent is stopped"]);
+        assert_eq!(judge("a", 1, 1000).because, ["the agent is stopped"]);
+        assert!(
+            judge("a", 2, 540).allow,
+            "reinstated, at the same time: first"
+        );
+        assert!(judge("b", 1, 1000).allow, "another agent is untouched");
+    }
+
+    #[test]
+    fn standing_only_tightens_and_revoked_is_for_good() {
+        use Standing::{Free, Quarantined, Restricted, Revoked};
+        assert_eq!(Free.after(Verb::Restrict), Restricted);
+        assert_eq!(
+            Quarantined.after(Verb::Restrict),
+            Quarantined,
+            "never loosened by a stop"
+        );
+        assert_eq!(Restricted.after(Verb::Quarantine), Quarantined);
+        assert_eq!(Quarantined.after(Verb::Reinstate), Free);
+        assert_eq!(Restricted.after(Verb::Reinstate), Free);
+        assert_eq!(Revoked.after(Verb::Reinstate), Revoked);
+        assert_eq!(Revoked.after(Verb::Restrict), Revoked);
+        // A restricted agent may read but not contact; the registry's one
+        // tool contacts, so it is refused.
+        let mut oracle = Oracle::default().with_agent_events(vec![(
+            "a".to_string(),
+            Verb::Restrict,
+            slot(1, 600),
+        )]);
+        let mut c = call(700, "ref:b", "whatsapp", false);
+        c.agent = "a".into();
+        assert_eq!(oracle.judge(&c).because, ["the agent is restricted"]);
     }
 }

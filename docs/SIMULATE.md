@@ -58,6 +58,7 @@ assignment: shared        # split (default): one agent per borrower; shared: eve
 provider_failures: { refuse: 1, error: 1, lose: 1 }   # the first borrowers' destinations: 422, 500, lost response
 events:                   # system-of-record events (ADR-012), for the first N borrowers whose messages are delivered
   - { day: 1, at: "12:00", type: loan.paid, borrowers: 2 }     # or loan.disputed: revokes their mandates
+  - { day: 1, at: "12:00", type: agent.quarantine, agent: sim-eager-1 }   # or agent.restrict | agent.revoke | agent.reinstate
   - { day: 2, at: "09:00", type: loan.dpd30, borrowers: 1 }    # a new default: assigned again, new mandates
 expect:                   # required: what passing means
   violations: 0
@@ -80,6 +81,7 @@ It models the product's rules, written independently of Kavach's policies, and j
 - **channels:** only those the mandate grants (WhatsApp, voice);
 - **forward-once:** a retry (same request id) is never sent again. Once the first call's outcome is recorded, `unknown` included, it gets the stored reply (`replayed`). Only while the first call is still running is it 409 `in_flight`, and a run never retries into that;
 - **provider outcomes** follow the agreed status contract (ADR-007): 2xx delivered, 4xx refused, and a 5xx or a lost response unknown (a 5xx does not prove the message was not sent);
+- **an operator's stop or reinstatement of an agent** (ADR-013): a restricted agent may not contact (the registry's one tool contacts), a quarantined or revoked one may do nothing; a stop only ever holds an agent back further, a reinstatement frees a restricted or quarantined agent **with its same mandates** and never a revoked one; a change at a call's time comes first, and another agent is untouched. The oracle's model of this shares no code with Kavach's, and the changes come from the scenario, never from Kavach's replies. The run also checks each reply's state against the simulator's own record, a revoke's mandates against the ones the run held, and the evidence: one signed `agent_state` record per change, in order, a loosening with an approver.
 - **payments and disputes** (ADR-012): a mandate issued at or before a borrower's `loan.paid` or `loan.disputed` is refused from the event on. A mandate issued after it (a new default) is not touched. The oracle takes the events from the scenario, never from Kavach's replies, and the issue time of each mandate from the simulator's own record.
 
 The adversarial agent's attacks are the attack catalog's own payloads (`kavach-attacks`). Each call's attack label is for the report only; the oracle never reads it, and a test checks that.
@@ -118,11 +120,12 @@ The same seed gives the same digest over the ledger (who did what, when, and wha
 | `payment-stops-contact` | A payment at 12:00 revokes two borrowers' mandates: their later calls are refused, one revocation record each, nothing delivered after it. A new default on day 2 assigns one again, and contact resumes for it only | Revocation by system-of-record event (ADR-012) |
 | `dispute-stops-contact` | Two agents share each borrower: one dispute revokes both agents' mandates, and neither reaches that borrower again | Revocation by system-of-record event (ADR-012) |
 | `retry-after-unknown` | A retry after an unknown outcome gets it back, replayed, and is never sent again | Gateway (forward-once) |
+| `rogue-agent-quarantined` | An operator quarantines the eager agent at 12:00 and restricts the compliant one at 15:00; at 09:00 and 12:00 on day 2 a second principal reinstates them. Nothing is allowed while an agent is stopped, the other agent is untouched, and the same mandates work again after | A stopped agent does nothing, from its next call, on every replica (ADR-013, K1-1): |
 | `mixed-week` | All of the above, with a payment on day 2, over three days | All of the above |
 
 ## Not covered yet
 
-- **Delegation to sub-agents:** needs an agent delegation API.
+- **Delegation to sub-agents:** needs an agent delegation API. So a delegated mandate's suspension through a stopped parent holder is **not** exercised here (the data-plane tests cover it).
 - **Consent withdrawn mid-run:** needs runtime consent changes.
 - **Quarantining a rogue agent:** needs the kill switch.
 - **Trusted time lost:** the acceptance suite covers it.

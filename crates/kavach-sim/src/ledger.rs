@@ -57,6 +57,25 @@ pub struct SorEntry {
     pub expected: Vec<String>,
 }
 
+/// An operator's change of an agent's state during a run (ADR-013).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AgentEntry {
+    pub day: u32,
+    pub at: DateTime<Utc>,
+    pub agent: String,
+    /// `restrict`, `quarantine`, `revoke` or `reinstate`.
+    pub verb: String,
+    pub status: u16,
+    /// The state Kavach says the agent is in now.
+    pub state: Option<String>,
+    /// The state the simulator's own model says: never read from replies.
+    pub expected_state: String,
+    /// The mandates Kavach says it revoked (a revoke).
+    pub revoked: Vec<String>,
+    /// The agent's mandates the run held and had not seen revoked.
+    pub expected_revoked: Vec<String>,
+}
+
 impl Entry {
     /// Kavach allowed it (PASS or ALERT).
     #[must_use]
@@ -68,8 +87,19 @@ impl Entry {
 /// What a seed must reproduce: who did what, when, and what was decided.
 /// Not the ids or signatures, which are random by design.
 #[must_use]
-pub fn digest(entries: &[Entry], events: &[SorEntry]) -> String {
+pub fn digest(entries: &[Entry], events: &[SorEntry], agent_events: &[AgentEntry]) -> String {
     let mut hash = Sha256::new();
+    for e in agent_events {
+        hash.update(format!(
+            "agent|{}|{}|{}|{}|{}|{}\n",
+            e.day,
+            e.at.to_rfc3339(),
+            e.agent,
+            e.verb,
+            e.status,
+            e.state.as_deref().unwrap_or("-")
+        ));
+    }
     for e in events {
         hash.update(format!(
             "event|{}|{}|{}|{}|{}|{}\n",

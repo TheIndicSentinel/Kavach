@@ -42,6 +42,20 @@ pub struct Borrower {
     pub voice: String,
 }
 
+/// The operator's verb an `agent.*` event stands for.
+#[must_use]
+pub fn verb_of(kind: crate::scenario::EventKind) -> Option<crate::oracle::Verb> {
+    use crate::oracle::Verb;
+    use crate::scenario::EventKind as K;
+    match kind {
+        K::AgentRestrict => Some(Verb::Restrict),
+        K::AgentQuarantine => Some(Verb::Quarantine),
+        K::AgentRevoke => Some(Verb::Revoke),
+        K::AgentReinstate => Some(Verb::Reinstate),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct World {
     pub agents: Vec<Agent>,
@@ -169,6 +183,27 @@ impl World {
                 out.push((self.borrowers[b].subject_ref.clone(), at));
             }
         }
+        out
+    }
+
+    /// The run's changes of agents' states (agent, verb, when), from the
+    /// scenario alone, in time order.
+    #[must_use]
+    pub fn agent_events(
+        &self,
+        scenario: &Scenario,
+    ) -> Vec<(String, crate::oracle::Verb, chrono::DateTime<chrono::Utc>)> {
+        let mut out: Vec<_> = scenario
+            .events
+            .iter()
+            .filter_map(|event| {
+                let verb = verb_of(event.kind)?;
+                let agent = event.agent.clone()?;
+                let minute = crate::scenario::minute_of_day(&event.at).ok()?;
+                Some((agent, verb, crate::calendar::slot(event.day, minute)))
+            })
+            .collect();
+        out.sort_by_key(|(_, _, at)| *at);
         out
     }
 

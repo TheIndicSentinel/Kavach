@@ -53,7 +53,7 @@ async fn world_and_database(
     destination: Option<&str>,
     provider_up: bool,
 ) -> Option<(Gw, Option<String>)> {
-    let (api, owner) = match store {
+    let (mut api, owner) = match store {
         Store::Memory => (config_for_gateway(), None),
         Store::Postgres => {
             let (owner, runtime) = kavach_storage::testing::isolated_database_urls().await?;
@@ -68,6 +68,9 @@ async fn world_and_database(
             (api, Some(owner))
         }
     };
+    // A machine principal that presents a client certificate holds the
+    // approver role in the policy (the certificate-principal attack).
+    api.mtls_principal_san = Some(kavach_api::MtlsSanKind::Uri);
     Some((gateway_on(api, destination, provider_up).await, owner))
 }
 
@@ -762,6 +765,80 @@ impl kavach_attacks::Target for InProcess<'_> {
 
     fn mandate(&self) -> String {
         self.0.mandate.clone()
+    }
+
+    fn has_principal(&self, _who: kavach_attacks::Principal) -> bool {
+        // The operator, a second human, and a machine principal whose
+        // certificate SAN is in the policy's approver group.
+        true
+    }
+
+    async fn operator_request(
+        &self,
+        who: kavach_attacks::Principal,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<(u16, Value), String> {
+        use kavach_attacks::Principal;
+        let mut request = axum::http::Request::builder().method(method).uri(path);
+        match who {
+            Principal::Operator => {
+                request = request.header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token(
+                            "kavach-api",
+                            json!({ "sub": "ops-1", "groups": ["admins", "change-approvers"] })
+                        )
+                    ),
+                );
+            }
+            Principal::Approver => {
+                request = request.header(
+                    "authorization",
+                    format!(
+                        "Bearer {}",
+                        token(
+                            "kavach-api",
+                            json!({ "sub": "ops-2", "groups": ["change-approvers"] })
+                        )
+                    ),
+                );
+            }
+            Principal::Certificate => {
+                // What the TLS acceptor leaves on a request: the SAN of a
+                // verified client certificate.
+                request = request.extension(kavach_api::PeerCertificate {
+                    uri_sans: vec!["spiffe://kavach.test/approver-bot".into()],
+                    dns_sans: Vec::new(),
+                });
+            }
+        }
+        let has_body = body.is_some();
+        if has_body {
+            request = request.header("content-type", "application/json");
+        }
+        let response = tower::ServiceExt::oneshot(
+            contract::router(self.0.state.clone()),
+            request
+                .body(axum::body::Body::from(
+                    body.map(|b| b.to_string()).unwrap_or_default(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        let bytes = http_body_util::BodyExt::collect(response.into_body())
+            .await
+            .map_err(|e| e.to_string())?
+            .to_bytes();
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
     }
 
     async fn post_agent(
