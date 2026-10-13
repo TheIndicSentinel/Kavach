@@ -64,7 +64,8 @@ pub fn status_from_api(err: &ApiError) -> Status {
             | kavach_evaluate::EvaluateError::ModelMismatch(_)
             | kavach_evaluate::EvaluateError::PackNotEffective,
         ) => tonic::Code::InvalidArgument,
-        ApiError::Evaluate(kavach_evaluate::EvaluateError::Policy(
+        ApiError::Unavailable(_)
+        | ApiError::Evaluate(kavach_evaluate::EvaluateError::Policy(
             kavach_policy::PolicyError::Timeout { .. },
         )) => tonic::Code::Unavailable,
         ApiError::NotFound(_) => tonic::Code::NotFound,

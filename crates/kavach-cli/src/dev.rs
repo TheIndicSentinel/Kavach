@@ -189,6 +189,24 @@ async fn export_at_exit(
     Ok(())
 }
 
+/// A call that has started finishes (and records its outcome) before the
+/// final checkpoint and the export, so the bundle shows no allow without an
+/// outcome. The provider is still up for it.
+async fn drain_calls(ui: &Ui, state: &AppState) {
+    let Some(dp) = state.dataplane() else {
+        return;
+    };
+    let left = dp
+        .in_flight()
+        .drain(std::time::Duration::from_secs(20))
+        .await;
+    if left > 0 && !ui.json {
+        crate::output::print_redacted(&format!(
+            "{left} gateway call(s) were still running after 20 s and are reported as missing an outcome."
+        ));
+    }
+}
+
 /// Ctrl-C, or (Unix) SIGTERM from a process manager.
 async fn stop_signal() {
     #[cfg(unix)]
@@ -226,6 +244,7 @@ pub(crate) fn dataplane_config(project: &Project, clock: Option<Arc<DevClock>>) 
         subject_pseudonym_key: kavach.join("pseudonym.key"),
         consents: kavach.join("consents.json"),
         tenant_id: kavach_devkit::TENANT.into(),
+        agent_only: false,
         sor_rate_per_second: 20,
         tool_registry: kavach.join("tools/agent-tools.yaml"),
         tool_registry_sha256: None,
@@ -649,6 +668,7 @@ pub async fn up(
         r = serve(guarded(sor_router(state.clone())), sor) => r.map_err(|e| CliError::new("the sor listener stopped", e))?,
         () = stop_signal() => {}
     }
+    drain_calls(ui, &state).await;
     provider_task.abort();
     export_at_exit(ui, &project, &state, export_on_exit).await?;
     if !ui.json {

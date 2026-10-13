@@ -25,16 +25,18 @@ use crate::lifecycle::list_audit_log;
 use crate::retention::{get_retention_settings, list_tombstones};
 use crate::state::AppState;
 
+/// The operator router. In agent-only mode (hosted builds, where the credit
+/// track is frozen) it serves the operator surface of the agent path alone:
+/// health, metrics, runtime, change requests, the audit log and the evidence
+/// reads. Every other route is an unknown path.
 pub fn router(state: Arc<AppState>) -> Router {
+    let agent_only = state
+        .dataplane()
+        .is_some_and(crate::dataplane::Dataplane::agent_only);
     let router = Router::new()
         .route("/health", get(health))
         .route("/metrics", get(metrics))
-        .route("/v1/evaluate", post(evaluate))
         .route("/v1/runtime", get(runtime))
-        .route("/v1/packs", get(list_policy_packs))
-        .route("/v1/packs/{pack_id}", get(get_policy_pack))
-        .route("/v1/models", get(list_model_records))
-        .route("/v1/models/{model_id}", get(get_model_record))
         .route(
             "/v1/change-requests",
             get(change_requests::list).post(change_requests::propose),
@@ -61,21 +63,48 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/agent-revocations/{system}/{event_id}",
             get(crate::evidence_read::read_revocation_record),
         )
-        .route("/v1/dev/clock", post(crate::dev_clock::set_dev_clock))
+        .route("/v1/agents/{agent_id}", get(crate::agents::get_agent))
         .route(
-            "/v1/decision-events/{evidence_id}",
-            get(crate::evidence_read::read_decision_event),
+            "/v1/agents/{agent_id}/restrict",
+            post(crate::agents::restrict),
         )
-        .route("/v1/admin/retention", get(get_retention_settings))
-        .route("/v1/admin/tombstones", get(list_tombstones))
-        .route("/v1/admin/incidents", get(list_incidents))
-        .route("/v1/admin/batch-jobs", get(list_batch_jobs))
-        .route("/v1/admin/batch-jobs/{job_id}", get(get_batch_job));
+        .route(
+            "/v1/agents/{agent_id}/quarantine",
+            post(crate::agents::quarantine),
+        )
+        .route("/v1/agents/{agent_id}/revoke", post(crate::agents::revoke))
+        .route("/v1/dev/clock", post(crate::dev_clock::set_dev_clock));
 
-    // The governance console, when it was built into this binary; else an
-    // unknown path is a problem.
+    // The credit track: Decision Governance (evaluate, packs, models,
+    // retention, incidents, batch) and its console.
+    let router = if agent_only {
+        router
+    } else {
+        router
+            .route("/v1/evaluate", post(evaluate))
+            .route("/v1/packs", get(list_policy_packs))
+            .route("/v1/packs/{pack_id}", get(get_policy_pack))
+            .route("/v1/models", get(list_model_records))
+            .route("/v1/models/{model_id}", get(get_model_record))
+            .route(
+                "/v1/decision-events/{evidence_id}",
+                get(crate::evidence_read::read_decision_event),
+            )
+            .route("/v1/admin/retention", get(get_retention_settings))
+            .route("/v1/admin/tombstones", get(list_tombstones))
+            .route("/v1/admin/incidents", get(list_incidents))
+            .route("/v1/admin/batch-jobs", get(list_batch_jobs))
+            .route("/v1/admin/batch-jobs/{job_id}", get(get_batch_job))
+    };
+
+    // The governance console, when it was built into this binary and the
+    // credit track is served; else an unknown path is a problem.
     #[cfg(console_embedded)]
-    let router = router.fallback(crate::console::fallback);
+    let router = if agent_only {
+        router.fallback(crate::problem::not_found)
+    } else {
+        router.fallback(crate::console::fallback)
+    };
     #[cfg(not(console_embedded))]
     let router = router.fallback(crate::problem::not_found);
 
@@ -160,6 +189,7 @@ impl From<ApiError> for crate::problem::Problem {
             ApiError::BadRequest(why) => Problem::new(status, "bad_request", why),
             ApiError::NotFound(what) => Problem::new(status, "not_found", what),
             ApiError::Conflict(why) => Problem::new(status, "conflict", why),
+            ApiError::Unavailable(cause) => Problem::unavailable(&cause),
             ApiError::Evaluate(E::Validation(why)) => Problem::new(status, "validation", why),
             ApiError::Evaluate(E::ModelMismatch(why)) => {
                 Problem::new(status, "model_mismatch", why)

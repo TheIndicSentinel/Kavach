@@ -132,4 +132,24 @@ namespace Kavach {
     principal: [User],
     resource: [System],
   };
+
+  action stop_agent appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action read_agent_state appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action propose_reinstate_agent appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action approve_reinstate_agent appliesTo {
+    principal: [User],
+    resource: [System],
+  };
 }

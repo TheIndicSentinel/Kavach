@@ -51,5 +51,10 @@
     "uid": { "type": "Kavach::User", "id": "approver-1" },
     "attrs": {},
     "parents": [{ "type": "Kavach::Group", "id": "change-approvers" }]
+  },
+  {
+    "uid": { "type": "Kavach::User", "id": "spiffe://kavach.test/approver-bot" },
+    "attrs": {},
+    "parents": [{ "type": "Kavach::Group", "id": "change-approvers" }]
   }
 ]

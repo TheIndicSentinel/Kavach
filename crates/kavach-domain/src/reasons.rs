@@ -27,7 +27,12 @@ const fn r(code: &'static str, meaning: &'static str, fix: &'static str) -> Reas
 }
 
 /// Codes that take parameters after a colon (`<prefix>:<field>...`).
-const PREFIXED: [Reason; 4] = [
+const PREFIXED: [Reason; 5] = [
+    r(
+        "agent_state",
+        "The agent was not active when this was decided (the state follows the colon).",
+        "Review the agent's risk state; stopping and reinstating are operator actions.",
+    ),
     r(
         "raw_identifier",
         "A parameter holds what reads as a raw identifier (a phone, account, Aadhaar or PAN number) instead of a reference.",
@@ -51,7 +56,7 @@ const PREFIXED: [Reason; 4] = [
 ];
 
 /// Every other code, by exact name.
-const EXACT: [Reason; 37] = [
+const EXACT: [Reason; 38] = [
     // Agent policies: decision words.
     r("authorized", "The agent policies permit this action under the mandate.", ""),
     r("forbidden", "An agent policy forbids this action; the policy ids listed with it say which.", "See the policy ids listed alongside."),
@@ -77,7 +82,8 @@ const EXACT: [Reason; 37] = [
     r("contact-hours-floor", "Contact is allowed only between 08:00 and 19:00 IST, whatever the mandate says.", "Try again between 08:00 and 19:00 IST."),
     r("contact-window", "The time is outside the mandate's contact window.", "Try again inside the mandate's window."),
     r("contact-daily-cap", "The borrower has had the most contacts the mandate allows today.", "Try again tomorrow (IST)."),
-    r("agent-restricted", "The agent is restricted.", "Review the agent's risk state."),
+    r("agent-restricted", "The agent is restricted: it may read within its mandate and do nothing with an external effect.", "Review the agent's risk state; reinstating it takes a second principal."),
+    r("agent-stopped", "The agent is quarantined or revoked: it, and every mandate it holds, may do nothing.", "Review the agent's risk state; reinstating a quarantined agent takes a second principal, a revoked one needs a new passport."),
     r("tainted-critical", "The task carries untrusted input, so a critical action needs approval.", "Ask for approval of this exact action."),
     // Gateway and core.
     r("mandate_invalid", "The mandate did not verify: unknown, expired, revoked, or its chain is broken.", "Act under a current mandate; check `kavach sor event` or the system of record."),

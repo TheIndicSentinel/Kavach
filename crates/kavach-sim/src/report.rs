@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::ledger::{digest, Entry, SorEntry};
+use crate::ledger::{digest, AgentEntry, Entry, SorEntry};
 use crate::oracle::{Oracle, Retry, Rules};
 use crate::scenario::Scenario;
 
@@ -60,6 +60,8 @@ pub struct Report {
     pub calls: usize,
     /// Payments and disputes sent to the stack.
     pub revocation_events: usize,
+    /// Operators' changes of agents' states the run made (ADR-013).
+    pub agent_state_events: usize,
     pub allowed: usize,
     pub blocked: usize,
     pub blocked_by_reason: BTreeMap<String, u32>,
@@ -144,18 +146,24 @@ fn retry_issue(call: &Entry, retry: &Retry) -> (bool, Option<Issue>) {
 }
 
 impl Report {
+    // The run's records are separate inputs on purpose (calls, events,
+    // agent-state changes, evidence): a struct of them would only be
+    // built to be taken apart again.
+    #[allow(clippy::too_many_arguments)]
     #[must_use]
     pub fn build(
         scenario: &Scenario,
         world: &crate::world::World,
         ledger: &[Entry],
         events: &[SorEntry],
+        agent_events: &[AgentEntry],
         evidence: Bundle,
         reconciliation: Option<crate::reconcile::Reconciliation>,
         rules: Rules,
     ) -> Self {
-        let mut oracle =
-            Oracle::new(rules, world.deliveries()).with_revocations(world.revocations(scenario));
+        let mut oracle = Oracle::new(rules, world.deliveries())
+            .with_revocations(world.revocations(scenario))
+            .with_agent_events(world.agent_events(scenario));
         let (mut violations, mut mismatches, mut leaks) = (Vec::new(), Vec::new(), Vec::new());
         let mut agents: BTreeMap<String, AgentCounts> = world
             .agents
@@ -225,6 +233,7 @@ impl Report {
             agents,
             calls,
             revocation_events: events.len(),
+            agent_state_events: agent_events.len(),
             allowed,
             blocked: calls - allowed,
             blocked_by_reason,
@@ -239,7 +248,7 @@ impl Report {
             leaks,
             evidence,
             reconciliation,
-            digest: digest(ledger, events),
+            digest: digest(ledger, events, agent_events),
             expectations_unmet: Vec::new(),
         };
         report.expectations_unmet = report.unmet(scenario);
@@ -362,6 +371,7 @@ mod tests {
             &world,
             &shared_cap(),
             &[],
+            &[],
             verified(),
             Some(crate::reconcile::Reconciliation::default()),
             Rules::default(),
@@ -391,6 +401,7 @@ mod tests {
             &world,
             &shared_cap(),
             &[],
+            &[],
             verified(),
             Some(crate::reconcile::Reconciliation::default()),
             weak,
@@ -405,6 +416,7 @@ mod tests {
             &scenario,
             &world,
             &allowed,
+            &[],
             &[],
             verified(),
             Some(crate::reconcile::Reconciliation::default()),
@@ -426,6 +438,7 @@ mod tests {
             &world,
             &shared_cap(),
             &[],
+            &[],
             missing,
             Some(crate::reconcile::Reconciliation::default()),
             Rules::default(),
@@ -438,6 +451,7 @@ mod tests {
             &scenario,
             &world,
             &shared_cap(),
+            &[],
             &[],
             failed,
             Some(crate::reconcile::Reconciliation::default()),
@@ -477,5 +491,59 @@ mod tests {
             !code.contains(".attack"),
             "the oracle must not read the attack label"
         );
+    }
+
+    /// ADR-013, the same discipline: an oracle that does not know about a
+    /// stop must surface Kavach's refusal as a mismatch, and Kavach
+    /// allowing a stopped agent's call is a violation. Otherwise the new
+    /// comparison could never fail.
+    #[test]
+    fn a_stop_the_oracle_does_not_know_is_a_mismatch_and_a_leaky_stop_a_violation() {
+        let scenario = builtin("rogue-agent-quarantined").unwrap();
+        let world = World::build(&scenario);
+        let stopped = || {
+            vec![
+                // Before the 12:00 quarantine: allowed.
+                entry(1, 540, "sim-eager-1", "PASS", &["authorized"]),
+                // After it: Kavach refuses.
+                entry(
+                    2,
+                    780,
+                    "sim-eager-1",
+                    "BLOCK",
+                    &["forbidden", "agent-stopped", "agent_state:quarantined"],
+                ),
+            ]
+        };
+        let build = |ledger: &[Entry], scenario: &Scenario| {
+            Report::build(
+                scenario,
+                &world,
+                ledger,
+                &[],
+                &[],
+                verified(),
+                Some(crate::reconcile::Reconciliation::default()),
+                Rules::default(),
+            )
+        };
+        let agreed = build(&stopped(), &scenario);
+        assert!(
+            agreed.mismatches.is_empty() && agreed.violations.is_empty(),
+            "{agreed:?}"
+        );
+
+        // The same run judged by an oracle that was told of no stop.
+        let mut blind = scenario.clone();
+        blind.events.clear();
+        let weak = build(&stopped(), &blind);
+        assert_eq!(weak.mismatches.len(), 1, "{weak:?}");
+
+        // Kavach allowing the stopped agent's call.
+        let mut leaky = stopped();
+        leaky[1] = entry(2, 780, "sim-eager-1", "PASS", &["authorized"]);
+        let report = build(&leaky, &scenario);
+        assert_eq!(report.violations.len(), 1, "{report:?}");
+        assert_eq!(report.exit_code(), 1);
     }
 }

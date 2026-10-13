@@ -214,6 +214,28 @@ impl MandateStore for InMemoryMandateStore {
         ready(result)
     }
 
+    fn active_held_by(
+        &self,
+        tenant_id: &str,
+        holder: &str,
+    ) -> impl Future<Output = Result<Vec<String>, PortError>> + Send {
+        let result = self.records.lock().map_err(|_| poisoned()).map(|records| {
+            let mut held: Vec<&StoredMandate> = records
+                .values()
+                .filter(|s| {
+                    s.mandate.tenant_id == tenant_id
+                        && s.mandate.holder == holder
+                        && s.status == MandateStatus::Active
+                })
+                .collect();
+            held.sort_by(|a, b| {
+                (a.mandate.nbf, &a.mandate.id).cmp(&(b.mandate.nbf, &b.mandate.id))
+            });
+            held.into_iter().map(|s| s.mandate.id.clone()).collect()
+        });
+        ready(result)
+    }
+
     fn record_revocation(
         &self,
         revocation: StoredRevocation,

@@ -57,6 +57,9 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    # Longer than --shutdown-grace-seconds (30): the API drains and writes a
+    # final checkpoint on SIGTERM before Compose would send SIGKILL.
+    stop_grace_period: 45s
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,0 +1,33 @@
+# The kill switch (ADR-013). Two agents work eight borrowers. At 12:00 on
+# day 1 an operator quarantines the eager one (it was contacting late and
+# too often): nothing it sends is allowed from then on, though its mandates
+# are only suspended. At 15:00 the compliant one is restricted: it may not
+# contact at all. At 09:00 on day 2 the eager agent is reinstated by a
+# second principal, and its same mandates work again; the compliant one
+# is reinstated at 12:00. Nothing is ever allowed while an agent is stopped,
+# and the other agent is untouched by the first stop.
+version: 1
+name: rogue-agent-quarantined
+description: An operator quarantines one agent and restricts another; two principals bring them back, and their mandates work again unchanged.
+covers: ["A stopped agent does nothing, from its next call, on every replica (ADR-013, K1-1):"]
+seed: 23
+days: 2
+borrowers: 8
+schedule: ["09:00", "12:00", "15:00", "17:00"]
+agents:
+  - type: eager
+    behaviour: { contacts_per_day: 3, late_rate: 0.0, extra_contact_rate: 0.0, wrong_channel_rate: 0.0 }
+  - type: compliant
+    behaviour: { contacts_per_day: 3 }
+assignment: split
+events:
+  - { day: 1, at: "12:00", type: agent.quarantine, agent: sim-eager-1 }
+  - { day: 1, at: "15:00", type: agent.restrict, agent: sim-compliant-1 }
+  - { day: 2, at: "09:00", type: agent.reinstate, agent: sim-eager-1 }
+  - { day: 2, at: "12:00", type: agent.reinstate, agent: sim-compliant-1 }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 8
+  blocked_at_least: { agent-stopped: 8, agent-restricted: 4 }

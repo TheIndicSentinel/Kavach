@@ -195,6 +195,415 @@ pub mod conformance {
     }
 }
 
+/// `AgentStateStore` contract (ADR-013). Every store must pass: the state
+/// rules, the history, and the chain record that goes with a change.
+pub mod agent_state_store {
+    use std::sync::Arc;
+
+    use chrono::{Duration, TimeZone, Utc};
+    use kavach_ports::agent_evidence::AgentEvidenceStore;
+    use kavach_ports::agent_state::{
+        AgentState, AgentStateChange, AgentStateStore, ReasonCode, Recording,
+    };
+    use kavach_ports::chain_record::{AgentStateDraft, ChainRecord};
+    use kavach_ports::ErrorClass;
+
+    use crate::agent_evidence::TestSigner;
+    use crate::FakeClock;
+
+    fn change(
+        tenant: &str,
+        agent: &str,
+        to: AgentState,
+        by: &str,
+        approved: Option<&str>,
+    ) -> AgentStateChange {
+        AgentStateChange {
+            tenant_id: tenant.into(),
+            agent_id: agent.into(),
+            to,
+            reason_code: ReasonCode::RogueBehaviour,
+            note: "behaving outside its task".into(),
+            changed_by: by.into(),
+            approved_by: approved.map(String::from),
+            change_request_id: None,
+            at: Utc.with_ymd_and_hms(2026, 10, 1, 6, 0, 0).unwrap(),
+        }
+    }
+
+    fn ids(items: &[&str]) -> Vec<String> {
+        items.iter().map(ToString::to_string).collect()
+    }
+
+    /// Runs the whole suite against a fresh, empty store.
+    pub async fn conformance<S>(store: Arc<S>)
+    where
+        S: AgentStateStore + AgentEvidenceStore + 'static,
+    {
+        defaults_and_isolation(&*store).await;
+        transitions_and_history(&*store).await;
+        recorded_changes(&*store).await;
+        a_failed_record_changes_nothing(&*store).await;
+        reconciler_view(&*store).await;
+        concurrent_changes(store).await;
+    }
+
+    async fn defaults_and_isolation<S: AgentStateStore>(store: &S) {
+        // No row means active, for every agent asked about.
+        let all = store
+            .states("t-1", &ids(&["rogue", "calm", "never-seen"]))
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.values().all(|s| *s == AgentState::Active));
+        assert_eq!(store.current("t-1", "rogue").await.unwrap(), None);
+        assert!(store.states("t-1", &[]).await.unwrap().is_empty());
+
+        store
+            .set(change(
+                "t-1",
+                "rogue",
+                AgentState::Quarantined,
+                "ops-1",
+                None,
+            ))
+            .await
+            .unwrap();
+        let got = store.states("t-1", &ids(&["rogue", "calm"])).await.unwrap();
+        assert_eq!(got["rogue"], AgentState::Quarantined);
+        assert_eq!(got["calm"], AgentState::Active);
+        // Another tenant's agent of the same name is untouched.
+        let other = store.states("t-2", &ids(&["rogue"])).await.unwrap();
+        assert_eq!(other["rogue"], AgentState::Active);
+    }
+
+    async fn transitions_and_history<S: AgentStateStore>(store: &S) {
+        let agent = "walks-the-ladder";
+        let t = "t-3";
+        let rejected = |err: kavach_ports::PortError| {
+            assert_eq!(err.class, ErrorClass::Rejected, "{err}");
+        };
+
+        let row = store
+            .set(change(t, agent, AgentState::Restricted, "ops-1", None))
+            .await
+            .unwrap();
+        assert_eq!(row.state, AgentState::Restricted);
+        assert_eq!(row.change_no, 1);
+        assert_eq!(row.reason_code, ReasonCode::RogueBehaviour);
+        assert_eq!(row.changed_by, "ops-1");
+        assert_eq!(row.approved_by, None);
+        assert_eq!(store.current(t, agent).await.unwrap(), Some(row));
+
+        // The same state again is not a change.
+        rejected(
+            store
+                .set(change(t, agent, AgentState::Restricted, "ops-1", None))
+                .await
+                .unwrap_err(),
+        );
+        // Tightening further needs one principal.
+        let second = store
+            .set(change(t, agent, AgentState::Quarantined, "ops-1", None))
+            .await
+            .unwrap();
+        assert_eq!(second.change_no, 2);
+        // Loosening needs a second, different principal.
+        rejected(
+            store
+                .set(change(t, agent, AgentState::Active, "ops-1", None))
+                .await
+                .unwrap_err(),
+        );
+        rejected(
+            store
+                .set(change(t, agent, AgentState::Active, "ops-1", Some("ops-1")))
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(
+            store.states(t, &ids(&[agent])).await.unwrap()[agent],
+            AgentState::Quarantined,
+            "a refused change changes nothing"
+        );
+        let back = store
+            .set(change(t, agent, AgentState::Active, "ops-1", Some("ops-2")))
+            .await
+            .unwrap();
+        assert_eq!(back.approved_by.as_deref(), Some("ops-2"));
+        assert_eq!(back.change_no, 3);
+
+        // A note too long, or with control characters, is invalid; a
+        // missing one is fine.
+        let mut bad = change(t, agent, AgentState::Quarantined, "ops-1", None);
+        bad.note = "x\ny".into();
+        assert_eq!(store.set(bad).await.unwrap_err().class, ErrorClass::Invalid);
+        let mut none = change(t, agent, AgentState::Quarantined, "ops-1", None);
+        none.note.clear();
+        store.set(none).await.unwrap();
+
+        // Revoked is final, from any state, whoever asks.
+        store
+            .set(change(t, agent, AgentState::Revoked, "ops-1", None))
+            .await
+            .unwrap();
+        for to in [
+            AgentState::Active,
+            AgentState::Restricted,
+            AgentState::Quarantined,
+        ] {
+            rejected(
+                store
+                    .set(change(t, agent, to, "ops-3", Some("ops-4")))
+                    .await
+                    .unwrap_err(),
+            );
+        }
+        assert_eq!(
+            store.states(t, &ids(&[agent])).await.unwrap()[agent],
+            AgentState::Revoked
+        );
+
+        // Every accepted change is in the history, in order, with its
+        // number, and nothing else is.
+        let history: Vec<_> = store
+            .changes_after(None, 100)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|c| c.tenant_id == t && c.agent_id == agent)
+            .map(|c| (c.change_no, c.from_state, c.to_state))
+            .collect();
+        assert_eq!(
+            history,
+            [
+                (1, AgentState::Active, AgentState::Restricted),
+                (2, AgentState::Restricted, AgentState::Quarantined),
+                (3, AgentState::Quarantined, AgentState::Active),
+                (4, AgentState::Active, AgentState::Quarantined),
+                (5, AgentState::Quarantined, AgentState::Revoked),
+            ]
+        );
+    }
+
+    /// A loosening is written with its record in one step: the chain holds
+    /// it, in order, and writing it again is the same record.
+    async fn recorded_changes<S>(store: &S)
+    where
+        S: AgentStateStore + AgentEvidenceStore,
+    {
+        let signer = TestSigner::new("evidence-test", 9);
+        let clock = FakeClock::synced_at(Utc.with_ymd_and_hms(2026, 10, 1, 6, 5, 0).unwrap());
+        let (t, agent) = ("t-5", "recorded");
+        store
+            .set(change(t, agent, AgentState::Quarantined, "ops-1", None))
+            .await
+            .unwrap();
+        let digest = |n: i64| Some(format!("mac:{}", format!("{n:02x}").repeat(32)));
+        let mut loosen = change(t, agent, AgentState::Active, "ops-1", Some("ops-2"));
+        loosen.change_request_id = Some("cr-1".into());
+        let (row, record) = store
+            .set_recorded(
+                loosen,
+                Recording {
+                    partition_id: 0,
+                    clock: &clock,
+                    signer: &signer,
+                    reason_digest: &digest,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(row.state, AgentState::Active);
+        let p = &record.payload;
+        assert_eq!((p.change_no, p.agent_id.as_str()), (2, agent));
+        assert_eq!(p.from_state, AgentState::Quarantined);
+        assert_eq!(p.to_state, AgentState::Active);
+        assert_eq!(p.approved_by.as_deref(), Some("ops-2"));
+        assert_eq!(p.change_request_id.as_deref(), Some("cr-1"));
+        assert_eq!(row.change_request_id.as_deref(), Some("cr-1"));
+        assert_eq!(p.reason_code, ReasonCode::RogueBehaviour);
+        assert_eq!(
+            p.reason_digest,
+            digest(2),
+            "the note is a digest, never text"
+        );
+        assert_eq!(p.changed_at, row.changed_at);
+        assert!(p.recorded_at >= p.changed_at);
+
+        let chain = store.records(t, 0).await.unwrap();
+        assert!(
+            matches!(chain.last(), Some(ChainRecord::AgentState(r)) if *r == record),
+            "the record is in the chain"
+        );
+        assert_eq!(
+            store.agent_state_record(t, agent, 2).await.unwrap(),
+            Some(record.clone())
+        );
+        // Change 1 (a tightening) has no record yet: it is the
+        // reconciler's to write.
+        assert_eq!(store.agent_state_record(t, agent, 1).await.unwrap(), None);
+
+        // The same change again is the same record, not a second one.
+        let draft = AgentStateDraft {
+            tenant_id: t.into(),
+            partition_id: 0,
+            agent_id: agent.into(),
+            change_no: 2,
+            from_state: AgentState::Quarantined,
+            to_state: AgentState::Active,
+            reason_code: ReasonCode::RogueBehaviour,
+            reason_digest: digest(2),
+            changed_by: "ops-1".into(),
+            approved_by: Some("ops-2".into()),
+            change_request_id: Some("cr-1".into()),
+            changed_at: row.changed_at,
+        };
+        let again = store
+            .append_agent_state(draft.clone(), &clock, &signer)
+            .await
+            .unwrap();
+        assert_eq!(again, record);
+        let mut other = draft;
+        other.changed_by = "someone-else".into();
+        assert_eq!(
+            store
+                .append_agent_state(other, &clock, &signer)
+                .await
+                .unwrap_err()
+                .class,
+            ErrorClass::Rejected
+        );
+    }
+
+    /// A record that cannot be written (the signer is down) must not leave
+    /// the agent loosened: both or neither.
+    async fn a_failed_record_changes_nothing<S>(store: &S)
+    where
+        S: AgentStateStore + AgentEvidenceStore,
+    {
+        let signer = TestSigner::failing("evidence-test");
+        let clock = FakeClock::synced_at(Utc.with_ymd_and_hms(2026, 10, 1, 6, 10, 0).unwrap());
+        let (t, agent) = ("t-6", "unrecordable");
+        store
+            .set(change(t, agent, AgentState::Quarantined, "ops-1", None))
+            .await
+            .unwrap();
+        let before = store.changes_after(None, 1000).await.unwrap().len();
+        let none = |_: i64| None;
+        let err = store
+            .set_recorded(
+                change(t, agent, AgentState::Active, "ops-1", Some("ops-2")),
+                Recording {
+                    partition_id: 0,
+                    clock: &clock,
+                    signer: &signer,
+                    reason_digest: &none,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_ne!(err.class, ErrorClass::Rejected, "{err}");
+        assert_eq!(
+            store.states(t, &ids(&[agent])).await.unwrap()[agent],
+            AgentState::Quarantined
+        );
+        assert_eq!(store.changes_after(None, 1000).await.unwrap().len(), before);
+        let row = store.current(t, agent).await.unwrap().unwrap();
+        assert_eq!(row.change_no, 1, "no change number was used");
+    }
+
+    /// What the reconciler does: page through the history, write any
+    /// missing record, and find nothing missing the second time.
+    async fn reconciler_view<S>(store: &S)
+    where
+        S: AgentStateStore + AgentEvidenceStore,
+    {
+        let signer = TestSigner::new("evidence-test", 9);
+        let clock = FakeClock::synced_at(Utc.with_ymd_and_hms(2026, 10, 1, 7, 0, 0).unwrap());
+        clock.advance(Duration::seconds(1));
+        let mut after = None;
+        let mut written = 0;
+        loop {
+            let page = store.changes_after(after.clone(), 2).await.unwrap();
+            let Some(last) = page.last() else { break };
+            after = Some(last.cursor());
+            for c in &page {
+                if store
+                    .agent_state_record(&c.tenant_id, &c.agent_id, c.change_no)
+                    .await
+                    .unwrap()
+                    .is_some()
+                {
+                    continue;
+                }
+                let draft = AgentStateDraft {
+                    tenant_id: c.tenant_id.clone(),
+                    partition_id: 0,
+                    agent_id: c.agent_id.clone(),
+                    change_no: c.change_no,
+                    from_state: c.from_state,
+                    to_state: c.to_state,
+                    reason_code: c.reason_code,
+                    reason_digest: None,
+                    changed_by: c.changed_by.clone(),
+                    approved_by: c.approved_by.clone(),
+                    change_request_id: c.change_request_id.clone(),
+                    changed_at: c.changed_at,
+                };
+                store
+                    .append_agent_state(draft, &clock, &signer)
+                    .await
+                    .unwrap();
+                written += 1;
+            }
+        }
+        assert!(written > 0, "tightenings had no records until now");
+        // Every change now has exactly one record.
+        for c in store.changes_after(None, 1000).await.unwrap() {
+            assert!(store
+                .agent_state_record(&c.tenant_id, &c.agent_id, c.change_no)
+                .await
+                .unwrap()
+                .is_some());
+        }
+    }
+
+    /// Two operators stop the same agent at the same moment: one change is
+    /// made, the other is told the agent is already in that state.
+    async fn concurrent_changes<S: AgentStateStore + 'static>(store: Arc<S>) {
+        let (a, b) = (Arc::clone(&store), Arc::clone(&store));
+        let first = tokio::spawn(async move {
+            a.set(change(
+                "t-4",
+                "racer",
+                AgentState::Quarantined,
+                "ops-1",
+                None,
+            ))
+            .await
+        });
+        let second = tokio::spawn(async move {
+            b.set(change(
+                "t-4",
+                "racer",
+                AgentState::Quarantined,
+                "ops-2",
+                None,
+            ))
+            .await
+        });
+        let results = [first.await.unwrap(), second.await.unwrap()];
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count(),
+            1,
+            "{results:?}"
+        );
+        let loser = results.into_iter().find_map(Result::err).unwrap();
+        assert_eq!(loser.class, ErrorClass::Rejected);
+    }
+}
+
 /// `MandateStore` contract (ADR-011). Written to the contract, not to one
 /// implementation: every store — in-memory now, Postgres in H5 — must pass.
 pub mod mandate_store {
@@ -284,6 +693,68 @@ pub mod mandate_store {
         delegation_racing_revocation(store).await;
     }
 
+    /// ADR-013: the active mandates an agent holds, roots and delegated
+    /// children alike, and only those.
+    async fn held_by_an_agent<S: MandateStore>(store: &S) {
+        // `record(.., depth)` is held by `agent-<depth>`.
+        let held = |id: &str, holder: &str| {
+            let mut r = root_about(id, "lms", "held-loan");
+            r.mandate.holder = holder.into();
+            r
+        };
+        for (id, holder) in [("h-1", "agent-A"), ("h-2", "agent-A"), ("h-3", "agent-B")] {
+            store.insert(held(id, holder)).await.expect("root");
+        }
+        let mut child = record("h-child", Some("h-1"), 1);
+        child.mandate.holder = "agent-A".into();
+        store
+            .insert_child(child)
+            .await
+            .expect("child held by A too");
+        let mut gone = held("h-gone", "agent-A");
+        gone.mandate.source.event_id = "evt-h-gone".into();
+        store.insert(gone).await.expect("root");
+        store
+            .revoke_tree(TENANT, "h-gone", RevocationReason::Manual)
+            .await
+            .expect("revoked");
+        let mut other_tenant = held("h-other", "agent-A");
+        other_tenant.mandate.tenant_id = "another-tenant".into();
+        store.insert(other_tenant).await.expect("another tenant's");
+
+        let mut a = store.active_held_by(TENANT, "agent-A").await.unwrap();
+        a.sort();
+        assert_eq!(
+            a,
+            ["h-1", "h-2", "h-child"],
+            "roots and delegated children; not revoked, not another tenant's, not another agent's"
+        );
+        assert_eq!(
+            store.active_held_by(TENANT, "agent-B").await.unwrap(),
+            ["h-3"]
+        );
+        assert!(store
+            .active_held_by(TENANT, "nobody")
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .active_held_by("another-tenant", "agent-A")
+                .await
+                .unwrap(),
+            ["h-other"]
+        );
+        // Revoking a root takes its children with it, and they leave the list.
+        store
+            .revoke_tree(TENANT, "h-1", RevocationReason::Manual)
+            .await
+            .unwrap();
+        let mut a = store.active_held_by(TENANT, "agent-A").await.unwrap();
+        a.sort();
+        assert_eq!(a, ["h-2"]);
+    }
+
     /// A root about `record_ref` of `system` (ADR-012).
     fn root_about(id: &str, system: &str, record_ref: &str) -> StoredMandate {
         let mut r = record(id, None, 0);
@@ -329,11 +800,13 @@ pub mod mandate_store {
             "active roots of this system and record only: not children, revoked ones, other records or systems"
         );
 
+        held_by_an_agent(store).await;
+
         let revocation = StoredRevocation {
             tenant_id: TENANT.into(),
             system: "lms".into(),
             event_id: "pay-1".into(),
-            content_sha256: "ab".repeat(32),
+            event_digest: format!("sha256-jcs-v1:{}", "ab".repeat(32)),
             event_type: "loan.paid".into(),
             record_ref: "loan-a".into(),
             occurred_at: Utc.with_ymd_and_hms(2026, 10, 1, 6, 0, 0).unwrap(),

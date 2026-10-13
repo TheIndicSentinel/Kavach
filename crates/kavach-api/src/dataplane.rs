@@ -39,7 +39,9 @@ use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
 };
-use kavach_ports::chain_record::{ChainRecord, RevocationDraft, RevocationRecord};
+use kavach_ports::chain_record::{
+    AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
+};
 use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::CredentialBroker;
 use kavach_ports::{
@@ -84,6 +86,11 @@ pub struct DataplaneConfig {
     /// Consent fixture (JSON list of consent records; PRD D7).
     pub consents: PathBuf,
     pub tenant_id: String,
+    /// Serve the agent surfaces and the evidence reads only: no evaluate,
+    /// pack, model, retention, incident or batch routes, no console, no
+    /// gRPC evaluate, and no change request of the credit track. For hosted
+    /// builds, where the Decision Governance track is frozen.
+    pub agent_only: bool,
     /// System-of-record events accepted per second (token bucket).
     pub sor_rate_per_second: u32,
     /// Agent tool registry (YAML, signed: `<path>.sig`).
@@ -244,6 +251,16 @@ impl MandateStore for MandateStoreBackend {
             Self::Postgres(s) => s.live_roots_for_record(tenant_id, system, record_ref).await,
         }
     }
+    async fn active_held_by(
+        &self,
+        tenant_id: &str,
+        holder: &str,
+    ) -> Result<Vec<String>, PortError> {
+        match self {
+            Self::Memory(s) => s.active_held_by(tenant_id, holder).await,
+            Self::Postgres(s) => s.active_held_by(tenant_id, holder).await,
+        }
+    }
     async fn record_revocation(&self, revocation: StoredRevocation) -> Result<(), PortError> {
         match self {
             Self::Memory(s) => s.record_revocation(revocation).await,
@@ -310,9 +327,104 @@ impl ReplayGuard for ReplayBackend {
     }
 }
 
+/// A revoked agent is issued and delegated nothing (ADR-013 §2): between its
+/// state becoming `revoked` and its mandates being revoked, no new mandate
+/// can be handed to it. A state that cannot be read refuses too.
+struct RevokedAgentGate {
+    store: Arc<EvidenceBackend>,
+}
+
+impl kavach_mandate::AgentGate for RevokedAgentGate {
+    fn may_hold<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        agent_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PortError>> + Send + 'a>>
+    {
+        use kavach_ports::agent_state::AgentStateStore as _;
+        Box::pin(async move {
+            let states = self
+                .store
+                .states(tenant_id, &[agent_id.to_string()])
+                .await
+                .map_err(|e| PortError::unavailable(format!("agent state: {}", e.message)))?;
+            match states.get(agent_id) {
+                Some(kavach_domain::AgentState::Revoked) => Err(PortError::rejected(format!(
+                    "agent {agent_id} is revoked and cannot hold a mandate"
+                ))),
+                Some(_) => Ok(()),
+                None => Err(PortError::unavailable("agent state was not read")),
+            }
+        })
+    }
+}
+
 pub enum EvidenceBackend {
     Memory(Box<MemoryAgentEvidenceStore>),
     Postgres(PostgresAgentEvidenceStore),
+}
+
+impl kavach_ports::agent_state::AgentStateStore for EvidenceBackend {
+    async fn states(
+        &self,
+        tenant_id: &str,
+        agent_ids: &[String],
+    ) -> Result<std::collections::BTreeMap<String, kavach_ports::agent_state::AgentState>, PortError>
+    {
+        match self {
+            Self::Memory(s) => s.states(tenant_id, agent_ids).await,
+            Self::Postgres(s) => s.states(tenant_id, agent_ids).await,
+        }
+    }
+
+    async fn current(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<kavach_ports::agent_state::StoredAgentState>, PortError> {
+        match self {
+            Self::Memory(s) => s.current(tenant_id, agent_id).await,
+            Self::Postgres(s) => s.current(tenant_id, agent_id).await,
+        }
+    }
+
+    async fn set(
+        &self,
+        change: kavach_ports::agent_state::AgentStateChange,
+    ) -> Result<kavach_ports::agent_state::StoredAgentState, PortError> {
+        match self {
+            Self::Memory(s) => s.set(change).await,
+            Self::Postgres(s) => s.set(change).await,
+        }
+    }
+
+    async fn set_recorded(
+        &self,
+        change: kavach_ports::agent_state::AgentStateChange,
+        recording: kavach_ports::agent_state::Recording<'_>,
+    ) -> Result<
+        (
+            kavach_ports::agent_state::StoredAgentState,
+            AgentStateRecord,
+        ),
+        PortError,
+    > {
+        match self {
+            Self::Memory(s) => s.set_recorded(change, recording).await,
+            Self::Postgres(s) => s.set_recorded(change, recording).await,
+        }
+    }
+
+    async fn changes_after(
+        &self,
+        after: Option<kavach_ports::agent_state::AgentChangeCursor>,
+        limit: u32,
+    ) -> Result<Vec<kavach_ports::agent_state::StoredAgentChange>, PortError> {
+        match self {
+            Self::Memory(s) => s.changes_after(after, limit).await,
+            Self::Postgres(s) => s.changes_after(after, limit).await,
+        }
+    }
 }
 
 impl AgentEvidenceStore for EvidenceBackend {
@@ -364,6 +476,30 @@ impl AgentEvidenceStore for EvidenceBackend {
             Self::Postgres(s) => s.records(tenant_id, partition_id).await,
         }
     }
+    async fn append_agent_state(
+        &self,
+        draft: AgentStateDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<AgentStateRecord, PortError> {
+        match self {
+            Self::Memory(s) => s.append_agent_state(draft, clock, signer).await,
+            Self::Postgres(s) => s.append_agent_state(draft, clock, signer).await,
+        }
+    }
+
+    async fn agent_state_record(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+        change_no: i64,
+    ) -> Result<Option<AgentStateRecord>, PortError> {
+        match self {
+            Self::Memory(s) => s.agent_state_record(tenant_id, agent_id, change_no).await,
+            Self::Postgres(s) => s.agent_state_record(tenant_id, agent_id, change_no).await,
+        }
+    }
+
     async fn append_revocation(
         &self,
         draft: RevocationDraft,
@@ -493,8 +629,52 @@ pub type Mandates = MandateService<
     ClockBackend,
 >;
 
+/// The system-of-record listener's limit and the operator stop limit.
+fn limiters(sor_rate_per_second: u32) -> (Mutex<TokenBucket>, Mutex<TokenBucket>) {
+    let rate = f64::from(sor_rate_per_second.max(1));
+    let bucket = |rate: f64, burst: f64| {
+        Mutex::new(TokenBucket {
+            rate,
+            burst,
+            tokens: burst,
+            last: Instant::now(),
+        })
+    };
+    (bucket(rate, rate), bucket(STOPS_PER_SECOND, STOP_BURST))
+}
+
+/// The mandate service, refusing to issue or delegate to a revoked agent
+/// (the gate reads the same store the agent states live in).
+fn mandate_service(
+    _config: &DataplaneConfig,
+    deps: MandateDeps<
+        SigningKeys,
+        ReplayBackend,
+        InMemoryConsentSource,
+        MandateStoreBackend,
+        InMemoryEventBus,
+        ClockBackend,
+    >,
+    mandate_config: kavach_mandate::MandateConfig,
+    evidence: &Arc<EvidenceBackend>,
+) -> Result<Arc<Mandates>, String> {
+    let service = MandateService::new(deps, mandate_config)
+        .map_err(|e| format!("mandate config: {e}"))?
+        .with_agent_gate(Arc::new(RevokedAgentGate {
+            store: Arc::clone(evidence),
+        }));
+    Ok(Arc::new(service))
+}
+
+/// Operator stops per second across the process, and the burst allowed: an
+/// incident may stop a handful of agents at once, never hundreds.
+const STOPS_PER_SECOND: f64 = 1.0;
+const STOP_BURST: f64 = 10.0;
+
 struct TokenBucket {
     rate: f64,
+    /// The most tokens it holds (the burst allowed).
+    burst: f64,
     tokens: f64,
     last: Instant,
 }
@@ -503,7 +683,7 @@ impl TokenBucket {
     fn take(&mut self) -> bool {
         let now = Instant::now();
         self.tokens =
-            (self.tokens + now.duration_since(self.last).as_secs_f64() * self.rate).min(self.rate);
+            (self.tokens + now.duration_since(self.last).as_secs_f64() * self.rate).min(self.burst);
         self.last = now;
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
@@ -523,10 +703,17 @@ pub struct Dataplane {
     passports: BTreeSet<(String, String)>,
     tenant: String,
     sor_limiter: Mutex<TokenBucket>,
+    /// Operator stops of agents (ADR-013): a global limit, because a stolen
+    /// operator credential must not be able to stop every agent at once.
+    stop_limiter: Mutex<TokenBucket>,
     broker: Broker,
     resolver: FixtureResolver,
     forwarder: crate::forward::HttpForwarder,
     keys: KeySources,
+    /// Gateway calls that have started and not finished (an orderly stop
+    /// waits for them).
+    in_flight: Arc<crate::shutdown::InFlight>,
+    agent_only: bool,
 }
 
 impl Dataplane {
@@ -563,20 +750,20 @@ impl Dataplane {
             refuse_dev_key("system-of-record issuer", &issuer.key.kid, insecure_dev)?;
         }
         let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
-        let mandates = Arc::new(
-            MandateService::new(
-                MandateDeps {
-                    keys,
-                    replay,
-                    consents: InMemoryConsentSource::new(consents),
-                    store,
-                    events: InMemoryEventBus::new(),
-                    clock: clock.clone(),
-                },
-                mandate_config,
-            )
-            .map_err(|e| format!("mandate config: {e}"))?,
-        );
+        let evidence = Arc::new(evidence);
+        let mandates = mandate_service(
+            config,
+            MandateDeps {
+                keys,
+                replay,
+                consents: InMemoryConsentSource::new(consents),
+                store,
+                events: InMemoryEventBus::new(),
+                clock: clock.clone(),
+            },
+            mandate_config,
+            &evidence,
+        )?;
         let signer = sources.evidence_signer(
             HsmRole::Evidence,
             &config.evidence_keys_dir,
@@ -588,7 +775,6 @@ impl Dataplane {
         let broker = build_broker(config, &tools, &mandate_kid, insecure_dev, &sources).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
             .map_err(|e| format!("subject pseudonym key: {e}"))?;
-        let evidence = Arc::new(evidence);
         let authorize = AuthorizeConfig {
             tenant_id: config.tenant_id.clone(),
             ..AuthorizeConfig::default()
@@ -614,7 +800,7 @@ impl Dataplane {
             .await
             .map_err(|e| format!("agent token verifier: {e}"))?;
         agents.spawn_refresher();
-        let rate = f64::from(config.sor_rate_per_second.max(1));
+        let (sor_limiter, stop_limiter) = limiters(config.sor_rate_per_second);
         Ok(Self {
             dev_clock: config.dev_clock.clone(),
             mandates,
@@ -623,16 +809,34 @@ impl Dataplane {
             agents,
             passports,
             tenant: config.tenant_id.clone(),
-            sor_limiter: Mutex::new(TokenBucket {
-                rate,
-                tokens: rate,
-                last: Instant::now(),
-            }),
+            sor_limiter,
+            stop_limiter,
             broker,
             resolver,
             forwarder,
             keys: sources,
+            in_flight: crate::shutdown::InFlight::new(),
+            agent_only: config.agent_only,
         })
+    }
+
+    /// Takes one operator stop from the global limit (ADR-013).
+    pub fn admit_stop(&self) -> bool {
+        self.stop_limiter
+            .lock()
+            .is_ok_and(|mut bucket| bucket.take())
+    }
+
+    /// Whether only the agent surfaces and the evidence reads are served
+    /// ([`DataplaneConfig::agent_only`]).
+    pub fn agent_only(&self) -> bool {
+        self.agent_only
+    }
+
+    /// Gateway calls in flight: an orderly stop drains them before its
+    /// final checkpoint.
+    pub fn in_flight(&self) -> &Arc<crate::shutdown::InFlight> {
+        &self.in_flight
     }
 
     /// Which signing roles use the HSM and whether it answers now; `None`
@@ -787,7 +991,6 @@ impl WhatIf {
         let agent = AgentIdentity {
             agent_id: agent_id.into(),
             identity_key: format!("what-if#{agent_id}"),
-            state: kavach_authz::AgentState::Active,
         };
         self.core
             .authorize(&agent, &call, Mode::Precheck)
@@ -1322,7 +1525,6 @@ fn authenticate_agent(dp: &Dataplane, headers: &HeaderMap) -> Result<AgentIdenti
         agent_id: verified.principal,
         // Agent risk states (RESTRICTED/QUARANTINED) arrive with the
         // gateway's taint tracking (FR-5).
-        state: kavach_authz::AgentState::Active,
     })
 }
 
@@ -1587,13 +1789,6 @@ pub async fn tool_call(
         metrics.observe_gateway_malformed();
         return Err(refuse_tool(refusal));
     }
-    let deps = GatewayDeps {
-        core: &dp.core,
-        resolver: &dp.resolver,
-        broker: &dp.broker,
-        forwarder: &dp.forwarder,
-        observer: metrics,
-    };
     // Log the registry's tool name, never the caller's path text.
     let tool_label = dp
         .core
@@ -1601,7 +1796,40 @@ pub async fn tool_call(
         .tool(&tool)
         .map_or("unknown", |t| t.name.as_str())
         .to_string();
-    let result = execute(&deps, &agent, &tool, request).await;
+    // The call runs in a task of its own and is counted while it runs. Once
+    // its decision is recorded it completes (forward, outcome) even if the
+    // client disconnects or the process is told to stop: a request that
+    // is dropped halfway would leave an allow with no outcome, and its
+    // retry would be refused as in flight for good.
+    let guard = dp.in_flight.enter();
+    let task_state = Arc::clone(&state);
+    let (task_agent, task_tool) = (agent.clone(), tool.clone());
+    let started = tokio::spawn(async move {
+        let _counted = guard;
+        let Some(dp) = task_state.dataplane() else {
+            return Err(GatewayError::Invalid(
+                "agent surfaces are not configured".into(),
+            ));
+        };
+        let deps = GatewayDeps {
+            core: &dp.core,
+            resolver: &dp.resolver,
+            broker: &dp.broker,
+            forwarder: &dp.forwarder,
+            observer: task_state.metrics(),
+        };
+        execute(&deps, &task_agent, &task_tool, request).await
+    });
+    let result = match started.await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::error!(tool = %tool_label, error = %error, "gateway call task failed");
+            return Err(crate::problem::Problem::for_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ));
+        }
+    };
     match &result {
         Ok(reply) => {
             tracing::info!(

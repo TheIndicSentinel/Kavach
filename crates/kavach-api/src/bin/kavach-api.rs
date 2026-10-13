@@ -5,10 +5,10 @@ use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
 use kavach_api::{
-    grpc_server_tls_config, resolve_access_control, router, serve_http, validate_principal_sources,
-    AccessControlKind, AccessControlMode, ApiConfig, AppState, EvaluateServiceServer,
-    EvidenceStoreKind, GrpcEvaluateService, JwksSource, MtlsSanKind, OidcConfig, TlsConfig,
-    DEFAULT_CHANGE_TTL_HOURS,
+    grpc_server_tls_config, resolve_access_control, router, serve_http_until, shutdown,
+    validate_principal_sources, AccessControlKind, AccessControlMode, ApiConfig, AppState,
+    EvaluateServiceServer, EvidenceStoreKind, GrpcEvaluateService, JwksSource, MtlsSanKind,
+    OidcConfig, TlsConfig, DEFAULT_CHANGE_TTL_HOURS,
 };
 use kavach_ports::ReferenceResolver;
 use tonic::transport::Server;
@@ -60,6 +60,15 @@ struct AgentArgs {
         default_value = "kavach-checkpoint-1"
     )]
     checkpoint_key_id: String,
+    /// On SIGTERM or Ctrl-C: stop accepting, wait this long for requests and
+    /// gateway calls in flight, then write a final checkpoint.
+    #[arg(
+        long,
+        env = "KAVACH_SHUTDOWN_GRACE_SECONDS",
+        default_value_t = kavach_api::shutdown::DEFAULT_GRACE_SECONDS,
+        value_parser = clap::value_parser!(u64).range(1..=600)
+    )]
+    shutdown_grace_seconds: u64,
     /// Uncovered records get a checkpoint at least this often (or after
     /// 1,000 records, whichever comes first).
     #[arg(long, env = "KAVACH_CHECKPOINT_INTERVAL_SECONDS", default_value_t = 60)]
@@ -118,6 +127,11 @@ struct AgentArgs {
     /// Gateway → provider total timeout (ms; below the 15 s credential lifetime).
     #[arg(long, env = "KAVACH_PROVIDER_TIMEOUT_MS", default_value_t = 5000)]
     provider_timeout_ms: u64,
+    /// Serve the agent surfaces and the evidence reads only: no evaluate,
+    /// pack, model, retention, incident or batch routes, no console and no
+    /// gRPC evaluate. For hosted builds (the credit track is frozen).
+    #[arg(long, env = "KAVACH_AGENT_ONLY")]
+    agent_only: bool,
     /// Listener for agents (`/v1/authorize`, tools): the only listener to
     /// attach to the agent network.
     #[arg(long, env = "KAVACH_AGENT_LISTEN", default_value = "127.0.0.1:8091")]
@@ -153,6 +167,13 @@ impl AgentArgs {
     ) -> Result<Option<kavach_api::dataplane::DataplaneConfig>, String> {
         let hsm = self.hsm_config()?;
         let Some(audience) = self.agent_oidc_audience else {
+            if self.agent_only {
+                return Err(
+                    "--agent-only serves the agent surfaces and nothing else: it needs them \
+                     (--agent-oidc-audience and the agent flags)"
+                        .into(),
+                );
+            }
             return Ok(None);
         };
         let operator = operator.ok_or(
@@ -197,6 +218,7 @@ impl AgentArgs {
             subject_pseudonym_key: need(self.subject_pseudonym_key, "--subject-pseudonym-key")?,
             consents: need(self.consents, "--consents")?,
             tenant_id: self.tenant_id,
+            agent_only: self.agent_only,
             sor_rate_per_second: self.sor_rate_per_second,
             tool_registry: need(self.tool_registry, "--tool-registry")?,
             tool_registry_sha256: self.tool_registry_sha256,
@@ -509,6 +531,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let grpc_listen = cli.grpc_listen;
     let sor_listen = cli.agents.sor_listen;
     let agent_listen = cli.agents.agent_listen;
+    let grace = std::time::Duration::from_secs(cli.agents.shutdown_grace_seconds);
+    let agent_only = cli.agents.agent_only;
     let config = cli
         .into_config()
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
@@ -532,11 +556,97 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             dp.resolver().describe()
         )
     });
+    let stopping = state.clone();
     let grpc_service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
 
     print_banner(&config, http_listen, grpc_listen, &pack_sha256);
 
-    if let Some(tools) = &tools_sha256 {
+    log_agent_surfaces(
+        agent_only,
+        tools_sha256.as_deref(),
+        agent_listen,
+        sor_listen,
+    );
+
+    let tls_ref = config.tls.as_ref();
+    // One signal stops every listener. A listener stops accepting at once
+    // and lets its requests finish.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+        let _ = rx.wait_for(|stop| *stop).await;
+    };
+    let (sor_stop, agent_stop, http_stop, grpc_stop) = (
+        stopped(stop_rx.clone()),
+        stopped(stop_rx.clone()),
+        stopped(stop_rx.clone()),
+        stopped(stop_rx),
+    );
+    let servers = async move {
+        tokio::try_join!(
+            async move {
+                if let Some(app) = sor_app {
+                    serve_http_until(app, sor_listen, tls_ref, sor_stop, grace).await?;
+                }
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            },
+            async move {
+                if let Some(app) = agent_app {
+                    serve_http_until(app, agent_listen, tls_ref, agent_stop, grace).await?;
+                }
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            },
+            async move {
+                serve_http_until(http_app, http_listen, tls_ref, http_stop, grace).await?;
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            },
+            async move {
+                // The evaluate service is the credit track's: not served.
+                if agent_only {
+                    return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
+                }
+                let mut builder = Server::builder();
+                if let Some(server_tls) = grpc_server_tls_config(tls_ref).await? {
+                    builder = builder.tls_config(server_tls)?;
+                }
+                builder
+                    .add_service(grpc_service)
+                    .serve_with_shutdown(grpc_listen, grpc_stop)
+                    .await?;
+                Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+            }
+        )
+    };
+    tokio::pin!(servers);
+    let told_to_stop = tokio::select! {
+        served = &mut servers => {
+            served?;
+            false
+        }
+        () = shutdown::termination() => true,
+    };
+    if !told_to_stop {
+        return Ok(());
+    }
+
+    shutdown::stop_and_checkpoint(servers.as_mut(), &stop_tx, grace, stopping.dataplane())
+        .await
+        .map_err(Into::into)
+}
+
+/// What the agent surfaces serve, once, at startup.
+fn log_agent_surfaces(
+    agent_only: bool,
+    tools: Option<&str>,
+    agent_listen: SocketAddr,
+    sor_listen: SocketAddr,
+) {
+    if agent_only {
+        tracing::info!(
+            "agent-only mode: the evaluate, pack, model, retention, incident and batch routes, \
+             the console and the gRPC evaluate service are not served"
+        );
+    }
+    if let Some(tools) = tools {
         tracing::info!(
             "agent surfaces enabled: agents on {agent_listen} (the only listener for the agent \
              network), /v1/sor/events on {sor_listen} (backend network only); tool registry \
@@ -545,36 +655,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     } else {
         tracing::info!("agent surfaces disabled (no --agent-oidc-audience)");
     }
-
-    let tls_ref = config.tls.as_ref();
-    tokio::try_join!(
-        async move {
-            if let Some(app) = sor_app {
-                serve_http(app, sor_listen, tls_ref).await?;
-            }
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        },
-        async move {
-            if let Some(app) = agent_app {
-                serve_http(app, agent_listen, tls_ref).await?;
-            }
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        },
-        async move {
-            serve_http(http_app, http_listen, tls_ref).await?;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        },
-        async move {
-            let mut builder = Server::builder();
-            if let Some(server_tls) = grpc_server_tls_config(tls_ref).await? {
-                builder = builder.tls_config(server_tls)?;
-            }
-            builder.add_service(grpc_service).serve(grpc_listen).await?;
-            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
-        }
-    )?;
-
-    Ok(())
 }
 
 /// Startup summary and warnings for unsafe development settings.

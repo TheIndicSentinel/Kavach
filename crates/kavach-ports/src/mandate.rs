@@ -22,8 +22,9 @@ pub struct StoredRevocation {
     pub tenant_id: String,
     pub system: String,
     pub event_id: String,
-    /// SHA-256 of the event's content, to tell a retry from a reuse.
-    pub content_sha256: String,
+    /// The event's digest (`sha256-jcs-v1:<hex>`; a bare 64-hex SHA-256 in
+    /// a row written before that form), to tell a retry from a reuse.
+    pub event_digest: String,
     pub event_type: String,
     pub record_ref: String,
     pub occurred_at: chrono::DateTime<chrono::Utc>,
@@ -133,6 +134,16 @@ pub trait MandateStore: Send + Sync {
         system: &str,
         record_ref: &str,
     ) -> impl Future<Output = Result<Vec<StoredMandate>, PortError>> + Send;
+
+    /// The ids of the active mandates `holder` holds, roots and delegated
+    /// children alike, oldest first (ADR-013: revoking an agent revokes
+    /// them). Expired mandates that are still `Active` in the store are
+    /// included: expiry is not stored status.
+    fn active_held_by(
+        &self,
+        tenant_id: &str,
+        holder: &str,
+    ) -> impl Future<Output = Result<Vec<String>, PortError>> + Send;
 
     /// Keeps a revocation's result. An existing `(tenant, system,
     /// event_id)` → `Rejected`.

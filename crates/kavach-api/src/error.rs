@@ -27,6 +27,11 @@ pub enum ApiError {
     #[error("evaluate: {0}")]
     Evaluate(#[from] EvaluateError),
 
+    /// 503: a dependency (the evidence or state store) could not be reached;
+    /// nothing was changed and the request can be retried.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
+
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -46,7 +51,8 @@ impl ApiError {
             Self::Conflict(_) | Self::Evaluate(EvaluateError::IdempotencyConflict(_)) => {
                 StatusCode::CONFLICT
             }
-            Self::Evaluate(EvaluateError::Policy(kavach_policy::PolicyError::Timeout {
+            Self::Unavailable(_)
+            | Self::Evaluate(EvaluateError::Policy(kavach_policy::PolicyError::Timeout {
                 ..
             })) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Evaluate(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,

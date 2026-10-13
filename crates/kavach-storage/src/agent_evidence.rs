@@ -1,7 +1,7 @@
 //! In-memory `AgentEvidenceStore` (tests and development; agent routes refuse
 //! it at startup, ADR-007). One mutex makes each commit atomic.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::{ready, Future};
 use std::sync::Mutex;
 
@@ -11,7 +11,14 @@ use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, OutcomeRecord, RequestBinding, GENESIS,
 };
-use kavach_ports::chain_record::{seal_revocation, ChainRecord, RevocationDraft, RevocationRecord};
+use kavach_ports::agent_state::{
+    AgentChangeCursor, AgentState, AgentStateChange, AgentStateStore, Recording, StoredAgentChange,
+    StoredAgentState,
+};
+use kavach_ports::chain_record::{
+    seal_agent_state, seal_revocation, AgentStateDraft, AgentStateRecord, ChainRecord,
+    RevocationDraft, RevocationRecord,
+};
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
     CHAIN_AGENT_DECISIONS,
@@ -29,6 +36,12 @@ struct State {
     counters: HashMap<(String, String, NaiveDate), u32>,
     outcomes: HashMap<(String, String), OutcomeRecord>,
     checkpoints: Vec<Checkpoint>,
+    changed_state_records: Vec<AgentStateRecord>,
+    /// Agent risk states (ADR-013), by `(tenant, agent)`, and the history of
+    /// every change. Under the same lock as the chain, so a loosening and its
+    /// record are one step.
+    agent_states: BTreeMap<(String, String), StoredAgentState>,
+    changed_state_history: Vec<StoredAgentChange>,
 }
 
 fn in_scope(checkpoint: &Checkpoint, scope: Scope<'_>) -> bool {
@@ -180,7 +193,12 @@ impl MemoryAgentEvidenceStore {
             .iter()
             .filter(|r| r.payload.tenant_id == tenant_id && r.payload.partition_id == partition_id)
             .map(|r| (r.payload.seq, ChainRecord::Revocation(r.clone())));
-        let mut all: Vec<(i64, ChainRecord)> = decisions.chain(revocations).collect();
+        let states = state
+            .changed_state_records
+            .iter()
+            .filter(|r| r.payload.tenant_id == tenant_id && r.payload.partition_id == partition_id)
+            .map(|r| (r.payload.seq, ChainRecord::AgentState(r.clone())));
+        let mut all: Vec<(i64, ChainRecord)> = decisions.chain(revocations).chain(states).collect();
         all.sort_by_key(|(seq, _)| *seq);
         Ok(all.into_iter().map(|(_, record)| record).collect())
     }
@@ -417,6 +435,36 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         ready(self.revocation_record_sync(tenant_id, source_system, event_id))
     }
 
+    fn append_agent_state(
+        &self,
+        draft: AgentStateDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<AgentStateRecord, PortError>> + Send {
+        ready(self.state.lock().map_err(poisoned).and_then(|mut guard| {
+            Self::append_state_record_locked(&mut guard, &draft, clock, signer)
+        }))
+    }
+
+    fn agent_state_record(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+        change_no: i64,
+    ) -> impl Future<Output = Result<Option<AgentStateRecord>, PortError>> + Send {
+        ready(self.state.lock().map_err(poisoned).map(|guard| {
+            guard
+                .changed_state_records
+                .iter()
+                .find(|r| {
+                    r.payload.tenant_id == tenant_id
+                        && r.payload.agent_id == agent_id
+                        && r.payload.change_no == change_no
+                })
+                .cloned()
+        }))
+    }
+
     fn record(
         &self,
         tenant_id: &str,
@@ -439,5 +487,206 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         ist_date: NaiveDate,
     ) -> impl Future<Output = Result<u32, PortError>> + Send {
         ready(self.contacts_on_sync(tenant_id, subject_pseudonym, ist_date))
+    }
+}
+
+impl MemoryAgentEvidenceStore {
+    /// Applies `change` to the states and the history. `Err` changes nothing.
+    fn change_locked(
+        state: &mut State,
+        change: &AgentStateChange,
+    ) -> Result<(StoredAgentState, StoredAgentChange), PortError> {
+        let key = (change.tenant_id.clone(), change.agent_id.clone());
+        let (current, last_no) = state
+            .agent_states
+            .get(&key)
+            .map_or((AgentState::Active, 0), |row| (row.state, row.change_no));
+        change.check(current)?;
+        let change_no = last_no + 1;
+        let row = StoredAgentState {
+            tenant_id: change.tenant_id.clone(),
+            agent_id: change.agent_id.clone(),
+            state: change.to,
+            change_no,
+            reason_code: change.reason_code,
+            note: change.note.clone(),
+            changed_by: change.changed_by.clone(),
+            approved_by: change.approved_by.clone(),
+            change_request_id: change.change_request_id.clone(),
+            changed_at: change.at,
+        };
+        let history = StoredAgentChange {
+            tenant_id: change.tenant_id.clone(),
+            agent_id: change.agent_id.clone(),
+            change_no,
+            from_state: current,
+            to_state: change.to,
+            reason_code: change.reason_code,
+            note: change.note.clone(),
+            changed_by: change.changed_by.clone(),
+            approved_by: change.approved_by.clone(),
+            change_request_id: change.change_request_id.clone(),
+            changed_at: change.at,
+        };
+        state.agent_states.insert(key, row.clone());
+        state.changed_state_history.push(history.clone());
+        Ok((row, history))
+    }
+
+    /// Appends the record for `draft` unless one exists (then it must be
+    /// this change).
+    fn append_state_record_locked(
+        state: &mut State,
+        draft: &AgentStateDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<AgentStateRecord, PortError> {
+        if let Some(stored) = state.changed_state_records.iter().find(|r| {
+            r.payload.tenant_id == draft.tenant_id
+                && r.payload.agent_id == draft.agent_id
+                && r.payload.change_no == draft.change_no
+        }) {
+            return if draft.matches(stored) {
+                Ok(stored.clone())
+            } else {
+                Err(PortError::rejected(
+                    "this change of the agent's state is recorded with different content",
+                ))
+            };
+        }
+        let head_key = (draft.tenant_id.clone(), draft.partition_id);
+        let (head_seq, head_hash) = state
+            .heads
+            .get(&head_key)
+            .cloned()
+            .unwrap_or((0, GENESIS.to_string()));
+        let payload = draft.complete(head_seq + 1, &head_hash, signer.key_id(), clock.now());
+        let record = seal_agent_state(payload, signer)?;
+        state
+            .heads
+            .insert(head_key, (record.payload.seq, record.hash.clone()));
+        state.changed_state_records.push(record.clone());
+        Ok(record)
+    }
+
+    fn set_recorded_sync(
+        &self,
+        change: &AgentStateChange,
+        recording: &Recording<'_>,
+    ) -> Result<(StoredAgentState, AgentStateRecord), PortError> {
+        let mut state = self.state.lock().map_err(poisoned)?;
+        // Work on a copy of what can be undone: a record that cannot be
+        // written (the signer failed) must leave the state as it was.
+        let before = (
+            state.agent_states.clone(),
+            state.changed_state_history.len(),
+            state.heads.clone(),
+        );
+        let result = (|| {
+            let (row, history) = Self::change_locked(&mut state, change)?;
+            let draft = AgentStateDraft {
+                tenant_id: history.tenant_id,
+                partition_id: recording.partition_id,
+                agent_id: history.agent_id,
+                change_no: history.change_no,
+                from_state: history.from_state,
+                to_state: history.to_state,
+                reason_code: history.reason_code,
+                reason_digest: if history.note.is_empty() {
+                    None
+                } else {
+                    (recording.reason_digest)(history.change_no)
+                },
+                changed_by: history.changed_by,
+                approved_by: history.approved_by,
+                change_request_id: history.change_request_id,
+                changed_at: history.changed_at,
+            };
+            let record = Self::append_state_record_locked(
+                &mut state,
+                &draft,
+                recording.clock,
+                recording.signer,
+            )?;
+            Ok((row, record))
+        })();
+        if result.is_err() {
+            state.agent_states = before.0;
+            state.changed_state_history.truncate(before.1);
+            state.heads = before.2;
+        }
+        result
+    }
+}
+
+impl AgentStateStore for MemoryAgentEvidenceStore {
+    fn states(
+        &self,
+        tenant_id: &str,
+        agent_ids: &[String],
+    ) -> impl Future<Output = Result<BTreeMap<String, AgentState>, PortError>> + Send {
+        ready(self.state.lock().map_err(poisoned).map(|guard| {
+            agent_ids
+                .iter()
+                .map(|id| {
+                    let state = guard
+                        .agent_states
+                        .get(&(tenant_id.to_string(), id.clone()))
+                        .map_or(AgentState::Active, |row| row.state);
+                    (id.clone(), state)
+                })
+                .collect()
+        }))
+    }
+
+    fn current(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+    ) -> impl Future<Output = Result<Option<StoredAgentState>, PortError>> + Send {
+        ready(self.state.lock().map_err(poisoned).map(|guard| {
+            guard
+                .agent_states
+                .get(&(tenant_id.to_string(), agent_id.to_string()))
+                .cloned()
+        }))
+    }
+
+    fn set(
+        &self,
+        change: AgentStateChange,
+    ) -> impl Future<Output = Result<StoredAgentState, PortError>> + Send {
+        ready(
+            self.state
+                .lock()
+                .map_err(poisoned)
+                .and_then(|mut guard| Self::change_locked(&mut guard, &change).map(|(row, _)| row)),
+        )
+    }
+
+    fn set_recorded(
+        &self,
+        change: AgentStateChange,
+        recording: Recording<'_>,
+    ) -> impl Future<Output = Result<(StoredAgentState, AgentStateRecord), PortError>> + Send {
+        ready(self.set_recorded_sync(&change, &recording))
+    }
+
+    fn changes_after(
+        &self,
+        after: Option<AgentChangeCursor>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<StoredAgentChange>, PortError>> + Send {
+        ready(self.state.lock().map_err(poisoned).map(|guard| {
+            let mut all: Vec<StoredAgentChange> = guard
+                .changed_state_history
+                .iter()
+                .filter(|c| after.as_ref().is_none_or(|a| c.cursor() > *a))
+                .cloned()
+                .collect();
+            all.sort_by_key(StoredAgentChange::cursor);
+            all.truncate(limit as usize);
+            all
+        }))
     }
 }

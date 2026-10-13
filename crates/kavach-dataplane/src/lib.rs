@@ -2,6 +2,7 @@
 //! authorization core; the resource gateway and credential broker join them
 //! in H5b. Agents reach backends only through this process.
 
+pub mod agent_state_evidence;
 pub mod authorize;
 pub mod checkpointer;
 pub mod detect;
@@ -11,9 +12,10 @@ pub mod revocation_evidence;
 pub mod tools;
 pub mod whatif;
 
+pub use agent_state_evidence::{reconcile_agent_states, StateReconcileReport};
 pub use authorize::{
-    policy_versions, validate_request_id, AgentIdentity, AuthorizeConfig, AuthorizeCore,
-    CommitStatus, CredentialGrant, Decided, MandateVerifier, Mode, ToolCall,
+    policy_versions, validate_request_id, AgentIdentity, AppliedStateChange, AuthorizeConfig,
+    AuthorizeCore, CommitStatus, CredentialGrant, Decided, MandateVerifier, Mode, ToolCall,
 };
 pub use checkpointer::{
     CheckpointPolicy, CheckpointStatus, Checkpointer, Skip, StallChange, Tick, TickReport,

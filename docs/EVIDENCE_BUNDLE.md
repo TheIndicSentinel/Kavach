@@ -2,6 +2,8 @@
 
 How Kavach's agent evidence is checkpointed, exported and verified offline. The decisions are in [ADR-005](ADR-005-evidence-v2.md) §13.
 
+> **The normative format specification is [specs/evidence-bundle.md](specs/evidence-bundle.md)**, checked by an independent verifier ([conformance/](../conformance/)). This document describes how Kavach's own tools produce and use bundles; where the two differ, the specification wins and this document is wrong.
+
 ## Status
 
 | Part | Status |
@@ -86,7 +88,7 @@ A checkpoint dated before the one preceding it is a warning (the clock stepped b
 - The checkpoint is dated by trusted time, under the same clock-error bound as decisions. If trusted time is unavailable the checkpoint is skipped and counted; it is never dated by a guess.
 - If records stay uncovered past the stall threshold (default 10 minutes), an alert is logged and shown in `/v1/runtime` and the metrics. `/health` and decisions are unaffected.
 - The task is restarted if it ever exits, and a panic is logged.
-- The server has no graceful shutdown yet, so no final checkpoint is written when it stops. Records written after the last checkpoint are covered after the next start.
+- On SIGTERM or Ctrl-C the server stops accepting, waits for the gateway calls in flight and writes a final checkpoint, so nothing recorded is left uncovered. A process that is killed (SIGKILL, a crash) writes none: its records are covered after the next start.
 - The checkpoint key is separate from every other key by id and from the evidence key by material. By default it sits in a directory beside the other keys, so the separation only becomes a real boundary when keys move to a KMS or HSM.
 
 ## Bundle format, version 2
@@ -156,22 +158,26 @@ Every record states its `kind` inside its hashed and signed content, so a record
 
 | `kind` | What it records | In version |
 |---|---|---|
-| `agent_decision` | An agent's call and the decision on it (ADR-005 §4). Its outcome, if it was allowed, is in `outcomes.jsonl` | 1 and 2 |
-| `mandate_revocation` | Mandates revoked by a system-of-record event (ADR-012 §7) | 2 |
+| `agent_decision` | An agent's call and the decision on it (ADR-005 §4). Its outcome, if it was allowed, is in `outcomes.jsonl` | 1, 2 and 3 |
+| `mandate_revocation` | Mandates revoked by a system-of-record event (ADR-012 §7) | 2, 3 |
+| `agent_state` | A change of an agent's state: restricted, quarantined, revoked, or reinstated (ADR-013 §4) | 3 |
 
 A `mandate_revocation` record holds, besides the fields every record has (`record_id`, `tenant_id`, `partition_id`, `seq`, `prev_hash`, `kind`, `hash_alg`, `key_id`, `time_sync`):
 
 | Field | Meaning |
 |---|---|
 | `source_system`, `event_id`, `event_type` | The system-of-record event (`loan.paid`, `loan.disputed`) |
-| `event_sha256` | SHA-256 of the event as it was verified |
+| `event_digest` | The event's digest, `sha256-jcs-v1:<hex>`: SHA-256 of the event's RFC 8785 bytes (the signed token's payload). Written now |
+| `event_sha256` | Legacy, bare 64-hex: the digest of the event's members in struct order. Records written before `event_digest` carry it; a record has exactly one of the two, and a verifier refuses one with both, neither or a malformed value |
 | `record_pseudonym` | A keyed pseudonym of the loan the event is about. A bundle never holds the loan reference |
 | `occurred_at` | When the event says it happened: mandates issued after it stay live |
 | `revoked` | The mandate ids it revoked, roots and their delegations |
 | `revoked_at` | When Kavach revoked them |
 | `recorded_at` | When this record was written. Later than `revoked_at` when the reconciler wrote it because the request that revoked could not |
 
-**A verifier refuses a kind it does not know, and never skips it.** A skipped record would break the chain's links anyway, and a verifier that skipped records could be shown a bundle with an unexplained gap. A version 1 bundle may hold `agent_decision` records only; any other kind in it fails verification. ADR-013 will add `agent_state`, with a new format version.
+An `agent_state` record holds: `agent_id`, `change_no` (1 for the agent's first change), `from_state` and `to_state`, `reason_code` (a closed set: the chain never holds an operator's free text, which could name a borrower and cannot be erased), `reason_digest` (a keyed digest of that text, which stays in the store and the audit log), `changed_by`, `approved_by` (present exactly when the change loosens, and never the changer), `changed_at` and `recorded_at`. A stop takes effect first and its record follows, so `recorded_at` can be later than `changed_at`; a loosening is written with its record or not at all.
+
+**A verifier refuses a kind it does not know, and never skips it.** A skipped record would break the chain's links anyway, and a verifier that skipped records could be shown a bundle with an unexplained gap. A version 1 bundle may hold `agent_decision` records only, and a version 2 bundle decisions and revocations only; any other kind in it fails verification. An export writes version 3.
 
 ### Trusted keys
 

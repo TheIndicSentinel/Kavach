@@ -24,12 +24,18 @@ use kavach_authz::{ist_date, AgentAction, AgentAuthorizer, AgentState, AuthzRequ
 use kavach_domain::mandate::{is_capability_ref, Mandate, CONTACT_ACTIONS, CONTACT_FLOOR_TO_MIN};
 use kavach_domain::Decision;
 use kavach_keys::SubjectKeys;
+use kavach_mandate::VerifiedChain;
 use kavach_ports::agent_evidence::{
     is_allow, sign_outcome, Actor, AgentDecisionPayload, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, ContactReservation, EvidenceSigner, Outcome, OutcomeRecord,
     PolicyVersions, RequestBinding, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
 };
-use kavach_ports::chain_record::{RevocationDraft, RevocationRecord};
+use kavach_ports::agent_state::{
+    AgentStateChange, AgentStateStore, Recording, StoredAgentChange, StoredAgentState,
+};
+use kavach_ports::chain_record::{
+    AgentStateDraft, AgentStateRecord, RevocationDraft, RevocationRecord,
+};
 use kavach_ports::{ErrorClass, PortError, StoredRevocation, TimeSource, TrustedNow};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -44,7 +50,7 @@ pub trait MandateVerifier: Send + Sync {
         &self,
         tenant_id: &str,
         mandate_id: &str,
-    ) -> impl Future<Output = Result<(Mandate, Vec<String>), PortError>> + Send;
+    ) -> impl Future<Output = Result<VerifiedChain, PortError>> + Send;
 }
 
 impl<K, R, C, S, E, T> MandateVerifier for kavach_mandate::MandateService<K, R, C, S, E, T>
@@ -56,11 +62,7 @@ where
     E: kavach_ports::EventBus,
     T: TimeSource,
 {
-    async fn verify(
-        &self,
-        tenant_id: &str,
-        mandate_id: &str,
-    ) -> Result<(Mandate, Vec<String>), PortError> {
+    async fn verify(&self, tenant_id: &str, mandate_id: &str) -> Result<VerifiedChain, PortError> {
         let stored = self
             .store()
             .get(tenant_id, mandate_id)
@@ -75,18 +77,18 @@ impl<V: MandateVerifier> MandateVerifier for Arc<V> {
         &self,
         tenant_id: &str,
         mandate_id: &str,
-    ) -> impl Future<Output = Result<(Mandate, Vec<String>), PortError>> + Send {
+    ) -> impl Future<Output = Result<VerifiedChain, PortError>> + Send {
         V::verify(self, tenant_id, mandate_id)
     }
 }
 
-/// The authenticated agent (identity from the agent token; state from the
-/// agent registry).
+/// The authenticated agent (identity from the agent token). Its risk state
+/// is not carried here: the core reads it from the store at every call
+/// (ADR-013 §1), so nothing a caller holds can be stale.
 #[derive(Debug, Clone)]
 pub struct AgentIdentity {
     pub agent_id: String,
     pub identity_key: String,
-    pub state: AgentState,
 }
 
 /// A tool call, after the gateway extracted typed parameters.
@@ -228,6 +230,53 @@ fn ist_minute_to_utc(date: NaiveDate, minute: u16) -> DateTime<Utc> {
     (midnight + Duration::minutes(i64::from(minute))).with_timezone(&Utc)
 }
 
+/// The state an agent acts under, from the states read for it and for the
+/// holders of its mandate chain: its own, or the most severe stopped state of
+/// any holder, whichever is more severe. An agent the answer does not
+/// mention is `Unavailable`, never `Active`: a call is not allowed on a
+/// state nobody read.
+pub fn resolve_state(
+    agent_id: &str,
+    holders: &[String],
+    states: &BTreeMap<String, AgentState>,
+) -> Result<AgentState, PortError> {
+    let mut effective = *states
+        .get(agent_id)
+        .ok_or_else(|| PortError::unavailable("no agent state was read for the agent"))?;
+    for holder in holders {
+        let state = *states
+            .get(holder)
+            .ok_or_else(|| PortError::unavailable("no agent state was read for a holder"))?;
+        if state.is_stopped() && state > effective {
+            effective = state;
+        }
+    }
+    Ok(effective)
+}
+
+/// What changing an agent's state did.
+#[derive(Debug, Clone)]
+pub struct AppliedStateChange {
+    pub state: StoredAgentState,
+    /// The change's evidence record, if it is written.
+    pub record: Option<AgentStateRecord>,
+    /// Why it is not, for a tightening whose record the reconciler will
+    /// write.
+    pub record_error: Option<String>,
+}
+
+/// Why a decided call may no longer go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StillAuthorised {
+    /// The mandate (or an ancestor) is revoked, expired or unknown.
+    MandateGone,
+    /// The agent, or a holder in its chain, is restricted, quarantined or
+    /// revoked.
+    AgentStopped,
+    /// A store could not be read.
+    Unavailable,
+}
+
 pub struct AuthorizeCore<V, S> {
     verifier: V,
     store: Arc<S>,
@@ -249,7 +298,7 @@ struct Assessment {
     now: TrustedNow,
 }
 
-impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
+impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<V, S> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         verifier: V,
@@ -325,7 +374,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
             partition_id: self.config.partition_id,
             source_system: revocation.system.clone(),
             event_id: revocation.event_id.clone(),
-            event_sha256: revocation.content_sha256.clone(),
+            event_digest: revocation.event_digest.clone(),
             event_type: revocation.event_type.clone(),
             record_pseudonym: self.subject_keys.record_pseudonym(
                 &revocation.tenant_id,
@@ -342,6 +391,119 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
     }
 
     /// The recorded outcome for a credential, if any.
+    /// Writes the evidence-chain record of a change of an agent's state
+    /// (ADR-013 §4), signed with the evidence key at trusted time, in this
+    /// core's partition. The operator's free text is never in the record:
+    /// it holds a keyed digest of it. Idempotent by `(agent, change_no)`:
+    /// the same change again returns its record.
+    pub async fn record_agent_change(
+        &self,
+        change: &StoredAgentChange,
+    ) -> Result<AgentStateRecord, PortError> {
+        let draft = AgentStateDraft {
+            tenant_id: change.tenant_id.clone(),
+            partition_id: self.config.partition_id,
+            agent_id: change.agent_id.clone(),
+            change_no: change.change_no,
+            from_state: change.from_state,
+            to_state: change.to_state,
+            reason_code: change.reason_code,
+            reason_digest: (!change.note.is_empty()).then(|| {
+                self.subject_keys.reason_digest(
+                    &change.tenant_id,
+                    &change.agent_id,
+                    change.change_no,
+                    &change.note,
+                )
+            }),
+            changed_by: change.changed_by.clone(),
+            approved_by: change.approved_by.clone(),
+            change_request_id: change.change_request_id.clone(),
+            changed_at: change.changed_at,
+        };
+        self.store
+            .append_agent_state(draft, &*self.clock, &*self.signer)
+            .await
+    }
+
+    /// Changes an agent's state (ADR-013 §3), and records the change.
+    ///
+    /// - **Tightening** takes effect first and its record follows: stopping
+    ///   never waits on the evidence chain. If the record cannot be written
+    ///   now, the change stands and the reconciler writes it
+    ///   (`record_error` says why).
+    /// - **Loosening** is written with its record in one step: if the
+    ///   record cannot be written, nothing changes, because authority is
+    ///   never given back without evidence.
+    ///
+    /// The rules (revoked is final, a loosening needs a different approver)
+    /// are the store's, and the database's.
+    pub async fn change_agent_state(
+        &self,
+        change: AgentStateChange,
+    ) -> Result<AppliedStateChange, PortError> {
+        let from = self
+            .store
+            .states(&change.tenant_id, std::slice::from_ref(&change.agent_id))
+            .await?
+            .get(&change.agent_id)
+            .copied()
+            .ok_or_else(|| PortError::unavailable("agent state was not read"))?;
+        if from.loosens_to(change.to) {
+            let (tenant, agent, note) = (
+                change.tenant_id.clone(),
+                change.agent_id.clone(),
+                change.note.clone(),
+            );
+            let keys = &self.subject_keys;
+            let digest = move |n: i64| keys.reason_digest(&tenant, &agent, n, &note);
+            let digest = |n: i64| Some(digest(n));
+            let (state, record) = self
+                .store
+                .set_recorded(
+                    change,
+                    Recording {
+                        partition_id: self.config.partition_id,
+                        clock: &*self.clock,
+                        signer: &*self.signer,
+                        reason_digest: &digest,
+                    },
+                )
+                .await?;
+            return Ok(AppliedStateChange {
+                state,
+                record: Some(record),
+                record_error: None,
+            });
+        }
+        let state = self.store.set(change).await?;
+        let stored = StoredAgentChange {
+            tenant_id: state.tenant_id.clone(),
+            agent_id: state.agent_id.clone(),
+            change_no: state.change_no,
+            from_state: from,
+            to_state: state.state,
+            reason_code: state.reason_code,
+            note: state.note.clone(),
+            changed_by: state.changed_by.clone(),
+            approved_by: state.approved_by.clone(),
+            change_request_id: state.change_request_id.clone(),
+            changed_at: state.changed_at,
+        };
+        Ok(match self.record_agent_change(&stored).await {
+            Ok(record) => AppliedStateChange {
+                state,
+                record: Some(record),
+                record_error: None,
+            },
+            Err(err) => AppliedStateChange {
+                state,
+                record: None,
+                record_error: Some(err.message),
+            },
+        })
+    }
+
     pub async fn outcome(&self, credential_id: &str) -> Result<Option<OutcomeRecord>, PortError> {
         self.store
             .outcome(&self.config.tenant_id, credential_id)
@@ -363,6 +525,56 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
             .verify(&self.config.tenant_id, mandate_id)
             .await
             .map(|_| ())
+    }
+
+    /// The state `agent_id` acts under for a call on a mandate whose chain
+    /// is held by `holders`: its own state, or the worst stopped state of
+    /// any holder in the chain, whichever is more severe (ADR-013 §2). A
+    /// restricted holder somewhere up the chain restricts nobody else.
+    /// `Err` when the store cannot be read: a call is never allowed on a
+    /// state nobody could read.
+    pub async fn effective_state(
+        &self,
+        agent_id: &str,
+        holders: &[String],
+    ) -> Result<AgentState, PortError> {
+        let mut ids: Vec<String> = Vec::with_capacity(holders.len() + 1);
+        ids.push(agent_id.to_string());
+        for holder in holders {
+            if !ids.contains(holder) {
+                ids.push(holder.clone());
+            }
+        }
+        let states = self.store.states(&self.config.tenant_id, &ids).await?;
+        resolve_state(agent_id, holders, &states)
+    }
+
+    /// Whether a call that was decided may still go: the mandate chain
+    /// verifies again **and** neither the agent nor any holder in the chain
+    /// has been stopped since. The gateway asks just before it mints a
+    /// credential (ADR-012 §5, ADR-013 §6).
+    pub async fn still_authorised(
+        &self,
+        agent_id: &str,
+        mandate_id: &str,
+    ) -> Result<(), StillAuthorised> {
+        let chain = self
+            .verifier
+            .verify(&self.config.tenant_id, mandate_id)
+            .await
+            .map_err(|err| match err.class {
+                ErrorClass::Unavailable => StillAuthorised::Unavailable,
+                ErrorClass::Rejected | ErrorClass::Invalid => StillAuthorised::MandateGone,
+            })?;
+        match self.effective_state(agent_id, &chain.holders).await {
+            Ok(state) if state.is_stopped() => Err(StillAuthorised::AgentStopped),
+            // A restricted agent's effect was refused when it was decided;
+            // if it became restricted since, stopping the send is the safe
+            // reading of "no external effect".
+            Ok(AgentState::Restricted) => Err(StillAuthorised::AgentStopped),
+            Ok(_) => Ok(()),
+            Err(_) => Err(StillAuthorised::Unavailable),
+        }
     }
 
     /// The core's clock now, synced or not: what the evidence it writes is
@@ -412,12 +624,27 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
                 };
                 (Decision::Block, vec![reason.to_string()], None)
             }
-            Ok((mandate, chain)) => {
-                let (decision, reasons) = self
-                    .decide(agent, action, call, &mandate, &assessment)
-                    .await;
-                (decision, reasons, Some((mandate, chain)))
-            }
+            Ok(VerifiedChain {
+                mandate,
+                ids,
+                holders,
+            }) => match self.effective_state(&agent.agent_id, &holders).await {
+                // Never allowed on a state nobody could read.
+                Err(_) => (
+                    Decision::Block,
+                    vec!["dependency_unavailable".to_string()],
+                    None,
+                ),
+                Ok(state) => {
+                    let (decision, mut reasons) = self
+                        .decide(agent, state, action, call, &mandate, &assessment)
+                        .await;
+                    if state != AgentState::Active {
+                        reasons.push(format!("agent_state:{}", state.as_str()));
+                    }
+                    (decision, reasons, Some((mandate, ids)))
+                }
+            },
         };
 
         if mode == Mode::Precheck {
@@ -494,6 +721,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
     async fn decide(
         &self,
         agent: &AgentIdentity,
+        state: AgentState,
         action: AgentAction,
         call: &ToolCall,
         mandate: &Mandate,
@@ -525,7 +753,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore> AuthorizeCore<V, S> {
             waiver_bps: call.waiver_bps,
             contacts_today,
             task_tainted: false,
-            agent_state: agent.state,
+            agent_state: state,
             approval_valid: false,
             now,
         };
@@ -706,5 +934,59 @@ fn decided(result: Result<CommitResult, PortError>) -> Decided {
         grant,
         record: Some(record),
         commit_time: None,
+    }
+}
+
+#[cfg(test)]
+mod state_tests {
+    use super::*;
+
+    fn states(items: &[(&str, AgentState)]) -> BTreeMap<String, AgentState> {
+        items.iter().map(|(a, s)| ((*a).to_string(), *s)).collect()
+    }
+
+    fn holders(ids: &[&str]) -> Vec<String> {
+        ids.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn the_worst_stopped_holder_decides_and_restriction_does_not_travel() {
+        use AgentState::*;
+        let resolve = |own: AgentState, parent: AgentState| {
+            resolve_state(
+                "child",
+                &holders(&["parent", "child"]),
+                &states(&[("child", own), ("parent", parent)]),
+            )
+            .unwrap()
+        };
+        assert_eq!(resolve(Active, Active), Active);
+        assert_eq!(
+            resolve(Active, Quarantined),
+            Quarantined,
+            "suspended through the chain"
+        );
+        assert_eq!(resolve(Active, Revoked), Revoked);
+        assert_eq!(resolve(Quarantined, Revoked), Revoked, "the more severe");
+        assert_eq!(resolve(Restricted, Quarantined), Quarantined);
+        assert_eq!(
+            resolve(Active, Restricted),
+            Active,
+            "a restricted parent restricts nobody else"
+        );
+        assert_eq!(resolve(Restricted, Active), Restricted);
+    }
+
+    #[test]
+    fn an_agent_nobody_read_is_unavailable_never_active() {
+        let err = resolve_state("a", &holders(&["a"]), &BTreeMap::new()).unwrap_err();
+        assert_eq!(err.class, ErrorClass::Unavailable);
+        let err = resolve_state(
+            "a",
+            &holders(&["boss", "a"]),
+            &states(&[("a", AgentState::Active)]),
+        )
+        .unwrap_err();
+        assert_eq!(err.class, ErrorClass::Unavailable, "a missing holder too");
     }
 }

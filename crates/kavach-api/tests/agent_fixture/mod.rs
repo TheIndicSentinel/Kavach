@@ -318,6 +318,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         subject_pseudonym_key: dir.join("pseudonym.key"),
         consents: dir.join("consents.json"),
         tenant_id: "default".into(),
+        agent_only: false,
         sor_rate_per_second: rate,
         tool_registry: registry,
         tool_registry_sha256: Some(digest),

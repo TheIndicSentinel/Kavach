@@ -438,6 +438,15 @@ mod tests {
         async fn revocation_record(&self, event_id: &str) -> Result<Option<String>, String> {
             Ok(self.state.lock().unwrap().records.get(event_id).cloned())
         }
+        async fn operator_request(
+            &self,
+            _: crate::Principal,
+            _: &str,
+            _: &str,
+            _: Option<Value>,
+        ) -> Result<(u16, Value), String> {
+            Err("unused".into())
+        }
     }
 
     fn attack(kind: RevocationAttack) -> Attack {

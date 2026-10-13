@@ -1,6 +1,7 @@
 //! Mandate issuance, verification, delegation and revocation (ADR-004).
 
 use std::collections::BTreeSet;
+use std::future::Future;
 
 use chrono::{DateTime, Duration, DurationRound, TimeDelta, Utc};
 use kavach_domain::mandate::{
@@ -23,6 +24,17 @@ use crate::jws::{self, TYP_MANDATE, TYP_SOR_EVENT};
 pub struct IssuedMandate {
     pub mandate: Mandate,
     pub token: String,
+}
+
+/// A mandate whose whole delegation chain verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedChain {
+    pub mandate: Mandate,
+    /// Mandate ids from the root to `mandate`.
+    pub ids: Vec<String>,
+    /// The holder of each mandate in `ids`, in the same order: the agents
+    /// whose state decides whether the chain may act (ADR-013 §2).
+    pub holders: Vec<String>,
 }
 
 /// Result of a revocation. The revocation itself is committed when this is
@@ -91,13 +103,34 @@ fn micros(t: DateTime<Utc>) -> DateTime<Utc> {
     t.duration_trunc(TimeDelta::microseconds(1)).unwrap_or(t)
 }
 
-/// SHA-256 of an event's content (a struct serializes in a fixed field
-/// order, its sets sorted): a retry has the same, a reuse of its id for
-/// other content does not.
-fn content_sha256(event: &SorEvent) -> Result<String, PortError> {
+/// The digest of an event: `sha256-jcs-v1:` and the hex SHA-256 of the
+/// event's RFC 8785 bytes, which are the payload of the token it arrived in
+/// (docs/specs/mandate-and-sor-event.md section 5). A retry has the same,
+/// a reuse of its id for other content does not. Recorded in the
+/// revocation's evidence record as `event_digest`.
+pub fn event_digest(event: &SorEvent) -> Result<String, PortError> {
+    let bytes = kavach_ports::jcs::to_vec(event)?;
+    Ok(format!(
+        "{}{}",
+        kavach_ports::chain_record::EVENT_DIGEST_PREFIX,
+        hex::encode(Sha256::digest(&bytes))
+    ))
+}
+
+/// **Legacy** digest of an event, written before [`event_digest`]: SHA-256
+/// of its members as compact JSON in struct declaration order. Kept only to
+/// recognise a revocation stored in that form, so that its retry is still a
+/// retry; never written.
+pub fn legacy_content_sha256(event: &SorEvent) -> Result<String, PortError> {
     let bytes =
         serde_json::to_vec(event).map_err(|e| PortError::invalid(format!("event content: {e}")))?;
     Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+/// Whether `stored` (a digest as kept in a revocation row) is `event`'s,
+/// in the current form or the legacy one.
+fn same_event(stored: &str, event: &SorEvent) -> Result<bool, PortError> {
+    Ok(stored == event_digest(event)? || stored == legacy_content_sha256(event)?)
 }
 
 /// Adapters the service depends on (ADR-006).
@@ -110,9 +143,24 @@ pub struct MandateDeps<K, R, C, S, E, T> {
     pub clock: T,
 }
 
+/// Whether an agent may be given authority at all (ADR-013): a revoked
+/// agent is issued nothing and delegated nothing, so a mandate cannot be
+/// handed to it between its state changing and its mandates being revoked.
+pub trait AgentGate: Send + Sync {
+    /// `Ok` when `agent_id` may hold a new mandate; `Rejected` when it may
+    /// not; `Unavailable` when that could not be read (the caller fails
+    /// closed).
+    fn may_hold<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        agent_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), PortError>> + Send + 'a>>;
+}
+
 pub struct MandateService<K, R, C, S, E, T> {
     deps: MandateDeps<K, R, C, S, E, T>,
     config: MandateConfig,
+    gate: Option<std::sync::Arc<dyn AgentGate>>,
 }
 
 impl<K, R, C, S, E, T> MandateService<K, R, C, S, E, T>
@@ -131,7 +179,26 @@ where
         config: MandateConfig,
     ) -> Result<Self, PortError> {
         config.validate()?;
-        Ok(Self { deps, config })
+        Ok(Self {
+            deps,
+            config,
+            gate: None,
+        })
+    }
+
+    /// Refuses to issue or delegate to an agent the gate says may not hold
+    /// a mandate.
+    #[must_use]
+    pub fn with_agent_gate(mut self, gate: std::sync::Arc<dyn AgentGate>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
+    async fn check_gate(&self, tenant_id: &str, agent_id: &str) -> Result<(), PortError> {
+        match &self.gate {
+            Some(gate) => gate.may_hold(tenant_id, agent_id).await,
+            None => Ok(()),
+        }
     }
 
     pub fn store(&self) -> &S {
@@ -146,6 +213,13 @@ where
         &self.deps.clock
     }
 
+    /// Whether `agent_id` has a passport for `tenant_id` (exact match, no
+    /// case folding): an agent this configuration knows.
+    #[must_use]
+    pub fn has_passport(&self, tenant_id: &str, agent_id: &str) -> bool {
+        self.config.passport(tenant_id, agent_id).is_some()
+    }
+
     /// Creates a mandate from a signed system-of-record event (ADR-004 §4–5).
     /// Every field comes from the verified event or the governed template.
     pub async fn issue_from_event(&self, event_token: &str) -> Result<IssuedMandate, PortError> {
@@ -158,6 +232,8 @@ where
                 PortError::rejected(format!("no mandate template for {}", event.event_type))
             })?;
         let passport = self.check_holder(&event, template)?;
+        self.check_gate(&event.tenant_id, &event.assigned_agent)
+            .await?;
         check_scope_within_passport(template, passport)?;
         if requires_window(&template.actions) && template.window.is_none() {
             return Err(PortError::rejected(
@@ -251,17 +327,13 @@ where
     /// `[nbf, exp)`; and each link is a valid narrowing of its parent. A
     /// valid signature alone is not sufficient.
     pub async fn verify_active(&self, token: &str) -> Result<Mandate, PortError> {
-        self.verify_active_chain(token)
-            .await
-            .map(|(mandate, _)| mandate)
+        self.verify_active_chain(token).await.map(|c| c.mandate)
     }
 
     /// As [`Self::verify_active`], also returning the verified chain of
-    /// mandate ids from the root to this mandate (for evidence).
-    pub async fn verify_active_chain(
-        &self,
-        token: &str,
-    ) -> Result<(Mandate, Vec<String>), PortError> {
+    /// mandate ids from the root to this mandate (for evidence) and the
+    /// holder of each.
+    pub async fn verify_active_chain(&self, token: &str) -> Result<VerifiedChain, PortError> {
         let (_, claimed): (String, Mandate) =
             jws::verify(token, TYP_MANDATE, &self.config.mandate_keys)?;
         let stored = self
@@ -277,8 +349,11 @@ where
         let mandate = self.check_record(&stored, now)?;
         if mandate.depth == 0 {
             return if mandate.parent_id.is_none() {
-                let id = mandate.id.clone();
-                Ok((mandate, vec![id]))
+                Ok(VerifiedChain {
+                    ids: vec![mandate.id.clone()],
+                    holders: vec![mandate.holder.clone()],
+                    mandate,
+                })
             } else {
                 Err(PortError::rejected("a root mandate cannot have a parent"))
             };
@@ -318,8 +393,18 @@ where
             ));
         }
         let mut ids: Vec<String> = chain.iter().rev().map(|s| s.mandate.id.clone()).collect();
+        let mut holders: Vec<String> = chain
+            .iter()
+            .rev()
+            .map(|s| s.mandate.holder.clone())
+            .collect();
         ids.push(mandate.id.clone());
-        Ok((mandate, ids))
+        holders.push(mandate.holder.clone());
+        Ok(VerifiedChain {
+            mandate,
+            ids,
+            holders,
+        })
     }
 
     /// One stored mandate: its token verifies and decodes to the stored
@@ -337,6 +422,9 @@ where
                 stored.mandate.id
             )));
         }
+        decoded
+            .check_form()
+            .map_err(|rule| PortError::rejected(format!("mandate {}: {rule}", decoded.id)))?;
         if stored.status != MandateStatus::Active {
             return Err(PortError::rejected(format!(
                 "mandate {} is revoked",
@@ -371,6 +459,8 @@ where
         if parent.holder != by_agent {
             return Err(PortError::rejected("only the mandate holder may delegate"));
         }
+        self.check_gate(tenant_id, by_agent).await?;
+        self.check_gate(tenant_id, to_agent).await?;
         if parent.depth >= parent.delegation.max_depth || parent.depth >= MAX_DELEGATION_DEPTH {
             return Err(PortError::rejected("delegation depth limit reached"));
         }
@@ -476,7 +566,7 @@ where
             tenant_id: event.tenant_id.clone(),
             system: event.system.clone(),
             event_id: event.event_id.clone(),
-            content_sha256: content_sha256(&event)?,
+            event_digest: event_digest(&event)?,
             event_type: event.event_type.clone(),
             record_ref: event.record_ref.clone(),
             occurred_at: event.occurred_at,
@@ -518,7 +608,7 @@ where
         else {
             return Ok(None);
         };
-        if stored.content_sha256 != content_sha256(&event)? {
+        if !same_event(&stored.event_digest, &event)? {
             return Err(PortError::rejected(format!(
                 "event {} was already used with different content",
                 event.event_id

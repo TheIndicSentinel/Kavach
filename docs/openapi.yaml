@@ -40,6 +40,7 @@ tags:
   - name: governance
   - name: change-requests
   - name: evidence
+  - name: agents
   - name: admin
   - name: development
   - name: agent
@@ -481,6 +482,85 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /v1/agents/{agent_id}:
+    get:
+      operationId: getAgentState
+      tags: [agents]
+      summary: An agent's state (admins).
+      description: >-
+        ADR-013. `active` for an agent whose state was never changed. The agent id must be
+        one a passport names, exactly: any other id is a 404.
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      responses:
+        "200":
+          description: The agent's state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentStateView" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/agents/{agent_id}/restrict:
+    post:
+      operationId: restrictAgent
+      tags: [agents]
+      summary: Restrict an agent (`stop_agent`; one principal; only ever tightens).
+      description: >-
+        ADR-013 §2. A restricted agent may read within its mandate and do nothing with an
+        external effect. Takes effect from its next call, on every replica.
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/StopAgentRequest" } } } }
+      responses: &stopResponses
+        "200":
+          description: >-
+            The agent's state now. `applied` is false when it was already in that state (the
+            same stop again is not a change).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentStopResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/agents/{agent_id}/quarantine:
+    post:
+      operationId: quarantineAgent
+      tags: [agents]
+      summary: Quarantine an agent (`stop_agent`; one principal; only ever tightens).
+      description: >-
+        ADR-013 §2. A quarantined agent does nothing, and the mandates it holds (and those
+        delegated from them) are suspended, not revoked: reinstating restores them.
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/StopAgentRequest" } } } }
+      responses: *stopResponses
+
+  /v1/agents/{agent_id}/revoke:
+    post:
+      operationId: revokeAgent
+      tags: [agents]
+      summary: Revoke an agent (`stop_agent`; one principal; permanent).
+      description: >-
+        ADR-013 §2. The agent's state becomes `revoked`, then the mandates it holds are
+        revoked (reason `manual`, delegations included). A repeat finishes a sweep that
+        stopped half-way. A revoked agent cannot be reinstated, issued or delegated a
+        mandate: a new passport with a new agent id is the way back.
+      parameters:
+        - $ref: "#/components/parameters/AgentId"
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/StopAgentRequest" } } } }
+      responses: *stopResponses
+
   /v1/decision-events/{evidence_id}:
     get:
       operationId: getDecisionEvent
@@ -780,6 +860,12 @@ components:
       in: path
       required: true
       schema: { type: string }
+    AgentId:
+      name: agent_id
+      in: path
+      required: true
+      description: An agent id a passport names, matched exactly.
+      schema: { type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" }
 
   headers:
     RequestId:
@@ -1162,9 +1248,77 @@ components:
         - erase_evidence
         - apply_retention
         - activate_model
+        - reinstate_agent
     ChangeStatus:
       type: string
       enum: [pending, applied, failed, rejected, cancelled, expired]
+
+    AgentStateName:
+      type: string
+      enum: [active, restricted, quarantined, revoked]
+    AgentReasonCode:
+      type: string
+      description: >-
+        Why, from a closed set. This is what the evidence chain carries, never the
+        operator's words.
+      enum:
+        - rogue_behaviour
+        - compromise_suspected
+        - policy_violation
+        - customer_complaint
+        - operator_request
+        - reviewed
+        - other
+    StopAgentRequest:
+      type: object
+      additionalProperties: false
+      required: [reason_code]
+      properties:
+        reason_code: { $ref: "#/components/schemas/AgentReasonCode" }
+        note:
+          type: string
+          maxLength: 256
+          description: The operator's words. Kept in the store and the audit log, never in the chain.
+    AgentStateView:
+      type: object
+      additionalProperties: false
+      required: [agent_id, state, change_no]
+      properties:
+        agent_id: { type: string }
+        state: { $ref: "#/components/schemas/AgentStateName" }
+        change_no: { type: integer, minimum: 0, description: "0 for an agent never changed." }
+        reason_code: { $ref: "#/components/schemas/AgentReasonCode" }
+        note: { type: string }
+        changed_by: { type: string }
+        approved_by: { type: [string, "null"] }
+        change_request_id: { type: [string, "null"] }
+        changed_at: { type: string, format: date-time }
+    AgentStopResult:
+      type: object
+      additionalProperties: false
+      required: [agent_id, state, change_no, applied, record]
+      properties:
+        agent_id: { type: string }
+        state: { $ref: "#/components/schemas/AgentStateName" }
+        change_no: { type: integer, minimum: 0 }
+        reason_code: { $ref: "#/components/schemas/AgentReasonCode" }
+        note: { type: string }
+        changed_by: { type: string }
+        approved_by: { type: [string, "null"] }
+        change_request_id: { type: [string, "null"] }
+        changed_at: { type: string, format: date-time }
+        applied: { type: boolean, description: "False when the agent was already in that state." }
+        record:
+          type: string
+          enum: [written, pending, unchanged]
+          description: >-
+            Whether the change's evidence record is in the chain (`pending`: the reconciler
+            writes it).
+        mandates_revoked: { type: array, items: { type: string } }
+        mandates_not_revoked:
+          type: array
+          items: { type: string }
+          description: Mandates a revoke could not revoke; repeat the revoke to finish.
 
     ChangeProposal:
       type: object
@@ -1175,7 +1329,8 @@ components:
         `apply_retention` `{}`; `update_model` `{model_id, status?,
         governance_mode?}`; `activate_model` `{model_id, version,
         allow_downgrade?}`; `update_retention` `{evidence_retention_days}`;
-        `erase_evidence` `{evidence_id}`. Unknown keys are refused.
+        `erase_evidence` `{evidence_id}`; `reinstate_agent` `{agent_id, to: active |
+        restricted, reason_code?, note?}` (never from `revoked`). Unknown keys are refused.
       properties:
         kind: { $ref: "#/components/schemas/ChangeKind" }
         params: { type: object }
@@ -1456,7 +1611,6 @@ components:
         - key_id
         - source_system
         - event_id
-        - event_sha256
         - event_type
         - record_pseudonym
         - occurred_at
@@ -1477,7 +1631,8 @@ components:
         key_id: { type: string }
         source_system: { type: string }
         event_id: { type: string }
-        event_sha256: { type: string }
+        event_digest: { type: string, description: "sha256-jcs-v1:<64 hex>. Exactly one of event_digest and event_sha256 is present." }
+        event_sha256: { type: string, description: "Legacy: 64 hex, from records written before event_digest." }
         event_type: { type: string }
         record_pseudonym: { type: string }
         occurred_at: { $ref: "#/components/schemas/DateTime" }

@@ -37,7 +37,7 @@ tokio-rustls.workspace = true
 x509-parser.workspace = true
 rustls.workspace = true
 rustls-pemfile.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["signal", "sync", "time"] }
 tower-http.workspace = true
 serde.workspace = true
 serde_json.workspace = true

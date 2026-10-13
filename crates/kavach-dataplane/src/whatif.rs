@@ -12,7 +12,9 @@ use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
 };
-use kavach_ports::chain_record::{ChainRecord, RevocationDraft, RevocationRecord};
+use kavach_ports::chain_record::{
+    AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
+};
 use kavach_ports::{PortError, TimeSource};
 
 const NOTHING_RECORDED: &str = "a what-if run records nothing";
@@ -66,6 +68,24 @@ impl AgentEvidenceStore for WhatIfStore {
         ready(Ok(Vec::new()))
     }
 
+    fn append_agent_state(
+        &self,
+        _draft: AgentStateDraft,
+        _clock: &dyn TimeSource,
+        _signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<AgentStateRecord, PortError>> + Send {
+        ready(Err(PortError::invalid(NOTHING_RECORDED)))
+    }
+
+    fn agent_state_record(
+        &self,
+        _tenant_id: &str,
+        _agent_id: &str,
+        _change_no: i64,
+    ) -> impl Future<Output = Result<Option<AgentStateRecord>, PortError>> + Send {
+        ready(Ok(None))
+    }
+
     fn append_revocation(
         &self,
         _draft: RevocationDraft,
@@ -99,6 +119,69 @@ impl AgentEvidenceStore for WhatIfStore {
         _ist_date: NaiveDate,
     ) -> impl Future<Output = Result<u32, PortError>> + Send {
         ready(Ok(self.contacts_today))
+    }
+}
+
+/// A what-if run supposes the agent is active: the question it answers is
+/// about the mandate and the call (the agent's risk state is its own
+/// question, answered by a live decision).
+impl kavach_ports::agent_state::AgentStateStore for WhatIfStore {
+    fn states(
+        &self,
+        _tenant_id: &str,
+        agent_ids: &[String],
+    ) -> impl Future<
+        Output = Result<
+            std::collections::BTreeMap<String, kavach_ports::agent_state::AgentState>,
+            PortError,
+        >,
+    > + Send {
+        ready(Ok(agent_ids
+            .iter()
+            .map(|id| (id.clone(), kavach_ports::agent_state::AgentState::Active))
+            .collect()))
+    }
+
+    fn current(
+        &self,
+        _tenant_id: &str,
+        _agent_id: &str,
+    ) -> impl Future<Output = Result<Option<kavach_ports::agent_state::StoredAgentState>, PortError>>
+           + Send {
+        ready(Ok(None))
+    }
+
+    fn set(
+        &self,
+        _change: kavach_ports::agent_state::AgentStateChange,
+    ) -> impl Future<Output = Result<kavach_ports::agent_state::StoredAgentState, PortError>> + Send
+    {
+        ready(Err(PortError::invalid(NOTHING_RECORDED)))
+    }
+
+    fn set_recorded(
+        &self,
+        _change: kavach_ports::agent_state::AgentStateChange,
+        _recording: kavach_ports::agent_state::Recording<'_>,
+    ) -> impl Future<
+        Output = Result<
+            (
+                kavach_ports::agent_state::StoredAgentState,
+                AgentStateRecord,
+            ),
+            PortError,
+        >,
+    > + Send {
+        ready(Err(PortError::invalid(NOTHING_RECORDED)))
+    }
+
+    fn changes_after(
+        &self,
+        _after: Option<kavach_ports::agent_state::AgentChangeCursor>,
+        _limit: u32,
+    ) -> impl Future<Output = Result<Vec<kavach_ports::agent_state::StoredAgentChange>, PortError>> + Send
+    {
+        ready(Ok(Vec::new()))
     }
 }
 

@@ -550,6 +550,12 @@ fn check_bundle_record(
             record.kind()
         )));
     }
+    if p.version == 2 && matches!(record, ChainRecord::AgentState(_)) {
+        return Err(BundleFailure::Segment(format!(
+            "record {seq} is an {}; a version 2 bundle holds decisions and revocations only",
+            record.kind()
+        )));
+    }
     let allow_dev_keys = opts.dev_keys == DevKeys::Accept;
     check_record(record, last_seq + 1, prev, opts.keys, allow_dev_keys)?;
     opts.within_validity(

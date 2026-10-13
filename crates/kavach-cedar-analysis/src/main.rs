@@ -19,7 +19,7 @@ use cedar_policy_symcc::{
 use kavach_authz::{AGENT_POLICIES, AGENT_SCHEMA};
 
 /// (name, policy permitting exactly the requests the property forbids).
-const PROPERTIES: [(&str, &str); 16] = [
+const PROPERTIES: [(&str, &str); 18] = [
     (
         "no waiver above the mandate ceiling is allowed without an action-bound approval",
         r#"permit (principal, action == Kavach::Agent::Action::"propose_plan", resource)
@@ -100,6 +100,16 @@ const PROPERTIES: [(&str, &str); 16] = [
            when { context.ist_minute_of_day < 480 || context.ist_minute_of_day >= 1140 };"#,
     ),
     (
+        "a restricted agent is allowed nothing but reading fields",
+        r#"permit (principal, action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call", Kavach::Agent::Action::"propose_plan", Kavach::Agent::Action::"update_status"], resource)
+           when { context.agent_restricted };"#,
+    ),
+    (
+        "a quarantined or revoked agent is allowed nothing at all",
+        r"permit (principal, action, resource)
+           when { context.agent_stopped };",
+    ),
+    (
         "no contact is allowed at or above the daily cap, or with a negative count",
         r#"permit (principal, action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call"], resource)
            when { context.contacts_today < 0
@@ -108,7 +118,7 @@ const PROPERTIES: [(&str, &str); 16] = [
 ];
 
 /// Weakened variants that must be caught: (label, anchor to replace, replacement).
-const SANITY_VARIANTS: [(&str, &str, &str); 7] = [
+const SANITY_VARIANTS: [(&str, &str, &str); 9] = [
     (
         "waiver ceiling relaxed by 500 bps",
         r"context.waiver_bps > context.waiver_ceiling_bps",
@@ -138,6 +148,16 @@ const SANITY_VARIANTS: [(&str, &str, &str); 7] = [
         "missing-waiver guard removed",
         r"unless { context.has_waiver };",
         r"unless { true };",
+    ),
+    (
+        "restricted agents unrestricted",
+        r"when { context.agent_restricted };",
+        r"when { false };",
+    ),
+    (
+        "stopped agents unstopped",
+        r"when { context.agent_stopped };",
+        r"when { false };",
     ),
     (
         "negative contact count allowed",

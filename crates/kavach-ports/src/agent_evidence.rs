@@ -15,7 +15,9 @@ use kavach_domain::Decision;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::chain_record::{ChainRecord, RevocationDraft, RevocationRecord};
+use crate::chain_record::{
+    AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
+};
 use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
 use crate::time::{SyncStatus, TimeSource};
@@ -23,6 +25,7 @@ use crate::time::{SyncStatus, TimeSource};
 pub const KIND_AGENT_DECISION: &str = "agent_decision";
 /// A revocation by a system-of-record event (ADR-012 §7).
 pub const KIND_MANDATE_REVOCATION: &str = "mandate_revocation";
+pub const KIND_AGENT_STATE: &str = "agent_state";
 pub const HASH_ALG_V2: &str = "v2";
 pub const HASH_PREFIX: &[u8] = b"kavach-evidence-v2";
 pub const SIG_PREFIX: &[u8] = b"kavach-agent-evidence-sig-v1:";
@@ -178,6 +181,14 @@ pub fn content_hash<T: Serialize>(prev_hash: &str, payload: &T) -> Result<String
 pub trait ChainEntry {
     /// The kind its signed payload states.
     fn kind(&self) -> &str;
+    /// The hash algorithm its payload states (`v2`).
+    fn hash_alg(&self) -> &str;
+    /// Rules on the shape of the payload that a hash and a signature do not
+    /// establish (a record whose signer wrote an unreadable form is not
+    /// evidence of anything). `Err` names the rule.
+    fn form(&self) -> Result<(), &'static str> {
+        Ok(())
+    }
     /// The kind a record of this type must state.
     fn expected_kind(&self) -> &'static str;
     fn tenant_id(&self) -> &str;
@@ -200,6 +211,9 @@ pub trait ChainEntry {
 impl ChainEntry for AgentDecisionRecord {
     fn kind(&self) -> &str {
         &self.payload.kind
+    }
+    fn hash_alg(&self) -> &str {
+        &self.payload.hash_alg
     }
     fn expected_kind(&self) -> &'static str {
         KIND_AGENT_DECISION
@@ -507,6 +521,26 @@ pub trait AgentEvidenceStore: Send + Sync {
         event_id: &str,
     ) -> impl Future<Output = Result<Option<RevocationRecord>, PortError>> + Send;
 
+    /// Appends the record of a change of an agent's state (ADR-013 §4), at
+    /// most once per `(tenant, agent, change_no)`: appending the same change
+    /// again returns the stored record, and a different one for the same
+    /// change is `Rejected`.
+    fn append_agent_state(
+        &self,
+        draft: AgentStateDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<AgentStateRecord, PortError>> + Send;
+
+    /// The record of change `change_no` of an agent's state, if one was
+    /// written.
+    fn agent_state_record(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+        change_no: i64,
+    ) -> impl Future<Output = Result<Option<AgentStateRecord>, PortError>> + Send;
+
     /// The committed decision with `record_id`, if any (operator reads).
     fn record(
         &self,
@@ -600,6 +634,10 @@ pub enum ChainError {
     DevClock { seq: i64 },
     #[error("record {seq}: kind {kind} is not the kind of this record")]
     Kind { seq: i64, kind: String },
+    #[error("record {seq}: malformed record: {reason}")]
+    Form { seq: i64, reason: &'static str },
+    #[error("record {seq}: hash_alg {hash_alg} is not one this verifier knows")]
+    HashAlg { seq: i64, hash_alg: String },
     #[error("record {seq}: expected seq {expected}")]
     Gap { seq: i64, expected: i64 },
     #[error("record {seq}: prev_hash does not link to the previous record")]
@@ -733,6 +771,15 @@ pub fn check_record<R: ChainEntry + ?Sized>(
         return Err(ChainError::Kind {
             seq,
             kind: record.kind().to_string(),
+        });
+    }
+    if let Err(reason) = record.form() {
+        return Err(ChainError::Form { seq, reason });
+    }
+    if record.hash_alg() != HASH_ALG_V2 {
+        return Err(ChainError::HashAlg {
+            seq,
+            hash_alg: record.hash_alg().to_string(),
         });
     }
     if !allow_dev_keys && is_dev_key(record.key_id()) {
@@ -1269,7 +1316,7 @@ mod tests {
             partition_id: 0,
             source_system: "lms".into(),
             event_id: "pay-1".into(),
-            event_sha256: "ab".repeat(32),
+            event_digest: format!("sha256-jcs-v1:{}", "ab".repeat(32)),
             event_type: "loan.paid".into(),
             record_pseudonym: "psn:00".into(),
             occurred_at: DateTime::from_timestamp(1_790_000_000, 0).unwrap(),
@@ -1330,6 +1377,193 @@ mod tests {
         );
     }
 
+    /// A revocation states its event by exactly one well-formed digest: the
+    /// tagged `event_digest`, or the legacy `event_sha256` of records written
+    /// before it. Both, neither or a malformed one is refused even though
+    /// the signature is genuine.
+    #[test]
+    fn a_revocation_states_exactly_one_digest() {
+        let key = Key(SigningKey::from_bytes(&[3u8; 32]));
+        let decisions = chain(1, &key);
+        let good = revocation_after(&decisions, &key);
+        let keys = keys(&key);
+        assert_eq!(check_record_signature(&good, &keys, false), Ok(()));
+        assert!(good.payload.event_digest.is_some());
+
+        let legacy_hex = "ab".repeat(32);
+        let reseal = |edit: &dyn Fn(&mut crate::chain_record::RevocationPayload)| {
+            let mut payload = good.payload.clone();
+            edit(&mut payload);
+            crate::chain_record::seal_revocation(payload, &key).unwrap()
+        };
+        // The legacy form, as it was written, is still accepted.
+        let legacy = reseal(&|p| {
+            p.event_digest = None;
+            p.event_sha256 = Some(legacy_hex.clone());
+        });
+        assert_eq!(check_record_signature(&legacy, &keys, false), Ok(()));
+
+        let tag = |hex: String| Some(format!("sha256-jcs-v1:{hex}"));
+        let edits: Vec<(&str, Option<String>, Option<String>)> = vec![
+            (
+                "both",
+                good.payload.event_digest.clone(),
+                Some("ab".repeat(32)),
+            ),
+            ("neither", None, None),
+            ("short", tag("ab".into()), None),
+            (
+                "unknown tag",
+                Some(format!("sha512:{}", "ab".repeat(32))),
+                None,
+            ),
+            ("upper case", tag("AB".repeat(32)), None),
+        ];
+        for (what, digest, sha) in edits {
+            let record = reseal(&|p| {
+                p.event_digest.clone_from(&digest);
+                p.event_sha256.clone_from(&sha);
+            });
+            assert!(
+                matches!(
+                    check_record_signature(&record, &keys, false),
+                    Err(ChainError::Form { seq: 2, .. })
+                ),
+                "{what}"
+            );
+        }
+    }
+
+    /// An agent-state record's own rules (spec §4.5) hold even when its hash
+    /// and signature are genuine: a signer that wrote one of these wrote
+    /// something that is not evidence of a change.
+    // One table of broken records beside the good ones: splitting it would
+    // hide which case is which.
+    #[allow(clippy::too_many_lines)]
+    #[test]
+    fn an_agent_state_record_must_be_a_real_change() {
+        use crate::chain_record::{seal_agent_state, AgentStateDraft};
+        use kavach_domain::{AgentState, ReasonCode};
+        let key = Key(SigningKey::from_bytes(&[3u8; 32]));
+        let base = AgentStateDraft {
+            tenant_id: "t".into(),
+            partition_id: 0,
+            agent_id: "a".into(),
+            change_no: 1,
+            from_state: AgentState::Active,
+            to_state: AgentState::Quarantined,
+            reason_code: ReasonCode::RogueBehaviour,
+            reason_digest: Some(format!("mac:{}", "ab".repeat(32))),
+            changed_by: "ops-1".into(),
+            approved_by: None,
+            change_request_id: None,
+            changed_at: DateTime::from_timestamp(1_790_000_000, 0).unwrap(),
+        };
+        let now = crate::TrustedNow {
+            utc: DateTime::from_timestamp(1_790_000_001, 0).unwrap(),
+            sync: SyncStatus::Unknown,
+        };
+        let sealed = |draft: &AgentStateDraft| {
+            let payload = draft.complete(1, GENESIS, key.key_id(), now);
+            seal_agent_state(payload, &key).unwrap()
+        };
+        assert_eq!(
+            check_record_signature(&sealed(&base), &keys(&key), false),
+            Ok(())
+        );
+        let loosen = |approver: Option<&str>| AgentStateDraft {
+            from_state: AgentState::Quarantined,
+            to_state: AgentState::Active,
+            approved_by: approver.map(String::from),
+            ..base.clone()
+        };
+        assert_eq!(
+            check_record_signature(&sealed(&loosen(Some("ops-2"))), &keys(&key), false),
+            Ok(())
+        );
+        let broken: Vec<(&str, AgentStateDraft)> = vec![
+            (
+                "change 0",
+                AgentStateDraft {
+                    change_no: 0,
+                    ..base.clone()
+                },
+            ),
+            (
+                "no change",
+                AgentStateDraft {
+                    to_state: AgentState::Active,
+                    ..base.clone()
+                },
+            ),
+            (
+                "from revoked",
+                AgentStateDraft {
+                    from_state: AgentState::Revoked,
+                    to_state: AgentState::Active,
+                    approved_by: Some("ops-2".into()),
+                    ..base.clone()
+                },
+            ),
+            (
+                "short digest",
+                AgentStateDraft {
+                    reason_digest: Some("mac:ab".into()),
+                    ..base.clone()
+                },
+            ),
+            (
+                "tightening with an approver",
+                AgentStateDraft {
+                    approved_by: Some("ops-2".into()),
+                    ..base.clone()
+                },
+            ),
+            ("loosening without one", loosen(None)),
+            (
+                "a request id on a tightening",
+                AgentStateDraft {
+                    change_request_id: Some("cr-1".into()),
+                    ..base.clone()
+                },
+            ),
+            (
+                "an empty request id",
+                AgentStateDraft {
+                    change_request_id: Some(String::new()),
+                    ..loosen(Some("ops-2"))
+                },
+            ),
+            ("approving one's own change", loosen(Some("ops-1"))),
+        ];
+        for (what, draft) in broken {
+            assert!(
+                matches!(
+                    check_record_signature(&sealed(&draft), &keys(&key), false),
+                    Err(ChainError::Form { .. })
+                ),
+                "{what}"
+            );
+        }
+    }
+
+    /// A record that states a hash algorithm this verifier does not know is
+    /// refused, not hashed as `v2` and then judged by chance.
+    #[test]
+    fn an_unknown_hash_algorithm_is_refused() {
+        let key = Key(SigningKey::from_bytes(&[3u8; 32]));
+        let mut payload = payload(1, GENESIS);
+        payload.hash_alg = "v9".into();
+        let record = seal(payload, &key).unwrap();
+        assert_eq!(
+            check_record_signature(&record, &keys(&key), false),
+            Err(ChainError::HashAlg {
+                seq: 1,
+                hash_alg: "v9".into()
+            })
+        );
+    }
+
     /// A record is only ever read as the kind it signed; another kind, or
     /// one this build does not know, is refused, never skipped.
     #[test]
@@ -1339,7 +1573,7 @@ mod tests {
         let revocation = revocation_after(&decisions, &key);
 
         let mut relabelled = serde_json::to_value(&revocation).unwrap();
-        relabelled["kind"] = "agent_state".into();
+        relabelled["kind"] = "agent_taint".into();
         let err = serde_json::from_value::<ChainRecord>(relabelled).unwrap_err();
         assert!(err.to_string().contains("does not know"), "{err}");
         let err = serde_json::from_value::<ChainRecord>(serde_json::json!({"seq": 1})).unwrap_err();

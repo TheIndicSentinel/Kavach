@@ -65,7 +65,7 @@ pub async fn reconcile_revocations<M, V, S>(
 where
     M: MandateStore,
     V: MandateVerifier,
-    S: AgentEvidenceStore,
+    S: AgentEvidenceStore + kavach_ports::agent_state::AgentStateStore,
 {
     let mut report = ReconcileReport {
         watermark,

@@ -288,6 +288,26 @@ impl MandateStore for PostgresMandateStore {
         rows.iter().map(row_to_stored).collect()
     }
 
+    async fn active_held_by(
+        &self,
+        tenant_id: &str,
+        holder: &str,
+    ) -> Result<Vec<String>, PortError> {
+        let rows = sqlx::query(
+            "SELECT id FROM mandates \
+            WHERE tenant_id = $1 AND mandate ->> 'holder' = $2 AND status = 'active' \
+            ORDER BY created_at, id",
+        )
+        .bind(tenant_id)
+        .bind(holder)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter()
+            .map(|row| row.try_get("id").map_err(|e| unavailable(&e)))
+            .collect()
+    }
+
     async fn record_revocation(&self, revocation: StoredRevocation) -> Result<(), PortError> {
         let revoked = serde_json::to_value(&revocation.revoked)
             .map_err(|e| PortError::invalid(format!("revoked ids: {e}")))?;
@@ -299,7 +319,7 @@ impl MandateStore for PostgresMandateStore {
         .bind(&revocation.tenant_id)
         .bind(&revocation.system)
         .bind(&revocation.event_id)
-        .bind(&revocation.content_sha256)
+        .bind(&revocation.event_digest)
         .bind(&revocation.event_type)
         .bind(&revocation.record_ref)
         .bind(revocation.occurred_at)
@@ -368,7 +388,7 @@ fn row_to_revocation(row: &sqlx::postgres::PgRow) -> Result<StoredRevocation, Po
         tenant_id: row.try_get("tenant_id").map_err(|e| unavailable(&e))?,
         system: row.try_get("source_system").map_err(|e| unavailable(&e))?,
         event_id: row.try_get("event_id").map_err(|e| unavailable(&e))?,
-        content_sha256: row.try_get("content_sha256").map_err(|e| unavailable(&e))?,
+        event_digest: row.try_get("content_sha256").map_err(|e| unavailable(&e))?,
         event_type: row.try_get("event_type").map_err(|e| unavailable(&e))?,
         record_ref: row.try_get("record_ref").map_err(|e| unavailable(&e))?,
         occurred_at: row.try_get("occurred_at").map_err(|e| unavailable(&e))?,

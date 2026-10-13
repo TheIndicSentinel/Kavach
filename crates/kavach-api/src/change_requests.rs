@@ -27,6 +27,7 @@ pub fn propose_action(kind: ChangeKind) -> KavachAction {
         ChangeKind::EraseEvidence => KavachAction::ProposeEraseEvidence,
         ChangeKind::ApplyRetention => KavachAction::ProposeApplyRetention,
         ChangeKind::ActivateModel => KavachAction::ProposeActivateModel,
+        ChangeKind::ReinstateAgent => KavachAction::ProposeReinstateAgent,
     }
 }
 
@@ -40,6 +41,7 @@ pub fn approve_action(kind: ChangeKind) -> KavachAction {
         ChangeKind::EraseEvidence => KavachAction::ApproveEraseEvidence,
         ChangeKind::ApplyRetention => KavachAction::ApproveApplyRetention,
         ChangeKind::ActivateModel => KavachAction::ApproveActivateModel,
+        ChangeKind::ReinstateAgent => KavachAction::ApproveReinstateAgent,
     }
 }
 
@@ -57,6 +59,19 @@ pub async fn propose(
     credentials: Credentials,
     StrictJson(proposal): StrictJson<ChangeProposal>,
 ) -> Result<(StatusCode, Json<ChangeRequest>), ApiError> {
+    // Every kind of change request there is today belongs to the credit
+    // track (packs, models, retention, erasure), which a hosted build does
+    // not serve. A kind of the agent path will be allowed here when it
+    // exists.
+    if proposal.kind != ChangeKind::ReinstateAgent
+        && state
+            .dataplane()
+            .is_some_and(crate::dataplane::Dataplane::agent_only)
+    {
+        return Err(ApiError::NotFound(
+            "this kind of change request is not available in agent-only mode".into(),
+        ));
+    }
     let proposer = authorized_principal(&state, &credentials, propose_action(proposal.kind))?;
     let request = state.propose_change(&proposer, proposal).await?;
     Ok((StatusCode::CREATED, Json(request)))

@@ -127,7 +127,7 @@ Without Postgres, `kavach dev up --export-on-exit <dir>` writes the same kind of
 
 ### Known attacks (`kavach attack`)
 
-`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 4, 30 attacks) is the same one the acceptance suite runs in CI.
+`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 5, 35 attacks) is the same one the acceptance suite runs in CI.
 
 ```bash
 kavach attack --list            # the scope: every attack, nothing run
@@ -143,6 +143,13 @@ kavach attack                   # exit 0 all refused, 1 an attack succeeded or d
   - **accepted, revoking nothing:** a valid payment for another loan, and one dated before the mandate was issued.
   - **replayed:** a payment that revoked a mandate, sent again after a new mandate for the loan: the stored result, the new mandate live, one record.
   - **A project made before version 4** has no attack borrower: those eight are **inconclusive** and the run exits 2 with the fix, `kavach init --force`. Never a pass.
+- **Kill-switch attacks (version 5, ADR-013 §5):** five attacks on a stopped agent. Each assigns the attack borrower (declared setup), **stops the holder agent** through the operator API, attacks the stop, and then **brings the agent back through the real approval path** (the operator proposes, a second principal approves), so a run leaves the stack as it found it. They are judged on the reply and on ground truth: the state read back through `GET /v1/agents/{id}`, the call's reasons, and nothing minted or sent.
+  - **`quarantined-agent-acts`:** a quarantined agent calls a tool: refused (`agent-stopped`), state still quarantined.
+  - **`restricted-agent-contacts`:** a restricted agent contacts the borrower: refused (`agent-restricted`).
+  - **`reinstate-without-approval`:** a weaker stop on a quarantined agent (409), and a proposal nobody approves: the agent stays quarantined.
+  - **`self-approved-reinstate`:** the operator, who holds the approver role too, approves its own proposal: 403 "a different principal" (the identity rule, not the role, refuses it).
+  - **`certificate-principal-approves`:** a client-certificate principal with the approver role: 403 "certificate principals cannot approve". A development stack serves plain HTTP, so `kavach attack` **skips** this one there; the in-process acceptance run (memory and Postgres) runs it.
+  - **A project made before version 5** has no approver token (`approver.jwt`): these five are **inconclusive** (exit 2) with the fix `kavach init --force`, and nothing is stopped. A project's operator token also now holds the approver role, so that only the identity rule refuses its own approval.
 - **Runs again:** every request and event id carries a per-run suffix, so the same stack can be attacked again. On a fixed clock, a run that finds the day's contacts used up (an earlier run's daily-cap setup) moves the clock to a fresh day.
 - **Clock attacks:** two attacks need a fixed clock (`dev up --clock`).
   - **out of hours:** the clock moves to 20:30 for the call, then on to 11:00.

@@ -16,7 +16,10 @@ use kavach_ports::agent_evidence::{
     OutcomeRecord, PolicyVersions, TimeSync, GENESIS, HASH_ALG_V2, KIND_AGENT_DECISION,
 };
 use kavach_ports::bundle::Exporter;
-use kavach_ports::chain_record::{seal_revocation, ChainRecord, RevocationDraft, RevocationRecord};
+use kavach_ports::chain_record::{
+    seal_agent_state, seal_revocation, AgentStateDraft, ChainRecord, RevocationDraft,
+    RevocationRecord,
+};
 use kavach_ports::checkpoint::{sign_checkpoint, Checkpoint, Head, Scope, CHAIN_AGENT_DECISIONS};
 use kavach_ports::{KeyAlgorithm, PortError, PublicKey, SyncStatus, TrustedNow};
 
@@ -234,6 +237,12 @@ pub fn scratch(name: &str) -> PathBuf {
 /// Bundle format 2's run: the four decisions, then a payment that revoked
 /// their mandate (record 5, ADR-012 §7).
 pub fn revocation(records: &[AgentDecisionRecord]) -> RevocationRecord {
+    // The legacy form: bundle-v2 stays byte-identical.
+    revocation_with_digest(records, &"7d".repeat(32))
+}
+
+/// The same revocation stating its event by `digest`.
+pub fn revocation_with_digest(records: &[AgentDecisionRecord], digest: &str) -> RevocationRecord {
     let head = records.last().unwrap();
     let revoked_at = head.payload.ts + Duration::seconds(30);
     let draft = RevocationDraft {
@@ -241,7 +250,7 @@ pub fn revocation(records: &[AgentDecisionRecord]) -> RevocationRecord {
         partition_id: 0,
         source_system: "lms".into(),
         event_id: "pay-kat-1".into(),
-        event_sha256: "7d".repeat(32),
+        event_digest: digest.to_string(),
         event_type: "loan.paid".into(),
         record_pseudonym: "psn:3c4d5e6f708192a3".into(),
         occurred_at: revoked_at - Duration::seconds(20),
@@ -258,8 +267,18 @@ pub fn revocation(records: &[AgentDecisionRecord]) -> RevocationRecord {
 
 /// The four decisions and the revocation, as one chain.
 pub fn chain_v2() -> Vec<ChainRecord> {
+    chain_with(revocation(&records()))
+}
+
+/// As [`chain_v2`], with the revocation stating its event by a tagged
+/// digest (`sha256-jcs-v1:`), the form written now.
+pub fn chain_v2_digest() -> Vec<ChainRecord> {
+    let digest = format!("sha256-jcs-v1:{}", "7d".repeat(32));
+    chain_with(revocation_with_digest(&records(), &digest))
+}
+
+fn chain_with(revocation: RevocationRecord) -> Vec<ChainRecord> {
     let records = records();
-    let revocation = revocation(&records);
     records
         .into_iter()
         .map(ChainRecord::Decision)
@@ -290,4 +309,61 @@ pub fn checkpoints_v2(chain: &[ChainRecord]) -> Vec<Checkpoint> {
     .unwrap();
     all.push(fifth);
     all
+}
+
+/// Bundle format 3's run: the format 2 run (its revocation stating its event
+/// by a tagged digest), then the collections agent is quarantined (record 6)
+/// and reinstated with a second principal's approval (record 7), ADR-013 §4.
+pub fn chain_v3() -> Vec<ChainRecord> {
+    use kavach_domain::{AgentState, ReasonCode};
+    use kavach_ports::agent_evidence::ChainEntry as _;
+    let mut chain = chain_v2_digest();
+    let mut prev = chain.last().unwrap().hash().to_string();
+    let mut seq = chain.last().unwrap().seq();
+    let at = chain.last().unwrap().ts();
+    let steps = [
+        (
+            AgentState::Active,
+            AgentState::Quarantined,
+            ReasonCode::RogueBehaviour,
+            Some(format!("mac:{}", "5a".repeat(32))),
+            None,
+            at + Duration::seconds(60),
+        ),
+        (
+            AgentState::Quarantined,
+            AgentState::Active,
+            ReasonCode::Reviewed,
+            None,
+            Some("ops-kat-2".to_string()),
+            at + Duration::seconds(600),
+        ),
+    ];
+    for (n, (from, to, reason, digest, approver, when)) in steps.into_iter().enumerate() {
+        seq += 1;
+        let draft = AgentStateDraft {
+            tenant_id: TENANT.into(),
+            partition_id: 0,
+            agent_id: "collections-agent".into(),
+            change_no: i64::try_from(n).unwrap() + 1,
+            from_state: from,
+            to_state: to,
+            reason_code: reason,
+            reason_digest: digest,
+            changed_by: "ops-kat-1".into(),
+            approved_by: approver,
+            // Absent: bundle-v3 stays byte-identical.
+            change_request_id: None,
+            changed_at: when,
+        };
+        let now = TrustedNow {
+            utc: when + Duration::seconds(1),
+            sync: SyncStatus::Synced { max_error_ms: 12 },
+        };
+        let payload = draft.complete(seq, &prev, evidence_key().0, now);
+        let record = seal_agent_state(payload, &evidence_key()).unwrap();
+        prev.clone_from(&record.hash);
+        chain.push(ChainRecord::AgentState(record));
+    }
+    chain
 }

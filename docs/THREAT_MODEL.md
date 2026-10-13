@@ -85,7 +85,7 @@ Item names follow the OWASP GenAI Security Project list (Dec 2025); verify IDs a
 | ASI07 Insecure inter-agent communication | Server-side delegation with narrowing (A2A deferred) | Planned (M1) |
 | ASI08 Cascading failures | Typed port errors; fail-closed for critical actions | Planned (M1) |
 | ASI09 Human-agent trust exploitation | Exact-action approval rendering; batching and decision-latency monitoring | Planned (M4) |
-| ASI10 Rogue agents | Agent states (`RESTRICTED` → `REVOKED`); mandate revocation via events | Planned (M4) |
+| ASI10 Rogue agents | Agent states (`RESTRICTED` → `REVOKED`) enforced on every call and through the delegation chain (ADR-013); operator stop/reinstate API with maker-checker reinstatement; signed state records; mandate revocation via events | Implemented (K1-1 to K1-3a); attacks and simulation to follow (K1-3b) |
 
 **MCP-specific risks** (OWASP MCP Top 10 themes; IDs to be verified): tool poisoning (manifest hashes, trust levels), token exposure (broker injection, no secrets in agent containers), privilege escalation (effective authority intersection), context over-sharing (capability references, purpose-minimal fields), insufficient authorization (gateway + Cedar on every call), audit gaps (Agent Decision Records).
 
