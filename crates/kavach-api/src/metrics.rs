@@ -21,6 +21,7 @@ pub struct Metrics {
     gateway_stage_seconds: HistogramVec,
     checkpoints: CheckpointMetrics,
     revocation_evidence: RevocationEvidenceMetrics,
+    agent_state_evidence: AgentStateEvidenceMetrics,
 }
 
 /// How long each stage of a gateway call takes (`stage` is the fixed list
@@ -128,6 +129,39 @@ impl RevocationEvidenceMetrics {
     }
 }
 
+/// Agent-state evidence records (ADR-013 §4): the reconciler's view.
+#[derive(Clone)]
+struct AgentStateEvidenceMetrics {
+    missing: prometheus::IntGauge,
+    reconciled: prometheus::IntCounter,
+    last_pass: prometheus::IntGauge,
+}
+
+impl AgentStateEvidenceMetrics {
+    fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
+        let metrics = Self {
+            missing: prometheus::IntGauge::new(
+                "kavach_agent_state_records_missing",
+                "Changes of an agent's state still without their evidence-chain record \
+                 after the last reconcile pass; alert when above 0",
+            )?,
+            reconciled: prometheus::IntCounter::new(
+                "kavach_agent_state_records_reconciled_total",
+                "Agent-state evidence records written by the reconciler because the \
+                 request that changed the state could not write them",
+            )?,
+            last_pass: prometheus::IntGauge::new(
+                "kavach_agent_state_reconcile_last_pass_timestamp_seconds",
+                "Unix time of the last complete agent-state reconcile pass; alert when it is old",
+            )?,
+        };
+        registry.register(Box::new(metrics.missing.clone()))?;
+        registry.register(Box::new(metrics.reconciled.clone()))?;
+        registry.register(Box::new(metrics.last_pass.clone()))?;
+        Ok(metrics)
+    }
+}
+
 impl Metrics {
     pub fn new() -> Result<Self, prometheus::Error> {
         let registry = Registry::new();
@@ -187,6 +221,7 @@ impl Metrics {
         registry.register(Box::new(gateway_outcome_write_failures.clone()))?;
         let checkpoints = CheckpointMetrics::register(&registry)?;
         let revocation_evidence = RevocationEvidenceMetrics::register(&registry)?;
+        let agent_state_evidence = AgentStateEvidenceMetrics::register(&registry)?;
         let gateway_stage_seconds = gateway_stage_histogram(&registry)?;
         Ok(Self {
             registry: Arc::new(registry),
@@ -201,6 +236,7 @@ impl Metrics {
             gateway_stage_seconds,
             checkpoints,
             revocation_evidence,
+            agent_state_evidence,
         })
     }
 
@@ -259,6 +295,20 @@ impl Metrics {
     /// what it wrote, and (when it read everything) that it completed.
     pub fn observe_revocation_reconcile(&self, report: &kavach_dataplane::ReconcileReport) {
         let metrics = &self.revocation_evidence;
+        metrics
+            .missing
+            .set(i64::try_from(report.missing.len()).unwrap_or(i64::MAX));
+        metrics
+            .reconciled
+            .inc_by(u64::try_from(report.reconciled.len()).unwrap_or(u64::MAX));
+        if report.error.is_none() {
+            metrics.last_pass.set(chrono::Utc::now().timestamp());
+        }
+    }
+
+    /// One reconcile pass of the agent-state evidence.
+    pub fn observe_agent_state_reconcile(&self, report: &kavach_dataplane::StateReconcileReport) {
+        let metrics = &self.agent_state_evidence;
         metrics
             .missing
             .set(i64::try_from(report.missing.len()).unwrap_or(i64::MAX));

@@ -146,6 +146,18 @@ fn from_bundle(
                 )
                 .fix("`kavach why` explains decisions; give a decision's record id"));
             }
+            ChainRecord::AgentState(record) if record.payload.record_id == record_id => {
+                return Err(CliError::new(
+                    format!("{record_id} is not a decision"),
+                    format!(
+                        "it records agent {} changing from {} to {}",
+                        record.payload.agent_id,
+                        record.payload.from_state.as_str(),
+                        record.payload.to_state.as_str()
+                    ),
+                )
+                .fix("`kavach why` explains decisions; give a decision's record id"));
+            }
             _ => {}
         }
     }

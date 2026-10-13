@@ -22,6 +22,7 @@ type HmacSha256 = Hmac<Sha256>;
 const PSEUDONYM_LABEL: &[u8] = b"kavach-subject-pseudonym-v1";
 const PARAMS_MAC_LABEL: &[u8] = b"kavach-params-mac-v1";
 const RECORD_PSEUDONYM_LABEL: &[u8] = b"kavach-record-pseudonym-v1";
+const REASON_LABEL: &[u8] = b"kavach-reason-digest-v1";
 
 /// Ed25519 evidence signer holding its key in memory.
 pub struct Ed25519EvidenceSigner {
@@ -78,6 +79,7 @@ pub struct SubjectKeys {
     pseudonym: [u8; 32],
     params: [u8; 32],
     record: [u8; 32],
+    reason: [u8; 32],
 }
 
 impl std::fmt::Debug for SubjectKeys {
@@ -103,6 +105,7 @@ impl SubjectKeys {
             pseudonym: hmac(&secret, &[PSEUDONYM_LABEL]),
             params: hmac(&secret, &[PARAMS_MAC_LABEL]),
             record: hmac(&secret, &[RECORD_PSEUDONYM_LABEL]),
+            reason: hmac(&secret, &[REASON_LABEL]),
         }
     }
 
@@ -139,6 +142,33 @@ impl SubjectKeys {
                     tenant_id.as_bytes(),
                     system.as_bytes(),
                     record_ref.as_bytes()
+                ]
+            ))
+        )
+    }
+
+    /// `mac:<hex>` of an operator's free-text reason for a change of an
+    /// agent's state, under a key of its own. The evidence chain holds this
+    /// and never the text (which could name a borrower and cannot be
+    /// erased); whoever holds the text can show it is the one that was
+    /// recorded.
+    #[must_use]
+    pub fn reason_digest(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+        change_no: i64,
+        note: &str,
+    ) -> String {
+        format!(
+            "mac:{}",
+            hex::encode(hmac(
+                &self.reason,
+                &[
+                    tenant_id.as_bytes(),
+                    agent_id.as_bytes(),
+                    &change_no.to_be_bytes(),
+                    note.as_bytes()
                 ]
             ))
         )

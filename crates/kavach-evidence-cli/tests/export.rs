@@ -42,9 +42,10 @@ impl Memory {
         )
     }
 
-    /// The decisions and the revocation: the format 2 vector's run.
-    fn fixture_v2() -> Self {
-        let chain = chain_v2();
+    /// The decisions, the revocation and the two agent-state records: the
+    /// format 3 vector's run (an export always writes the newest format).
+    fn fixture_v3() -> Self {
+        let chain = chain_v3();
         let checkpoints = checkpoints_v2(&chain);
         Self::of(chain, checkpoints)
     }
@@ -134,7 +135,7 @@ fn request<'a>(out: &'a Path, after_checkpoint: Option<i64>, key: &'a Key) -> Ex
 
 fn vector(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/vectors/bundle-v2")
+        .join("tests/vectors/bundle-v3")
         .join(name)
 }
 
@@ -151,7 +152,7 @@ async fn a_paged_export_is_the_checked_in_bundle_byte_for_byte() {
     let key = export_key();
     for page in [1, 2, 3, 1000] {
         let out = scratch("export");
-        let mut source = Memory::fixture_v2();
+        let mut source = Memory::fixture_v3();
         let summary = export(
             &mut source,
             ExportRequest {
@@ -168,8 +169,8 @@ async fn a_paged_export_is_the_checked_in_bundle_byte_for_byte() {
                 "{name} with pages of {page}"
             );
         }
-        // The third checkpoint covers the revocation, the newest record.
-        assert_eq!(summary.last_checkpoint, Some(5));
+        // The third checkpoint covers the newest record, an agent-state one.
+        assert_eq!(summary.last_checkpoint, Some(7));
         assert_eq!(summary.uncovered_records, 0);
         if page == 1 {
             assert!(source.reads > 8, "read in pages: {}", source.reads);

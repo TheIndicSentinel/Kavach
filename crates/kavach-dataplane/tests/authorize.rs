@@ -1100,7 +1100,8 @@ async fn set_state(w: &World, agent: &str, to: AgentState, approved: Option<&str
             tenant_id: TENANT.into(),
             agent_id: agent.into(),
             to,
-            reason: "test".into(),
+            reason_code: kavach_domain::ReasonCode::RogueBehaviour,
+            note: "test".into(),
             changed_by: "ops-1".into(),
             approved_by: approved.map(String::from),
             at: w.clock.now().utc,
@@ -1321,7 +1322,8 @@ impl kavach_ports::ReferenceResolver for QuarantiningResolver {
                     tenant_id: tenant,
                     agent_id: agent,
                     to: AgentState::Quarantined,
-                    reason: "stopped mid-call".into(),
+                    reason_code: kavach_domain::ReasonCode::RogueBehaviour,
+                    note: "stopped mid-call".into(),
                     changed_by: "ops-1".into(),
                     approved_by: None,
                     at,
@@ -1335,4 +1337,166 @@ impl kavach_ports::ReferenceResolver for QuarantiningResolver {
     fn describe(&self) -> String {
         "quarantining".into()
     }
+}
+
+// ---- K1-2 (ADR-013 §4): every change of state is signed evidence ----
+
+fn change_to(to: AgentState, by: &str, approved: Option<&str>, note: &str) -> AgentStateChange {
+    AgentStateChange {
+        tenant_id: TENANT.into(),
+        agent_id: "collections-agent".into(),
+        to,
+        reason_code: kavach_domain::ReasonCode::CompromiseSuspected,
+        note: note.into(),
+        changed_by: by.into(),
+        approved_by: approved.map(String::from),
+        at: ist(11, 0, 0),
+    }
+}
+
+/// A tightening is in force at once and recorded; the chain holds the
+/// closed reason code and a digest of the note, never the note.
+#[tokio::test]
+async fn a_stop_is_recorded_without_the_operators_words() {
+    let w = world();
+    let note = "borrower Asha Verma called to complain";
+    let done = w
+        .core
+        .change_agent_state(change_to(AgentState::Quarantined, "ops-1", None, note))
+        .await
+        .unwrap();
+    assert_eq!(done.state.state, AgentState::Quarantined);
+    let record = done.record.expect("recorded at once");
+    assert!(done.record_error.is_none());
+    let p = &record.payload;
+    assert_eq!(p.change_no, 1);
+    assert_eq!(
+        (p.from_state, p.to_state),
+        (AgentState::Active, AgentState::Quarantined)
+    );
+    assert_eq!(
+        p.reason_code,
+        kavach_domain::ReasonCode::CompromiseSuspected
+    );
+    assert!(p
+        .reason_digest
+        .as_deref()
+        .is_some_and(|d| d.starts_with("mac:")));
+    let json = serde_json::to_string(&record).unwrap();
+    assert!(
+        !json.contains("Asha") && !json.contains("complain"),
+        "the note is not in the chain: {json}"
+    );
+    // The store keeps the text for the operator.
+    assert_eq!(done.state.note, note);
+
+    let records = w.core.store().records(TENANT, 0).await.unwrap();
+    kavach_ports::agent_evidence::verify_chain(
+        &records,
+        &TestSigner::new("evidence-test", 9).keys(),
+        None,
+        &[],
+        w.clock.now().utc,
+    )
+    .expect("a chain with an agent-state record verifies");
+}
+
+/// Authority is never given back without evidence: if the record cannot be
+/// written, the loosening does not happen; a tightening stands, and says
+/// its record is owed.
+#[tokio::test]
+async fn a_loosening_without_its_record_does_not_happen_but_a_stop_stands() {
+    let w = world_with(TestSigner::failing("evidence-test"));
+    // Tightening: in force, record owed.
+    let done = w
+        .core
+        .change_agent_state(change_to(AgentState::Quarantined, "ops-1", None, ""))
+        .await
+        .unwrap();
+    assert_eq!(done.state.state, AgentState::Quarantined);
+    assert!(done.record.is_none() && done.record_error.is_some());
+    // Loosening: refused, and the agent stays stopped.
+    let err = w
+        .core
+        .change_agent_state(change_to(AgentState::Active, "ops-1", Some("ops-2"), ""))
+        .await
+        .unwrap_err();
+    assert_ne!(err.class, kavach_ports::ErrorClass::Rejected, "{err}");
+    let now = w
+        .core
+        .store()
+        .states(TENANT, &["collections-agent".to_string()])
+        .await
+        .unwrap();
+    assert_eq!(now["collections-agent"], AgentState::Quarantined);
+}
+
+/// The reconciler writes the record of a stop whose request could not, once
+/// per change and in order, and then finds nothing missing.
+#[tokio::test]
+async fn the_reconciler_records_a_stop_the_request_could_not() {
+    let w = world();
+    let store = Arc::clone(w.core.store());
+    // A stop that went through the store only (the record is owed).
+    store
+        .set(change_to(AgentState::Restricted, "ops-1", None, "first"))
+        .await
+        .unwrap();
+    store
+        .set(change_to(AgentState::Quarantined, "ops-1", None, "second"))
+        .await
+        .unwrap();
+    assert!(store
+        .agent_state_record(TENANT, "collections-agent", 1)
+        .await
+        .unwrap()
+        .is_none());
+
+    let config = kavach_dataplane::ReconcileConfig::default();
+    // Too young: left to the request that made it.
+    let early =
+        kavach_dataplane::reconcile_agent_states(&w.core, None, ist(11, 0, 10), config).await;
+    assert_eq!((early.checked, early.reconciled.len()), (0, 0), "{early:?}");
+
+    w.at(ist(11, 5, 0));
+    let first =
+        kavach_dataplane::reconcile_agent_states(&w.core, None, w.clock.now().utc, config).await;
+    assert_eq!(
+        first.reconciled,
+        ["collections-agent#1", "collections-agent#2"]
+    );
+    assert!(
+        first.missing.is_empty() && first.error.is_none(),
+        "{first:?}"
+    );
+    assert_eq!(first.watermark, Some(ist(11, 0, 0)));
+
+    let one = store
+        .agent_state_record(TENANT, "collections-agent", 1)
+        .await
+        .unwrap()
+        .expect("written");
+    assert!(
+        one.payload.recorded_at > one.payload.changed_at,
+        "later, by the reconciler"
+    );
+    let records = store.records(TENANT, 0).await.unwrap();
+    kavach_ports::agent_evidence::verify_chain(
+        &records,
+        &TestSigner::new("evidence-test", 9).keys(),
+        None,
+        &[],
+        w.clock.now().utc,
+    )
+    .expect("the chain verifies");
+
+    let second = kavach_dataplane::reconcile_agent_states(
+        &w.core,
+        first.watermark,
+        w.clock.now().utc,
+        config,
+    )
+    .await;
+    assert!(second.reconciled.is_empty(), "{second:?}");
+    assert_eq!(store.records(TENANT, 0).await.unwrap().len(), records.len());
 }

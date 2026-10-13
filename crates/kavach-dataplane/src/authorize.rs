@@ -30,8 +30,12 @@ use kavach_ports::agent_evidence::{
     CommitRequest, CommitResult, ContactReservation, EvidenceSigner, Outcome, OutcomeRecord,
     PolicyVersions, RequestBinding, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
 };
-use kavach_ports::agent_state::AgentStateStore;
-use kavach_ports::chain_record::{RevocationDraft, RevocationRecord};
+use kavach_ports::agent_state::{
+    AgentStateChange, AgentStateStore, Recording, StoredAgentChange, StoredAgentState,
+};
+use kavach_ports::chain_record::{
+    AgentStateDraft, AgentStateRecord, RevocationDraft, RevocationRecord,
+};
 use kavach_ports::{ErrorClass, PortError, StoredRevocation, TimeSource, TrustedNow};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -250,6 +254,17 @@ pub fn resolve_state(
     Ok(effective)
 }
 
+/// What changing an agent's state did.
+#[derive(Debug, Clone)]
+pub struct AppliedStateChange {
+    pub state: StoredAgentState,
+    /// The change's evidence record, if it is written.
+    pub record: Option<AgentStateRecord>,
+    /// Why it is not, for a tightening whose record the reconciler will
+    /// write.
+    pub record_error: Option<String>,
+}
+
 /// Why a decided call may no longer go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StillAuthorised {
@@ -376,6 +391,117 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
     }
 
     /// The recorded outcome for a credential, if any.
+    /// Writes the evidence-chain record of a change of an agent's state
+    /// (ADR-013 §4), signed with the evidence key at trusted time, in this
+    /// core's partition. The operator's free text is never in the record:
+    /// it holds a keyed digest of it. Idempotent by `(agent, change_no)`:
+    /// the same change again returns its record.
+    pub async fn record_agent_change(
+        &self,
+        change: &StoredAgentChange,
+    ) -> Result<AgentStateRecord, PortError> {
+        let draft = AgentStateDraft {
+            tenant_id: change.tenant_id.clone(),
+            partition_id: self.config.partition_id,
+            agent_id: change.agent_id.clone(),
+            change_no: change.change_no,
+            from_state: change.from_state,
+            to_state: change.to_state,
+            reason_code: change.reason_code,
+            reason_digest: (!change.note.is_empty()).then(|| {
+                self.subject_keys.reason_digest(
+                    &change.tenant_id,
+                    &change.agent_id,
+                    change.change_no,
+                    &change.note,
+                )
+            }),
+            changed_by: change.changed_by.clone(),
+            approved_by: change.approved_by.clone(),
+            changed_at: change.changed_at,
+        };
+        self.store
+            .append_agent_state(draft, &*self.clock, &*self.signer)
+            .await
+    }
+
+    /// Changes an agent's state (ADR-013 §3), and records the change.
+    ///
+    /// - **Tightening** takes effect first and its record follows: stopping
+    ///   never waits on the evidence chain. If the record cannot be written
+    ///   now, the change stands and the reconciler writes it
+    ///   (`record_error` says why).
+    /// - **Loosening** is written with its record in one step: if the
+    ///   record cannot be written, nothing changes, because authority is
+    ///   never given back without evidence.
+    ///
+    /// The rules (revoked is final, a loosening needs a different approver)
+    /// are the store's, and the database's.
+    pub async fn change_agent_state(
+        &self,
+        change: AgentStateChange,
+    ) -> Result<AppliedStateChange, PortError> {
+        let from = self
+            .store
+            .states(&change.tenant_id, std::slice::from_ref(&change.agent_id))
+            .await?
+            .get(&change.agent_id)
+            .copied()
+            .ok_or_else(|| PortError::unavailable("agent state was not read"))?;
+        if from.loosens_to(change.to) {
+            let (tenant, agent, note) = (
+                change.tenant_id.clone(),
+                change.agent_id.clone(),
+                change.note.clone(),
+            );
+            let keys = &self.subject_keys;
+            let digest = move |n: i64| keys.reason_digest(&tenant, &agent, n, &note);
+            let digest = |n: i64| Some(digest(n));
+            let (state, record) = self
+                .store
+                .set_recorded(
+                    change,
+                    Recording {
+                        partition_id: self.config.partition_id,
+                        clock: &*self.clock,
+                        signer: &*self.signer,
+                        reason_digest: &digest,
+                    },
+                )
+                .await?;
+            return Ok(AppliedStateChange {
+                state,
+                record: Some(record),
+                record_error: None,
+            });
+        }
+        let state = self.store.set(change).await?;
+        let stored = StoredAgentChange {
+            tenant_id: state.tenant_id.clone(),
+            agent_id: state.agent_id.clone(),
+            change_no: state.change_no,
+            from_state: from,
+            to_state: state.state,
+            reason_code: state.reason_code,
+            note: state.note.clone(),
+            changed_by: state.changed_by.clone(),
+            approved_by: state.approved_by.clone(),
+            changed_at: state.changed_at,
+        };
+        Ok(match self.record_agent_change(&stored).await {
+            Ok(record) => AppliedStateChange {
+                state,
+                record: Some(record),
+                record_error: None,
+            },
+            Err(err) => AppliedStateChange {
+                state,
+                record: None,
+                record_error: Some(err.message),
+            },
+        })
+    }
+
     pub async fn outcome(&self, credential_id: &str) -> Result<Option<OutcomeRecord>, PortError> {
         self.store
             .outcome(&self.config.tenant_id, credential_id)

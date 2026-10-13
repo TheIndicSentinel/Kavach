@@ -12,7 +12,9 @@ use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
 };
-use kavach_ports::chain_record::{ChainRecord, RevocationDraft, RevocationRecord};
+use kavach_ports::chain_record::{
+    AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
+};
 use kavach_ports::{PortError, TimeSource};
 
 const NOTHING_RECORDED: &str = "a what-if run records nothing";
@@ -64,6 +66,24 @@ impl AgentEvidenceStore for WhatIfStore {
         _partition_id: i32,
     ) -> impl Future<Output = Result<Vec<ChainRecord>, PortError>> + Send {
         ready(Ok(Vec::new()))
+    }
+
+    fn append_agent_state(
+        &self,
+        _draft: AgentStateDraft,
+        _clock: &dyn TimeSource,
+        _signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<AgentStateRecord, PortError>> + Send {
+        ready(Err(PortError::invalid(NOTHING_RECORDED)))
+    }
+
+    fn agent_state_record(
+        &self,
+        _tenant_id: &str,
+        _agent_id: &str,
+        _change_no: i64,
+    ) -> impl Future<Output = Result<Option<AgentStateRecord>, PortError>> + Send {
+        ready(Ok(None))
     }
 
     fn append_revocation(
@@ -137,6 +157,31 @@ impl kavach_ports::agent_state::AgentStateStore for WhatIfStore {
     ) -> impl Future<Output = Result<kavach_ports::agent_state::StoredAgentState, PortError>> + Send
     {
         ready(Err(PortError::invalid(NOTHING_RECORDED)))
+    }
+
+    fn set_recorded(
+        &self,
+        _change: kavach_ports::agent_state::AgentStateChange,
+        _recording: kavach_ports::agent_state::Recording<'_>,
+    ) -> impl Future<
+        Output = Result<
+            (
+                kavach_ports::agent_state::StoredAgentState,
+                AgentStateRecord,
+            ),
+            PortError,
+        >,
+    > + Send {
+        ready(Err(PortError::invalid(NOTHING_RECORDED)))
+    }
+
+    fn changes_after(
+        &self,
+        _after: Option<kavach_ports::agent_state::AgentChangeCursor>,
+        _limit: u32,
+    ) -> impl Future<Output = Result<Vec<kavach_ports::agent_state::StoredAgentChange>, PortError>> + Send
+    {
+        ready(Ok(Vec::new()))
     }
 }
 

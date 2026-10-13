@@ -1,4 +1,4 @@
-# Evidence bundle, version 2 (normative)
+# Evidence bundle, versions 1 to 3 (normative)
 
 This document defines the evidence a Kavach deployment writes and exactly what a verifier checks. It is self-contained: an implementer needs nothing else. [`docs/EVIDENCE_BUNDLE.md`](../EVIDENCE_BUNDLE.md) explains how an operator uses it.
 
@@ -78,10 +78,11 @@ sig  = hex( Ed25519_sign( evidence_key, "kavach-agent-evidence-sig-v1:" || ASCII
 
 | `kind` | Defined in | Bundle versions |
 |---|---|---|
-| `agent_decision` | §4.3 | 1, 2 |
-| `mandate_revocation` | §4.4 | 2 |
+| `agent_decision` | §4.3 | 1, 2, 3 |
+| `mandate_revocation` | §4.4 | 2, 3 |
+| `agent_state` | §4.5 | 3 |
 
-**A verifier MUST refuse a record whose `kind` is not in the registry for the bundle's version, and MUST NOT skip it.** A bundle of version 1 may hold `agent_decision` records only. A new kind is added to this registry with a new bundle `version`, so a verifier that does not know it fails on the bundle rather than misreading it.
+**A verifier MUST refuse a record whose `kind` is not in the registry for the bundle's version, and MUST NOT skip it.** A bundle of version 1 may hold `agent_decision` records only, and a bundle of version 2 `agent_decision` and `mandate_revocation` records only. A new kind is added to this registry with a new bundle `version`, so a verifier that does not know it fails on the bundle rather than misreading it.
 
 ### 4.3 `agent_decision`
 
@@ -112,6 +113,31 @@ Mandates revoked by a system-of-record event (ADR-012 §7).
 | `recorded_at` | When this record was written. Used as the record's time in §8.2 |
 
 A record MUST state **exactly one** of `event_digest` and `event_sha256`, well formed as above. A record with both, neither, a tag other than `sha256-jcs-v1:`, or hex that is short or upper case is refused (§9), even if its hash and signature are genuine. A bundle verifier cannot recompute either digest (it does not hold the event); it checks the form and that the signature covers it.
+
+### 4.5 `agent_state`
+
+A change of an agent's state (ADR-013 §4): an agent was restricted, quarantined, revoked or reinstated. Members besides §4.1:
+
+| Member | Type | Meaning |
+|---|---|---|
+| `agent_id` | string | The agent whose state changed. A record names the agent, never a borrower |
+| `change_no` | integer | 1 for the agent's first change, then 2, 3, …. With `tenant_id` and `agent_id` it identifies the change; a chain holds at most one record for it |
+| `from_state`, `to_state` | string | One of `active`, `restricted`, `quarantined`, `revoked`. Different from each other |
+| `reason_code` | string | One of `rogue_behaviour`, `compromise_suspected`, `policy_violation`, `customer_complaint`, `operator_request`, `reviewed`, `other`. A closed set: the chain never holds an operator's free text, which could name a borrower and cannot be erased |
+| `reason_digest` | string or `null` | `mac:` and 64 lowercase hex: a keyed digest of the operator's free text, which is kept outside the chain; `null` when there was none. A verifier cannot recompute it (it does not hold the key or the text); it checks the form |
+| `changed_by` | string | The principal who made the change |
+| `approved_by` | string or `null` | The second principal. Present, and different from `changed_by`, **exactly when the change loosens** |
+| `changed_at` | time | When the state changed |
+| `recorded_at` | time | When this record was written: later than `changed_at` when it was written after the fact. Used as the record's time in §8.2 |
+
+Severity orders the states `active` < `restricted` < `quarantined` < `revoked`. A change **tightens** when `to_state` is more severe than `from_state` and **loosens** when it is less severe. A verifier MUST refuse (§9) a record that breaks any of these, even if its hash and signature are genuine:
+
+- `change_no` is at least 1;
+- `from_state` differs from `to_state`, and `from_state` is not `revoked` (a revoked agent is never changed);
+- `reason_code` is in the set above, and `reason_digest` is `null` or well formed;
+- a tightening has `approved_by` `null`, and a loosening has an `approved_by` that is not empty and not equal to `changed_by`.
+
+A stop is written **after** it takes effect (so stopping never waits on the chain), so a record's `recorded_at` can be later than `changed_at` and its position in the chain later than decisions made after the stop. That is why the record carries `changed_at`.
 
 ## 5. Outcomes
 
@@ -171,7 +197,7 @@ There is **no** `prev_hash` here: a checkpoint's hash covers the canonical paylo
 | Member | Type | Meaning |
 |---|---|---|
 | `format` | string | MUST be `kavach-evidence-bundle` |
-| `version` | integer | `1` or `2`. A verifier MUST refuse any other |
+| `version` | integer | `1`, `2` or `3`. A verifier MUST refuse any other. An export writes `3` |
 | `tenant_id`, `partition_id`, `chain` | | The chain the segment belongs to |
 | `segment` | object | `after_seq` (integer ≥ 0), `after_hash` (hash), `last_seq` (integer ≥ `after_seq`), `head_hash` (hash) |
 | `files` | object | `records`, `outcomes`, `checkpoints`, each `{ "sha256": hash, "count": integer ≥ 0 }` |
@@ -215,7 +241,7 @@ An entry may carry limits for a retired or compromised key:
 | `valid_until_seq` | Something this key signed for a record with `seq` greater than this is refused, **unless** a kept checkpoint (§9.9) has `seq` at least that large |
 | `not_before`, `not_after` | Something this key signed with a time `ts` such that `ts < not_before` or `ts >= not_after` is refused |
 
-The `seq` and time used are: for a record, its `seq` and its `ts` (`recorded_at` for a `mandate_revocation`); for an outcome, its record's `seq` and its `ts`; for a checkpoint, its `seq` and `ts`; for the manifest, `segment.last_seq` and `exported_at`. A signature beyond a limit fails verification.
+The `seq` and time used are: for a record, its `seq` and its `ts` (`recorded_at` for a `mandate_revocation` or an `agent_state`); for an outcome, its record's `seq` and its `ts`; for a checkpoint, its `seq` and `ts`; for the manifest, `segment.last_seq` and `exported_at`. A signature beyond a limit fails verification.
 
 ## 9. Verification
 
@@ -267,6 +293,7 @@ A script that tests only for success MUST treat *verified, with warnings* as not
 
 | Vector | Expected result |
 |---|---|
+| `crates/kavach-evidence-cli/tests/vectors/bundle-v3` with `bundle-v2.keys.json` | Verified, with warnings: `no_kept_checkpoint`, `outcome_missing` (`cred-4`), `outcome_unknown` (`cred-3`). Seven records: four decisions, the revocation (by `event_digest`), then a quarantine of `collections-agent` (record 6, a tightening, with a `reason_digest`) and its reinstatement (record 7, a loosening approved by `ops-kat-2`). Three checkpoints, the last covering record 7 |
 | `crates/kavach-evidence-cli/tests/vectors/bundle-v2-digest` with `bundle-v2.keys.json` | The same run with the revocation stating its event by `event_digest`. Same warnings as `bundle-v2` |
 | `crates/kavach-evidence-cli/tests/vectors/bundle-v2` with `bundle-v2.keys.json` | Verified, with warnings: `no_kept_checkpoint`, `outcome_missing` (`cred-4`), `outcome_unknown` (`cred-3`). Five records, two outcomes, three checkpoints, the last covering record 5, so no uncovered records |
 | `crates/kavach-evidence-cli/tests/vectors/bundle-v1` with `bundle-v1.keys.json` | Verified, with warnings: `no_kept_checkpoint`, `outcome_missing` (`cred-4`), `outcome_unknown` (`cred-3`), and `uncovered_records` = 1 (four records; the last checkpoint covers record 3). Both keys files hold test-only keys that are not `dev-` keys, so no `--dev` flag is needed |
@@ -275,4 +302,4 @@ A script that tests only for success MUST treat *verified, with warnings* as not
 
 The verifier's reference time for the table above is `2026-10-02T07:00:00Z` or later (every credential in the run has expired by then).
 
-A verifier MUST also refuse, at least: a changed byte in any file; a record of an unknown kind; a `mandate_revocation` in a bundle of `version` 1; a removed or repeated record; a removed or repeated outcome; a checkpoint at a different hash; a signature by a key that is not trusted; a duplicate member name.
+A verifier MUST also refuse, at least: a changed byte in any file; a record of an unknown kind; a `mandate_revocation` in a bundle of `version` 1; an `agent_state` in a bundle of `version` 1 or 2; an `agent_state` record that breaks §4.5; a removed or repeated record; a removed or repeated outcome; a checkpoint at a different hash; a signature by a key that is not trusted; a duplicate member name.

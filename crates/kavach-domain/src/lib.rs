@@ -14,7 +14,7 @@ pub mod request;
 pub mod response;
 pub mod types;
 
-pub use agent::AgentState;
+pub use agent::{AgentState, ReasonCode};
 pub use decision::Decision;
 pub use error::DomainError;
 pub use path::EvaluatePath;

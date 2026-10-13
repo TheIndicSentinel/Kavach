@@ -26,11 +26,12 @@ use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
 
 pub const BUNDLE_FORMAT: &str = "kavach-evidence-bundle";
-/// The format version an export writes. Version 2 (ADR-012 §7) carries
-/// records of every kind; version 1 carried decisions only.
-pub const BUNDLE_VERSION: u32 = 2;
+/// The format version an export writes. Version 3 (ADR-013 §4) adds
+/// `agent_state` records to version 2's decisions and revocations
+/// (ADR-012 §7); version 1 carried decisions only.
+pub const BUNDLE_VERSION: u32 = 3;
 /// The versions a verifier reads; it refuses any other.
-pub const BUNDLE_VERSIONS: [u32; 2] = [1, 2];
+pub const BUNDLE_VERSIONS: [u32; 3] = [1, 2, 3];
 pub const BUNDLE_HASH_PREFIX: &[u8] = b"kavach-evidence-bundle-v1";
 pub const BUNDLE_SIG_PREFIX: &[u8] = b"kavach-evidence-bundle-v1:";
 
@@ -491,7 +492,7 @@ mod tests {
             verify(&m)
         };
         for change in [
-            (|p| p.version = 3) as fn(&mut ManifestPayload),
+            (|p| p.version = 4) as fn(&mut ManifestPayload),
             |p| p.format = "something-else".into(),
             |p| p.segment.last_seq = -1,
             |p| p.files.records.count = 4,

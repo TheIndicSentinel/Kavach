@@ -50,6 +50,13 @@ class Vectors(unittest.TestCase):
         self.assertEqual(r["records"], 5)
 
 
+class AgentStates(unittest.TestCase):
+    def test_bundle_v3_with_a_stop_and_an_approved_reinstatement(self):
+        r = kv.verify_bundle(f"{BUNDLES}/bundle-v3", f"{BUNDLES}/bundle-v2.keys.json", now=NOW)
+        self.assertEqual((r["version"], r["records"], r["last_seq"]), (3, 7, 7))
+        self.assertEqual(kinds(r), ["no_kept_checkpoint", "outcome_missing", "outcome_unknown"])
+
+
 class DigestForms(unittest.TestCase):
     def test_bundle_with_a_tagged_event_digest(self):
         r = kv.verify_bundle(f"{BUNDLES}/bundle-v2-digest", f"{BUNDLES}/bundle-v2.keys.json",
@@ -217,6 +224,41 @@ class Mutations(unittest.TestCase):
                 self.reseal(rows)
                 with self.structural():
                     self.refuse("exactly one well-formed event digest")
+
+    def _v3(self):
+        shutil.rmtree(self.bundle)
+        shutil.copytree(f"{BUNDLES}/bundle-v3", self.bundle)
+        return self.rows("records.jsonl")
+
+    def test_agent_state_rules_hold_even_when_signed(self):
+        cases = {
+            "same state": (5, {"to_state": "active"}),
+            "revoked is never changed": (5, {"from_state": "revoked", "to_state": "active",
+                                               "approved_by": "ops-9"}),
+            "unknown state": (5, {"to_state": "frozen"}),
+            "free text reason": (5, {"reason_code": "the borrower Asha called"}),
+            "bad digest": (5, {"reason_digest": "mac:abc"}),
+            "tightening names an approver": (5, {"approved_by": "ops-2"}),
+            "loosening without approver": (6, {"approved_by": None}),
+            "approves their own change": (6, {"approved_by": "ops-kat-1"}),
+            "change number zero": (5, {"change_no": 0}),
+        }
+        for what, (index, edit) in cases.items():
+            with self.subTest(what):
+                rows = self._v3()
+                rows[index].update(edit)
+                self.reseal(rows)
+                with self.structural():
+                    self.refuse("malformed record")
+
+    def test_a_version_2_bundle_refuses_an_agent_state_record(self):
+        rows = self._v3()
+        manifest = self.rows("manifest.json")[0]
+        manifest["version"] = 2
+        self.write("records.jsonl", rows)
+        self.seal_manifest(manifest)
+        with self.structural():
+            self.refuse("registry")
 
     def test_hash_alg_must_be_v2(self):
         rows = self.rows("records.jsonl")

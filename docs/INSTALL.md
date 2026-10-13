@@ -288,6 +288,10 @@ A certificate with no SAN, or several SANs, of the configured type gets 401. A b
   - **Watch it.** `kavach_revocation_records_missing` is the number of revocations still without their record after the last pass: alert when it is above 0. `kavach_revocation_records_reconciled_total` counts records the reconciler had to write. Alert when `time() - kavach_revocation_reconcile_last_pass_timestamp_seconds` exceeds a few minutes: that catches a reconciler that has stopped.
   - **Logs.** Missing records are logged as an error starting `ALERT revocation evidence missing`, with the event ids.
   - **Export.** Revocation records are exported and verified with the decisions (bundle format 2, [EVIDENCE_BUNDLE.md](EVIDENCE_BUNDLE.md)). Bundles written before it (format 1) still verify; a verifier older than format 2 refuses a format 2 bundle rather than misread it.
+- **Agent state evidence.** Each change of an agent's state is a signed `agent_state` record in the same chain (bundle format 3). A stop takes effect first and its record follows; a reinstatement is written with its record in one transaction or not at all.
+  - **Watch it.** `kavach_agent_state_records_missing` is the number of changes still without their record after the last pass: alert when above 0. `kavach_agent_state_records_reconciled_total` counts records the reconciler had to write. Alert when `time() - kavach_agent_state_reconcile_last_pass_timestamp_seconds` exceeds a few minutes.
+  - **Logs.** `ALERT agent state evidence missing`, with the agent, the change number and why.
+  - **Privacy.** The chain holds a closed reason code and a keyed digest of the operator's note, never the note.
 - **Agent credentials.** Agents send `Authorization: Bearer <agent token>`. `X-Kavach-Principal` is never accepted on agent routes, not even with `--insecure-dev`. Operator tokens are refused on agent routes, and agent tokens on operator routes.
 - **System-of-record events.**
   - The body is `{"event": "<signed JWS>"}`; a new event returns 201 with the mandate id.
