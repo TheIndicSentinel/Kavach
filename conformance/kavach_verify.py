@@ -732,6 +732,13 @@ class Verifier:
                 bad("a loosening needs an approver other than the changer")
         elif approver is not None:
             bad("a change that tightens names no approver")
+        if "change_request_id" in rec:
+            request = rec["change_request_id"]
+            if not (isinstance(request, str) and 1 <= len(request) <= 128
+                    and not any(ord(c) < 32 or ord(c) == 127 for c in request)):
+                bad("change_request_id is not a plain identifier of 1 to 128 characters")
+            if not loosens:
+                bad("only a loosening is carried out by a change request")
 
     @staticmethod
     def _event_digest(rec, where):

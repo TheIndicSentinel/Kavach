@@ -57,6 +57,16 @@ pub enum KavachAction {
     ReadChangeRequests,
     ProposeActivateModel,
     ApproveActivateModel,
+    /// Restrict, quarantine or revoke an agent (ADR-013 §3). Only tightens;
+    /// one principal. A separate action, so who may stop an agent is a
+    /// policy change (an incident-responder role), not a code change.
+    StopAgent,
+    /// Read an agent's state.
+    ReadAgentState,
+    /// Propose bringing a stopped agent back (ADR-013 §3): needs a second
+    /// principal's approval.
+    ProposeReinstateAgent,
+    ApproveReinstateAgent,
 }
 
 impl KavachAction {
@@ -88,6 +98,10 @@ impl KavachAction {
             Self::ReadChangeRequests => "read_change_requests",
             Self::ProposeActivateModel => "propose_activate_model",
             Self::ApproveActivateModel => "approve_activate_model",
+            Self::StopAgent => "stop_agent",
+            Self::ReadAgentState => "read_agent_state",
+            Self::ProposeReinstateAgent => "propose_reinstate_agent",
+            Self::ApproveReinstateAgent => "approve_reinstate_agent",
         }
     }
 }

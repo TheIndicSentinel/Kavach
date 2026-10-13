@@ -135,6 +135,16 @@ pub trait MandateStore: Send + Sync {
         record_ref: &str,
     ) -> impl Future<Output = Result<Vec<StoredMandate>, PortError>> + Send;
 
+    /// The ids of the active mandates `holder` holds, roots and delegated
+    /// children alike, oldest first (ADR-013: revoking an agent revokes
+    /// them). Expired mandates that are still `Active` in the store are
+    /// included: expiry is not stored status.
+    fn active_held_by(
+        &self,
+        tenant_id: &str,
+        holder: &str,
+    ) -> impl Future<Output = Result<Vec<String>, PortError>> + Send;
+
     /// Keeps a revocation's result. An existing `(tenant, system,
     /// event_id)` → `Rejected`.
     fn record_revocation(

@@ -63,6 +63,16 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/agent-revocations/{system}/{event_id}",
             get(crate::evidence_read::read_revocation_record),
         )
+        .route("/v1/agents/{agent_id}", get(crate::agents::get_agent))
+        .route(
+            "/v1/agents/{agent_id}/restrict",
+            post(crate::agents::restrict),
+        )
+        .route(
+            "/v1/agents/{agent_id}/quarantine",
+            post(crate::agents::quarantine),
+        )
+        .route("/v1/agents/{agent_id}/revoke", post(crate::agents::revoke))
         .route("/v1/dev/clock", post(crate::dev_clock::set_dev_clock));
 
     // The credit track: Decision Governance (evaluate, packs, models,
@@ -179,6 +189,7 @@ impl From<ApiError> for crate::problem::Problem {
             ApiError::BadRequest(why) => Problem::new(status, "bad_request", why),
             ApiError::NotFound(what) => Problem::new(status, "not_found", what),
             ApiError::Conflict(why) => Problem::new(status, "conflict", why),
+            ApiError::Unavailable(cause) => Problem::unavailable(&cause),
             ApiError::Evaluate(E::Validation(why)) => Problem::new(status, "validation", why),
             ApiError::Evaluate(E::ModelMismatch(why)) => {
                 Problem::new(status, "model_mismatch", why)

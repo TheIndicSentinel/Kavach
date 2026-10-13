@@ -262,6 +262,12 @@ pub struct AgentStatePayload {
     pub changed_by: String,
     /// Present exactly when the change loosens, and not the changer.
     pub approved_by: Option<String>,
+    /// The change request that carried out a loosening (ADR-009), so the
+    /// record ties the change to its proposal and approval. Absent for an
+    /// operator's stop. Written only when present, so a record without it
+    /// hashes as it always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub change_request_id: Option<String>,
     /// When the state changed (trusted time, whole microseconds).
     pub changed_at: DateTime<Utc>,
     /// When this record was written: later than `changed_at` when the
@@ -292,6 +298,7 @@ pub struct AgentStateDraft {
     pub reason_digest: Option<String>,
     pub changed_by: String,
     pub approved_by: Option<String>,
+    pub change_request_id: Option<String>,
     pub changed_at: DateTime<Utc>,
 }
 
@@ -322,6 +329,7 @@ impl AgentStateDraft {
             reason_digest: self.reason_digest.clone(),
             changed_by: self.changed_by.clone(),
             approved_by: self.approved_by.clone(),
+            change_request_id: self.change_request_id.clone(),
             changed_at: micros(self.changed_at),
             recorded_at: micros(now.utc),
             time_sync: now.sync.into(),
@@ -341,6 +349,7 @@ impl AgentStateDraft {
             && p.reason_digest == self.reason_digest
             && p.changed_by == self.changed_by
             && p.approved_by == self.approved_by
+            && p.change_request_id == self.change_request_id
     }
 }
 
@@ -382,6 +391,14 @@ impl ChainEntry for AgentStateRecord {
         }
         if p.reason_digest.as_deref().is_some_and(|d| !is_mac(d)) {
             return Err("reason_digest is not a well-formed digest");
+        }
+        if let Some(id) = &p.change_request_id {
+            if id.is_empty() || id.len() > 128 || id.chars().any(char::is_control) {
+                return Err("change_request_id is not a plain identifier of 1 to 128 characters");
+            }
+            if !p.from_state.loosens_to(p.to_state) {
+                return Err("only a loosening is carried out by a change request");
+            }
         }
         match (
             p.from_state.loosens_to(p.to_state),

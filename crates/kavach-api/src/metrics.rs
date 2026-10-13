@@ -18,6 +18,7 @@ pub struct Metrics {
     gateway_malformed: prometheus::IntCounter,
     gateway_jti_conflicts: prometheus::IntCounter,
     gateway_outcome_write_failures: prometheus::IntCounter,
+    agent_state_changes: IntCounterVec,
     gateway_stage_seconds: HistogramVec,
     checkpoints: CheckpointMetrics,
     revocation_evidence: RevocationEvidenceMetrics,
@@ -215,6 +216,17 @@ impl Metrics {
             "kavach_gateway_outcome_write_failures_total",
             "ALERT: an outcome happened but could not be recorded",
         )?;
+        let agent_state_changes = IntCounterVec::new(
+            Opts::new(
+                "kavach_agent_state_changes_total",
+                "Attempts to change an agent's state through the operator API, by the state \
+                 asked for and the result (applied, unchanged, refused, rate_limited, \
+                 unavailable, forbidden, unknown_agent). A stop is an incident; a burst of \
+                 them is a stolen credential until shown otherwise",
+            ),
+            &["to", "result"],
+        )?;
+        registry.register(Box::new(agent_state_changes.clone()))?;
         registry.register(Box::new(gateway_calls.clone()))?;
         registry.register(Box::new(gateway_malformed.clone()))?;
         registry.register(Box::new(gateway_jti_conflicts.clone()))?;
@@ -233,6 +245,7 @@ impl Metrics {
             gateway_malformed,
             gateway_jti_conflicts,
             gateway_outcome_write_failures,
+            agent_state_changes,
             gateway_stage_seconds,
             checkpoints,
             revocation_evidence,
@@ -318,6 +331,14 @@ impl Metrics {
         if report.error.is_none() {
             metrics.last_pass.set(chrono::Utc::now().timestamp());
         }
+    }
+
+    /// One attempt to change an agent's state (`to` and `result` are fixed
+    /// vocabularies).
+    pub fn observe_agent_state_change(&self, to: &str, result: &str) {
+        self.agent_state_changes
+            .with_label_values(&[to, result])
+            .inc();
     }
 
     pub fn gather_text(&self) -> Result<String, prometheus::Error> {

@@ -126,6 +126,7 @@ A change of an agent's state (ADR-013 §4): an agent was restricted, quarantined
 | `reason_code` | string | One of `rogue_behaviour`, `compromise_suspected`, `policy_violation`, `customer_complaint`, `operator_request`, `reviewed`, `other`. A closed set: the chain never holds an operator's free text, which could name a borrower and cannot be erased |
 | `reason_digest` | string or `null` | `mac:` and 64 lowercase hex: a keyed digest of the operator's free text, which is kept outside the chain; `null` when there was none. A verifier cannot recompute it (it does not hold the key or the text); it checks the form |
 | `changed_by` | string | The principal who made the change |
+| `change_request_id` | string, optional | The change request (ADR-009) that carried out a loosening, 1 to 128 characters without control characters. **Absent** for an operator's stop, and MUST be absent from a tightening. Written only when present, so a record without it hashes as it always did |
 | `approved_by` | string or `null` | The second principal. Present, and different from `changed_by`, **exactly when the change loosens** |
 | `changed_at` | time | When the state changed |
 | `recorded_at` | time | When this record was written: later than `changed_at` when it was written after the fact. Used as the record's time in §8.2 |

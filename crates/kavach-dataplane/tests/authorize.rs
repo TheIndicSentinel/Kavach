@@ -1104,6 +1104,7 @@ async fn set_state(w: &World, agent: &str, to: AgentState, approved: Option<&str
             note: "test".into(),
             changed_by: "ops-1".into(),
             approved_by: approved.map(String::from),
+            change_request_id: None,
             at: w.clock.now().utc,
         })
         .await
@@ -1326,6 +1327,7 @@ impl kavach_ports::ReferenceResolver for QuarantiningResolver {
                     note: "stopped mid-call".into(),
                     changed_by: "ops-1".into(),
                     approved_by: None,
+                    change_request_id: None,
                     at,
                 })
                 .await
@@ -1350,6 +1352,7 @@ fn change_to(to: AgentState, by: &str, approved: Option<&str>, note: &str) -> Ag
         note: note.into(),
         changed_by: by.into(),
         approved_by: approved.map(String::from),
+        change_request_id: None,
         at: ist(11, 0, 0),
     }
 }
@@ -1499,4 +1502,24 @@ async fn the_reconciler_records_a_stop_the_request_could_not() {
     .await;
     assert!(second.reconciled.is_empty(), "{second:?}");
     assert_eq!(store.records(TENANT, 0).await.unwrap().len(), records.len());
+}
+
+/// ADR-013 §2: a quarantine suspends a mandate, it does not extend it. One
+/// that expired while its agent was stopped stays expired when the agent is
+/// reinstated: authority comes back exactly as it was, no longer.
+#[tokio::test]
+async fn a_mandate_that_expired_while_its_agent_was_stopped_stays_expired() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    set_state(&w, "collections-agent", AgentState::Quarantined, None).await;
+    // Past the mandate's seven days.
+    w.at(ist(11, 0, 0) + Duration::days(8));
+    set_state(&w, "collections-agent", AgentState::Active, Some("ops-2")).await;
+    assert!(
+        w.mandates.verify(TENANT, &mandate).await.is_err(),
+        "reinstating did not revive an expired mandate"
+    );
+    let (d, why) = decide(&w, "collections-agent", &read(&mandate, "after-expiry")).await;
+    assert_eq!(d, Decision::Block);
+    assert!(why.contains(&"mandate_invalid".to_string()), "{why:?}");
 }

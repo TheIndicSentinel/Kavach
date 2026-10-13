@@ -6,6 +6,7 @@
 //! 2 warnings, 64 usage), colour only on a terminal and never with
 //! `NO_COLOR`, no prompts. Nothing is sent anywhere: no telemetry.
 
+mod agent;
 mod attack;
 mod authorize;
 mod counterfactual;
@@ -73,6 +74,11 @@ enum Command {
     /// Run Kavach locally.
     #[command(subcommand)]
     Dev(DevCommand),
+    /// The kill switch (ADR-013): an agent's state, stopping it, and bringing
+    /// it back. Stopping takes one principal and only ever tightens;
+    /// reinstating is proposed here and approved by a second principal.
+    #[command(subcommand)]
+    Agent(AgentCommand),
     /// What the gateway would decide for a tool call: offline, in this
     /// process, nothing recorded. Exit 0 if allowed, 1 if not.
     #[command(
@@ -364,6 +370,56 @@ enum DevCommand {
     },
 }
 
+/// `kavach agent`.
+#[derive(Subcommand)]
+enum AgentCommand {
+    /// An agent's state.
+    Status {
+        /// The agent id, exactly as its passport names it.
+        agent: String,
+    },
+    /// Restrict an agent: it may read within its mandate and do nothing
+    /// with an external effect.
+    Restrict(StopArgs),
+    /// Quarantine an agent: it does nothing, and its mandates are suspended
+    /// (not revoked) until it is reinstated.
+    Quarantine(StopArgs),
+    /// Revoke an agent for good: its mandates are revoked, and it cannot be
+    /// reinstated (issue a new passport with a new agent id).
+    Revoke(StopArgs),
+    /// Propose bringing a restricted or quarantined agent back. A second
+    /// principal approves it; this command never applies it.
+    Reinstate {
+        agent: String,
+        /// What it is brought back to.
+        #[arg(long, default_value = "active", value_name = "active|restricted")]
+        to: String,
+        /// Why, from the closed set (rogue_behaviour, compromise_suspected,
+        /// policy_violation, customer_complaint, operator_request, reviewed,
+        /// other). This is what the evidence chain carries.
+        #[arg(long, default_value = "reviewed")]
+        reason_code: String,
+        /// Your words, kept in the store and the audit log, never in the
+        /// evidence chain.
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+}
+
+#[derive(clap::Args)]
+struct StopArgs {
+    agent: String,
+    /// Why, from the closed set (rogue_behaviour, compromise_suspected,
+    /// policy_violation, customer_complaint, operator_request, reviewed,
+    /// other). This is what the evidence chain carries.
+    #[arg(long, default_value = "operator_request")]
+    reason_code: String,
+    /// Your words, kept in the store and the audit log, never in the
+    /// evidence chain.
+    #[arg(long, default_value = "")]
+    note: String,
+}
+
 fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -500,6 +556,7 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             .await,
         ),
         Command::Dev(command) => dev_command(ui, cli, command).await,
+        Command::Agent(command) => agent_command(ui, cli, command).await,
     }
 }
 
@@ -528,6 +585,65 @@ async fn dev_command(
             .await,
         ),
         DevCommand::Clock { time } => ("dev clock", dev::move_clock(&ui, &cli.project, time).await),
+    }
+}
+
+/// `kavach agent …`.
+async fn agent_command(
+    ui: Ui,
+    cli: &Cli,
+    command: &AgentCommand,
+) -> (&'static str, Result<i32, CliError>) {
+    match command {
+        AgentCommand::Status { agent } => (
+            "agent status",
+            agent::status(&ui, &cli.project, agent).await,
+        ),
+        AgentCommand::Restrict(a) => (
+            "agent restrict",
+            agent::stop(
+                &ui,
+                &cli.project,
+                &a.agent,
+                "restrict",
+                &a.reason_code,
+                &a.note,
+            )
+            .await,
+        ),
+        AgentCommand::Quarantine(a) => (
+            "agent quarantine",
+            agent::stop(
+                &ui,
+                &cli.project,
+                &a.agent,
+                "quarantine",
+                &a.reason_code,
+                &a.note,
+            )
+            .await,
+        ),
+        AgentCommand::Revoke(a) => (
+            "agent revoke",
+            agent::stop(
+                &ui,
+                &cli.project,
+                &a.agent,
+                "revoke",
+                &a.reason_code,
+                &a.note,
+            )
+            .await,
+        ),
+        AgentCommand::Reinstate {
+            agent,
+            to,
+            reason_code,
+            note,
+        } => (
+            "agent reinstate",
+            agent::reinstate(&ui, &cli.project, agent, to, reason_code, note).await,
+        ),
     }
 }
 

@@ -251,6 +251,16 @@ impl MandateStore for MandateStoreBackend {
             Self::Postgres(s) => s.live_roots_for_record(tenant_id, system, record_ref).await,
         }
     }
+    async fn active_held_by(
+        &self,
+        tenant_id: &str,
+        holder: &str,
+    ) -> Result<Vec<String>, PortError> {
+        match self {
+            Self::Memory(s) => s.active_held_by(tenant_id, holder).await,
+            Self::Postgres(s) => s.active_held_by(tenant_id, holder).await,
+        }
+    }
     async fn record_revocation(&self, revocation: StoredRevocation) -> Result<(), PortError> {
         match self {
             Self::Memory(s) => s.record_revocation(revocation).await,
@@ -314,6 +324,38 @@ impl ReplayGuard for ReplayBackend {
                 Ok(())
             }
         }
+    }
+}
+
+/// A revoked agent is issued and delegated nothing (ADR-013 §2): between its
+/// state becoming `revoked` and its mandates being revoked, no new mandate
+/// can be handed to it. A state that cannot be read refuses too.
+struct RevokedAgentGate {
+    store: Arc<EvidenceBackend>,
+}
+
+impl kavach_mandate::AgentGate for RevokedAgentGate {
+    fn may_hold<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        agent_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), PortError>> + Send + 'a>>
+    {
+        use kavach_ports::agent_state::AgentStateStore as _;
+        Box::pin(async move {
+            let states = self
+                .store
+                .states(tenant_id, &[agent_id.to_string()])
+                .await
+                .map_err(|e| PortError::unavailable(format!("agent state: {}", e.message)))?;
+            match states.get(agent_id) {
+                Some(kavach_domain::AgentState::Revoked) => Err(PortError::rejected(format!(
+                    "agent {agent_id} is revoked and cannot hold a mandate"
+                ))),
+                Some(_) => Ok(()),
+                None => Err(PortError::unavailable("agent state was not read")),
+            }
+        })
     }
 }
 
@@ -587,8 +629,52 @@ pub type Mandates = MandateService<
     ClockBackend,
 >;
 
+/// The system-of-record listener's limit and the operator stop limit.
+fn limiters(sor_rate_per_second: u32) -> (Mutex<TokenBucket>, Mutex<TokenBucket>) {
+    let rate = f64::from(sor_rate_per_second.max(1));
+    let bucket = |rate: f64, burst: f64| {
+        Mutex::new(TokenBucket {
+            rate,
+            burst,
+            tokens: burst,
+            last: Instant::now(),
+        })
+    };
+    (bucket(rate, rate), bucket(STOPS_PER_SECOND, STOP_BURST))
+}
+
+/// The mandate service, refusing to issue or delegate to a revoked agent
+/// (the gate reads the same store the agent states live in).
+fn mandate_service(
+    _config: &DataplaneConfig,
+    deps: MandateDeps<
+        SigningKeys,
+        ReplayBackend,
+        InMemoryConsentSource,
+        MandateStoreBackend,
+        InMemoryEventBus,
+        ClockBackend,
+    >,
+    mandate_config: kavach_mandate::MandateConfig,
+    evidence: &Arc<EvidenceBackend>,
+) -> Result<Arc<Mandates>, String> {
+    let service = MandateService::new(deps, mandate_config)
+        .map_err(|e| format!("mandate config: {e}"))?
+        .with_agent_gate(Arc::new(RevokedAgentGate {
+            store: Arc::clone(evidence),
+        }));
+    Ok(Arc::new(service))
+}
+
+/// Operator stops per second across the process, and the burst allowed: an
+/// incident may stop a handful of agents at once, never hundreds.
+const STOPS_PER_SECOND: f64 = 1.0;
+const STOP_BURST: f64 = 10.0;
+
 struct TokenBucket {
     rate: f64,
+    /// The most tokens it holds (the burst allowed).
+    burst: f64,
     tokens: f64,
     last: Instant,
 }
@@ -597,7 +683,7 @@ impl TokenBucket {
     fn take(&mut self) -> bool {
         let now = Instant::now();
         self.tokens =
-            (self.tokens + now.duration_since(self.last).as_secs_f64() * self.rate).min(self.rate);
+            (self.tokens + now.duration_since(self.last).as_secs_f64() * self.rate).min(self.burst);
         self.last = now;
         if self.tokens >= 1.0 {
             self.tokens -= 1.0;
@@ -617,6 +703,9 @@ pub struct Dataplane {
     passports: BTreeSet<(String, String)>,
     tenant: String,
     sor_limiter: Mutex<TokenBucket>,
+    /// Operator stops of agents (ADR-013): a global limit, because a stolen
+    /// operator credential must not be able to stop every agent at once.
+    stop_limiter: Mutex<TokenBucket>,
     broker: Broker,
     resolver: FixtureResolver,
     forwarder: crate::forward::HttpForwarder,
@@ -661,20 +750,20 @@ impl Dataplane {
             refuse_dev_key("system-of-record issuer", &issuer.key.kid, insecure_dev)?;
         }
         let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
-        let mandates = Arc::new(
-            MandateService::new(
-                MandateDeps {
-                    keys,
-                    replay,
-                    consents: InMemoryConsentSource::new(consents),
-                    store,
-                    events: InMemoryEventBus::new(),
-                    clock: clock.clone(),
-                },
-                mandate_config,
-            )
-            .map_err(|e| format!("mandate config: {e}"))?,
-        );
+        let evidence = Arc::new(evidence);
+        let mandates = mandate_service(
+            config,
+            MandateDeps {
+                keys,
+                replay,
+                consents: InMemoryConsentSource::new(consents),
+                store,
+                events: InMemoryEventBus::new(),
+                clock: clock.clone(),
+            },
+            mandate_config,
+            &evidence,
+        )?;
         let signer = sources.evidence_signer(
             HsmRole::Evidence,
             &config.evidence_keys_dir,
@@ -686,7 +775,6 @@ impl Dataplane {
         let broker = build_broker(config, &tools, &mandate_kid, insecure_dev, &sources).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
             .map_err(|e| format!("subject pseudonym key: {e}"))?;
-        let evidence = Arc::new(evidence);
         let authorize = AuthorizeConfig {
             tenant_id: config.tenant_id.clone(),
             ..AuthorizeConfig::default()
@@ -712,7 +800,7 @@ impl Dataplane {
             .await
             .map_err(|e| format!("agent token verifier: {e}"))?;
         agents.spawn_refresher();
-        let rate = f64::from(config.sor_rate_per_second.max(1));
+        let (sor_limiter, stop_limiter) = limiters(config.sor_rate_per_second);
         Ok(Self {
             dev_clock: config.dev_clock.clone(),
             mandates,
@@ -721,11 +809,8 @@ impl Dataplane {
             agents,
             passports,
             tenant: config.tenant_id.clone(),
-            sor_limiter: Mutex::new(TokenBucket {
-                rate,
-                tokens: rate,
-                last: Instant::now(),
-            }),
+            sor_limiter,
+            stop_limiter,
             broker,
             resolver,
             forwarder,
@@ -733,6 +818,13 @@ impl Dataplane {
             in_flight: crate::shutdown::InFlight::new(),
             agent_only: config.agent_only,
         })
+    }
+
+    /// Takes one operator stop from the global limit (ADR-013).
+    pub fn admit_stop(&self) -> bool {
+        self.stop_limiter
+            .lock()
+            .is_ok_and(|mut bucket| bucket.take())
     }
 
     /// Whether only the agent surfaces and the evidence reads are served

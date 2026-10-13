@@ -1148,6 +1148,79 @@ fn a_fixed_dev_clock_moves_forward_and_marks_evidence() {
     );
 }
 
+/// `kavach agent` against a real dev stack (ADR-013): status, a quarantine
+/// that stops the next call, a weaker state refused, an unknown agent, and a
+/// reinstatement that is only proposed here.
+#[test]
+fn the_agent_kill_switch_from_the_command_line() {
+    let dir = scratch("agent-switch");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    let _stack = dev_up(&dir, &["--at", "11:00"]);
+
+    let status = json(&kavach(
+        &dir,
+        &["--json", "agent", "status", "collections-agent"],
+    ));
+    assert_eq!(status["state"], "active", "{status}");
+
+    let quarantined = kavach(
+        &dir,
+        &[
+            "--json",
+            "agent",
+            "quarantine",
+            "collections-agent",
+            "--reason-code",
+            "rogue_behaviour",
+            "--note",
+            "sending outside its task",
+        ],
+    );
+    let doc = json(&quarantined);
+    assert_eq!(quarantined.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["state"], "quarantined", "{doc}");
+    assert_eq!(doc["applied"], true);
+
+    let call = json(&kavach(
+        &dir,
+        &["--json", "call", "send_reminder", "--issue-mandate"],
+    ));
+    assert_eq!(call["decision"], "BLOCK", "{call}");
+    assert!(call["reply"]["reasons"]
+        .to_string()
+        .contains("agent-stopped"));
+
+    // Weaker is loosening: refused.
+    let weaker = kavach(&dir, &["agent", "restrict", "collections-agent"]);
+    assert_eq!(weaker.status.code(), Some(1));
+    // Unknown agents, exactly matched.
+    let unknown = kavach(&dir, &["agent", "quarantine", "Collections-Agent"]);
+    assert_eq!(unknown.status.code(), Some(1));
+    // A reason that is not from the closed set is a usage error.
+    let bad = kavach(
+        &dir,
+        &[
+            "agent",
+            "quarantine",
+            "collections-agent",
+            "--reason-code",
+            "because",
+        ],
+    );
+    assert_eq!(bad.status.code(), Some(64));
+
+    // Reinstating is proposed, never applied from here.
+    let proposed = kavach(&dir, &["--json", "agent", "reinstate", "collections-agent"]);
+    let doc = json(&proposed);
+    assert_eq!(proposed.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["status"], "pending", "{doc}");
+    let still = json(&kavach(
+        &dir,
+        &["--json", "agent", "status", "collections-agent"],
+    ));
+    assert_eq!(still["state"], "quarantined", "{still}");
+}
+
 /// `kavach demo`: every step of the story behaves as scripted, at any hour,
 /// and the throwaway project is gone afterwards (kept with --keep). Part of
 /// the 20× acceptance gate: it is the first-impression path.

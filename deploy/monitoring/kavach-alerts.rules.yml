@@ -78,6 +78,34 @@ groups:
             It runs every 30 seconds and is restarted if it exits. A pass that cannot read
             the state history or the evidence store does not count as complete.
 
+      - alert: KavachAgentStopped
+        expr: sum(increase(kavach_agent_state_changes_total{result="applied",to=~"quarantined|revoked"}[5m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: An agent was quarantined or revoked
+          description: >-
+            An operator stopped an agent through the API. That is an incident response, or
+            a mistake, or a misused credential: the audit log names who and why (the
+            `stop_agent` entries), and the evidence chain holds the signed change.
+      - alert: KavachAgentStopBurst
+        expr: sum(increase(kavach_agent_state_changes_total{result=~"applied|rate_limited"}[10m])) > 5
+        labels: { severity: critical }
+        annotations:
+          summary: Many agent stops in ten minutes
+          description: >-
+            More than five stops in ten minutes, or stops refused by the global limit. A
+            real incident can look like this; so can a stolen operator credential stopping
+            every agent. There is no bulk stop, and the limit bounds the damage. Check the
+            audit log for `stop_agent` and `stop_agent_refused`.
+      - alert: KavachAgentStopForbidden
+        expr: sum(increase(kavach_agent_state_changes_total{result="forbidden"}[10m])) > 0
+        labels: { severity: warning }
+        annotations:
+          summary: A principal that may not stop agents tried to
+          description: >-
+            Someone without `stop_agent` called a stop route. The attempt is in the audit log
+            as `stop_agent_refused`.
+
   - name: kavach-gateway
     rules:
       - alert: KavachOutcomeWriteFailures

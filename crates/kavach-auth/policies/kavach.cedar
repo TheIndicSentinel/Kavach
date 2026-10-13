@@ -227,3 +227,36 @@ permit (
   action == Kavach::Action::"read_governance",
   resource == Kavach::System::"api"
 );
+
+// Agent kill switch (ADR-013). Stopping makes things safer and takes one
+// principal; bringing an agent back is a change request another principal
+// approves. `stop_agent` is its own action so that who may stop an agent
+// (for example an on-call incident responder who may not change packs) is a
+// policy edit.
+@id("admins-may-stop-agent")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"stop_agent",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-read-agent-state")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"read_agent_state",
+  resource == Kavach::System::"api"
+);
+
+@id("admins-may-propose-reinstate-agent")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"propose_reinstate_agent",
+  resource == Kavach::System::"api"
+);
+
+@id("change-approvers-may-approve-reinstate-agent")
+permit (
+  principal in Kavach::Group::"change-approvers",
+  action == Kavach::Action::"approve_reinstate_agent",
+  resource == Kavach::System::"api"
+);

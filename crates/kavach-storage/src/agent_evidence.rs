@@ -512,6 +512,7 @@ impl MemoryAgentEvidenceStore {
             note: change.note.clone(),
             changed_by: change.changed_by.clone(),
             approved_by: change.approved_by.clone(),
+            change_request_id: change.change_request_id.clone(),
             changed_at: change.at,
         };
         let history = StoredAgentChange {
@@ -524,6 +525,7 @@ impl MemoryAgentEvidenceStore {
             note: change.note.clone(),
             changed_by: change.changed_by.clone(),
             approved_by: change.approved_by.clone(),
+            change_request_id: change.change_request_id.clone(),
             changed_at: change.at,
         };
         state.agent_states.insert(key, row.clone());
@@ -597,6 +599,7 @@ impl MemoryAgentEvidenceStore {
                 },
                 changed_by: history.changed_by,
                 approved_by: history.approved_by,
+                change_request_id: history.change_request_id,
                 changed_at: history.changed_at,
             };
             let record = Self::append_state_record_locked(
