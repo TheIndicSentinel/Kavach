@@ -1,6 +1,6 @@
 # ADR-014: Tenancy Tiers (Managed Single-Tenant First, Pooled Later)
 
-**Status:** Proposed. The model (managed single-tenant first, pooled only on demand) was approved by the owner on 2026-10-12; the details below are for review.  
+**Status:** Accepted (2026-10-13, with the owner's amendments: one tenant per issuer key, open question 3 answered). The model (managed single-tenant first, pooled only on demand) was approved by the owner on 2026-10-12.  
 **Date:** 2026-10-12  
 **Deciders:** Kavach product/engineering  
 **Related:** ADR-002 (deployment), ADR-005 (evidence), ADR-007 (network boundary), ADR-008 (authentication), ADR-012 (revocation), [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md), [SECOND_REVIEW.md](SECOND_REVIEW.md)
@@ -37,7 +37,7 @@ So the agent path is tenant-keyed by design, and everything around it is single-
 Regulated lenders will ask for Tier 1's isolation and key ownership regardless, so it is also what the first customers will want.
 
 ### 2. No-regret work, done now (each is correct in Tier 1 too)
-1. **Bind each system-of-record issuer to its tenants.** A key is registered for `(system, tenants)`, and an event whose `tenant_id` is not in its key's set is refused. **Security-critical:** it has its own test (one tenant's key signs for another and must be refused) and goes on the second-review list. This replaces the single-tenant refusal as the primary control.
+1. **Bind each system-of-record issuer key to exactly one tenant (and one system).** A key is registered for `(tenant, system, kid)`, never for a set of tenants: a key valid for several tenants is the weakness this removes. An event whose `tenant_id` is not its key's tenant is refused. The same public key is never registered for two tenants (checked on the key material, not the `kid`), and an unknown `kid` and a wrong-tenant `kid` get the same external refusal, so the error cannot be used to find which keys exist. **Security-critical:** it has its own tests (one tenant's key signs for another and must be refused; on Postgres) and goes on the second-review list. This becomes the primary control, with the listener's served-tenant check kept as a second layer.
 2. **Agent-only mode** (`--agent-only`): the agent surfaces and the evidence reads only. Default for any hosted build. The credit track is frozen.
 3. **A tenant column on the admin audit log** (a constant default, so nothing is rewritten) and a **tenant label on metrics**.
 4. **A tenant-isolation test suite** at the store level: two tenants in one database, every store trait, no read or count crosses. This is meaningful today and catches regressions.
@@ -64,9 +64,9 @@ Regulated lenders will ask for Tier 1's isolation and key ownership regardless, 
 - **Burden of proof:** until Tier 2 exists, the answer to "can tenant A see tenant B?" is "they do not share a process, a database or a key".
 
 ## Open questions
-1. **Who operates Tier 1:** Kavach's cloud, or the customer's (bring your own cloud)? It changes the control plane, not the binary.
+1. **Who operates Tier 1:** Kavach's cloud, or the customer's (bring your own cloud)? It changes the control plane, not the binary. **Left open until a design partner answers.**
 2. **Residency:** an India region first. Are there per-lender residency rules beyond that?
-3. **One lender's sandbox and production:** two stacks (recommended) or two tenants in one.
+3. **One lender's sandbox and production: two stacks (decided 2026-10-13).** Never two tenants in one stack: a shared database makes a test mistake a production incident. Sandbox and production share no process, database or key.
 4. **HSM:** one per tenant, or one shared with per-tenant key labels (an HSM-vendor question).
 5. **Metering and billing:** the evidence chain is a natural meter. Not designed here.
 
