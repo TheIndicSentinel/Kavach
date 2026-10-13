@@ -76,6 +76,10 @@ fn event_for(kind: RevocationAttack, id: String) -> SorSpec {
             other_tenant: true,
             ..paid
         },
+        RevocationAttack::AnotherTenantsKey => SorSpec {
+            key: SorKey::AnotherTenants,
+            ..paid
+        },
         RevocationAttack::WrongLoan => SorSpec {
             loan: Loan::Unused,
             ..paid
@@ -277,6 +281,7 @@ mod tests {
         Ordering,
         Replay,
         RecordsRefused,
+        IssuerTenant,
     }
 
     const NOW: i64 = 1_000_000;
@@ -306,7 +311,8 @@ mod tests {
         fn process(&self, event: &Value) -> (u16, Value) {
             let b = self.broken;
             let at = event["at"].as_i64().unwrap();
-            let refused = if (event["forged"] == true && b != Broken::Signature)
+            let refused = if (event["other_issuer"] == true && b != Broken::IssuerTenant)
+                || (event["forged"] == true && b != Broken::Signature)
                 || ((at - NOW).abs() > 300 && b != Broken::Freshness)
             {
                 Some(422)
@@ -411,6 +417,7 @@ mod tests {
                 "id": spec.event_id,
                 "type": spec.event_type,
                 "forged": spec.key == SorKey::Unregistered,
+                "other_issuer": spec.key == SorKey::AnotherTenants,
                 "other_tenant": spec.other_tenant,
                 "loan": if spec.loan == Loan::Attack { "attack" } else { "unused" },
                 "at": NOW + spec.offset_seconds,
@@ -474,6 +481,7 @@ mod tests {
             R::WrongLoan,
             R::ReachesForward,
             R::Replayed,
+            R::AnotherTenantsKey,
         ] {
             let (verdict, observed) = verdict(Broken::Nothing, kind).await;
             assert_eq!(verdict, Verdict::Refused, "{kind:?}: {observed}");
@@ -492,6 +500,7 @@ mod tests {
             (Broken::Loan, R::WrongLoan),
             (Broken::Ordering, R::ReachesForward),
             (Broken::Replay, R::Replayed),
+            (Broken::IssuerTenant, R::AnotherTenantsKey),
             // Refused, but recorded as a revocation all the same.
             (Broken::RecordsRefused, R::Forged),
         ] {

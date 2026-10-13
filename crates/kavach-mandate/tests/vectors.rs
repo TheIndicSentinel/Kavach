@@ -134,6 +134,24 @@ fn event(id: &str, kind: &str, at: DateTime<Utc>, nonce: &str) -> SorEvent {
     }
 }
 
+/// Genuinely signed events that no registered key may state: the issuer
+/// binding (spec section 2) is to a tenant and a system, not to a system.
+fn binding_refused(p: &InMemoryKeyProvider, good: &SorEvent) -> Value {
+    let other_tenant = SorEvent {
+        tenant_id: "other-tenant".into(),
+        ..good.clone()
+    };
+    let other_system = SorEvent {
+        system: "crm".into(),
+        ..good.clone()
+    };
+    json!([
+        {"name": "another-tenants-event", "token": token_of(p, SOR_KID, TYP_SOR_EVENT, &other_tenant)},
+        {"name": "another-systems-event", "token": token_of(p, SOR_KID, TYP_SOR_EVENT, &other_system)},
+        {"name": "another-issuers-key", "token": token_of(p, OTHER_KID, TYP_SOR_EVENT, good)},
+    ])
+}
+
 fn b64(bytes: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(bytes)
 }
@@ -271,9 +289,10 @@ fn build() -> Value {
         "description": "Kavach mandate and system-of-record event tokens v1: compact JWS, EdDSA, RFC 8785 canonical header and payload. Test keys only.",
         "mandate_key": jwk(&m),
         "sor_issuers": [
-            {"system": "lms", "key": jwk(&s)},
-            {"system": "crm", "key": jwk(&o)},
+            {"tenant_id": TENANT, "system": "lms", "key": jwk(&s)},
+            {"tenant_id": TENANT, "system": "crm", "key": jwk(&o)},
         ],
+        "binding_refused": binding_refused(&p, &dpd),
         "freshness_seconds": 300,
         "mandates": [
             {"name": "root", "token": root_token, "payload": decode_payload(&root_token)},
@@ -346,6 +365,44 @@ fn the_checked_in_tokens_verify_to_the_expected_content() {
         assert_eq!(
             legacy_content_sha256(&event).unwrap(),
             item["legacy_content_sha256"]
+        );
+    }
+}
+
+/// No registered key (tenant, system, kid) matches these events.
+#[test]
+fn events_outside_the_issuer_binding_are_not_accepted() {
+    let v = vector();
+    let issuers: Vec<(String, String, String)> = v["sor_issuers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| {
+            (
+                i["tenant_id"].as_str().unwrap().into(),
+                i["system"].as_str().unwrap().into(),
+                i["key"]["kid"].as_str().unwrap().into(),
+            )
+        })
+        .collect();
+    let keys = KeySet::new(
+        v["sor_issuers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| key_of(&i["key"])),
+    );
+    for case in v["binding_refused"].as_array().unwrap() {
+        let token = case["token"].as_str().unwrap();
+        // The signature is genuine...
+        let (kid, event): (String, SorEvent) = jws::verify(token, TYP_SOR_EVENT, &keys).unwrap();
+        // ...and no registration covers this tenant and system with this key.
+        assert!(
+            !issuers
+                .iter()
+                .any(|(t, s, k)| *t == event.tenant_id && *s == event.system && *k == kid),
+            "{} is inside the binding",
+            case["name"]
         );
     }
 }

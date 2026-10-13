@@ -1,4 +1,18 @@
 {
+  "binding_refused": [
+    {
+      "name": "another-tenants-event",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6Imxtcy1pc3N1ZXIta2F0IiwidHlwIjoia2F2YWNoLXNvci1ldmVudCtqd3MifQ.eyJhc3NpZ25lZF9hZ2VudCI6ImNvbGxlY3Rpb25zLWFnZW50IiwiY29uc2VudF9yZWZzIjpbIkMtMSJdLCJldmVudF9pZCI6ImV2dC1kcGQzMC0xIiwiZXZlbnRfdHlwZSI6ImxvYW4uZHBkMzAiLCJub25jZSI6Im4tMSIsIm9jY3VycmVkX2F0IjoiMjAyNi0xMC0wMVQwNTozMDowMFoiLCJwcmluY2lwYWwiOiJjb2xsZWN0aW9ucy1vcHMiLCJyZWNvcmRfcmVmIjoibG1zOmxvYW4vQi05MzgyIiwic3ViamVjdF9yZWYiOiJyZWY6Ym9ycm93ZXI6Qi05MzgyIiwic3lzdGVtIjoibG1zIiwidGVuYW50X2lkIjoib3RoZXItdGVuYW50In0.vALY8G4AjC9QdZhGuzdYunIXliR8XQFiw-F4MetfhRMD73HyevxNti4G8Kh9LOZSKcLu09XvEL25s8hQ7L0YCA"
+    },
+    {
+      "name": "another-systems-event",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6Imxtcy1pc3N1ZXIta2F0IiwidHlwIjoia2F2YWNoLXNvci1ldmVudCtqd3MifQ.eyJhc3NpZ25lZF9hZ2VudCI6ImNvbGxlY3Rpb25zLWFnZW50IiwiY29uc2VudF9yZWZzIjpbIkMtMSJdLCJldmVudF9pZCI6ImV2dC1kcGQzMC0xIiwiZXZlbnRfdHlwZSI6ImxvYW4uZHBkMzAiLCJub25jZSI6Im4tMSIsIm9jY3VycmVkX2F0IjoiMjAyNi0xMC0wMVQwNTozMDowMFoiLCJwcmluY2lwYWwiOiJjb2xsZWN0aW9ucy1vcHMiLCJyZWNvcmRfcmVmIjoibG1zOmxvYW4vQi05MzgyIiwic3ViamVjdF9yZWYiOiJyZWY6Ym9ycm93ZXI6Qi05MzgyIiwic3lzdGVtIjoiY3JtIiwidGVuYW50X2lkIjoibmJmYy1kZW1vIn0.0bNEKxc1OhSGAzkr6_XZDiEkh1elxkwz2yEjMQYakRJ1smWoyh6wYNDrq-vH-6hqC1HSNKZns6nPlgTuE3dVAA"
+    },
+    {
+      "name": "another-issuers-key",
+      "token": "eyJhbGciOiJFZERTQSIsImtpZCI6ImNybS1pc3N1ZXIta2F0IiwidHlwIjoia2F2YWNoLXNvci1ldmVudCtqd3MifQ.eyJhc3NpZ25lZF9hZ2VudCI6ImNvbGxlY3Rpb25zLWFnZW50IiwiY29uc2VudF9yZWZzIjpbIkMtMSJdLCJldmVudF9pZCI6ImV2dC1kcGQzMC0xIiwiZXZlbnRfdHlwZSI6ImxvYW4uZHBkMzAiLCJub25jZSI6Im4tMSIsIm9jY3VycmVkX2F0IjoiMjAyNi0xMC0wMVQwNTozMDowMFoiLCJwcmluY2lwYWwiOiJjb2xsZWN0aW9ucy1vcHMiLCJyZWNvcmRfcmVmIjoibG1zOmxvYW4vQi05MzgyIiwic3ViamVjdF9yZWYiOiJyZWY6Ym9ycm93ZXI6Qi05MzgyIiwic3lzdGVtIjoibG1zIiwidGVuYW50X2lkIjoibmJmYy1kZW1vIn0.TgApD2z2u3vZs1GZUWGpif40hHKlRyEacDth3ke6_buq3DeLqLR5UERxLxH4-PYoTEgnYJoS4x5ir7NlyQuhDg"
+    }
+  ],
   "description": "Kavach mandate and system-of-record event tokens v1: compact JWS, EdDSA, RFC 8785 canonical header and payload. Test keys only.",
   "events": [
     {
@@ -253,7 +267,8 @@
         "kty": "OKP",
         "x": "TtMvY7818O7vyyXyii4fvchzrig1ZxsMlGD18S5FVqg"
       },
-      "system": "lms"
+      "system": "lms",
+      "tenant_id": "nbfc-demo"
     },
     {
       "key": {
@@ -262,7 +277,8 @@
         "kty": "OKP",
         "x": "iEuIV_TqoWE8YVBNs01L6vNGUXoOMd483dTZtCAdnQs"
       },
-      "system": "crm"
+      "system": "crm",
+      "tenant_id": "nbfc-demo"
     }
   ]
 }

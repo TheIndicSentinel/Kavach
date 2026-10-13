@@ -141,10 +141,12 @@ pub fn try_fixture(
         mandate_keys: KeySet::new([kavach_pub]),
         sor_issuers: vec![
             SorIssuer {
+                tenant_id: TENANT.into(),
                 system: "lms".into(),
                 key: lms_pub,
             },
             SorIssuer {
+                tenant_id: TENANT.into(),
                 system: "crm".into(),
                 key: crm_pub,
             },

@@ -941,7 +941,7 @@ impl kavach_attacks::Target for InProcess<'_> {
             consent_refs: &["C-attack"],
             assigned_agent: "collections-agent",
             at: self.0.clock.now().utc,
-            forged: false,
+            key: EventKey::Registered,
         })
         .await;
         let (status, reply) = self.post_sor_event(&event).await?;
@@ -969,7 +969,11 @@ impl kavach_attacks::Target for InProcess<'_> {
             consent_refs: &[],
             assigned_agent: "",
             at: self.0.clock.now().utc + chrono::Duration::seconds(spec.offset_seconds),
-            forged: spec.key == kavach_attacks::SorKey::Unregistered,
+            key: match spec.key {
+                kavach_attacks::SorKey::Registered => EventKey::Registered,
+                kavach_attacks::SorKey::Unregistered => EventKey::Forged,
+                kavach_attacks::SorKey::AnotherTenants => EventKey::AnotherTenants,
+            },
         })
         .await)
     }

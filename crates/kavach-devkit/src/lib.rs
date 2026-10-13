@@ -63,6 +63,11 @@ pub const CREDENTIAL_KID: &str = "dev-credential-1";
 pub const EXPORT_KID: &str = "dev-export-1";
 pub const TOOL_SIGNER_KID: &str = "dev-tool-signer-1";
 pub const SOR_KID: &str = "dev-sor-issuer-1";
+/// A second system-of-record issuer, registered for **another tenant's**
+/// `lms` (`kavach attack`: a key must not sign for a tenant it is not
+/// registered for, ADR-014 §2.1). No agent or mandate exists for that tenant.
+pub const SOR_OTHER_TENANT_KID: &str = "dev-sor-other-tenant-1";
+pub const OTHER_TENANT: &str = "attack-other-tenant";
 pub const IDP_KID: &str = "dev-idp-1";
 pub const PROVIDER_KID: &str = "dev-provider-enc-1";
 
@@ -315,6 +320,29 @@ pub async fn generate(opts: &Options) -> Result<Summary, String> {
     generate_with(opts, &World::default()).await
 }
 
+/// The signed tool registry and the signer the gateway trusts for it.
+async fn write_signed_registry(
+    kavach: &Path,
+    signer: &LocalFileKeyProvider,
+    signer_public: &kavach_ports::PublicKey,
+) -> Result<(), String> {
+    let registry_path = kavach.join("tools/agent-tools.yaml");
+    write(&registry_path, REGISTRY)?;
+    let digest = format!("sha256:{:x}", Sha256::digest(REGISTRY.as_bytes()));
+    let signature = sign_tool_registry(signer, TOOL_SIGNER_KID, &digest)
+        .await
+        .map_err(|e| e.to_string())?;
+    write(
+        &kavach.join("tools/agent-tools.yaml.sig"),
+        &serde_json::to_string_pretty(&signature).unwrap_or_default(),
+    )?;
+    write_json(
+        &kavach.join("tool-signers.json"),
+        &json!({ "signers": [{ "kid": TOOL_SIGNER_KID, "roles": ["tool"],
+            "public_key": hex::encode(signer_public.bytes) }] }),
+    )
+}
+
 /// [`generate`], holding `world`'s agents and borrowers.
 pub async fn generate_with(opts: &Options, world: &World) -> Result<Summary, String> {
     if !opts.provider_endpoint.starts_with("https://") {
@@ -367,27 +395,15 @@ pub async fn generate_with(opts: &Options, world: &World) -> Result<Summary, Str
     // The system of record's event key, and the tool-registry signer.
     let sor_keys = LocalFileKeyProvider::new(&sor);
     let sor_public = sor_keys.create_key(SOR_KID).map_err(|e| e.to_string())?;
+    let sor_other_public = sor_keys
+        .create_key(SOR_OTHER_TENANT_KID)
+        .map_err(|e| e.to_string())?;
     let signer = LocalFileKeyProvider::new(&signing);
     let signer_public = signer
         .create_key(TOOL_SIGNER_KID)
         .map_err(|e| e.to_string())?;
 
-    // The signed tool registry.
-    let registry_path = kavach.join("tools/agent-tools.yaml");
-    write(&registry_path, REGISTRY)?;
-    let digest = format!("sha256:{:x}", Sha256::digest(REGISTRY.as_bytes()));
-    let signature = sign_tool_registry(&signer, TOOL_SIGNER_KID, &digest)
-        .await
-        .map_err(|e| e.to_string())?;
-    write(
-        &kavach.join("tools/agent-tools.yaml.sig"),
-        &serde_json::to_string_pretty(&signature).unwrap_or_default(),
-    )?;
-    write_json(
-        &kavach.join("tool-signers.json"),
-        &json!({ "signers": [{ "kid": TOOL_SIGNER_KID, "roles": ["tool"],
-            "public_key": hex::encode(signer_public.bytes) }] }),
-    )?;
+    write_signed_registry(&kavach, &signer, &signer_public).await?;
 
     write_identity(&kavach, &agents, out, opts.token_hours, &world.agents)?;
 
@@ -416,13 +432,19 @@ pub async fn generate_with(opts: &Options, world: &World) -> Result<Summary, Str
     write(&provider.join("tls.pem"), &cert_pem)?;
     write_secret(&provider.join("tls-key.pem"), &key_pem)?;
 
-    write_kavach_config(&kavach, opts, world, &sor_public, &provider_key)?;
+    write_kavach_config(
+        &kavach,
+        opts,
+        world,
+        (&sor_public, &sor_other_public),
+        &provider_key,
+    )?;
     write(&kavach.join("kavach.env"), &env_file(&opts.kavach_mount))?;
     write(&out.join("README.txt"), README)?;
 
     Ok(Summary {
         out: out.clone(),
-        registry_sha256: digest,
+        registry_sha256: format!("sha256:{:x}", Sha256::digest(REGISTRY.as_bytes())),
         agents: world.agents.clone(),
     })
 }
@@ -482,7 +504,7 @@ fn write_kavach_config(
     kavach: &Path,
     opts: &Options,
     world: &World,
-    sor_public: &kavach_ports::PublicKey,
+    (sor_public, sor_other_public): (&kavach_ports::PublicKey, &kavach_ports::PublicKey),
     provider_key: &DecryptionKey,
 ) -> Result<(), String> {
     // Kavach's configuration.
@@ -491,7 +513,12 @@ fn write_kavach_config(
         &json!({
             "issuer_id": "kavach-dev",
             "signing_kid": MANDATE_KID,
-            "sor_issuers": [{ "system": "lms", "kid": SOR_KID, "public_key": hex::encode(sor_public.bytes) }],
+            "sor_issuers": [
+                { "tenant_id": TENANT, "system": "lms", "kid": SOR_KID,
+                  "public_key": hex::encode(sor_public.bytes) },
+                { "tenant_id": OTHER_TENANT, "system": "lms", "kid": SOR_OTHER_TENANT_KID,
+                  "public_key": hex::encode(sor_other_public.bytes) },
+            ],
             "templates": [world_template(world)],
             "passports": world.agents.iter().map(|a| passport(a)).collect::<Vec<_>>(),
             "event_freshness_seconds": 300,
@@ -629,6 +656,8 @@ pub struct AttackEvent {
     pub occurred_at: DateTime<Utc>,
     /// Signed under the registered key id with a key nobody registered.
     pub forged: bool,
+    /// Signed by the key registered for another tenant's `lms`.
+    pub other_tenants_key: bool,
 }
 
 /// Signs an [`AttackEvent`] for the loan of its subject.
@@ -647,7 +676,10 @@ pub async fn attack_event(bundle: &Path, spec: &AttackEvent) -> Result<String, S
         nonce: format!("n-{}", spec.event_id),
     };
     let typ = kavach_mandate::jws::TYP_SOR_EVENT;
-    if spec.forged {
+    if spec.other_tenants_key {
+        let keys = LocalFileKeyProvider::new(bundle.join("sor"));
+        kavach_mandate::jws::sign(&keys, SOR_OTHER_TENANT_KID, typ, &event).await
+    } else if spec.forged {
         let mut keys = kavach_keys::InMemoryKeyProvider::new();
         keys.insert_seed(SOR_KID, random32()?)
             .map_err(|e| e.to_string())?;

@@ -903,7 +903,7 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
         };
         assert_eq!(o["verdict"], expected, "{o}");
     }
-    assert_eq!(doc["catalog_version"], "5");
+    assert_eq!(doc["catalog_version"], "6");
     // Again on the same stack: nothing a run sends is reused by the next.
     let again = kavach(&dir, &["--json", "attack"]);
     let doc = json(&again);
@@ -966,8 +966,8 @@ fn attack_without_the_attack_borrower_is_inconclusive() {
         .iter()
         .filter(|o| o["verdict"] == "inconclusive")
         .collect();
-    // Eight revocation attacks and five kill-switch attacks.
-    assert_eq!(inconclusive.len(), 13, "{doc}");
+    // Nine revocation attacks and five kill-switch attacks.
+    assert_eq!(inconclusive.len(), 14, "{doc}");
     assert!(inconclusive[0]["observed"]["fix"]
         .as_str()
         .unwrap()

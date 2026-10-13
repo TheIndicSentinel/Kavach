@@ -29,10 +29,13 @@ pub struct MandateConfig {
     pub replay_window_seconds: i64,
 }
 
-/// A registered system-of-record signing key. An event is accepted only if
-/// it is signed by a key registered for the event's `system`.
+/// A registered system-of-record signing key (ADR-014 §2.1). A key is
+/// registered for exactly one tenant and one system, never a set of
+/// tenants: an event is accepted only if it is signed by a key registered
+/// for the event's `tenant_id` **and** `system`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SorIssuer {
+    pub tenant_id: String,
     pub system: String,
     pub key: PublicKey,
 }
@@ -42,11 +45,13 @@ impl MandateConfig {
         KeySet::new(self.sor_issuers.iter().map(|i| i.key.clone()))
     }
 
-    pub fn sor_system_for_kid(&self, kid: &str) -> Option<&str> {
+    /// The issuer registered under `kid` for exactly this tenant and
+    /// system: a key registered for another tenant, or another system, is
+    /// not found (and is indistinguishable from an unknown one).
+    pub fn sor_issuer(&self, tenant_id: &str, system: &str, kid: &str) -> Option<&SorIssuer> {
         self.sor_issuers
             .iter()
-            .find(|i| i.key.kid == kid)
-            .map(|i| i.system.as_str())
+            .find(|i| i.tenant_id == tenant_id && i.system == system && i.key.kid == kid)
     }
 
     pub fn template(&self, tenant_id: &str, event_type: &str) -> Option<&MandateTemplate> {
@@ -67,6 +72,31 @@ impl MandateConfig {
     /// ceilings, delegation depth, and scopes beyond agents' passports.
     pub fn validate(&self) -> Result<(), PortError> {
         let invalid = |msg: String| Err(PortError::invalid(msg));
+        // One key, one registration: by id, and by the key material (the
+        // same public key under two ids for two tenants would defeat the
+        // binding).
+        let (mut kids, mut materials) = (BTreeSet::new(), BTreeSet::new());
+        for issuer in &self.sor_issuers {
+            if issuer.tenant_id.is_empty() || issuer.system.is_empty() {
+                return invalid(format!(
+                    "system-of-record issuer {}: a tenant and a system are required",
+                    issuer.key.kid
+                ));
+            }
+            if !kids.insert(&issuer.key.kid) {
+                return invalid(format!(
+                    "system-of-record issuer key id {} is registered twice",
+                    issuer.key.kid
+                ));
+            }
+            if !materials.insert(issuer.key.bytes) {
+                return invalid(format!(
+                    "system-of-record issuer {}: the same public key is registered more than once \
+                     (a key is valid for exactly one tenant and one system)",
+                    issuer.key.kid
+                ));
+            }
+        }
         let mut seen = BTreeSet::new();
         for p in &self.passports {
             if !seen.insert((&p.tenant_id, &p.agent_id)) {

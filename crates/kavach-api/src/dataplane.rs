@@ -153,6 +153,9 @@ pub type Broker = JoseCredentialBroker<SigningKeys>;
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SorIssuerFile {
+    /// The one tenant this key signs for (ADR-014 §2.1): required, so the
+    /// binding is something a configuration states, not a default.
+    tenant_id: String,
     system: String,
     kid: String,
     /// Hex Ed25519 public key.
@@ -1436,6 +1439,7 @@ async fn load_mandate_config(
                 .and_then(|b| b.try_into().ok())
                 .ok_or_else(|| format!("sor issuer {}: public_key must be 32 bytes hex", i.kid))?;
             Ok(SorIssuer {
+                tenant_id: i.tenant_id,
                 system: i.system,
                 key: PublicKey {
                     kid: i.kid,

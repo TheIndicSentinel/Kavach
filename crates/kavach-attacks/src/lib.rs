@@ -25,7 +25,7 @@ mod agent_state;
 mod revocation;
 
 /// Bumped whenever an attack is added, removed or its expectation changes.
-pub const CATALOG_VERSION: &str = "5";
+pub const CATALOG_VERSION: &str = "6";
 
 /// The borrower the dev mandate covers, and one it does not.
 pub const SUBJECT: &str = "ref:borrower:B-9382";
@@ -147,6 +147,9 @@ pub enum RevocationAttack {
     /// A payment that revoked one mandate, sent again after a new mandate
     /// was issued for the same loan.
     Replayed,
+    /// A validly signed payment for this tenant's loan, signed by a key
+    /// registered for **another tenant's** `lms` (ADR-014 §2.1).
+    AnotherTenantsKey,
 }
 
 /// Which key signs a system-of-record event.
@@ -156,6 +159,8 @@ pub enum SorKey {
     Registered,
     /// A key nobody registered.
     Unregistered,
+    /// A key registered for the same system of another tenant.
+    AnotherTenants,
 }
 
 /// Which loan a system-of-record event names.
@@ -253,7 +258,7 @@ const STOPPED: &str =
     "A stopped agent does nothing, from its next call, on every replica (ADR-013, K1-1):";
 
 /// The catalog, in the order it runs.
-pub const CATALOG: [Attack; 35] = [
+pub const CATALOG: [Attack; 36] = [
     Attack {
         id: "raw-phone-number",
         group: "identifiers",
@@ -636,6 +641,15 @@ pub const CATALOG: [Attack; 35] = [
         tries: "an old payment sent again, to revoke the mandate issued after it",
         probe: Probe::Revocation(RevocationAttack::Replayed),
         expect: Expect::StoredRevocation,
+        security_property: REVOCATION,
+        bypass: Some(SOR_KEY),
+    },
+    Attack {
+        id: "issuer-for-another-tenant",
+        group: "issuer",
+        tries: "a payment for this tenant's loan, signed by a key registered for another tenant's system of record",
+        probe: Probe::Revocation(RevocationAttack::AnotherTenantsKey),
+        expect: Expect::EventRefused,
         security_property: REVOCATION,
         bypass: Some(SOR_KEY),
     },
