@@ -320,6 +320,41 @@ pub enum EvidenceBackend {
     Postgres(PostgresAgentEvidenceStore),
 }
 
+impl kavach_ports::agent_state::AgentStateStore for EvidenceBackend {
+    async fn states(
+        &self,
+        tenant_id: &str,
+        agent_ids: &[String],
+    ) -> Result<std::collections::BTreeMap<String, kavach_ports::agent_state::AgentState>, PortError>
+    {
+        match self {
+            Self::Memory(s) => s.states(tenant_id, agent_ids).await,
+            Self::Postgres(s) => s.states(tenant_id, agent_ids).await,
+        }
+    }
+
+    async fn current(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<kavach_ports::agent_state::StoredAgentState>, PortError> {
+        match self {
+            Self::Memory(s) => s.current(tenant_id, agent_id).await,
+            Self::Postgres(s) => s.current(tenant_id, agent_id).await,
+        }
+    }
+
+    async fn set(
+        &self,
+        change: kavach_ports::agent_state::AgentStateChange,
+    ) -> Result<kavach_ports::agent_state::StoredAgentState, PortError> {
+        match self {
+            Self::Memory(s) => s.set(change).await,
+            Self::Postgres(s) => s.set(change).await,
+        }
+    }
+}
+
 impl AgentEvidenceStore for EvidenceBackend {
     async fn commit(
         &self,
@@ -810,7 +845,6 @@ impl WhatIf {
         let agent = AgentIdentity {
             agent_id: agent_id.into(),
             identity_key: format!("what-if#{agent_id}"),
-            state: kavach_authz::AgentState::Active,
         };
         self.core
             .authorize(&agent, &call, Mode::Precheck)
@@ -1345,7 +1379,6 @@ fn authenticate_agent(dp: &Dataplane, headers: &HeaderMap) -> Result<AgentIdenti
         agent_id: verified.principal,
         // Agent risk states (RESTRICTED/QUARANTINED) arrive with the
         // gateway's taint tracking (FR-5).
-        state: kavach_authz::AgentState::Active,
     })
 }
 

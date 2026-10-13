@@ -126,9 +126,24 @@ forbid (
 )
 unless { context.mandate_channels.contains(context.channel) };
 
+// A restricted agent may read within its mandate and do nothing with an
+// external effect (ADR-013 §2). A quarantined or revoked one may do nothing.
 @id("agent-restricted")
-forbid (principal, action, resource)
+forbid (
+  principal,
+  action in [
+    Kavach::Agent::Action::"send_reminder",
+    Kavach::Agent::Action::"place_call",
+    Kavach::Agent::Action::"propose_plan",
+    Kavach::Agent::Action::"update_status"
+  ],
+  resource
+)
 when { context.agent_restricted };
+
+@id("agent-stopped")
+forbid (principal, action, resource)
+when { context.agent_stopped };
 
 @id("waiver-ceiling")
 @escalate("human_review")

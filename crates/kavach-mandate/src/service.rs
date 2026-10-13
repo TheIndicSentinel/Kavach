@@ -25,6 +25,17 @@ pub struct IssuedMandate {
     pub token: String,
 }
 
+/// A mandate whose whole delegation chain verified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedChain {
+    pub mandate: Mandate,
+    /// Mandate ids from the root to `mandate`.
+    pub ids: Vec<String>,
+    /// The holder of each mandate in `ids`, in the same order: the agents
+    /// whose state decides whether the chain may act (ADR-013 §2).
+    pub holders: Vec<String>,
+}
+
 /// Result of a revocation. The revocation itself is committed when this is
 /// returned; `publish_errors` lists mandates whose revocation event could not
 /// be published, so downstream caches and credentials were not told. Until an
@@ -272,17 +283,13 @@ where
     /// `[nbf, exp)`; and each link is a valid narrowing of its parent. A
     /// valid signature alone is not sufficient.
     pub async fn verify_active(&self, token: &str) -> Result<Mandate, PortError> {
-        self.verify_active_chain(token)
-            .await
-            .map(|(mandate, _)| mandate)
+        self.verify_active_chain(token).await.map(|c| c.mandate)
     }
 
     /// As [`Self::verify_active`], also returning the verified chain of
-    /// mandate ids from the root to this mandate (for evidence).
-    pub async fn verify_active_chain(
-        &self,
-        token: &str,
-    ) -> Result<(Mandate, Vec<String>), PortError> {
+    /// mandate ids from the root to this mandate (for evidence) and the
+    /// holder of each.
+    pub async fn verify_active_chain(&self, token: &str) -> Result<VerifiedChain, PortError> {
         let (_, claimed): (String, Mandate) =
             jws::verify(token, TYP_MANDATE, &self.config.mandate_keys)?;
         let stored = self
@@ -298,8 +305,11 @@ where
         let mandate = self.check_record(&stored, now)?;
         if mandate.depth == 0 {
             return if mandate.parent_id.is_none() {
-                let id = mandate.id.clone();
-                Ok((mandate, vec![id]))
+                Ok(VerifiedChain {
+                    ids: vec![mandate.id.clone()],
+                    holders: vec![mandate.holder.clone()],
+                    mandate,
+                })
             } else {
                 Err(PortError::rejected("a root mandate cannot have a parent"))
             };
@@ -339,8 +349,18 @@ where
             ));
         }
         let mut ids: Vec<String> = chain.iter().rev().map(|s| s.mandate.id.clone()).collect();
+        let mut holders: Vec<String> = chain
+            .iter()
+            .rev()
+            .map(|s| s.mandate.holder.clone())
+            .collect();
         ids.push(mandate.id.clone());
-        Ok((mandate, ids))
+        holders.push(mandate.holder.clone());
+        Ok(VerifiedChain {
+            mandate,
+            ids,
+            holders,
+        })
     }
 
     /// One stored mandate: its token verifies and decodes to the stored

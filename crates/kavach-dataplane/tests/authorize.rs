@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use chrono::{DateTime, Duration, Utc};
-use kavach_authz::AgentState;
 use kavach_dataplane::MandateVerifier as _;
 use kavach_dataplane::{
     reconcile_revocations, AgentIdentity, AuthorizeConfig, AuthorizeCore, CommitStatus, Mode,
@@ -106,7 +105,6 @@ fn agent(id: &str) -> AgentIdentity {
     AgentIdentity {
         agent_id: id.into(),
         identity_key: format!("oidc:https://idp#{id}"),
-        state: AgentState::Active,
     }
 }
 
@@ -1089,4 +1087,252 @@ async fn a_revocation_record_that_cannot_be_written_is_missing_and_retried() {
     assert_eq!(report.missing[0].0, "pay-1");
     assert!(report.reconciled.is_empty());
     assert_eq!(report.watermark, None, "not past what is missing");
+}
+
+// ---- K1-1 (ADR-013): agent risk state ----
+
+use kavach_ports::agent_state::{AgentState, AgentStateChange, AgentStateStore};
+
+async fn set_state(w: &World, agent: &str, to: AgentState, approved: Option<&str>) {
+    w.core
+        .store()
+        .set(AgentStateChange {
+            tenant_id: TENANT.into(),
+            agent_id: agent.into(),
+            to,
+            reason: "test".into(),
+            changed_by: "ops-1".into(),
+            approved_by: approved.map(String::from),
+            at: w.clock.now().utc,
+        })
+        .await
+        .expect("state set");
+}
+
+fn read(mandate_id: &str, request_id: &str) -> ToolCall {
+    ToolCall {
+        action: "read_fields".into(),
+        channel: None,
+        requested_fields: common::set(&["name"]),
+        extra: BTreeMap::new(),
+        ..reminder(mandate_id, request_id)
+    }
+}
+
+async fn decide(w: &World, who: &str, call: &ToolCall) -> (Decision, Vec<String>) {
+    let d = w
+        .core
+        .authorize(&agent(who), call, Mode::Commit)
+        .await
+        .unwrap();
+    (d.decision, d.reasons)
+}
+
+/// ADR-013 §2: restricted reads within the mandate and does nothing with an
+/// effect; the decision is a recorded BLOCK that says why.
+#[tokio::test]
+async fn a_restricted_agent_reads_but_cannot_contact_or_plan() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    set_state(&w, "collections-agent", AgentState::Restricted, None).await;
+
+    let (d, why) = decide(&w, "collections-agent", &read(&mandate, "r-read")).await;
+    assert_eq!(d, Decision::Pass, "{why:?}");
+    assert!(
+        why.contains(&"agent_state:restricted".to_string()),
+        "{why:?}"
+    );
+
+    let (d, why) = decide(&w, "collections-agent", &reminder(&mandate, "r-send")).await;
+    assert_eq!(d, Decision::Block);
+    assert!(why.contains(&"agent-restricted".to_string()), "{why:?}");
+    assert!(
+        why.contains(&"agent_state:restricted".to_string()),
+        "{why:?}"
+    );
+    assert!(
+        w.core
+            .store()
+            .get_by_request(TENANT, "collections-agent", "r-send")
+            .await
+            .unwrap()
+            .is_some(),
+        "the refusal is recorded"
+    );
+}
+
+/// ADR-013 §2: a quarantined agent does nothing, and its mandates are
+/// suspended, not revoked: they work again, untouched, once it is reinstated.
+#[tokio::test]
+async fn a_quarantined_agent_does_nothing_and_its_mandates_wait() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    assert_eq!(
+        decide(&w, "collections-agent", &reminder(&mandate, "r-1"))
+            .await
+            .0,
+        Decision::Pass
+    );
+
+    set_state(&w, "collections-agent", AgentState::Quarantined, None).await;
+    for (i, call) in [read(&mandate, "q-read"), reminder(&mandate, "q-send")]
+        .iter()
+        .enumerate()
+    {
+        let (d, why) = decide(&w, "collections-agent", call).await;
+        assert_eq!(d, Decision::Block, "{i}");
+        assert!(why.contains(&"agent-stopped".to_string()), "{why:?}");
+        assert!(
+            why.contains(&"agent_state:quarantined".to_string()),
+            "{why:?}"
+        );
+    }
+    // Nothing was written to the mandate: it still verifies as live.
+    assert!(w.mandates.verify(TENANT, &mandate).await.is_ok());
+
+    set_state(&w, "collections-agent", AgentState::Active, Some("ops-2")).await;
+    let (d, why) = decide(&w, "collections-agent", &reminder(&mandate, "r-2")).await;
+    assert_eq!(
+        d,
+        Decision::Pass,
+        "reinstated, the same mandate works: {why:?}"
+    );
+    assert!(
+        !why.iter().any(|r| r.starts_with("agent_state:")),
+        "{why:?}"
+    );
+}
+
+/// ADR-013 §2: a mandate delegated from a quarantined holder authorises
+/// nothing while the parent is stopped, though its own holder is active; and
+/// other agents are untouched.
+#[tokio::test]
+async fn a_delegation_is_suspended_while_its_parent_holder_is_stopped() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let child = w
+        .mandates
+        .delegate(
+            TENANT,
+            &mandate,
+            "collections-agent",
+            "translator-agent",
+            &kavach_domain::mandate::DelegationRequest {
+                actions: common::set(&["read_fields"]),
+                data_fields: common::set(&["name"]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .mandate
+        .id;
+    let (d, why) = decide(&w, "translator-agent", &read(&child, "c-1")).await;
+    assert_eq!(d, Decision::Pass, "{why:?}");
+
+    set_state(&w, "collections-agent", AgentState::Quarantined, None).await;
+    let (d, why) = decide(&w, "translator-agent", &read(&child, "c-2")).await;
+    assert_eq!(d, Decision::Block);
+    assert!(why.contains(&"agent-stopped".to_string()), "{why:?}");
+
+    // A restricted parent restricts nobody else.
+    set_state(&w, "collections-agent", AgentState::Active, Some("ops-2")).await;
+    set_state(&w, "collections-agent", AgentState::Restricted, None).await;
+    let (d, why) = decide(&w, "translator-agent", &read(&child, "c-3")).await;
+    assert_eq!(d, Decision::Pass, "{why:?}");
+}
+
+/// ADR-013 §6: an agent stopped after the decision was recorded but before
+/// the credential is minted gets no credential, and nothing is sent.
+#[tokio::test]
+async fn an_agent_stopped_after_the_decision_mints_nothing_and_sends_nothing() {
+    use kavach_ports::agent_evidence::Outcome;
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let mut keys = InMemoryKeyProvider::new();
+    keys.insert_seed("kavach-credential-1", [5u8; 32]).unwrap();
+    let broker = CountingBroker {
+        inner: kavach_credential::JoseCredentialBroker::new(
+            keys,
+            "kavach-credential-1",
+            "kavach",
+            BTreeMap::from([(
+                "mock-messaging".to_string(),
+                kavach_credential::DecryptionKey::from_bytes("enc", [11u8; 32]).recipient(),
+            )]),
+        ),
+        issued: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let forwarder = CountingForwarder::default();
+    let resolver = QuarantiningResolver {
+        store: Arc::clone(w.core.store()),
+        agent: "collections-agent".into(),
+        at: w.clock.now().utc,
+    };
+    let deps = kavach_dataplane::GatewayDeps {
+        core: &w.core,
+        resolver: &resolver,
+        broker: &broker,
+        forwarder: &forwarder,
+        observer: &NoMetrics,
+    };
+    let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
+        "mandate_id": mandate,
+        "request_id": "stopped-1",
+        "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" }
+    }))
+    .unwrap();
+    let reply =
+        kavach_dataplane::execute(&deps, &agent("collections-agent"), "send_reminder", request)
+            .await
+            .unwrap();
+    assert_eq!(reply.decision, Decision::Pass, "allowed when decided");
+    assert_eq!(reply.outcome, Some(Outcome::NotExecuted));
+    assert_eq!(reply.outcome_reason.as_deref(), Some("agent_stopped"));
+    assert_eq!(broker.issued.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(forwarder.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+/// A resolver that quarantines the agent while it resolves: the decision is
+/// recorded, the credential not yet minted.
+struct QuarantiningResolver {
+    store: Arc<MemoryAgentEvidenceStore>,
+    agent: String,
+    at: DateTime<Utc>,
+}
+
+impl kavach_ports::ReferenceResolver for QuarantiningResolver {
+    fn resolve(
+        &self,
+        tenant_id: &str,
+        _subject_ref: &str,
+        _channel: &str,
+    ) -> impl std::future::Future<Output = Result<kavach_ports::Destination, kavach_ports::PortError>>
+           + Send {
+        let (store, agent, at, tenant) = (
+            Arc::clone(&self.store),
+            self.agent.clone(),
+            self.at,
+            tenant_id.to_string(),
+        );
+        async move {
+            store
+                .set(AgentStateChange {
+                    tenant_id: tenant,
+                    agent_id: agent,
+                    to: AgentState::Quarantined,
+                    reason: "stopped mid-call".into(),
+                    changed_by: "ops-1".into(),
+                    approved_by: None,
+                    at,
+                })
+                .await
+                .expect("quarantined");
+            Ok(kavach_ports::Destination::new("+910000000001"))
+        }
+    }
+
+    fn describe(&self) -> String {
+        "quarantining".into()
+    }
 }

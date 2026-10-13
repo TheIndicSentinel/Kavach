@@ -252,7 +252,6 @@ async fn run_authorize(
     let agent = Arc::new(AgentIdentity {
         agent_id: AGENT.into(),
         identity_key: format!("oidc:{}#{AGENT}", kavach_devkit::ISSUER),
-        state: kavach_authz::AgentState::Active,
     });
     let stack_op = Arc::clone(stack);
     let measured = measure(concurrency, warmup, duration, sequence, move |n| {

@@ -7,7 +7,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use common::*;
-use kavach_authz::AgentState;
 use kavach_dataplane::{
     AgentIdentity, AuthorizeConfig, AuthorizeCore, CommitStatus, Mode, ToolCall,
 };
@@ -77,7 +76,6 @@ async fn reminders_on_postgres_as_the_runtime_role() {
     let agent = AgentIdentity {
         agent_id: "collections-agent".into(),
         identity_key: "oidc:https://idp#collections-agent".into(),
-        state: AgentState::Active,
     };
     let call = |request_id: &str| ToolCall {
         mandate_id: mandate.clone(),

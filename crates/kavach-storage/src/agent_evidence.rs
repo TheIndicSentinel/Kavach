@@ -1,7 +1,7 @@
 //! In-memory `AgentEvidenceStore` (tests and development; agent routes refuse
 //! it at startup, ADR-007). One mutex makes each commit atomic.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::future::{ready, Future};
 use std::sync::Mutex;
 
@@ -11,6 +11,7 @@ use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, OutcomeRecord, RequestBinding, GENESIS,
 };
+use kavach_ports::agent_state::{AgentState, AgentStateChange, AgentStateStore, StoredAgentState};
 use kavach_ports::chain_record::{seal_revocation, ChainRecord, RevocationDraft, RevocationRecord};
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
@@ -39,6 +40,8 @@ fn in_scope(checkpoint: &Checkpoint, scope: Scope<'_>) -> bool {
 #[derive(Default)]
 pub struct MemoryAgentEvidenceStore {
     state: Mutex<State>,
+    /// Agent risk states (ADR-013), by `(tenant, agent)`.
+    agent_states: Mutex<BTreeMap<(String, String), StoredAgentState>>,
 }
 
 fn poisoned<T>(_: T) -> PortError {
@@ -439,5 +442,64 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         ist_date: NaiveDate,
     ) -> impl Future<Output = Result<u32, PortError>> + Send {
         ready(self.contacts_on_sync(tenant_id, subject_pseudonym, ist_date))
+    }
+}
+
+impl AgentStateStore for MemoryAgentEvidenceStore {
+    fn states(
+        &self,
+        tenant_id: &str,
+        agent_ids: &[String],
+    ) -> impl Future<Output = Result<BTreeMap<String, AgentState>, PortError>> + Send {
+        ready(self.agent_states.lock().map_err(poisoned).map(|guard| {
+            agent_ids
+                .iter()
+                .map(|id| {
+                    let state = guard
+                        .get(&(tenant_id.to_string(), id.clone()))
+                        .map_or(AgentState::Active, |row| row.state);
+                    (id.clone(), state)
+                })
+                .collect()
+        }))
+    }
+
+    fn current(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+    ) -> impl Future<Output = Result<Option<StoredAgentState>, PortError>> + Send {
+        ready(self.agent_states.lock().map_err(poisoned).map(|guard| {
+            guard
+                .get(&(tenant_id.to_string(), agent_id.to_string()))
+                .cloned()
+        }))
+    }
+
+    fn set(
+        &self,
+        change: AgentStateChange,
+    ) -> impl Future<Output = Result<StoredAgentState, PortError>> + Send {
+        ready(self.set_sync(change))
+    }
+}
+
+impl MemoryAgentEvidenceStore {
+    fn set_sync(&self, change: AgentStateChange) -> Result<StoredAgentState, PortError> {
+        let mut guard = self.agent_states.lock().map_err(poisoned)?;
+        let key = (change.tenant_id.clone(), change.agent_id.clone());
+        let current = guard.get(&key).map_or(AgentState::Active, |row| row.state);
+        change.check(current)?;
+        let row = StoredAgentState {
+            tenant_id: change.tenant_id,
+            agent_id: change.agent_id,
+            state: change.to,
+            reason: change.reason,
+            changed_by: change.changed_by,
+            approved_by: change.approved_by,
+            changed_at: change.at,
+        };
+        guard.insert(key, row.clone());
+        Ok(row)
     }
 }

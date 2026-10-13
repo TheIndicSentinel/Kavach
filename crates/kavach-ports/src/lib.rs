@@ -5,6 +5,7 @@
 //! conformance suites live in `kavach-ports-testkit`.
 
 pub mod agent_evidence;
+pub mod agent_state;
 pub mod bundle;
 pub mod bundle_verify;
 pub mod chain_record;

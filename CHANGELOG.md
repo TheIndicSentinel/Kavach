@@ -8,6 +8,10 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 - **Public specifications, `docs/specs/`** (evidence bundle format 2, credential format, mandate and system-of-record event) and an **independent verifier**, `conformance/kavach_verify.py`: Python, standard library only, written from the specification text alone. It verifies the published bundle, checkpoint, JCS, credential, mandate and event vectors and refuses unknown record kinds; CI runs it as the job "Independent verifier".
 
+### Added
+
+- **Agent risk state is enforced (K1-1, ADR-013).** An agent is `active`, `restricted` (reads within its mandate, nothing with an external effect), `quarantined` or `revoked` (nothing). The state is read from the database at every authorization, together with the state of every holder in the mandate's delegation chain, so a mandate delegated from a stopped agent authorises nothing while its parent's holder is stopped; a quarantine suspends mandates without changing them. A state that cannot be read blocks the call. A call decided before a stop is re-checked just before its credential is minted and ends `not_executed` (`agent_stopped`). Decisions for a non-active agent carry `agent_state:<state>`. Migration 017 adds `agent_states` (the database also refuses undoing a revocation and a self-approved change). Cedar: `agent-restricted` now forbids only the actions with an external effect, and the new `agent-stopped` forbids all; 18 properties are proven (two new) and 9 weakened variants caught. **Nothing in the product changes a state yet**: the operator API, the CLI and maker-checker reinstatement are K1-3, signed state records K1-2. The API's hard-coded `AgentState::Active` is gone.
+
 ### Changed
 
 - **Mandate verification re-checks the mandate's form** (`Mandate::check_form`): format version, capability-reference subject, delegation depth, parent/depth agreement, channels, contact window inside the 08:00–19:00 IST floor, contact actions with a window, ceilings in range, lifetime 1 s to 30 days. Kavach issues mandates that satisfy these, so nothing it wrote is refused; a signed token that breaks them now is.

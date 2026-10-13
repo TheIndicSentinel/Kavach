@@ -215,16 +215,41 @@ fn scenario7_delegated_read_only_mandate_cannot_update() {
 }
 
 #[test]
-fn non_active_agent_states_block() {
+fn a_restricted_agent_reads_and_does_nothing_with_an_effect() {
     let m = mandate();
-    for state in [
-        AgentState::Restricted,
-        AgentState::Quarantined,
-        AgentState::Revoked,
+    let mut r = request(&m, AgentAction::ReadFields);
+    r.agent_state = AgentState::Restricted;
+    assert_eq!(decide(&r).0, Decision::Pass, "reads stay");
+    for action in [
+        AgentAction::SendReminder,
+        AgentAction::PlaceCall,
+        AgentAction::ProposePlan,
+        AgentAction::UpdateStatus,
     ] {
-        let mut r = request(&m, AgentAction::ReadFields);
-        r.agent_state = state;
-        assert_eq!(decide(&r).0, Decision::Block, "{state:?}");
+        let mut r = request(&m, action);
+        r.agent_state = AgentState::Restricted;
+        r.channel = Some("whatsapp".into());
+        r.waiver_bps = Some(0);
+        // Allowed when active (the request is otherwise valid)...
+        let mut active = r.clone();
+        active.agent_state = AgentState::Active;
+        assert_eq!(decide(&active).0, Decision::Pass, "{action:?} active");
+        // ... and blocked, for this reason, when restricted.
+        blocked_by(&r, "agent-restricted");
+    }
+}
+
+#[test]
+fn a_quarantined_or_revoked_agent_does_nothing_at_all() {
+    let m = mandate();
+    for state in [AgentState::Quarantined, AgentState::Revoked] {
+        for action in AgentAction::ALL {
+            let mut r = request(&m, action);
+            r.agent_state = state;
+            r.channel = Some("whatsapp".into());
+            r.waiver_bps = Some(0);
+            blocked_by(&r, "agent-stopped");
+        }
     }
 }
 
