@@ -309,6 +309,7 @@ class Mandates(unittest.TestCase):
         r = kv.run_mandate(MANDATE)
         self.assertEqual(r["events"], ["issuing", "revoking"])
         self.assertEqual(len(r["refused"]), len(self.v["refused"]))
+        self.assertEqual(len(r["binding_refused"]), len(self.v["binding_refused"]))
 
     def test_digest_is_of_the_signed_bytes_and_tagged(self):
         e = self.v["events"][0]

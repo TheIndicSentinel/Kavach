@@ -118,6 +118,7 @@ pub fn setup() -> Setup {
         signing_kid: "kavach-mandate-1".into(),
         mandate_keys: KeySet::new([kavach_pub]),
         sor_issuers: vec![SorIssuer {
+            tenant_id: TENANT.into(),
             system: "lms".into(),
             key: lms_pub,
         }],

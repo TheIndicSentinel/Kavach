@@ -739,7 +739,7 @@ async fn another_tenants_event_is_refused_and_revocation_reads_are_audited() {
         consent_refs: &[],
         assigned_agent: "",
         at: gw.clock_now(),
-        forged: false,
+        key: EventKey::Registered,
     })
     .await;
     let (status, body) = post(foreign).await;

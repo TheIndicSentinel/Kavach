@@ -46,7 +46,7 @@ Members (all required, no others):
 ### Checks, in order
 
 1. Section 1.
-2. **Issuer binding.** The signing key is registered for exactly one `system`, and `system` in the payload MUST equal it. A key registered for `crm` cannot state a fact about `lms`.
+2. **Issuer binding.** The signing key is registered for exactly one `tenant_id` and one `system`, and `tenant_id` and `system` in the payload MUST equal them. A key registered for `crm` cannot state a fact about `lms`; a key registered for one tenant cannot state a fact about another. The same public key is never registered twice (not under two key ids, not for two tenants). A refusal for an unknown key id, a key of another tenant or system, or a bad signature is the same refusal: it does not say which keys exist.
 3. **Freshness.** `|reference time − occurred_at| ≤ 300 s`. An event in the future by more than that is refused as well as an old one.
 4. **Replay.** `(tenant_id, system, event_id)` is accepted once within 24 hours of first acceptance (single use). A retry of the *same content* is answered with the stored result, not refused (section 5).
 5. `subject_ref` is a capability reference.
@@ -121,9 +121,10 @@ The token does **not** say the mandate is live. Kavach keeps the status (active 
 
 | Member | Content |
 |---|---|
-| `mandate_key`, `sor_issuers` | Test public keys as JWKs (Ed25519). `sor_issuers` binds each key to a system. |
+| `mandate_key`, `sor_issuers` | Test public keys as JWKs (Ed25519). `sor_issuers` binds each key to a tenant and a system. |
+| `binding_refused` | Events with a genuine signature that MUST still not be accepted: another tenant's event signed by this tenant's key, another system's event, and another issuer's key. |
 | `mandates` | A root and its child, each with `token` and decoded `payload`. |
 | `events` | An issuing and a revoking event with `token`, `payload`, `event_digest`, `legacy_content_sha256`, `fresh_at`. |
 | `refused` | Tokens that MUST be refused, each with its `typ` and the `rule` it breaks (a conforming verifier refuses each **for that rule**; the signature is genuine in every case but `bad-signature`, so no earlier check hides it): a changed signature, a token of the other kind, an unknown key, a payload or header not in canonical form, an unknown member, a time with an offset, a time with a zero fraction, a non-integer number, four parts, padding. |
 
-A conforming verifier verifies every token in `mandates` and `events` to the stated payload, reproduces both digests, refuses everything in `refused`, and refuses the events outside their `fresh_at ± 300 s`.
+A conforming verifier verifies every token in `mandates` and `events` to the stated payload, reproduces both digests, refuses everything in `refused` and in `binding_refused`, and refuses the events outside their `fresh_at ± 300 s`.

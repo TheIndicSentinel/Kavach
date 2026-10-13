@@ -690,7 +690,96 @@ pub mod mandate_store {
         insert_rules(&*store).await;
         ancestors_and_revoke_tree(&*store).await;
         revocations(&*store).await;
-        delegation_racing_revocation(store).await;
+        delegation_racing_revocation(store.clone()).await;
+        tenants_are_separate(&*store).await;
+    }
+
+    /// ADR-014 §2.1: the same system, record reference, source event id and
+    /// mandate id in two tenants are two independent things; nothing
+    /// looked up or revoked in one reaches the other.
+    async fn tenants_are_separate<S: MandateStore>(store: &S) {
+        const OTHER: &str = "conformance-other";
+        let in_other = |id: &str| {
+            let mut r = root_about(id, "lms", "shared-loan");
+            r.mandate.tenant_id = OTHER.into();
+            r.mandate.source.event_id = "evt-shared".into();
+            r
+        };
+        let mut mine = root_about("shared-1", "lms", "shared-loan");
+        mine.mandate.source.event_id = "evt-shared".into();
+        store.insert(mine).await.expect("root in the first tenant");
+        // Same source event id, same record, same mandate id: accepted in
+        // the other tenant, not a duplicate.
+        store
+            .insert(in_other("shared-1"))
+            .await
+            .expect("same event in another tenant is not a duplicate");
+
+        for tenant in [TENANT, OTHER] {
+            let root = store
+                .root_for_event(tenant, "lms", "evt-shared")
+                .await
+                .expect("lookup")
+                .expect("its own root");
+            assert_eq!(root.mandate.tenant_id, tenant);
+            let live = store
+                .live_roots_for_record(tenant, "lms", "shared-loan")
+                .await
+                .expect("live roots");
+            assert_eq!(live.len(), 1, "{tenant}: only its own root");
+            assert_eq!(live[0].mandate.tenant_id, tenant);
+        }
+
+        // Revoking in one tenant leaves the other's mandate active, and a
+        // tenant that has no such mandate cannot revoke by id.
+        store
+            .revoke_tree(OTHER, "shared-1", RevocationReason::Manual)
+            .await
+            .expect("revoked in the other tenant");
+        assert_eq!(status(store, "shared-1").await, Some(MandateStatus::Active));
+        let roots = store
+            .live_roots_for_record(OTHER, "lms", "shared-loan")
+            .await
+            .expect("live roots");
+        assert!(roots.is_empty(), "revoked in its own tenant");
+        let err = store
+            .revoke_tree("conformance-nobody", "shared-1", RevocationReason::Manual)
+            .await
+            .expect_err("a tenant with no such mandate");
+        assert_eq!(err.class, ErrorClass::Rejected);
+        assert_eq!(status(store, "shared-1").await, Some(MandateStatus::Active));
+
+        // The revocation record of an event id is per tenant.
+        let revocation = |tenant: &str, record_ref: &str| StoredRevocation {
+            tenant_id: tenant.into(),
+            system: "lms".into(),
+            event_id: "pay-shared".into(),
+            event_digest: format!("sha256-jcs-v1:{}", "cd".repeat(32)),
+            event_type: "loan.paid".into(),
+            record_ref: record_ref.into(),
+            occurred_at: Utc.with_ymd_and_hms(2026, 10, 1, 7, 0, 0).unwrap(),
+            revoked: vec![],
+            revoked_at: Utc.with_ymd_and_hms(2026, 10, 1, 7, 0, 1).unwrap(),
+        };
+        store
+            .record_revocation(revocation(TENANT, "shared-loan"))
+            .await
+            .expect("first tenant");
+        store
+            .record_revocation(revocation(OTHER, "another-loan"))
+            .await
+            .expect("same event id, other tenant");
+        let theirs = store
+            .revocation_for_event(OTHER, "lms", "pay-shared")
+            .await
+            .expect("lookup")
+            .expect("kept");
+        assert_eq!(theirs.record_ref, "another-loan");
+        assert!(store
+            .revocation_for_event("conformance-nobody", "lms", "pay-shared")
+            .await
+            .expect("lookup")
+            .is_none());
     }
 
     /// ADR-013: the active mandates an agent holds, roots and delegated

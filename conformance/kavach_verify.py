@@ -1234,10 +1234,10 @@ def run_mandate(path):
     with open(path, "r", encoding="utf-8") as handle:
         vector = loads(handle.read())
     mkeys = {vector["mandate_key"]["kid"]: _jwk_bytes(vector["mandate_key"], "x")}
-    sor_keys, sor_system = {}, {}
+    sor_keys, sor_binding = {}, {}
     for issuer in vector["sor_issuers"]:
         sor_keys[issuer["key"]["kid"]] = _jwk_bytes(issuer["key"], "x")
-        sor_system[issuer["key"]["kid"]] = issuer["system"]
+        sor_binding[issuer["key"]["kid"]] = (issuer["tenant_id"], issuer["system"])
     freshness = vector["freshness_seconds"]
     decoded = {}
     for item in vector["mandates"]:
@@ -1255,8 +1255,8 @@ def run_mandate(path):
         occurred = check_event(payload)
         if payload != item["payload"]:
             raise Refused(f"event {item['name']}: payload differs from the vector's")
-        if sor_system[kid] != payload["system"]:
-            raise Refused(f"event {item['name']}: key not registered for its system")
+        if sor_binding[kid] != (payload["tenant_id"], payload["system"]):
+            raise Refused(f"event {item['name']}: key not registered for its tenant and system")
         if event_digest(payload) != item["event_digest"]:
             raise Refused(f"event {item['name']}: event_digest differs")
         if legacy_content_sha256(payload) != item["legacy_content_sha256"]:
@@ -1288,7 +1288,16 @@ def run_mandate(path):
             refused.append(case["name"])
             continue
         raise Refused(f"{case['name']} was accepted")
-    return {"result": "verified", "mandates": sorted(decoded), "events": checks, "refused": refused}
+    # Genuinely signed, but by a key registered for another tenant or system.
+    binding = []
+    for case in vector["binding_refused"]:
+        kid, payload = verify_jws(case["token"], TYP_SOR_EVENT, sor_keys)
+        check_event(payload)
+        if sor_binding[kid] == (payload["tenant_id"], payload["system"]):
+            raise Refused(f"{case['name']} is inside the issuer binding")
+        binding.append(case["name"])
+    return {"result": "verified", "mandates": sorted(decoded), "events": checks, "refused": refused,
+            "binding_refused": binding}
 
 
 # --------------------------------------------------------------------------

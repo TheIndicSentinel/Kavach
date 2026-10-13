@@ -47,6 +47,10 @@ pub struct RevokeOutcome {
     pub publish_errors: Vec<(String, String)>,
 }
 
+/// What a caller is told when an event's key is not trusted for it, whatever
+/// the reason (see `verified_event`).
+pub const UNTRUSTED_ISSUER: &str = "the event is not accepted from this issuer";
+
 /// The system-of-record event types that revoke (ADR-012), and why.
 pub const REVOKING_EVENTS: [(&str, RevocationReason); 2] = [
     ("loan.paid", RevocationReason::Payment),
@@ -287,14 +291,7 @@ where
         &self,
         event_token: &str,
     ) -> Result<Option<IssuedMandate>, PortError> {
-        let (kid, event): (String, SorEvent) =
-            jws::verify(event_token, TYP_SOR_EVENT, &self.config.sor_keys())?;
-        if self.config.sor_system_for_kid(&kid) != Some(event.system.as_str()) {
-            return Err(PortError::rejected(format!(
-                "key {kid} is not registered for system {}",
-                event.system
-            )));
-        }
+        let event = self.verified_event(event_token)?;
         let Some(stored) = self
             .deps
             .store
@@ -592,14 +589,7 @@ where
         &self,
         event_token: &str,
     ) -> Result<Option<RevokedByEvent>, PortError> {
-        let (kid, event): (String, SorEvent) =
-            jws::verify(event_token, TYP_SOR_EVENT, &self.config.sor_keys())?;
-        if self.config.sor_system_for_kid(&kid) != Some(event.system.as_str()) {
-            return Err(PortError::rejected(format!(
-                "key {kid} is not registered for system {}",
-                event.system
-            )));
-        }
+        let event = self.verified_event(event_token)?;
         let Some(stored) = self
             .deps
             .store
@@ -624,15 +614,43 @@ where
         }))
     }
 
-    async fn verify_event(&self, token: &str, now: DateTime<Utc>) -> Result<SorEvent, PortError> {
+    /// A system-of-record event whose signature verifies **and** whose key
+    /// is registered for the event's own tenant and system (ADR-014 §2.1).
+    ///
+    /// Every refusal that is about *the key* (an unknown key id, a bad
+    /// signature, a key registered for another tenant or system) is one
+    /// external message, so a caller cannot use the refusal to find out
+    /// which keys exist or whose they are; the reason goes to the log,
+    /// which is redacted, and only the key id and the tenant are named in it.
+    fn verified_event(&self, token: &str) -> Result<SorEvent, PortError> {
+        let untrusted = || PortError::rejected(UNTRUSTED_ISSUER);
         let (kid, event): (String, SorEvent) =
-            jws::verify(token, TYP_SOR_EVENT, &self.config.sor_keys())?;
-        if self.config.sor_system_for_kid(&kid) != Some(event.system.as_str()) {
-            return Err(PortError::rejected(format!(
-                "key {kid} is not registered for system {}",
-                event.system
-            )));
+            match jws::verify(token, TYP_SOR_EVENT, &self.config.sor_keys()) {
+                Ok(verified) => verified,
+                Err(err) if err.class == kavach_ports::ErrorClass::Rejected => {
+                    tracing::warn!(reason = %err.message, "system-of-record event refused");
+                    return Err(untrusted());
+                }
+                Err(err) => return Err(err),
+            };
+        if self
+            .config
+            .sor_issuer(&event.tenant_id, &event.system, &kid)
+            .is_none()
+        {
+            tracing::warn!(
+                key_id = %kid,
+                tenant = %event.tenant_id,
+                system = %event.system,
+                "system-of-record event refused: the key is not registered for this tenant and system"
+            );
+            return Err(untrusted());
         }
+        Ok(event)
+    }
+
+    async fn verify_event(&self, token: &str, now: DateTime<Utc>) -> Result<SorEvent, PortError> {
+        let event = self.verified_event(token)?;
         let age = (now - event.occurred_at).num_seconds().abs();
         if age > self.config.event_freshness_seconds {
             return Err(PortError::rejected(format!(

@@ -298,6 +298,7 @@ impl Target for Live {
                 },
                 occurred_at: now + chrono::Duration::seconds(spec.offset_seconds),
                 forged: spec.key == SorKey::Unregistered,
+                other_tenants_key: spec.key == SorKey::AnotherTenants,
             },
         )
         .await

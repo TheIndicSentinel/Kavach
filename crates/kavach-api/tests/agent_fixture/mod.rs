@@ -232,14 +232,11 @@ fn signing_keys(keys: &Path) {
 /// Seed of the fixture's checkpoint key (`kavach-checkpoint-1`).
 pub const CHECKPOINT_SEED: [u8; 32] = [8u8; 32];
 
-pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
-    let dir = std::env::temp_dir().join(format!("kavach-dp-{}", uuid::Uuid::new_v4().simple()));
-    let keys = dir.join("keys");
-    std::fs::create_dir_all(&keys).unwrap();
-    signing_keys(&keys);
-    owner_only(&dir.join("pseudonym.key"), &hex::encode([6u8; 32]));
-    credential_files(&dir, &keys);
-
+/// The mandate configuration (two tenants' issuer keys) and the consents.
+fn write_mandates_and_consents(dir: &std::path::Path) {
+    let other_tenant = SigningKey::from_bytes(&[3u8; 32])
+        .verifying_key()
+        .to_bytes();
     let lms = SigningKey::from_bytes(&[2u8; 32])
         .verifying_key()
         .to_bytes();
@@ -257,7 +254,10 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         json!({
             "issuer_id": "kavach-test",
             "signing_kid": "kavach-mandate-1",
-            "sor_issuers": [{ "system": "lms", "kid": "lms-issuer-1", "public_key": hex::encode(lms) }],
+            "sor_issuers": [
+                { "tenant_id": "default", "system": "lms", "kid": "lms-issuer-1", "public_key": hex::encode(lms) },
+                { "tenant_id": "attack-other-tenant", "system": "lms", "kid": "lms-other-tenant-1", "public_key": hex::encode(other_tenant) },
+            ],
             "templates": [template()],
             "passports": [passport("collections-agent"), passport("translation-agent")],
             "event_freshness_seconds": 300,
@@ -283,6 +283,17 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         serde_json::to_string(&consents).unwrap(),
     )
     .unwrap();
+}
+
+pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
+    let dir = std::env::temp_dir().join(format!("kavach-dp-{}", uuid::Uuid::new_v4().simple()));
+    let keys = dir.join("keys");
+    std::fs::create_dir_all(&keys).unwrap();
+    signing_keys(&keys);
+    owner_only(&dir.join("pseudonym.key"), &hex::encode([6u8; 32]));
+    credential_files(&dir, &keys);
+
+    write_mandates_and_consents(&dir);
     let public = SigningKey::from_bytes(&IDP_SEED).verifying_key().to_bytes();
     std::fs::write(
         dir.join("jwks.json"),
@@ -418,13 +429,28 @@ pub struct AnyEvent<'a> {
     pub consent_refs: &'a [&'a str],
     pub assigned_agent: &'a str,
     pub at: chrono::DateTime<chrono::Utc>,
-    pub forged: bool,
+    pub key: EventKey,
+}
+
+/// Which key signs an [`AnyEvent`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKey {
+    /// `lms-issuer-1`, registered for this tenant.
+    Registered,
+    /// The registered key id with another key.
+    Forged,
+    /// `lms-other-tenant-1`, registered for another tenant's `lms`.
+    AnotherTenants,
 }
 
 pub async fn any_event(e: &AnyEvent<'_>) -> String {
     let mut sor = InMemoryKeyProvider::new();
-    let seed = if e.forged { [77u8; 32] } else { [2u8; 32] };
-    sor.insert_seed("lms-issuer-1", seed).unwrap();
+    let (kid, seed) = match e.key {
+        EventKey::Registered => ("lms-issuer-1", [2u8; 32]),
+        EventKey::Forged => ("lms-issuer-1", [77u8; 32]),
+        EventKey::AnotherTenants => ("lms-other-tenant-1", [3u8; 32]),
+    };
+    sor.insert_seed(kid, seed).unwrap();
     let event = SorEvent {
         event_id: e.event_id.into(),
         tenant_id: e.tenant_id.into(),
@@ -438,14 +464,9 @@ pub async fn any_event(e: &AnyEvent<'_>) -> String {
         occurred_at: e.at,
         nonce: format!("n-{}", e.event_id),
     };
-    kavach_mandate::jws::sign(
-        &sor,
-        "lms-issuer-1",
-        kavach_mandate::jws::TYP_SOR_EVENT,
-        &event,
-    )
-    .await
-    .unwrap()
+    kavach_mandate::jws::sign(&sor, kid, kavach_mandate::jws::TYP_SOR_EVENT, &event)
+        .await
+        .unwrap()
 }
 
 /// A signed revoking event (ADR-012: `loan.paid`, `loan.disputed`) about
