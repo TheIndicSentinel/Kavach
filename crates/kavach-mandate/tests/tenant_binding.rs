@@ -151,7 +151,11 @@ async fn the_refusal_does_not_say_whether_the_key_exists() {
     let unknown = signed(&w, "lms-rogue", &event).await;
     let mut bad_signature = signed(&w, "lms-a", &event).await;
     let at = bad_signature.rfind('.').unwrap() + 1;
-    let swap = if bad_signature.as_bytes()[at] == b'A' { "B" } else { "A" };
+    let swap = if bad_signature.as_bytes()[at] == b'A' {
+        "B"
+    } else {
+        "A"
+    };
     bad_signature.replace_range(at..=at, swap);
     let mut messages = Vec::new();
     for token in [&wrong_tenant, &unknown, &bad_signature] {
@@ -189,9 +193,16 @@ async fn a_revocation_for_a_loan_id_reaches_only_its_own_tenant() {
 
     let paid_in_a = signed(&w, "lms-a", &event_for(A, "pay-1", "loan.paid")).await;
     let done = w.service.revoke_from_event(&paid_in_a).await.unwrap();
-    assert_eq!(done.revoked, std::slice::from_ref(&ma.mandate.id), "only A's mandate");
+    assert_eq!(
+        done.revoked,
+        std::slice::from_ref(&ma.mandate.id),
+        "only A's mandate"
+    );
     assert!(w.service.verify_active(&ma.token).await.is_err());
-    assert!(w.service.verify_active(&mb.token).await.is_ok(), "B untouched");
+    assert!(
+        w.service.verify_active(&mb.token).await.is_ok(),
+        "B untouched"
+    );
 
     // Tenant B's payment with the same event id is its own event.
     let paid_in_b = signed(&w, "lms-b", &event_for(B, "pay-1", "loan.paid")).await;

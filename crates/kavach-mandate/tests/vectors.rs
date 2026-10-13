@@ -385,7 +385,13 @@ fn events_outside_the_issuer_binding_are_not_accepted() {
             )
         })
         .collect();
-    let keys = KeySet::new(v["sor_issuers"].as_array().unwrap().iter().map(|i| key_of(&i["key"])));
+    let keys = KeySet::new(
+        v["sor_issuers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| key_of(&i["key"])),
+    );
     for case in v["binding_refused"].as_array().unwrap() {
         let token = case["token"].as_str().unwrap();
         // The signature is genuine...
