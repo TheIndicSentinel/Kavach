@@ -195,6 +195,190 @@ pub mod conformance {
     }
 }
 
+/// `AgentStateStore` contract (ADR-013 §1). Every store must pass.
+pub mod agent_state_store {
+    use std::sync::Arc;
+
+    use chrono::{TimeZone, Utc};
+    use kavach_ports::agent_state::{AgentState, AgentStateChange, AgentStateStore};
+    use kavach_ports::ErrorClass;
+
+    fn change(
+        tenant: &str,
+        agent: &str,
+        to: AgentState,
+        by: &str,
+        approved: Option<&str>,
+    ) -> AgentStateChange {
+        AgentStateChange {
+            tenant_id: tenant.into(),
+            agent_id: agent.into(),
+            to,
+            reason: "behaving outside its task".into(),
+            changed_by: by.into(),
+            approved_by: approved.map(String::from),
+            at: Utc.with_ymd_and_hms(2026, 10, 1, 6, 0, 0).unwrap(),
+        }
+    }
+
+    fn ids(items: &[&str]) -> Vec<String> {
+        items.iter().map(ToString::to_string).collect()
+    }
+
+    /// Runs the whole suite against a fresh, empty store.
+    pub async fn conformance<S: AgentStateStore + 'static>(store: Arc<S>) {
+        defaults_and_isolation(&*store).await;
+        transitions(&*store).await;
+        concurrent_changes(store).await;
+    }
+
+    async fn defaults_and_isolation<S: AgentStateStore>(store: &S) {
+        // No row means active, for every agent asked about.
+        let all = store
+            .states("t-1", &ids(&["rogue", "calm", "never-seen"]))
+            .await
+            .unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.values().all(|s| *s == AgentState::Active));
+        assert_eq!(store.current("t-1", "rogue").await.unwrap(), None);
+        assert!(store.states("t-1", &[]).await.unwrap().is_empty());
+
+        store
+            .set(change(
+                "t-1",
+                "rogue",
+                AgentState::Quarantined,
+                "ops-1",
+                None,
+            ))
+            .await
+            .unwrap();
+        let got = store.states("t-1", &ids(&["rogue", "calm"])).await.unwrap();
+        assert_eq!(got["rogue"], AgentState::Quarantined);
+        assert_eq!(got["calm"], AgentState::Active);
+        // Another tenant's agent of the same name is untouched.
+        let other = store.states("t-2", &ids(&["rogue"])).await.unwrap();
+        assert_eq!(other["rogue"], AgentState::Active);
+    }
+
+    async fn transitions<S: AgentStateStore>(store: &S) {
+        let agent = "walks-the-ladder";
+        let t = "t-3";
+        let rejected = |err: kavach_ports::PortError| {
+            assert_eq!(err.class, ErrorClass::Rejected, "{err}");
+        };
+
+        let row = store
+            .set(change(t, agent, AgentState::Restricted, "ops-1", None))
+            .await
+            .unwrap();
+        assert_eq!(row.state, AgentState::Restricted);
+        assert_eq!(row.changed_by, "ops-1");
+        assert_eq!(row.approved_by, None);
+        assert_eq!(store.current(t, agent).await.unwrap(), Some(row));
+
+        // The same state again is not a change.
+        rejected(
+            store
+                .set(change(t, agent, AgentState::Restricted, "ops-1", None))
+                .await
+                .unwrap_err(),
+        );
+        // Tightening further needs one principal.
+        store
+            .set(change(t, agent, AgentState::Quarantined, "ops-1", None))
+            .await
+            .unwrap();
+        // Loosening needs a second, different principal.
+        rejected(
+            store
+                .set(change(t, agent, AgentState::Active, "ops-1", None))
+                .await
+                .unwrap_err(),
+        );
+        rejected(
+            store
+                .set(change(t, agent, AgentState::Active, "ops-1", Some("ops-1")))
+                .await
+                .unwrap_err(),
+        );
+        assert_eq!(
+            store.states(t, &ids(&[agent])).await.unwrap()[agent],
+            AgentState::Quarantined,
+            "a refused change changes nothing"
+        );
+        let back = store
+            .set(change(t, agent, AgentState::Active, "ops-1", Some("ops-2")))
+            .await
+            .unwrap();
+        assert_eq!(back.approved_by.as_deref(), Some("ops-2"));
+
+        // A reason is required.
+        let mut no_reason = change(t, agent, AgentState::Quarantined, "ops-1", None);
+        no_reason.reason = "  ".into();
+        assert_eq!(
+            store.set(no_reason).await.unwrap_err().class,
+            ErrorClass::Invalid
+        );
+
+        // Revoked is final, from any state, whoever asks.
+        store
+            .set(change(t, agent, AgentState::Revoked, "ops-1", None))
+            .await
+            .unwrap();
+        for to in [
+            AgentState::Active,
+            AgentState::Restricted,
+            AgentState::Quarantined,
+        ] {
+            rejected(
+                store
+                    .set(change(t, agent, to, "ops-3", Some("ops-4")))
+                    .await
+                    .unwrap_err(),
+            );
+        }
+        assert_eq!(
+            store.states(t, &ids(&[agent])).await.unwrap()[agent],
+            AgentState::Revoked
+        );
+    }
+
+    /// Two operators stop the same agent at the same moment: one change is
+    /// made, the other is told the agent is already in that state.
+    async fn concurrent_changes<S: AgentStateStore + 'static>(store: Arc<S>) {
+        let (a, b) = (Arc::clone(&store), Arc::clone(&store));
+        let first = tokio::spawn(async move {
+            a.set(change(
+                "t-4",
+                "racer",
+                AgentState::Quarantined,
+                "ops-1",
+                None,
+            ))
+            .await
+        });
+        let second = tokio::spawn(async move {
+            b.set(change(
+                "t-4",
+                "racer",
+                AgentState::Quarantined,
+                "ops-2",
+                None,
+            ))
+            .await
+        });
+        let results = [first.await.unwrap(), second.await.unwrap()];
+        assert_eq!(
+            results.iter().filter(|r| r.is_ok()).count(),
+            1,
+            "{results:?}"
+        );
+        let loser = results.into_iter().find_map(Result::err).unwrap();
+        assert_eq!(loser.class, ErrorClass::Rejected);
+    }
+}
+
 /// `MandateStore` contract (ADR-011). Written to the contract, not to one
 /// implementation: every store — in-memory now, Postgres in H5 — must pass.
 pub mod mandate_store {

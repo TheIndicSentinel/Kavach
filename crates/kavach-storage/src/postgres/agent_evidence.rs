@@ -10,6 +10,7 @@ use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding, GENESIS,
 };
+use kavach_ports::agent_state::{AgentState, AgentStateChange, AgentStateStore, StoredAgentState};
 use kavach_ports::chain_record::{seal_revocation, ChainRecord, RevocationDraft, RevocationRecord};
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
@@ -689,5 +690,112 @@ impl CheckpointStore for PostgresAgentEvidenceStore {
         .await
         .map_err(|e| unavailable(&e))?;
         rows.iter().map(row_to_checkpoint).collect()
+    }
+}
+
+fn state_row(row: &sqlx::postgres::PgRow) -> Result<StoredAgentState, PortError> {
+    let name: String = row.try_get("state").map_err(|e| unavailable(&e))?;
+    Ok(StoredAgentState {
+        tenant_id: row.try_get("tenant_id").map_err(|e| unavailable(&e))?,
+        agent_id: row.try_get("agent_id").map_err(|e| unavailable(&e))?,
+        // A state this build does not know is an error, never "active".
+        state: AgentState::parse(&name)
+            .ok_or_else(|| PortError::invalid(format!("stored agent state {name:?}")))?,
+        reason: row.try_get("reason").map_err(|e| unavailable(&e))?,
+        changed_by: row.try_get("changed_by").map_err(|e| unavailable(&e))?,
+        approved_by: row.try_get("approved_by").map_err(|e| unavailable(&e))?,
+        changed_at: row.try_get("changed_at").map_err(|e| unavailable(&e))?,
+    })
+}
+
+const STATE_COLUMNS: &str =
+    "tenant_id, agent_id, state, reason, changed_by, approved_by, changed_at";
+
+impl AgentStateStore for PostgresAgentEvidenceStore {
+    async fn states(
+        &self,
+        tenant_id: &str,
+        agent_ids: &[String],
+    ) -> Result<std::collections::BTreeMap<String, AgentState>, PortError> {
+        let rows = sqlx::query(&format!(
+            "SELECT {STATE_COLUMNS} FROM agent_states \
+             WHERE tenant_id = $1 AND agent_id = ANY($2)"
+        ))
+        .bind(tenant_id)
+        .bind(agent_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        let mut out: std::collections::BTreeMap<String, AgentState> = agent_ids
+            .iter()
+            .map(|id| (id.clone(), AgentState::Active))
+            .collect();
+        for row in &rows {
+            let stored = state_row(row)?;
+            out.insert(stored.agent_id, stored.state);
+        }
+        Ok(out)
+    }
+
+    async fn current(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<StoredAgentState>, PortError> {
+        let row = sqlx::query(&format!(
+            "SELECT {STATE_COLUMNS} FROM agent_states WHERE tenant_id = $1 AND agent_id = $2"
+        ))
+        .bind(tenant_id)
+        .bind(agent_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        row.as_ref().map(state_row).transpose()
+    }
+
+    async fn set(&self, change: AgentStateChange) -> Result<StoredAgentState, PortError> {
+        let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
+        // One change at a time per agent, whether or not it has a row yet.
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!(
+                "agent_state:{}:{}",
+                change.tenant_id, change.agent_id
+            ))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| unavailable(&e))?;
+        let current = sqlx::query(&format!(
+            "SELECT {STATE_COLUMNS} FROM agent_states WHERE tenant_id = $1 AND agent_id = $2"
+        ))
+        .bind(&change.tenant_id)
+        .bind(&change.agent_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|e| unavailable(&e))?
+        .as_ref()
+        .map(state_row)
+        .transpose()?
+        .map_or(AgentState::Active, |row| row.state);
+        change.check(current)?;
+        let row = sqlx::query(&format!(
+            "INSERT INTO agent_states ({STATE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7) \
+             ON CONFLICT (tenant_id, agent_id) DO UPDATE SET state = EXCLUDED.state, \
+             reason = EXCLUDED.reason, changed_by = EXCLUDED.changed_by, \
+             approved_by = EXCLUDED.approved_by, changed_at = EXCLUDED.changed_at \
+             RETURNING {STATE_COLUMNS}"
+        ))
+        .bind(&change.tenant_id)
+        .bind(&change.agent_id)
+        .bind(change.to.as_str())
+        .bind(&change.reason)
+        .bind(&change.changed_by)
+        .bind(&change.approved_by)
+        .bind(change.at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        let stored = state_row(&row)?;
+        tx.commit().await.map_err(|e| unavailable(&e))?;
+        Ok(stored)
     }
 }

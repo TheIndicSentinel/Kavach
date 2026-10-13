@@ -1,6 +1,6 @@
 # ADR-013: Agent Kill Switch (Restrict, Quarantine, Revoke)
 
-**Status:** Accepted (with the owner's amendments, 2026-10-06)  
+**Status:** Accepted (with the owner's amendments, 2026-10-06). Implementation: K1-1 (store, enforcement, Cedar) done; K1-2 (signed `agent_state` records, bundle format 3) and K1-3 (operator API, CLI, maker-checker) follow.  
 **Date:** 2026-10-06  
 **Deciders:** Kavach product/engineering  
 **Related:** ADR-008 (authentication), ADR-009 (change requests), ADR-012 (revocation), PRD FR-5 and FR-9, OWASP Agentic ASI10 (rogue agents)

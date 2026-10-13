@@ -447,3 +447,49 @@ async fn each_kind_is_enforced(owner_pool: &sqlx::PgPool) {
         .await
         .expect("another event, another record");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn memory_store_keeps_agent_states_to_the_contract() {
+    kavach_ports_testkit::agent_state_store::conformance(Arc::new(
+        MemoryAgentEvidenceStore::default(),
+    ))
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn postgres_store_keeps_agent_states_to_the_contract_and_the_database_holds_the_rules() {
+    let Some((owner, runtime)) = isolated_database_urls().await else {
+        return;
+    };
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .expect("connect");
+    kavach_ports_testkit::agent_state_store::conformance(Arc::new(pool.agent_evidence_store()))
+        .await;
+
+    // The runtime role holds UPDATE on the table, and still cannot undo a
+    // revocation, delete a row, or approve its own change: the database says so.
+    let raw = sqlx::PgPool::connect(&runtime).await.expect("raw");
+    let revoked = "walks-the-ladder";
+    let undo = sqlx::query("UPDATE agent_states SET state = 'active' WHERE agent_id = $1")
+        .bind(revoked)
+        .execute(&raw)
+        .await;
+    assert!(undo.is_err(), "a revoked agent was changed by SQL");
+    let delete = sqlx::query("DELETE FROM agent_states WHERE agent_id = $1")
+        .bind(revoked)
+        .execute(&raw)
+        .await;
+    assert!(delete.is_err(), "a row was deleted");
+    let self_approved = sqlx::query(
+        "UPDATE agent_states SET state = 'active', changed_by = 'x', approved_by = 'x' \
+         WHERE agent_id = 'racer'",
+    )
+    .execute(&raw)
+    .await;
+    assert!(self_approved.is_err(), "an agent approved its own change");
+}

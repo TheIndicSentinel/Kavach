@@ -27,6 +27,7 @@ namespace Kavach::Agent {
     has_requested_fields: Bool,
     task_tainted: Bool,
     agent_restricted: Bool,
+    agent_stopped: Bool,
     approval_valid: Bool,
   };
 

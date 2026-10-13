@@ -23,7 +23,9 @@ use kavach_ports::{
 };
 use serde::Serialize;
 
-use crate::authorize::{AgentIdentity, AuthorizeCore, CommitStatus, MandateVerifier, Mode};
+use crate::authorize::{
+    AgentIdentity, AuthorizeCore, CommitStatus, MandateVerifier, Mode, StillAuthorised,
+};
 use crate::tools::{ToolRequest, Trust};
 
 /// What happened on the wire, as the forwarder saw it.
@@ -197,7 +199,8 @@ pub async fn execute<V, S, R, B, F, O>(
 ) -> Result<GatewayReply, GatewayError>
 where
     V: MandateVerifier,
-    S: kavach_ports::agent_evidence::AgentEvidenceStore,
+    S: kavach_ports::agent_evidence::AgentEvidenceStore
+        + kavach_ports::agent_state::AgentStateStore,
     R: ReferenceResolver,
     B: CredentialBroker,
     F: Forwarder,
@@ -311,7 +314,8 @@ async fn run_allowed<V, S, R, B, F, O>(
 ) -> (Outcome, String, Option<String>)
 where
     V: MandateVerifier,
-    S: kavach_ports::agent_evidence::AgentEvidenceStore,
+    S: kavach_ports::agent_evidence::AgentEvidenceStore
+        + kavach_ports::agent_state::AgentStateStore,
     R: ReferenceResolver,
     B: CredentialBroker,
     F: Forwarder,
@@ -349,10 +353,14 @@ where
     };
     // Revoked (or expired) since the decision was recorded: no credential,
     // nothing sent (ADR-012 §5).
-    if let Err(err) = core.mandate_in_force(&call.mandate_id).await {
-        return not_executed(match err.class {
-            ErrorClass::Unavailable => "mandate_unavailable",
-            ErrorClass::Rejected | ErrorClass::Invalid => "mandate_revoked",
+    if let Err(why) = core
+        .still_authorised(&agent.agent_id, &call.mandate_id)
+        .await
+    {
+        return not_executed(match why {
+            StillAuthorised::Unavailable => "mandate_unavailable",
+            StillAuthorised::MandateGone => "mandate_revoked",
+            StillAuthorised::AgentStopped => "agent_stopped",
         });
     }
     let started = Instant::now();

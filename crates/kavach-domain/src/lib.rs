@@ -3,6 +3,7 @@
 //! No I/O, no HTTP, no database. Follows SOLID: single responsibility,
 //! dependency inversion via traits in future crates.
 
+pub mod agent;
 pub mod decision;
 pub mod error;
 pub mod golden;
@@ -13,6 +14,7 @@ pub mod request;
 pub mod response;
 pub mod types;
 
+pub use agent::AgentState;
 pub use decision::Decision;
 pub use error::DomainError;
 pub use path::EvaluatePath;

@@ -77,15 +77,7 @@ impl AgentAction {
     }
 }
 
-/// Agent risk state (ADR-003 §6). Anything but `Active` blocks all actions
-/// in the MVP.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AgentState {
-    Active,
-    Restricted,
-    Quarantined,
-    Revoked,
-}
+pub use kavach_domain::AgentState;
 
 /// Everything the decision depends on. The caller builds it from the
 /// verified mandate, extracted tool parameters, server-side counters, risk
@@ -342,7 +334,8 @@ pub fn build_context(req: &AuthzRequest<'_>) -> serde_json::Value {
         "waiver_bps": req.waiver_bps.unwrap_or(0),
         "has_waiver": req.waiver_bps.is_some(),
         "task_tainted": req.task_tainted,
-        "agent_restricted": req.agent_state != AgentState::Active,
+        "agent_restricted": req.agent_state == AgentState::Restricted,
+        "agent_stopped": req.agent_state.is_stopped(),
         "approval_valid": req.approval_valid,
     })
 }

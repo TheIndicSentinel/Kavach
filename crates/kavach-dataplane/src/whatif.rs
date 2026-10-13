@@ -102,6 +102,44 @@ impl AgentEvidenceStore for WhatIfStore {
     }
 }
 
+/// A what-if run supposes the agent is active: the question it answers is
+/// about the mandate and the call (the agent's risk state is its own
+/// question, answered by a live decision).
+impl kavach_ports::agent_state::AgentStateStore for WhatIfStore {
+    fn states(
+        &self,
+        _tenant_id: &str,
+        agent_ids: &[String],
+    ) -> impl Future<
+        Output = Result<
+            std::collections::BTreeMap<String, kavach_ports::agent_state::AgentState>,
+            PortError,
+        >,
+    > + Send {
+        ready(Ok(agent_ids
+            .iter()
+            .map(|id| (id.clone(), kavach_ports::agent_state::AgentState::Active))
+            .collect()))
+    }
+
+    fn current(
+        &self,
+        _tenant_id: &str,
+        _agent_id: &str,
+    ) -> impl Future<Output = Result<Option<kavach_ports::agent_state::StoredAgentState>, PortError>>
+           + Send {
+        ready(Ok(None))
+    }
+
+    fn set(
+        &self,
+        _change: kavach_ports::agent_state::AgentStateChange,
+    ) -> impl Future<Output = Result<kavach_ports::agent_state::StoredAgentState, PortError>> + Send
+    {
+        ready(Err(PortError::invalid(NOTHING_RECORDED)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
