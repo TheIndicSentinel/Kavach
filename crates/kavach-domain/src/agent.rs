@@ -57,6 +57,53 @@ impl AgentState {
     }
 }
 
+/// Why an agent's state was changed, from a closed set. This is what the
+/// evidence chain carries: the chain cannot be erased, so it never holds an
+/// operator's free text (which could name a borrower). The free text stays
+/// in the store and the admin audit log, and the chain holds a keyed digest
+/// of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasonCode {
+    RogueBehaviour,
+    CompromiseSuspected,
+    PolicyViolation,
+    CustomerComplaint,
+    OperatorRequest,
+    Reviewed,
+    Other,
+}
+
+impl ReasonCode {
+    pub const ALL: [Self; 7] = [
+        Self::RogueBehaviour,
+        Self::CompromiseSuspected,
+        Self::PolicyViolation,
+        Self::CustomerComplaint,
+        Self::OperatorRequest,
+        Self::Reviewed,
+        Self::Other,
+    ];
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::RogueBehaviour => "rogue_behaviour",
+            Self::CompromiseSuspected => "compromise_suspected",
+            Self::PolicyViolation => "policy_violation",
+            Self::CustomerComplaint => "customer_complaint",
+            Self::OperatorRequest => "operator_request",
+            Self::Reviewed => "reviewed",
+            Self::Other => "other",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|c| c.as_str() == s)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -72,6 +119,10 @@ mod tests {
             assert_eq!(AgentState::parse(s.as_str()), Some(s));
         }
         assert_eq!(AgentState::parse("Active"), None);
+        for code in ReasonCode::ALL {
+            assert_eq!(ReasonCode::parse(code.as_str()), Some(code));
+        }
+        assert_eq!(ReasonCode::parse("free text"), None);
         assert!(AgentState::Active < AgentState::Restricted);
         assert!(AgentState::Restricted < AgentState::Quarantined);
         assert!(AgentState::Quarantined < AgentState::Revoked);

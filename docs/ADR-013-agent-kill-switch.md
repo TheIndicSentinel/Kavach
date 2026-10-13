@@ -1,6 +1,6 @@
 # ADR-013: Agent Kill Switch (Restrict, Quarantine, Revoke)
 
-**Status:** Accepted (with the owner's amendments, 2026-10-06). Implementation: K1-1 (store, enforcement, Cedar) done; K1-2 (signed `agent_state` records, bundle format 3) and K1-3 (operator API, CLI, maker-checker) follow.  
+**Status:** Accepted (with the owner's amendments, 2026-10-06). Implementation: K1-1 (store, enforcement, Cedar) and K1-2 (signed `agent_state` records, bundle format 3) done; K1-3 (operator API, CLI, maker-checker) follows.  
 **Date:** 2026-10-06  
 **Deciders:** Kavach product/engineering  
 **Related:** ADR-008 (authentication), ADR-009 (change requests), ADR-012 (revocation), PRD FR-5 and FR-9, OWASP Agentic ASI10 (rogue agents)
@@ -16,7 +16,7 @@ PRD FR-5 defines agent states `ACTIVE / RESTRICTED / QUARANTINED / REVOKED`, and
 ## Decision
 
 ### 1. A store for agent states
-- **Postgres:** `agent_states (tenant_id, agent_id, state, reason, changed_by, approved_by, changed_at)`. The memory store mirrors it for development.
+- **Postgres:** `agent_states (tenant_id, agent_id, state, change_no, reason_code, reason, changed_by, approved_by, changed_at)` (`reason` is the operator's optional note) and the append-only history `agent_state_changes`. The memory store mirrors it for development.
 - **Default:** an agent with no row is `active`.
 - **Reads:** at every authorization, so there is no cache and nothing to propagate to other replicas.
 
@@ -51,7 +51,7 @@ The Cedar policy changes from "not active → forbid all" to the table above. Th
   - `kavach agent reinstate <agent>`, which proposes the change.
 - **Evidence:**
   - every decision for a non-active agent carries the signal `agent_state:<state>`, in the existing `signals` field;
-  - **every state change is a signed record in the agent evidence chain**, of a new kind `agent_state`: the agent, the old and new state, the reason, who changed it, and for a reinstatement who approved it. It is hash-chained and checkpointed like decisions, and exported and verified with them. This adds a record kind to the bundle format, documented in `EVIDENCE_BUNDLE.md`, and verifiers that do not know the kind refuse the bundle rather than skip it.
+  - **every state change is a signed record in the agent evidence chain**, of a new kind `agent_state`: the agent, the old and new state, the reason (*amended in K1-2: a closed reason code and a keyed digest of the operator's free text, never the text, because the chain cannot be erased*), who changed it, and for a reinstatement who approved it. A stop takes effect first and its record follows (a reconciler writes it if the request could not); a reinstatement is written with its record in one transaction or not at all. It is hash-chained and checkpointed like decisions, and exported and verified with them. This adds a record kind to the bundle format, documented in `EVIDENCE_BUNDLE.md`, and verifiers that do not know the kind refuse the bundle rather than skip it.
   - Each change is also an admin audit entry, as for every operator action.
 
 ### 5. Simulation and attacks

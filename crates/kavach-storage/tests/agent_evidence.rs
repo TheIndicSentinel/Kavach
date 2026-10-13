@@ -266,6 +266,30 @@ async fn insert_row(
     .map(|_| ())
 }
 
+/// A row of kind `agent_state` written directly by the owner (K1-2).
+async fn insert_state_row(
+    pool: &sqlx::PgPool,
+    seq: i64,
+    kind: &str,
+    agent_id: Option<&str>,
+    change_no: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, prev_hash, \
+            hash, sig, key_id, payload, kind, agent_id, state_change_no) \
+        VALUES ('kinds', 0, $1, $2, 'p', 'h', 's', 'k', $3, $4, $5, $6)",
+    )
+    .bind(seq)
+    .bind(format!("state-{seq}-{kind}"))
+    .bind(serde_json::json!({ "kind": kind }))
+    .bind(kind)
+    .bind(agent_id)
+    .bind(change_no)
+    .execute(pool)
+    .await
+    .map(|_| ())
+}
+
 /// R1b-1: the chain holds more than one kind of record in one table. The
 /// kinds change no grant and no trigger, every record still takes one
 /// position, and each kind's required fields are enforced by the database.
@@ -302,6 +326,7 @@ async fn record_kinds_keep_grants_triggers_and_one_record_per_position() {
     assert_eq!(kinds, ["agent_decision"]);
 
     each_kind_is_enforced(&owner_pool).await;
+    agent_state_records_are_enforced(&owner_pool).await;
 
     // A revocation record is append-only too, for the runtime role and owner.
     for statement in [
@@ -420,8 +445,8 @@ async fn each_kind_is_enforced(owner_pool: &sqlx::PgPool) {
         insert_row(
             owner_pool,
             2,
-            "agent_state",
-            "agent_state",
+            "agent_taint",
+            "agent_taint",
             None,
             Some("lms"),
             Some("e-1"),
@@ -446,6 +471,48 @@ async fn each_kind_is_enforced(owner_pool: &sqlx::PgPool) {
     insert_row(owner_pool, 3, rev, rev, None, Some("lms"), Some("e-2"))
         .await
         .expect("another event, another record");
+}
+
+/// K1-2: agent-state records are identified by agent and change number, one
+/// record per change, enforced by the database.
+async fn agent_state_records_are_enforced(owner_pool: &sqlx::PgPool) {
+    let refused = |result: Result<(), sqlx::Error>, why: &str, expected: &str| {
+        let err = result.expect_err(why).to_string();
+        assert!(err.contains(expected), "{why}: {err}");
+    };
+    refused(
+        insert_state_row(owner_pool, 4, "agent_state", Some("agent-1"), None).await,
+        "an agent-state record without its change number",
+        "agent_records_state_fields",
+    );
+    refused(
+        insert_state_row(owner_pool, 4, "agent_state", None, Some(1)).await,
+        "an agent-state record without its agent",
+        "agent_records_state_fields",
+    );
+    refused(
+        insert_state_row(
+            owner_pool,
+            4,
+            "mandate_revocation",
+            Some("agent-1"),
+            Some(1),
+        )
+        .await,
+        "a change number on a record that is not an agent-state record",
+        "agent_records_change_no_only_for_states",
+    );
+    insert_state_row(owner_pool, 4, "agent_state", Some("agent-1"), Some(1))
+        .await
+        .expect("an agent-state record");
+    refused(
+        insert_state_row(owner_pool, 5, "agent_state", Some("agent-1"), Some(1)).await,
+        "a second record for one change",
+        "agent_records_one_per_state_change",
+    );
+    insert_state_row(owner_pool, 5, "agent_state", Some("agent-1"), Some(2))
+        .await
+        .expect("the next change, its own record");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

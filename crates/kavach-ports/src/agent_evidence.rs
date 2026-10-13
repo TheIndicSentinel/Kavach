@@ -15,7 +15,9 @@ use kavach_domain::Decision;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::chain_record::{ChainRecord, RevocationDraft, RevocationRecord};
+use crate::chain_record::{
+    AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
+};
 use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
 use crate::time::{SyncStatus, TimeSource};
@@ -23,6 +25,7 @@ use crate::time::{SyncStatus, TimeSource};
 pub const KIND_AGENT_DECISION: &str = "agent_decision";
 /// A revocation by a system-of-record event (ADR-012 §7).
 pub const KIND_MANDATE_REVOCATION: &str = "mandate_revocation";
+pub const KIND_AGENT_STATE: &str = "agent_state";
 pub const HASH_ALG_V2: &str = "v2";
 pub const HASH_PREFIX: &[u8] = b"kavach-evidence-v2";
 pub const SIG_PREFIX: &[u8] = b"kavach-agent-evidence-sig-v1:";
@@ -517,6 +520,26 @@ pub trait AgentEvidenceStore: Send + Sync {
         source_system: &str,
         event_id: &str,
     ) -> impl Future<Output = Result<Option<RevocationRecord>, PortError>> + Send;
+
+    /// Appends the record of a change of an agent's state (ADR-013 §4), at
+    /// most once per `(tenant, agent, change_no)`: appending the same change
+    /// again returns the stored record, and a different one for the same
+    /// change is `Rejected`.
+    fn append_agent_state(
+        &self,
+        draft: AgentStateDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<AgentStateRecord, PortError>> + Send;
+
+    /// The record of change `change_no` of an agent's state, if one was
+    /// written.
+    fn agent_state_record(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+        change_no: i64,
+    ) -> impl Future<Output = Result<Option<AgentStateRecord>, PortError>> + Send;
 
     /// The committed decision with `record_id`, if any (operator reads).
     fn record(
@@ -1411,6 +1434,101 @@ mod tests {
         }
     }
 
+    /// An agent-state record's own rules (spec §4.5) hold even when its hash
+    /// and signature are genuine: a signer that wrote one of these wrote
+    /// something that is not evidence of a change.
+    #[test]
+    fn an_agent_state_record_must_be_a_real_change() {
+        use crate::chain_record::{seal_agent_state, AgentStateDraft};
+        use kavach_domain::{AgentState, ReasonCode};
+        let key = Key(SigningKey::from_bytes(&[3u8; 32]));
+        let base = AgentStateDraft {
+            tenant_id: "t".into(),
+            partition_id: 0,
+            agent_id: "a".into(),
+            change_no: 1,
+            from_state: AgentState::Active,
+            to_state: AgentState::Quarantined,
+            reason_code: ReasonCode::RogueBehaviour,
+            reason_digest: Some(format!("mac:{}", "ab".repeat(32))),
+            changed_by: "ops-1".into(),
+            approved_by: None,
+            changed_at: DateTime::from_timestamp(1_790_000_000, 0).unwrap(),
+        };
+        let now = crate::TrustedNow {
+            utc: DateTime::from_timestamp(1_790_000_001, 0).unwrap(),
+            sync: SyncStatus::Unknown,
+        };
+        let sealed = |draft: &AgentStateDraft| {
+            let payload = draft.complete(1, GENESIS, key.key_id(), now);
+            seal_agent_state(payload, &key).unwrap()
+        };
+        assert_eq!(
+            check_record_signature(&sealed(&base), &keys(&key), false),
+            Ok(())
+        );
+        let loosen = |approver: Option<&str>| AgentStateDraft {
+            from_state: AgentState::Quarantined,
+            to_state: AgentState::Active,
+            approved_by: approver.map(String::from),
+            ..base.clone()
+        };
+        assert_eq!(
+            check_record_signature(&sealed(&loosen(Some("ops-2"))), &keys(&key), false),
+            Ok(())
+        );
+        let broken: Vec<(&str, AgentStateDraft)> = vec![
+            (
+                "change 0",
+                AgentStateDraft {
+                    change_no: 0,
+                    ..base.clone()
+                },
+            ),
+            (
+                "no change",
+                AgentStateDraft {
+                    to_state: AgentState::Active,
+                    ..base.clone()
+                },
+            ),
+            (
+                "from revoked",
+                AgentStateDraft {
+                    from_state: AgentState::Revoked,
+                    to_state: AgentState::Active,
+                    approved_by: Some("ops-2".into()),
+                    ..base.clone()
+                },
+            ),
+            (
+                "short digest",
+                AgentStateDraft {
+                    reason_digest: Some("mac:ab".into()),
+                    ..base.clone()
+                },
+            ),
+            (
+                "tightening with an approver",
+                AgentStateDraft {
+                    approved_by: Some("ops-2".into()),
+                    ..base.clone()
+                },
+            ),
+            ("loosening without one", loosen(None)),
+            ("approving one's own change", loosen(Some("ops-1"))),
+        ];
+        for (what, draft) in broken {
+            assert!(
+                matches!(
+                    check_record_signature(&sealed(&draft), &keys(&key), false),
+                    Err(ChainError::Form { .. })
+                ),
+                "{what}"
+            );
+        }
+    }
+
     /// A record that states a hash algorithm this verifier does not know is
     /// refused, not hashed as `v2` and then judged by chance.
     #[test]
@@ -1437,7 +1555,7 @@ mod tests {
         let revocation = revocation_after(&decisions, &key);
 
         let mut relabelled = serde_json::to_value(&revocation).unwrap();
-        relabelled["kind"] = "agent_state".into();
+        relabelled["kind"] = "agent_taint".into();
         let err = serde_json::from_value::<ChainRecord>(relabelled).unwrap_err();
         assert!(err.to_string().contains("does not know"), "{err}");
         let err = serde_json::from_value::<ChainRecord>(serde_json::json!({"seq": 1})).unwrap_err();

@@ -39,7 +39,9 @@ use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
 };
-use kavach_ports::chain_record::{ChainRecord, RevocationDraft, RevocationRecord};
+use kavach_ports::chain_record::{
+    AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
+};
 use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::CredentialBroker;
 use kavach_ports::{
@@ -353,6 +355,34 @@ impl kavach_ports::agent_state::AgentStateStore for EvidenceBackend {
             Self::Postgres(s) => s.set(change).await,
         }
     }
+
+    async fn set_recorded(
+        &self,
+        change: kavach_ports::agent_state::AgentStateChange,
+        recording: kavach_ports::agent_state::Recording<'_>,
+    ) -> Result<
+        (
+            kavach_ports::agent_state::StoredAgentState,
+            AgentStateRecord,
+        ),
+        PortError,
+    > {
+        match self {
+            Self::Memory(s) => s.set_recorded(change, recording).await,
+            Self::Postgres(s) => s.set_recorded(change, recording).await,
+        }
+    }
+
+    async fn changes_after(
+        &self,
+        after: Option<kavach_ports::agent_state::AgentChangeCursor>,
+        limit: u32,
+    ) -> Result<Vec<kavach_ports::agent_state::StoredAgentChange>, PortError> {
+        match self {
+            Self::Memory(s) => s.changes_after(after, limit).await,
+            Self::Postgres(s) => s.changes_after(after, limit).await,
+        }
+    }
 }
 
 impl AgentEvidenceStore for EvidenceBackend {
@@ -404,6 +434,30 @@ impl AgentEvidenceStore for EvidenceBackend {
             Self::Postgres(s) => s.records(tenant_id, partition_id).await,
         }
     }
+    async fn append_agent_state(
+        &self,
+        draft: AgentStateDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<AgentStateRecord, PortError> {
+        match self {
+            Self::Memory(s) => s.append_agent_state(draft, clock, signer).await,
+            Self::Postgres(s) => s.append_agent_state(draft, clock, signer).await,
+        }
+    }
+
+    async fn agent_state_record(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+        change_no: i64,
+    ) -> Result<Option<AgentStateRecord>, PortError> {
+        match self {
+            Self::Memory(s) => s.agent_state_record(tenant_id, agent_id, change_no).await,
+            Self::Postgres(s) => s.agent_state_record(tenant_id, agent_id, change_no).await,
+        }
+    }
+
     async fn append_revocation(
         &self,
         draft: RevocationDraft,

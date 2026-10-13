@@ -16,7 +16,10 @@ use kavach_ports::agent_evidence::{
     OutcomeRecord, PolicyVersions, TimeSync, GENESIS, HASH_ALG_V2, KIND_AGENT_DECISION,
 };
 use kavach_ports::bundle::Exporter;
-use kavach_ports::chain_record::{seal_revocation, ChainRecord, RevocationDraft, RevocationRecord};
+use kavach_ports::chain_record::{
+    seal_agent_state, seal_revocation, AgentStateDraft, ChainRecord, RevocationDraft,
+    RevocationRecord,
+};
 use kavach_ports::checkpoint::{sign_checkpoint, Checkpoint, Head, Scope, CHAIN_AGENT_DECISIONS};
 use kavach_ports::{KeyAlgorithm, PortError, PublicKey, SyncStatus, TrustedNow};
 
@@ -306,4 +309,59 @@ pub fn checkpoints_v2(chain: &[ChainRecord]) -> Vec<Checkpoint> {
     .unwrap();
     all.push(fifth);
     all
+}
+
+/// Bundle format 3's run: the format 2 run (its revocation stating its event
+/// by a tagged digest), then the collections agent is quarantined (record 6)
+/// and reinstated with a second principal's approval (record 7), ADR-013 §4.
+pub fn chain_v3() -> Vec<ChainRecord> {
+    use kavach_domain::{AgentState, ReasonCode};
+    use kavach_ports::agent_evidence::ChainEntry as _;
+    let mut chain = chain_v2_digest();
+    let mut prev = chain.last().unwrap().hash().to_string();
+    let mut seq = chain.last().unwrap().seq();
+    let at = chain.last().unwrap().ts();
+    let steps = [
+        (
+            AgentState::Active,
+            AgentState::Quarantined,
+            ReasonCode::RogueBehaviour,
+            Some(format!("mac:{}", "5a".repeat(32))),
+            None,
+            at + Duration::seconds(60),
+        ),
+        (
+            AgentState::Quarantined,
+            AgentState::Active,
+            ReasonCode::Reviewed,
+            None,
+            Some("ops-kat-2".to_string()),
+            at + Duration::seconds(600),
+        ),
+    ];
+    for (n, (from, to, reason, digest, approver, when)) in steps.into_iter().enumerate() {
+        seq += 1;
+        let draft = AgentStateDraft {
+            tenant_id: TENANT.into(),
+            partition_id: 0,
+            agent_id: "collections-agent".into(),
+            change_no: i64::try_from(n).unwrap() + 1,
+            from_state: from,
+            to_state: to,
+            reason_code: reason,
+            reason_digest: digest,
+            changed_by: "ops-kat-1".into(),
+            approved_by: approver,
+            changed_at: when,
+        };
+        let now = TrustedNow {
+            utc: when + Duration::seconds(1),
+            sync: SyncStatus::Synced { max_error_ms: 12 },
+        };
+        let payload = draft.complete(seq, &prev, evidence_key().0, now);
+        let record = seal_agent_state(payload, &evidence_key()).unwrap();
+        prev.clone_from(&record.hash);
+        chain.push(ChainRecord::AgentState(record));
+    }
+    chain
 }

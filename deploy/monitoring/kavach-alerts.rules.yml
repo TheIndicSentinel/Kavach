@@ -57,6 +57,27 @@ groups:
             It runs every 30 seconds and is restarted if it exits. A pass that cannot read
             the revocations or the evidence store does not count as complete.
 
+      - alert: KavachAgentStateRecordMissing
+        expr: kavach_agent_state_records_missing > 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: A change of an agent's state has no evidence record
+          description: >-
+            The agent is stopped (or reinstated) as the store says, but the signed record
+            of that change is not in the evidence chain and the reconciler cannot write
+            it. See `ALERT agent state evidence missing` in the logs for the agent, the
+            change number and why.
+      - alert: KavachAgentStateReconcilerStopped
+        expr: time() - kavach_agent_state_reconcile_last_pass_timestamp_seconds > 300
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: The agent state evidence reconciler has not completed a pass for 5 minutes
+          description: >-
+            It runs every 30 seconds and is restarted if it exits. A pass that cannot read
+            the state history or the evidence store does not count as complete.
+
   - name: kavach-gateway
     rules:
       - alert: KavachOutcomeWriteFailures

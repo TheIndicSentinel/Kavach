@@ -489,7 +489,14 @@ CHECKPOINT_SIG = b"kavach-evidence-checkpoint-v1:"
 MANIFEST_PREFIX = b"kavach-evidence-bundle-v1"
 MANIFEST_SIG = b"kavach-evidence-bundle-v1:"
 
-KINDS = {1: {"agent_decision"}, 2: {"agent_decision", "mandate_revocation"}}
+KINDS = {
+    1: {"agent_decision"},
+    2: {"agent_decision", "mandate_revocation"},
+    3: {"agent_decision", "mandate_revocation", "agent_state"},
+}
+STATES = ["active", "restricted", "quarantined", "revoked"]
+REASON_CODES = {"rogue_behaviour", "compromise_suspected", "policy_violation",
+                "customer_complaint", "operator_request", "reviewed", "other"}
 OUTCOMES = {"delivered", "failed", "refused", "not_executed", "unknown"}
 FILES = ["manifest.json", "records.jsonl", "outcomes.jsonl", "checkpoints.jsonl"]
 
@@ -673,8 +680,9 @@ class Verifier:
             if expect != rec["hash"]:
                 raise Refused(f"{where}: hash does not match its content")
             self._check_sig(kid, _signed(RECORD_SIG, rec["hash"]), rec["sig"], where)
-            when = parse_time(rec["recorded_at"] if kind == "mandate_revocation" else rec.get("ts"),
-                              f"{where}: time")
+            when = parse_time(
+                rec["recorded_at"] if kind in ("mandate_revocation", "agent_state") else rec.get("ts"),
+                f"{where}: time")
             self._limits(kid, seq, when, where)
             if kind == "agent_decision":
                 for member in ("credential_id", "returned_decision", "credential_expires_at"):
@@ -682,11 +690,48 @@ class Verifier:
                         raise Refused(f"{where}: lacks {member}")
             if kind == "mandate_revocation":
                 self._event_digest(rec, where)
+            if kind == "agent_state":
+                self._agent_state_form(rec, where)
             prev, expected_seq = rec["hash"], expected_seq + 1
             out.append(rec)
         if prev != seg["head_hash"] or expected_seq - 1 != seg["last_seq"]:
             raise Refused("records.jsonl: the records do not end at the manifest's head")
         return out
+
+    @staticmethod
+    def _agent_state_form(rec, where):
+        """Spec 4.5: the rules a hash and a signature do not establish."""
+        for member in ("agent_id", "change_no", "from_state", "to_state", "reason_code",
+                       "reason_digest", "changed_by", "approved_by", "changed_at", "recorded_at"):
+            if member not in rec:
+                raise Refused(f"{where}: lacks {member}")
+        def bad(reason):
+            raise Refused(f"{where}: malformed record: {reason}")
+        if not isinstance(rec["agent_id"], str) or not rec["agent_id"]:
+            bad("agent_id is not a string")
+        if isinstance(rec["change_no"], bool) or not isinstance(rec["change_no"], int) \
+                or rec["change_no"] < 1:
+            bad("change_no starts at 1")
+        if rec["from_state"] not in STATES or rec["to_state"] not in STATES:
+            bad("a state is not in the set")
+        if rec["from_state"] == rec["to_state"]:
+            bad("a change from a state to itself is not a change")
+        if rec["from_state"] == "revoked":
+            bad("a revoked agent is never changed")
+        if rec["reason_code"] not in REASON_CODES:
+            bad("reason_code is not in the closed set")
+        digest = rec["reason_digest"]
+        if digest is not None and not (
+                isinstance(digest, str) and digest.startswith("mac:") and is_hash(digest[4:])):
+            bad("reason_digest is not a well-formed digest")
+        parse_time(rec["changed_at"], f"{where}: changed_at")
+        loosens = STATES.index(rec["to_state"]) < STATES.index(rec["from_state"])
+        approver = rec["approved_by"]
+        if loosens:
+            if not (isinstance(approver, str) and approver and approver != rec["changed_by"]):
+                bad("a loosening needs an approver other than the changer")
+        elif approver is not None:
+            bad("a change that tightens names no approver")
 
     @staticmethod
     def _event_digest(rec, where):

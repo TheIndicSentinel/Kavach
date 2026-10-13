@@ -6,12 +6,19 @@
 
 use chrono::NaiveDate;
 use kavach_domain::Decision;
+use kavach_domain::ReasonCode;
 use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding, GENESIS,
 };
-use kavach_ports::agent_state::{AgentState, AgentStateChange, AgentStateStore, StoredAgentState};
-use kavach_ports::chain_record::{seal_revocation, ChainRecord, RevocationDraft, RevocationRecord};
+use kavach_ports::agent_state::{
+    AgentChangeCursor, AgentState, AgentStateChange, AgentStateStore, Recording, StoredAgentChange,
+    StoredAgentState,
+};
+use kavach_ports::chain_record::{
+    seal_agent_state, seal_revocation, AgentStateDraft, AgentStateRecord, ChainRecord,
+    RevocationDraft, RevocationRecord,
+};
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
     CHAIN_AGENT_DECISIONS,
@@ -74,9 +81,51 @@ pub(super) fn row_to_chain_record(row: &sqlx::postgres::PgRow) -> Result<ChainRe
 fn row_to_revocation(row: &sqlx::postgres::PgRow) -> Result<RevocationRecord, PortError> {
     match row_to_chain_record(row)? {
         ChainRecord::Revocation(record) => Ok(record),
-        ChainRecord::Decision(_) => Err(PortError::invalid(
-            "a revocation row holds a decision payload",
+        ChainRecord::Decision(_) | ChainRecord::AgentState(_) => Err(PortError::invalid(
+            "a revocation row holds another kind of payload",
         )),
+    }
+}
+
+fn row_to_state_record(row: &sqlx::postgres::PgRow) -> Result<AgentStateRecord, PortError> {
+    match row_to_chain_record(row)? {
+        ChainRecord::AgentState(record) => Ok(record),
+        ChainRecord::Decision(_) | ChainRecord::Revocation(_) => Err(PortError::invalid(
+            "an agent-state row holds another kind of payload",
+        )),
+    }
+}
+
+async fn find_state_record<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    tenant_id: &str,
+    agent_id: &str,
+    change_no: i64,
+) -> Result<Option<AgentStateRecord>, PortError> {
+    let row = sqlx::query(
+        "SELECT payload, hash, sig FROM agent_decisions \
+        WHERE kind = 'agent_state' AND tenant_id = $1 AND agent_id = $2 \
+            AND state_change_no = $3",
+    )
+    .bind(tenant_id)
+    .bind(agent_id)
+    .bind(change_no)
+    .fetch_optional(executor)
+    .await
+    .map_err(|e| unavailable(&e))?;
+    row.as_ref().map(row_to_state_record).transpose()
+}
+
+fn same_state_record(
+    stored: AgentStateRecord,
+    draft: &AgentStateDraft,
+) -> Result<AgentStateRecord, PortError> {
+    if draft.matches(&stored) {
+        Ok(stored)
+    } else {
+        Err(PortError::rejected(
+            "this change of the agent's state is recorded with different content",
+        ))
     }
 }
 
@@ -547,6 +596,50 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         find_revocation(&self.pool, tenant_id, source_system, event_id).await
     }
 
+    async fn append_agent_state(
+        &self,
+        draft: AgentStateDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<AgentStateRecord, PortError> {
+        if let Some(stored) = find_state_record(
+            &self.pool,
+            &draft.tenant_id,
+            &draft.agent_id,
+            draft.change_no,
+        )
+        .await?
+        {
+            return same_state_record(stored, &draft);
+        }
+        match self.append_state_record_once(&draft, clock, signer).await {
+            Ok(record) => Ok(record),
+            // Another writer (the operator path or the reconciler) recorded
+            // this change first; its record decides.
+            Err(err) if err.message == STATE_RECORD_EXISTS => {
+                let stored = find_state_record(
+                    &self.pool,
+                    &draft.tenant_id,
+                    &draft.agent_id,
+                    draft.change_no,
+                )
+                .await?
+                .ok_or(err)?;
+                same_state_record(stored, &draft)
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn agent_state_record(
+        &self,
+        tenant_id: &str,
+        agent_id: &str,
+        change_no: i64,
+    ) -> Result<Option<AgentStateRecord>, PortError> {
+        find_state_record(&self.pool, tenant_id, agent_id, change_no).await
+    }
+
     async fn contacts_on(
         &self,
         tenant_id: &str,
@@ -693,23 +786,196 @@ impl CheckpointStore for PostgresAgentEvidenceStore {
     }
 }
 
+/// The insert lost a race: another writer recorded this change first.
+const STATE_RECORD_EXISTS: &str = "this change of the agent's state is already recorded";
+
+fn parse_state(name: &str) -> Result<AgentState, PortError> {
+    // A state this build does not know is an error, never "active".
+    AgentState::parse(name)
+        .ok_or_else(|| PortError::invalid(format!("stored agent state {name:?}")))
+}
+
+fn parse_reason(code: &str) -> Result<ReasonCode, PortError> {
+    ReasonCode::parse(code)
+        .ok_or_else(|| PortError::invalid(format!("stored reason code {code:?}")))
+}
+
 fn state_row(row: &sqlx::postgres::PgRow) -> Result<StoredAgentState, PortError> {
-    let name: String = row.try_get("state").map_err(|e| unavailable(&e))?;
+    let get = |name: &str| -> Result<String, PortError> {
+        row.try_get(name).map_err(|e| unavailable(&e))
+    };
     Ok(StoredAgentState {
-        tenant_id: row.try_get("tenant_id").map_err(|e| unavailable(&e))?,
-        agent_id: row.try_get("agent_id").map_err(|e| unavailable(&e))?,
-        // A state this build does not know is an error, never "active".
-        state: AgentState::parse(&name)
-            .ok_or_else(|| PortError::invalid(format!("stored agent state {name:?}")))?,
-        reason: row.try_get("reason").map_err(|e| unavailable(&e))?,
-        changed_by: row.try_get("changed_by").map_err(|e| unavailable(&e))?,
+        tenant_id: get("tenant_id")?,
+        agent_id: get("agent_id")?,
+        state: parse_state(&get("state")?)?,
+        change_no: row.try_get("change_no").map_err(|e| unavailable(&e))?,
+        reason_code: parse_reason(&get("reason_code")?)?,
+        note: get("reason")?,
+        changed_by: get("changed_by")?,
+        approved_by: row.try_get("approved_by").map_err(|e| unavailable(&e))?,
+        changed_at: row.try_get("changed_at").map_err(|e| unavailable(&e))?,
+    })
+}
+
+fn change_row(row: &sqlx::postgres::PgRow) -> Result<StoredAgentChange, PortError> {
+    let get = |name: &str| -> Result<String, PortError> {
+        row.try_get(name).map_err(|e| unavailable(&e))
+    };
+    Ok(StoredAgentChange {
+        tenant_id: get("tenant_id")?,
+        agent_id: get("agent_id")?,
+        change_no: row.try_get("change_no").map_err(|e| unavailable(&e))?,
+        from_state: parse_state(&get("from_state")?)?,
+        to_state: parse_state(&get("to_state")?)?,
+        reason_code: parse_reason(&get("reason_code")?)?,
+        note: get("note")?,
+        changed_by: get("changed_by")?,
         approved_by: row.try_get("approved_by").map_err(|e| unavailable(&e))?,
         changed_at: row.try_get("changed_at").map_err(|e| unavailable(&e))?,
     })
 }
 
 const STATE_COLUMNS: &str =
-    "tenant_id, agent_id, state, reason, changed_by, approved_by, changed_at";
+    "tenant_id, agent_id, state, change_no, reason_code, reason, changed_by, approved_by, changed_at";
+const CHANGE_COLUMNS: &str = "tenant_id, agent_id, change_no, from_state, to_state, reason_code, \
+     note, changed_by, approved_by, changed_at";
+
+impl PostgresAgentEvidenceStore {
+    /// Takes the agent's lock, checks `change` against the stored state and
+    /// writes the new state and the history entry, in `tx`. One change at a
+    /// time per agent, whether or not it has a row yet.
+    ///
+    /// **Lock order:** this agent lock, then (for a recorded change) the
+    /// partition head. Nothing takes them the other way round.
+    async fn change_in(
+        tx: &mut Transaction<'_, Postgres>,
+        change: &AgentStateChange,
+    ) -> Result<(StoredAgentState, StoredAgentChange), PortError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!(
+                "agent_state:{}:{}",
+                change.tenant_id, change.agent_id
+            ))
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| unavailable(&e))?;
+        let current = sqlx::query(&format!(
+            "SELECT {STATE_COLUMNS} FROM agent_states WHERE tenant_id = $1 AND agent_id = $2"
+        ))
+        .bind(&change.tenant_id)
+        .bind(&change.agent_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|e| unavailable(&e))?
+        .as_ref()
+        .map(state_row)
+        .transpose()?;
+        let (from, last_no) = current
+            .as_ref()
+            .map_or((AgentState::Active, 0), |row| (row.state, row.change_no));
+        change.check(from)?;
+        let change_no = last_no + 1;
+        let history = sqlx::query(&format!(
+            "INSERT INTO agent_state_changes ({CHANGE_COLUMNS}) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {CHANGE_COLUMNS}"
+        ))
+        .bind(&change.tenant_id)
+        .bind(&change.agent_id)
+        .bind(change_no)
+        .bind(from.as_str())
+        .bind(change.to.as_str())
+        .bind(change.reason_code.as_str())
+        .bind(&change.note)
+        .bind(&change.changed_by)
+        .bind(&change.approved_by)
+        .bind(change.at)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        let row = sqlx::query(&format!(
+            "INSERT INTO agent_states ({STATE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+             ON CONFLICT (tenant_id, agent_id) DO UPDATE SET state = EXCLUDED.state, \
+             change_no = EXCLUDED.change_no, reason_code = EXCLUDED.reason_code, \
+             reason = EXCLUDED.reason, changed_by = EXCLUDED.changed_by, \
+             approved_by = EXCLUDED.approved_by, changed_at = EXCLUDED.changed_at \
+             RETURNING {STATE_COLUMNS}"
+        ))
+        .bind(&change.tenant_id)
+        .bind(&change.agent_id)
+        .bind(change.to.as_str())
+        .bind(change_no)
+        .bind(change.reason_code.as_str())
+        .bind(&change.note)
+        .bind(&change.changed_by)
+        .bind(&change.approved_by)
+        .bind(change.at)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        Ok((state_row(&row)?, change_row(&history)?))
+    }
+
+    /// Writes `record` at the head of its partition, which `tx` holds locked,
+    /// and advances the head.
+    async fn insert_state_record(
+        tx: &mut Transaction<'_, Postgres>,
+        record: &AgentStateRecord,
+    ) -> Result<(), PortError> {
+        let p = &record.payload;
+        let advanced = sqlx::query(
+            "WITH inserted AS ( \
+                INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, \
+                    prev_hash, hash, sig, key_id, payload, kind, agent_id, state_change_no) \
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'agent_state', $10, $11) \
+                RETURNING tenant_id, partition_id, seq, hash) \
+            UPDATE agent_evidence_chains AS c SET head_seq = inserted.seq, \
+                head_hash = inserted.hash \
+            FROM inserted \
+            WHERE c.tenant_id = inserted.tenant_id AND c.partition_id = inserted.partition_id",
+        )
+        .bind(&p.tenant_id)
+        .bind(p.partition_id)
+        .bind(p.seq)
+        .bind(&p.record_id)
+        .bind(&p.prev_hash)
+        .bind(&record.hash)
+        .bind(&record.sig)
+        .bind(&p.key_id)
+        .bind(json(p)?)
+        .bind(&p.agent_id)
+        .bind(p.change_no)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| {
+            if is_unique_violation(&e) {
+                PortError::rejected(STATE_RECORD_EXISTS)
+            } else {
+                unavailable(&e)
+            }
+        })?;
+        if advanced.rows_affected() == 1 {
+            Ok(())
+        } else {
+            Err(PortError::unavailable("the partition head did not advance"))
+        }
+    }
+
+    async fn append_state_record_once(
+        &self,
+        draft: &AgentStateDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<AgentStateRecord, PortError> {
+        let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
+        let (head_seq, head_hash) =
+            Self::lock_head(&mut tx, &draft.tenant_id, draft.partition_id).await?;
+        let payload = draft.complete(head_seq + 1, &head_hash, signer.key_id(), clock.now());
+        let record = seal_agent_state(payload, signer)?;
+        Self::insert_state_record(&mut tx, &record).await?;
+        tx.commit().await.map_err(|e| unavailable(&e))?;
+        Ok(record)
+    }
+}
 
 impl AgentStateStore for PostgresAgentEvidenceStore {
     async fn states(
@@ -755,47 +1021,82 @@ impl AgentStateStore for PostgresAgentEvidenceStore {
 
     async fn set(&self, change: AgentStateChange) -> Result<StoredAgentState, PortError> {
         let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
-        // One change at a time per agent, whether or not it has a row yet.
-        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(format!(
-                "agent_state:{}:{}",
-                change.tenant_id, change.agent_id
-            ))
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| unavailable(&e))?;
-        let current = sqlx::query(&format!(
-            "SELECT {STATE_COLUMNS} FROM agent_states WHERE tenant_id = $1 AND agent_id = $2"
-        ))
-        .bind(&change.tenant_id)
-        .bind(&change.agent_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|e| unavailable(&e))?
-        .as_ref()
-        .map(state_row)
-        .transpose()?
-        .map_or(AgentState::Active, |row| row.state);
-        change.check(current)?;
-        let row = sqlx::query(&format!(
-            "INSERT INTO agent_states ({STATE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7) \
-             ON CONFLICT (tenant_id, agent_id) DO UPDATE SET state = EXCLUDED.state, \
-             reason = EXCLUDED.reason, changed_by = EXCLUDED.changed_by, \
-             approved_by = EXCLUDED.approved_by, changed_at = EXCLUDED.changed_at \
-             RETURNING {STATE_COLUMNS}"
-        ))
-        .bind(&change.tenant_id)
-        .bind(&change.agent_id)
-        .bind(change.to.as_str())
-        .bind(&change.reason)
-        .bind(&change.changed_by)
-        .bind(&change.approved_by)
-        .bind(change.at)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|e| unavailable(&e))?;
-        let stored = state_row(&row)?;
+        let (state, _) = Self::change_in(&mut tx, &change).await?;
         tx.commit().await.map_err(|e| unavailable(&e))?;
-        Ok(stored)
+        Ok(state)
+    }
+
+    async fn set_recorded(
+        &self,
+        change: AgentStateChange,
+        recording: Recording<'_>,
+    ) -> Result<(StoredAgentState, AgentStateRecord), PortError> {
+        let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
+        let (state, history) = Self::change_in(&mut tx, &change).await?;
+        let (head_seq, head_hash) =
+            Self::lock_head(&mut tx, &history.tenant_id, recording.partition_id).await?;
+        let draft = AgentStateDraft {
+            tenant_id: history.tenant_id.clone(),
+            partition_id: recording.partition_id,
+            agent_id: history.agent_id.clone(),
+            change_no: history.change_no,
+            from_state: history.from_state,
+            to_state: history.to_state,
+            reason_code: history.reason_code,
+            reason_digest: if history.note.is_empty() {
+                None
+            } else {
+                (recording.reason_digest)(history.change_no)
+            },
+            changed_by: history.changed_by.clone(),
+            approved_by: history.approved_by.clone(),
+            changed_at: history.changed_at,
+        };
+        let payload = draft.complete(
+            head_seq + 1,
+            &head_hash,
+            recording.signer.key_id(),
+            recording.clock.now(),
+        );
+        let record = seal_agent_state(payload, recording.signer)?;
+        Self::insert_state_record(&mut tx, &record).await?;
+        // Both or neither: a failure above drops `tx`, which rolls back.
+        tx.commit().await.map_err(|e| unavailable(&e))?;
+        Ok((state, record))
+    }
+
+    async fn changes_after(
+        &self,
+        after: Option<AgentChangeCursor>,
+        limit: u32,
+    ) -> Result<Vec<StoredAgentChange>, PortError> {
+        let limit = i64::from(limit);
+        let rows = match after {
+            Some(c) => {
+                sqlx::query(&format!(
+                    "SELECT {CHANGE_COLUMNS} FROM agent_state_changes \
+                 WHERE (changed_at, tenant_id, agent_id, change_no) > ($1, $2, $3, $4) \
+                 ORDER BY changed_at, tenant_id, agent_id, change_no LIMIT $5"
+                ))
+                .bind(c.changed_at)
+                .bind(c.tenant_id)
+                .bind(c.agent_id)
+                .bind(c.change_no)
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+            }
+            None => {
+                sqlx::query(&format!(
+                    "SELECT {CHANGE_COLUMNS} FROM agent_state_changes \
+                 ORDER BY changed_at, tenant_id, agent_id, change_no LIMIT $1"
+                ))
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await
+            }
+        }
+        .map_err(|e| unavailable(&e))?;
+        rows.iter().map(change_row).collect()
     }
 }

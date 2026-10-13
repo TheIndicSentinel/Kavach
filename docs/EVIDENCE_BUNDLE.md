@@ -158,8 +158,9 @@ Every record states its `kind` inside its hashed and signed content, so a record
 
 | `kind` | What it records | In version |
 |---|---|---|
-| `agent_decision` | An agent's call and the decision on it (ADR-005 §4). Its outcome, if it was allowed, is in `outcomes.jsonl` | 1 and 2 |
-| `mandate_revocation` | Mandates revoked by a system-of-record event (ADR-012 §7) | 2 |
+| `agent_decision` | An agent's call and the decision on it (ADR-005 §4). Its outcome, if it was allowed, is in `outcomes.jsonl` | 1, 2 and 3 |
+| `mandate_revocation` | Mandates revoked by a system-of-record event (ADR-012 §7) | 2, 3 |
+| `agent_state` | A change of an agent's state: restricted, quarantined, revoked, or reinstated (ADR-013 §4) | 3 |
 
 A `mandate_revocation` record holds, besides the fields every record has (`record_id`, `tenant_id`, `partition_id`, `seq`, `prev_hash`, `kind`, `hash_alg`, `key_id`, `time_sync`):
 
@@ -174,7 +175,9 @@ A `mandate_revocation` record holds, besides the fields every record has (`recor
 | `revoked_at` | When Kavach revoked them |
 | `recorded_at` | When this record was written. Later than `revoked_at` when the reconciler wrote it because the request that revoked could not |
 
-**A verifier refuses a kind it does not know, and never skips it.** A skipped record would break the chain's links anyway, and a verifier that skipped records could be shown a bundle with an unexplained gap. A version 1 bundle may hold `agent_decision` records only; any other kind in it fails verification. ADR-013 will add `agent_state`, with a new format version.
+An `agent_state` record holds: `agent_id`, `change_no` (1 for the agent's first change), `from_state` and `to_state`, `reason_code` (a closed set: the chain never holds an operator's free text, which could name a borrower and cannot be erased), `reason_digest` (a keyed digest of that text, which stays in the store and the audit log), `changed_by`, `approved_by` (present exactly when the change loosens, and never the changer), `changed_at` and `recorded_at`. A stop takes effect first and its record follows, so `recorded_at` can be later than `changed_at`; a loosening is written with its record or not at all.
+
+**A verifier refuses a kind it does not know, and never skips it.** A skipped record would break the chain's links anyway, and a verifier that skipped records could be shown a bundle with an unexplained gap. A version 1 bundle may hold `agent_decision` records only, and a version 2 bundle decisions and revocations only; any other kind in it fails verification. An export writes version 3.
 
 ### Trusted keys
 

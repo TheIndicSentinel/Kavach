@@ -67,11 +67,10 @@ fn write_chain(out: &Path, chain: &[ChainRecord]) {
 #[test]
 #[ignore = "regenerates the checked-in vector; run only on a deliberate format change"]
 fn generate() {
-    // Format 2 only: the format 1 vector is never rewritten.
-    let bundle = vectors().join("bundle-v2");
-    let _ = fs::remove_dir_all(&bundle);
+    // The keys file only: `bundle-v1` and `bundle-v2` were written by earlier
+    // formats and are never rewritten (the writer now writes format 3, see
+    // `generate_v3`).
     fs::create_dir_all(vectors()).unwrap();
-    write_bundle(&bundle);
     let keys: Vec<Value> = public_keys()
         .values()
         .map(
@@ -123,11 +122,11 @@ fn keys_from_file(vector: &str) -> BTreeMap<String, PublicKey> {
 #[test]
 fn the_writer_reproduces_the_checked_in_bundle_byte_for_byte() {
     let out = scratch("vector");
-    write_bundle(&out);
+    write_chain(&out, &chain_v3());
     for name in [MANIFEST_FILE, RECORDS_FILE, OUTCOMES_FILE, CHECKPOINTS_FILE] {
         assert_eq!(
             fs::read(out.join(name)).unwrap(),
-            fs::read(vectors().join("bundle-v2").join(name)).unwrap(),
+            fs::read(vectors().join("bundle-v3").join(name)).unwrap(),
             "{name}: the bundle format changed (see the module docs)"
         );
     }
@@ -310,7 +309,7 @@ fn an_unknown_kind_or_a_revocation_in_format_1_is_refused() {
     };
 
     let (out, manifest) = copy("kind-unknown", &|record| {
-        record["kind"] = "agent_state".into();
+        record["kind"] = "agent_taint".into();
     });
     seal(&out, manifest, 2);
     let err = verify(&out).unwrap_err().to_string();
@@ -401,4 +400,83 @@ fn a_revocation_with_a_tagged_event_digest_verifies() {
     let old = fs::read_to_string(vectors().join("bundle-v2").join(RECORDS_FILE)).unwrap();
     let old_last: Value = serde_json::from_str(old.lines().last().unwrap()).unwrap();
     assert!(old_last.get("event_sha256").is_some() && old_last.get("event_digest").is_none());
+}
+
+/// `bundle-v3`: format 3, the revocation by tagged digest, then a quarantine
+/// and an approved reinstatement (`agent_state` records, ADR-013 §4). Same
+/// keys file. The earlier vectors are untouched.
+#[test]
+#[ignore = "regenerates the checked-in vector; run only on a deliberate format change"]
+fn generate_v3() {
+    let bundle = vectors().join("bundle-v3");
+    let _ = fs::remove_dir_all(&bundle);
+    write_chain(&bundle, &chain_v3());
+}
+
+#[test]
+fn the_format_3_bundle_verifies_with_its_agent_state_records() {
+    let bundle = vectors().join("bundle-v3");
+    let manifest: Manifest =
+        serde_json::from_slice(&fs::read(bundle.join(MANIFEST_FILE)).unwrap()).unwrap();
+    assert_eq!(manifest.payload.version, 3);
+    let report =
+        kavach_evidence_cli::verify::verify_dir(&kavach_evidence_cli::verify::VerifyRequest {
+            bundle: &bundle,
+            keys: &vectors().join("bundle-v2.keys.json"),
+            expect_checkpoint: None,
+            dev: false,
+            now: exported_at(),
+        })
+        .expect("the bundle verifies");
+    assert_eq!((report.records, report.last_seq), (7, 7));
+    assert_eq!(
+        (report.last_checkpoint, report.uncovered_records),
+        (Some(7), 0)
+    );
+    let lines: Vec<ChainRecord> = json_lines(&bundle.join(RECORDS_FILE));
+    let kinds: Vec<&str> = lines
+        .iter()
+        .map(kavach_ports::agent_evidence::ChainEntry::kind)
+        .collect();
+    assert_eq!(
+        kinds[4..],
+        ["mandate_revocation", "agent_state", "agent_state"]
+    );
+    let text = fs::read_to_string(bundle.join(RECORDS_FILE)).unwrap();
+    assert!(
+        text.contains("\"reason_code\":\"rogue_behaviour\"") && !text.contains("\"note\""),
+        "a closed reason code, never free text"
+    );
+}
+
+/// A version 2 bundle holds no agent-state record: its verifier refuses one.
+#[test]
+fn a_version_2_bundle_refuses_an_agent_state_record() {
+    let out = scratch("v2-with-state");
+    write_chain(&out, &chain_v3());
+    let mut manifest: Manifest =
+        serde_json::from_slice(&fs::read(out.join(MANIFEST_FILE)).unwrap()).unwrap();
+    manifest.payload.version = 2;
+    manifest.payload.key_id = None;
+    manifest.sig = None;
+    manifest.hash = kavach_ports::bundle::manifest_hash(&manifest.payload).unwrap();
+    fs::write(
+        out.join(MANIFEST_FILE),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let err =
+        kavach_evidence_cli::verify::verify_dir(&kavach_evidence_cli::verify::VerifyRequest {
+            bundle: &out,
+            keys: &vectors().join("bundle-v2.keys.json"),
+            expect_checkpoint: None,
+            dev: false,
+            now: exported_at(),
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("a version 2 bundle holds decisions and revocations only"),
+        "{err}"
+    );
 }
