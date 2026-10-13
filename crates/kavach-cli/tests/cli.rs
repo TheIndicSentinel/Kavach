@@ -894,9 +894,16 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
     let outcomes = doc["outcomes"].as_array().unwrap();
     assert_eq!(outcomes.len(), count);
     for o in outcomes {
-        assert_eq!(o["verdict"], "refused", "{o}");
+        // A development stack serves plain HTTP: no client certificate, so
+        // that one attack is skipped there (and run in process in CI).
+        let expected = if o["id"] == "certificate-principal-approves" {
+            "skipped"
+        } else {
+            "refused"
+        };
+        assert_eq!(o["verdict"], expected, "{o}");
     }
-    assert_eq!(doc["catalog_version"], "4");
+    assert_eq!(doc["catalog_version"], "5");
     // Again on the same stack: nothing a run sends is reused by the next.
     let again = kavach(&dir, &["--json", "attack"]);
     let doc = json(&again);
@@ -906,9 +913,15 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
             .as_array()
             .unwrap()
             .iter()
-            .all(|o| o["verdict"] == "refused"),
+            .all(|o| matches!(o["verdict"].as_str(), Some("refused" | "skipped"))),
         "{doc}"
     );
+    // The kill-switch attacks leave the agent as they found it.
+    let status = json(&kavach(
+        &dir,
+        &["--json", "agent", "status", "collections-agent"],
+    ));
+    assert_eq!(status["state"], "active", "{status}");
     drop(stack);
 
     // Outside contact hours on a clock it cannot move: inconclusive (2).
@@ -927,7 +940,7 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
 }
 
 /// A project made before catalog v4 has no attack borrower: the revocation
-/// attacks cannot run, so `kavach attack` is inconclusive (exit 2) with the
+/// and kill-switch attacks cannot run, so `kavach attack` is inconclusive (exit 2) with the
 /// fix, never a pass, and every other attack still runs and is refused.
 #[test]
 fn attack_without_the_attack_borrower_is_inconclusive() {
@@ -953,7 +966,8 @@ fn attack_without_the_attack_borrower_is_inconclusive() {
         .iter()
         .filter(|o| o["verdict"] == "inconclusive")
         .collect();
-    assert_eq!(inconclusive.len(), 8, "{doc}");
+    // Eight revocation attacks and five kill-switch attacks.
+    assert_eq!(inconclusive.len(), 13, "{doc}");
     assert!(inconclusive[0]["observed"]["fix"]
         .as_str()
         .unwrap()
@@ -962,6 +976,12 @@ fn attack_without_the_attack_borrower_is_inconclusive() {
         .iter()
         .filter(|o| o["verdict"] != "inconclusive")
         .all(|o| o["verdict"] == "refused"));
+    // Nothing was stopped by an attack that could not conclude.
+    let status = json(&kavach(
+        &dir,
+        &["--json", "agent", "status", "collections-agent"],
+    ));
+    assert_eq!(status["state"], "active", "{status}");
     let human = kavach(&dir, &["attack"]);
     let text = String::from_utf8_lossy(&human.stdout);
     assert!(text.contains("kavach init --force"), "{text}");
@@ -1527,6 +1547,7 @@ fn simulate_runs_every_builtin_as_expected() {
             "provider-failures",
             "retry-after-unknown",
             "mixed-week",
+            "rogue-agent-quarantined",
         ]
     );
 
@@ -1544,7 +1565,9 @@ fn simulate_runs_every_builtin_as_expected() {
         let records = doc["evidence"]["records"].as_u64().unwrap();
         let calls = doc["calls"].as_u64().unwrap();
         let revocations = doc["revocation_events"].as_u64().unwrap();
-        assert!(records <= calls + revocations, "{doc}");
+        // ... and each operator stop or reinstatement its agent-state one.
+        let state_changes = doc["agent_state_events"].as_u64().unwrap();
+        assert!(records <= calls + revocations + state_changes, "{doc}");
         for list in ["violations", "mismatches", "leaks", "expectations_unmet"] {
             assert!(
                 doc[list].as_array().unwrap().is_empty(),

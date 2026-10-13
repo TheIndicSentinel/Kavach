@@ -13,7 +13,9 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use kavach_sim::driver::{self, Stack};
 use kavach_sim::oracle::Rules;
-use kavach_sim::reconcile::{reconcile, Arrived, Recorded, RecordedRevocation};
+use kavach_sim::reconcile::{
+    reconcile, Arrived, Recorded, RecordedAgentChange, RecordedRevocation,
+};
 use kavach_sim::report::{Bundle, Report};
 use kavach_sim::scenario::{self, Scenario, BUILTINS};
 use kavach_sim::world::World;
@@ -122,7 +124,7 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     let bundle = check_evidence(&project, &evidence, clean);
     let reconciliation = match &bundle {
         Bundle::Verified { .. } => {
-            let (recorded, outcomes, revocations) = read_bundle(&evidence)?;
+            let (recorded, outcomes, revocations, changes) = read_bundle(&evidence)?;
             Some(reconcile(
                 &run.calls,
                 &recorded,
@@ -132,6 +134,8 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
                 &world.deliveries(),
                 &run.events,
                 &revocations,
+                &run.agent_events,
+                &changes,
             ))
         }
         _ => None,
@@ -141,6 +145,7 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
         &world,
         &run.calls,
         &run.events,
+        &run.agent_events,
         bundle,
         reconciliation,
         Rules::default(),
@@ -151,7 +156,8 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     data["kept"] = json!(ask.keep.then(|| scene.dir.display().to_string()));
     if let Some(path) = ask.report {
         let text = serde_json::to_string_pretty(
-            &json!({ "report": data, "ledger": run.calls, "events": run.events }),
+            &json!({ "report": data, "ledger": run.calls, "events": run.events,
+                "agent_events": run.agent_events }),
         )
         .unwrap_or_default();
         std::fs::write(path, text + "\n")
@@ -168,12 +174,13 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     Ok(code)
 }
 
-/// The bundle's decisions, outcomes and revocation records (it verified
-/// first).
+/// The bundle's decisions, outcomes, revocation records and agent-state
+/// records (it verified first).
 type Read = (
     Vec<Recorded>,
     BTreeMap<String, String>,
     Vec<RecordedRevocation>,
+    Vec<RecordedAgentChange>,
 );
 
 fn read_bundle(dir: &Path) -> Result<Read, CliError> {
@@ -217,11 +224,22 @@ fn read_bundle(dir: &Path) -> Result<Read, CliError> {
                 .unwrap_or_default(),
         })
         .collect();
+    let changes = records
+        .iter()
+        .filter(|r| r["kind"] == "agent_state")
+        .map(|r| RecordedAgentChange {
+            agent_id: text(r, "agent_id"),
+            change_no: r["change_no"].as_i64().unwrap_or_default(),
+            from_state: text(r, "from_state"),
+            to_state: text(r, "to_state"),
+            approved_by: r["approved_by"].as_str().map(str::to_string),
+        })
+        .collect();
     let outcomes = lines("outcomes.jsonl")?
         .iter()
         .map(|o| (text(o, "credential_id"), text(o, "outcome")))
         .collect();
-    Ok((recorded, outcomes, revocations))
+    Ok((recorded, outcomes, revocations, changes))
 }
 
 /// The bundle the stack wrote as it stopped, verified with the auditor's
@@ -295,9 +313,27 @@ fn evidence_lines(out: &mut String, r: &Report) {
                 rec.revocation_events, rec.revocation_records
             );
         }
+        if rec.agent_events > 0 {
+            let _ = writeln!(
+                out,
+                "Agent state changes: {} made · {} signed records in the evidence",
+                rec.agent_events, rec.agent_state_records
+            );
+        }
         for finding in &rec.findings {
             let _ = writeln!(out, "  reconciliation: {finding}");
         }
+    }
+}
+
+/// The operator stops and reinstatements the run made, if any.
+fn stops_line(out: &mut String, r: &Report) {
+    if r.agent_state_events > 0 {
+        let _ = writeln!(
+            out,
+            "Operator stops and reinstatements {} (a stopped agent may do nothing; a reinstated one's same mandates work again)",
+            r.agent_state_events
+        );
     }
 }
 
@@ -334,6 +370,7 @@ fn text(ui: Ui, r: &Report, kept: Option<&Path>) -> String {
             r.revocation_events
         );
     }
+    stops_line(&mut out, r);
     if !r.attacks.is_empty() {
         let tried: u32 = r.attacks.values().map(|(t, _)| t).sum();
         let refused: u32 = r.attacks.values().map(|(_, n)| n).sum();
@@ -404,6 +441,8 @@ struct Live {
     run: RunFile,
     bundle: PathBuf,
     operator_token: String,
+    /// A second principal's token: reinstating an agent needs one.
+    approver_token: Option<String>,
     now: Mutex<DateTime<Utc>>,
 }
 
@@ -417,11 +456,15 @@ impl Live {
             .map_err(|e| CliError::new("cannot read the operator token", e))?
             .trim()
             .to_string();
+        let approver_token = std::fs::read_to_string(project.bundle().join("approver.jwt"))
+            .ok()
+            .map(|t| t.trim().to_string());
         Ok(Self {
             client,
             run: RunFile::live(project)?,
             bundle: project.bundle(),
             operator_token,
+            approver_token,
             now: Mutex::new(start),
         })
     }
@@ -504,6 +547,61 @@ impl Stack for Live {
                 crate::problem::detail(status, &body)
             ))
         }
+    }
+
+    async fn set_agent_state(&self, agent: &str, verb: &str) -> Result<(u16, Value), String> {
+        let operator = format!("http://{}", self.run.operator);
+        let send = |request: reqwest::RequestBuilder| async move {
+            let response = request.send().await.map_err(|e| e.to_string())?;
+            let status = response.status().as_u16();
+            Ok::<_, String>((status, response.json().await.unwrap_or(Value::Null)))
+        };
+        if verb != "reinstate" {
+            return send(
+                self.client
+                    .post(format!("{operator}/v1/agents/{agent}/{verb}"))
+                    .bearer_auth(&self.operator_token)
+                    .json(
+                        &json!({ "reason_code": "rogue_behaviour", "note": "simulated incident" }),
+                    ),
+            )
+            .await;
+        }
+        // Two principals: the operator proposes, a second one approves.
+        let approver = self
+            .approver_token
+            .as_deref()
+            .ok_or("this project has no approver token (kavach init --force)")?;
+        let (status, proposal) = send(
+            self.client
+                .post(format!("{operator}/v1/change-requests"))
+                .bearer_auth(&self.operator_token)
+                .json(&json!({
+                    "kind": "reinstate_agent",
+                    "params": { "agent_id": agent, "to": "active", "reason_code": "reviewed" },
+                })),
+        )
+        .await?;
+        if status != 201 {
+            return Ok((status, proposal));
+        }
+        let id = proposal["id"].as_str().unwrap_or_default();
+        let (status, applied) = send(
+            self.client
+                .post(format!("{operator}/v1/change-requests/{id}/approve"))
+                .bearer_auth(approver)
+                .json(&json!({ "change_digest": proposal["change_digest"] })),
+        )
+        .await?;
+        if status != 200 {
+            return Ok((status, applied));
+        }
+        send(
+            self.client
+                .get(format!("{operator}/v1/agents/{agent}"))
+                .bearer_auth(&self.operator_token),
+        )
+        .await
     }
 
     async fn revoke(

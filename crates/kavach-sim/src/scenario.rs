@@ -53,6 +53,10 @@ pub struct EventSpec {
     pub kind: EventKind,
     #[serde(default = "one")]
     pub borrowers: u32,
+    /// The agent an `agent.*` event is about (an id of the run's world,
+    /// such as `sim-eager-1`). Required for them, refused for the others.
+    #[serde(default)]
+    pub agent: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +70,18 @@ pub enum EventKind {
     /// A new default: the borrower is assigned again (new mandates).
     #[serde(rename = "loan.dpd30")]
     Assigned,
+    /// An operator restricts the agent (ADR-013): reads only.
+    #[serde(rename = "agent.restrict")]
+    AgentRestrict,
+    /// An operator quarantines the agent: nothing, mandates suspended.
+    #[serde(rename = "agent.quarantine")]
+    AgentQuarantine,
+    /// An operator revokes the agent for good: its mandates are revoked.
+    #[serde(rename = "agent.revoke")]
+    AgentRevoke,
+    /// Two principals bring a restricted or quarantined agent back.
+    #[serde(rename = "agent.reinstate")]
+    AgentReinstate,
 }
 
 impl EventKind {
@@ -75,7 +91,20 @@ impl EventKind {
             Self::Paid => "loan.paid",
             Self::Disputed => "loan.disputed",
             Self::Assigned => "loan.dpd30",
+            Self::AgentRestrict => "agent.restrict",
+            Self::AgentQuarantine => "agent.quarantine",
+            Self::AgentRevoke => "agent.revoke",
+            Self::AgentReinstate => "agent.reinstate",
         }
+    }
+
+    /// An event about an agent's state, not a loan.
+    #[must_use]
+    pub fn is_agent_event(self) -> bool {
+        matches!(
+            self,
+            Self::AgentRestrict | Self::AgentQuarantine | Self::AgentRevoke | Self::AgentReinstate
+        )
     }
 
     /// Revokes the borrower's mandates (a payment or a dispute).
@@ -312,7 +341,11 @@ impl Scenario {
                     .into(),
             );
         }
-        let delivering = self.borrowers - (f.refuse + f.error + f.lose);
+        self.validate_events(self.borrowers - (f.refuse + f.error + f.lose))
+    }
+
+    /// The events: their days and times, and who each is about.
+    fn validate_events(&self, delivering: u32) -> Result<(), String> {
         for event in &self.events {
             if !(1..=self.days).contains(&event.day) {
                 return Err(format!(
@@ -321,6 +354,32 @@ impl Scenario {
                 ));
             }
             minute_of_day(&event.at)?;
+            match (event.kind.is_agent_event(), &event.agent) {
+                (true, None) => {
+                    return Err(format!(
+                        "{} needs `agent:` (an agent id)",
+                        event.kind.as_str()
+                    ));
+                }
+                (true, Some(agent)) => {
+                    let known = agent_ids(self);
+                    if !known.contains(agent) {
+                        return Err(format!(
+                            "{} names {agent:?}: this scenario's agents are {}",
+                            event.kind.as_str(),
+                            known.join(", ")
+                        ));
+                    }
+                    continue;
+                }
+                (false, Some(_)) => {
+                    return Err(format!(
+                        "{} is not about an agent: drop `agent:`",
+                        event.kind.as_str()
+                    ));
+                }
+                (false, None) => {}
+            }
             if !(1..=delivering).contains(&event.borrowers) {
                 return Err(format!(
                     "an event for {} borrower(s): it needs 1–{delivering} (borrowers whose messages are delivered)",
@@ -335,6 +394,20 @@ impl Scenario {
     pub fn slots(&self) -> Result<Vec<u32>, String> {
         self.schedule.iter().map(|s| minute_of_day(s)).collect()
     }
+}
+
+/// The ids the world gives this scenario's agents (`sim-<type>-<n>`).
+fn agent_ids(scenario: &Scenario) -> Vec<String> {
+    let mut counts: BTreeMap<AgentKind, u32> = BTreeMap::new();
+    let mut ids = Vec::new();
+    for spec in &scenario.agents {
+        for _ in 0..spec.count {
+            let n = counts.entry(spec.kind).or_default();
+            *n += 1;
+            ids.push(format!("sim-{}-{n}", spec.kind.as_str()));
+        }
+    }
+    ids
 }
 
 /// The built-in scenarios: name and file.
@@ -378,6 +451,10 @@ pub const BUILTINS: &[(&str, &str)] = &[
         include_str!("../scenarios/retry-after-unknown.yaml"),
     ),
     ("mixed-week", include_str!("../scenarios/mixed-week.yaml")),
+    (
+        "rogue-agent-quarantined",
+        include_str!("../scenarios/rogue-agent-quarantined.yaml"),
+    ),
 ];
 
 /// A built-in scenario by name.

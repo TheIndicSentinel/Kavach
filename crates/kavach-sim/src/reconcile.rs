@@ -18,7 +18,8 @@ use serde::Serialize;
 
 use chrono::{DateTime, Utc};
 
-use crate::ledger::{Entry, SorEntry};
+use crate::ledger::{AgentEntry, Entry, SorEntry};
+use crate::oracle::{Standing, Verb};
 use crate::world::Delivery;
 
 /// One record from the evidence bundle (`records.jsonl`).
@@ -37,6 +38,16 @@ pub struct Recorded {
 pub struct RecordedRevocation {
     pub event_id: String,
     pub revoked: Vec<String>,
+}
+
+/// An `agent_state` record from the evidence bundle.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedAgentChange {
+    pub agent_id: String,
+    pub change_no: i64,
+    pub from_state: String,
+    pub to_state: String,
+    pub approved_by: Option<String>,
 }
 
 /// One message in the provider's inbox.
@@ -59,6 +70,10 @@ pub struct Reconciliation {
     /// Payments and disputes the run sent, and their evidence records.
     pub revocation_events: usize,
     pub revocation_records: usize,
+    /// Operators' changes of agents' states the run made, and their
+    /// evidence records.
+    pub agent_events: usize,
+    pub agent_state_records: usize,
     pub findings: Vec<String>,
 }
 
@@ -194,6 +209,96 @@ fn arrivals(
     findings
 }
 
+/// The run's changes of agents' states against Kavach's replies and the
+/// evidence: the state each reply names against the simulator's own model,
+/// the mandates a revoke took against the ones the run held, and the
+/// signed records (one per change, in order, a loosening with an approver).
+#[must_use]
+pub fn reconcile_agent_events(
+    sent: &[AgentEntry],
+    recorded: &[RecordedAgentChange],
+) -> Vec<String> {
+    let mut findings = Vec::new();
+    let mut standing: BTreeMap<&str, Standing> = BTreeMap::new();
+    let mut expected: BTreeMap<&str, Vec<(&'static str, &'static str)>> = BTreeMap::new();
+    for event in sent {
+        let who = format!("{} {} on day {}", event.verb, event.agent, event.day);
+        if event.status != 200 {
+            findings.push(format!("{who}: refused ({})", event.status));
+        } else if event.state.as_deref() != Some(event.expected_state.as_str()) {
+            findings.push(format!(
+                "{who}: the agent is {} after it, the run's own record says {}",
+                event.state.as_deref().unwrap_or("not stated"),
+                event.expected_state
+            ));
+        }
+        if event.verb == "revoke" && sorted(&event.revoked) != sorted(&event.expected_revoked) {
+            findings.push(format!(
+                "{who}: revoked {} mandate(s), but the run held {} of the agent's",
+                event.revoked.len(),
+                event.expected_revoked.len()
+            ));
+        }
+        let before = standing
+            .get(event.agent.as_str())
+            .copied()
+            .unwrap_or_default();
+        let verb = match event.verb.as_str() {
+            "restrict" => Verb::Restrict,
+            "quarantine" => Verb::Quarantine,
+            "revoke" => Verb::Revoke,
+            _ => Verb::Reinstate,
+        };
+        let after = before.after(verb);
+        standing.insert(event.agent.as_str(), after);
+        if after != before && event.status == 200 {
+            expected
+                .entry(event.agent.as_str())
+                .or_default()
+                .push((before.name(), after.name()));
+        }
+    }
+    let mut by_agent: BTreeMap<&str, Vec<&RecordedAgentChange>> = BTreeMap::new();
+    for record in recorded {
+        by_agent
+            .entry(record.agent_id.as_str())
+            .or_default()
+            .push(record);
+    }
+    for (agent, records) in &mut by_agent {
+        records.sort_by_key(|r| r.change_no);
+        let want = expected.get(agent).cloned().unwrap_or_default();
+        let got: Vec<(&str, &str)> = records
+            .iter()
+            .map(|r| (r.from_state.as_str(), r.to_state.as_str()))
+            .collect();
+        if got != want {
+            findings.push(format!(
+                "{agent}: the evidence holds the changes {got:?}, the run made {want:?}"
+            ));
+        }
+        for record in records.iter() {
+            let loosens = ["restricted", "quarantined"].contains(&record.from_state.as_str())
+                && record.to_state == "active";
+            if loosens && record.approved_by.is_none() {
+                findings.push(format!(
+                    "{agent}: change {} loosened it with no approver in the evidence",
+                    record.change_no
+                ));
+            }
+        }
+    }
+    for (agent, want) in &expected {
+        if !want.is_empty() && !by_agent.contains_key(agent) {
+            findings.push(format!(
+                "{agent}: {} change(s) made, none in the evidence",
+                want.len()
+            ));
+        }
+    }
+    findings
+}
+
 /// Reconciles a run. `destinations` and `deliveries` describe the world;
 /// `outcomes` are the bundle's outcomes by credential id.
 #[allow(clippy::too_many_arguments)]
@@ -206,6 +311,8 @@ pub fn reconcile(
     deliveries: &BTreeMap<String, Delivery>,
     sent: &[SorEntry],
     revocations: &[RecordedRevocation],
+    agent_events: &[AgentEntry],
+    agent_changes: &[RecordedAgentChange],
 ) -> Reconciliation {
     let mut findings = Vec::new();
     let by_record: BTreeMap<&str, &Recorded> =
@@ -276,6 +383,7 @@ pub fn reconcile(
         }
     }
     findings.extend(reconcile_revocations(sent, revocations, inbox, recorded));
+    findings.extend(reconcile_agent_events(agent_events, agent_changes));
     Reconciliation {
         ledger_records: firsts.len(),
         evidence_records: recorded.len(),
@@ -283,6 +391,8 @@ pub fn reconcile(
         inbox_messages: inbox.len(),
         revocation_events: sent.len(),
         revocation_records: revocations.len(),
+        agent_events: agent_events.len(),
+        agent_state_records: agent_changes.len(),
         findings,
     }
 }
@@ -385,6 +495,8 @@ mod tests {
                 &self.deliveries,
                 &self.sent,
                 &self.revocations,
+                &[],
+                &[],
             )
             .findings
         }
@@ -552,5 +664,75 @@ mod tests {
         let mut wrong = sent.clone();
         wrong[0].revoked = vec![];
         check(&paid().1, &wrong, "revoked 0 mandate(s)");
+    }
+
+    fn change(day: u32, verb: &str, status: u16, state: &str, expected: &str) -> AgentEntry {
+        AgentEntry {
+            day,
+            at: slot(day, 720),
+            agent: "sim-eager-1".into(),
+            verb: verb.into(),
+            status,
+            state: Some(state.into()),
+            expected_state: expected.into(),
+            revoked: vec![],
+            expected_revoked: vec![],
+        }
+    }
+
+    fn record(no: i64, from: &str, to: &str, approver: Option<&str>) -> RecordedAgentChange {
+        RecordedAgentChange {
+            agent_id: "sim-eager-1".into(),
+            change_no: no,
+            from_state: from.into(),
+            to_state: to.into(),
+            approved_by: approver.map(String::from),
+        }
+    }
+
+    /// The run's stops and reinstatements against Kavach's replies and its
+    /// signed records: each can disagree, and each is found.
+    #[test]
+    fn agent_state_changes_are_reconciled_with_the_evidence() {
+        let sent = vec![
+            change(1, "quarantine", 200, "quarantined", "quarantined"),
+            // A weaker stop changes nothing, and writes no record.
+            change(1, "restrict", 200, "quarantined", "quarantined"),
+            change(2, "reinstate", 200, "active", "active"),
+        ];
+        let records = vec![
+            record(1, "active", "quarantined", None),
+            record(2, "quarantined", "active", Some("dev-approver")),
+        ];
+        assert!(reconcile_agent_events(&sent, &records).is_empty());
+
+        // Kavach says the agent is something else.
+        let mut wrong = sent.clone();
+        wrong[0].state = Some("active".into());
+        assert!(reconcile_agent_events(&wrong, &records)[0].contains("the run's own record"));
+        // A change with no record.
+        let findings = reconcile_agent_events(&sent, &records[..1]);
+        assert!(findings[0].contains("the evidence holds"), "{findings:?}");
+        // A loosening whose record names no approver.
+        let mut unapproved = records.clone();
+        unapproved[1].approved_by = None;
+        assert!(reconcile_agent_events(&sent, &unapproved)
+            .iter()
+            .any(|f| f.contains("no approver")));
+        // A refused change.
+        let mut refused = sent.clone();
+        refused[2].status = 409;
+        assert!(reconcile_agent_events(&refused, &records)
+            .iter()
+            .any(|f| f.contains("refused (409)")));
+        // A revoke that took other mandates than the run held.
+        let mut revoke = change(1, "revoke", 200, "revoked", "revoked");
+        revoke.revoked = vec!["m-1".into()];
+        revoke.expected_revoked = vec!["m-1".into(), "m-2".into()];
+        assert!(
+            reconcile_agent_events(&[revoke], &[record(1, "active", "revoked", None)])
+                .iter()
+                .any(|f| f.contains("revoked 1 mandate(s)"))
+        );
     }
 }

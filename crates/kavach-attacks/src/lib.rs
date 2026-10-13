@@ -21,10 +21,11 @@ use base64::Engine;
 use serde::Serialize;
 use serde_json::{json, Value};
 
+mod agent_state;
 mod revocation;
 
 /// Bumped whenever an attack is added, removed or its expectation changes.
-pub const CATALOG_VERSION: &str = "4";
+pub const CATALOG_VERSION: &str = "5";
 
 /// The borrower the dev mandate covers, and one it does not.
 pub const SUBJECT: &str = "ref:borrower:B-9382";
@@ -88,6 +89,42 @@ pub enum Probe {
     /// (ADR-012). Its declared setup assigns the borrower (a mandate);
     /// ground truth is that mandate, pre-checked, and the evidence chain.
     Revocation(RevocationAttack),
+    /// An attack on the agent kill switch (ADR-013). Its declared setup
+    /// assigns the attack borrower and stops the holder agent through the
+    /// operator API; it is judged on the reply and on ground truth (the
+    /// state read back, a pre-check of the attack mandate, nothing minted),
+    /// and then the agent is brought back through the real approval path.
+    AgentState(AgentStateAttack),
+}
+
+/// The kill-switch attacks (catalog v5, ADR-013 §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentStateAttack {
+    /// A quarantined agent calls a tool under its own mandate.
+    QuarantinedActs,
+    /// A restricted agent tries to contact the borrower.
+    RestrictedContacts,
+    /// A quarantined agent is loosened without anyone approving: through a
+    /// weaker stop, and by a proposal nobody approved.
+    ReinstateWithoutApproval,
+    /// The principal who proposed a reinstatement approves it.
+    SelfApprovedReinstate,
+    /// A client-certificate (machine) principal approves a reinstatement.
+    CertificatePrincipalApproves,
+}
+
+/// Who speaks on the operator API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Principal {
+    /// The operator: may stop and propose, and (in the development and
+    /// acceptance worlds) holds the approver role too, so that only the
+    /// distinct-identity rule refuses its own approval.
+    Operator,
+    /// A second human principal with the approver role.
+    Approver,
+    /// A machine principal identified by a client certificate, holding the
+    /// approver role in the policy.
+    Certificate,
 }
 
 /// The revocation attacks (catalog v4, ADR-012 §8).
@@ -176,6 +213,12 @@ pub enum Expect {
     StoredRevocation,
     /// Any 4xx from the provider.
     Refused,
+    /// The agent stays stopped: its call is a BLOCK for `reason`, the state
+    /// read back is still `state`, and no reinstatement went through.
+    AgentStaysStopped {
+        state: &'static str,
+        reason: &'static str,
+    },
 }
 
 /// One attack.
@@ -206,9 +249,11 @@ const STOLEN_TOKEN: &str = "An agent token stolen before it expires";
 const SOR_KEY: &str = "A system of record with a valid issuer key";
 const REVOCATION: &str = "Revocation by system-of-record event (ADR-012):";
 const AROUND: &str = "A resource the agent reaches without the gateway";
+const STOPPED: &str =
+    "A stopped agent does nothing, from its next call, on every replica (ADR-013, K1-1):";
 
 /// The catalog, in the order it runs.
-pub const CATALOG: [Attack; 30] = [
+pub const CATALOG: [Attack; 35] = [
     Attack {
         id: "raw-phone-number",
         group: "identifiers",
@@ -594,6 +639,66 @@ pub const CATALOG: [Attack; 30] = [
         security_property: REVOCATION,
         bypass: Some(SOR_KEY),
     },
+    Attack {
+        id: "quarantined-agent-acts",
+        group: "agent-state",
+        tries: "a quarantined agent calling a tool under its own mandate",
+        probe: Probe::AgentState(AgentStateAttack::QuarantinedActs),
+        expect: Expect::AgentStaysStopped {
+            state: "quarantined",
+            reason: "agent-stopped",
+        },
+        security_property: STOPPED,
+        bypass: None,
+    },
+    Attack {
+        id: "restricted-agent-contacts",
+        group: "agent-state",
+        tries: "a restricted agent contacting the borrower",
+        probe: Probe::AgentState(AgentStateAttack::RestrictedContacts),
+        expect: Expect::AgentStaysStopped {
+            state: "restricted",
+            reason: "agent-restricted",
+        },
+        security_property: STOPPED,
+        bypass: None,
+    },
+    Attack {
+        id: "reinstate-without-approval",
+        group: "agent-state",
+        tries: "loosening a quarantined agent with no approver: a weaker stop, and a proposal nobody approves",
+        probe: Probe::AgentState(AgentStateAttack::ReinstateWithoutApproval),
+        expect: Expect::AgentStaysStopped {
+            state: "quarantined",
+            reason: "agent-stopped",
+        },
+        security_property: STOPPED,
+        bypass: None,
+    },
+    Attack {
+        id: "self-approved-reinstate",
+        group: "agent-state",
+        tries: "the principal who proposed a reinstatement approving it",
+        probe: Probe::AgentState(AgentStateAttack::SelfApprovedReinstate),
+        expect: Expect::AgentStaysStopped {
+            state: "quarantined",
+            reason: "agent-stopped",
+        },
+        security_property: STOPPED,
+        bypass: None,
+    },
+    Attack {
+        id: "certificate-principal-approves",
+        group: "agent-state",
+        tries: "a client-certificate principal, holding the approver role, approving a reinstatement",
+        probe: Probe::AgentState(AgentStateAttack::CertificatePrincipalApproves),
+        expect: Expect::AgentStaysStopped {
+            state: "quarantined",
+            reason: "agent-stopped",
+        },
+        security_property: STOPPED,
+        bypass: None,
+    },
 ];
 
 /// The agent token of the attack that uses one, changed as `auth` asks.
@@ -703,6 +808,27 @@ pub trait Target {
         &self,
         event_id: &str,
     ) -> impl Future<Output = Result<Option<String>, String>>;
+    /// The agent that holds [`mandate`](Self::mandate): the one the
+    /// kill-switch attacks stop.
+    fn agent_id(&self) -> String {
+        "collections-agent".into()
+    }
+    /// Whether this runner can speak as `who` on the operator API (a
+    /// development stack made before catalog v5 has no approver token:
+    /// `kavach init --force`; only some runners can present a client
+    /// certificate).
+    fn has_principal(&self, who: Principal) -> bool {
+        who == Principal::Operator
+    }
+    /// A request to the operator API as `who`: status and JSON body (a
+    /// problem document for an error).
+    fn operator_request(
+        &self,
+        who: Principal,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> impl Future<Output = Result<(u16, Value), String>>;
     /// Moves the stack's clock forward to the next `hour:minute` IST; with
     /// `fresh_day`, to that time on a later IST day than any so far.
     fn move_clock(
@@ -853,7 +979,8 @@ fn judge(expect: Expect, status: u16, body: &Value) -> Verdict {
         | Expect::Refused
         | Expect::EventRefused
         | Expect::RevokesNothing
-        | Expect::StoredRevocation => Verdict::Error,
+        | Expect::StoredRevocation
+        | Expect::AgentStaysStopped { .. } => Verdict::Error,
     }
 }
 
@@ -926,6 +1053,49 @@ async fn revocation_with_ground_truth<T: Target>(
     }
 }
 
+async fn agent_state_with_ground_truth<T: Target>(
+    target: &T,
+    kind: AgentStateAttack,
+    expect: Expect,
+    n: &str,
+) -> Judged {
+    let (before_allowed, before_delivered) = ground(target).await;
+    let (verdict, observed, setup) = if target.has_attack_borrower() {
+        crate::agent_state::run(target, kind, expect, n).await
+    } else {
+        (
+            Verdict::Inconclusive,
+            json!({
+                "inconclusive": format!("the project has no {ATTACK_SUBJECT}"),
+                "fix": "kavach init --force (it rewrites the development bundle)",
+            }),
+            None,
+        )
+    };
+    // Nothing may be minted or sent, setup and teardown included.
+    let (after_allowed, after_delivered) = ground(target).await;
+    let minted = match (&before_allowed, &after_allowed) {
+        (Ok(b), Ok(a)) => a.saturating_sub(*b),
+        _ => 0,
+    };
+    let sent = match (&before_delivered, &after_delivered) {
+        (Ok(b), Ok(a)) => a.abs_diff(*b),
+        _ => 0,
+    };
+    let verdict = if minted > 0 || sent > 0 {
+        Verdict::Succeeded
+    } else {
+        verdict
+    };
+    Judged {
+        verdict,
+        observed,
+        setup,
+        minted,
+        sent,
+    }
+}
+
 /// Runs `attacks` against `target`, judging each on its reply and on
 /// ground truth (credentials minted, messages delivered).
 pub async fn run<T: Target>(target: &T, attacks: &[Attack]) -> Report {
@@ -961,6 +1131,13 @@ pub async fn run<T: Target>(target: &T, attacks: &[Attack]) -> Report {
         }
         if let Probe::Revocation(kind) = attack.probe {
             let judged = revocation_with_ground_truth(target, kind, attack.expect, n).await;
+            minted_total += judged.minted;
+            delivered_total += judged.sent;
+            outcomes.push(outcome(judged.verdict, judged.observed, judged.setup));
+            continue;
+        }
+        if let Probe::AgentState(kind) = attack.probe {
+            let judged = agent_state_with_ground_truth(target, kind, attack.expect, n).await;
             minted_total += judged.minted;
             delivered_total += judged.sent;
             outcomes.push(outcome(judged.verdict, judged.observed, judged.setup));
@@ -1169,9 +1346,9 @@ async fn probe<T: Target>(target: &T, attack: &Attack, n: &str) -> (Verdict, Val
                 Err(e) => (Verdict::Error, json!({ "error": e })),
             }
         }
-        Probe::Revocation(_) => (
+        Probe::Revocation(_) | Probe::AgentState(_) => (
             Verdict::Error,
-            json!({ "error": "a revocation attack is run on its own" }),
+            json!({ "error": "a revocation or agent-state attack is run on its own" }),
         ),
         Probe::ProviderDirect => provider_direct(target).await,
     }

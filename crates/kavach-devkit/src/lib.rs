@@ -14,7 +14,8 @@
 //! | `kavach/kavach.env` | kavach-api | every setting, as environment variables |
 //! | `provider/` | mock provider | X25519 encryption key, credential public keys, TLS certificate and key |
 //! | `agents/<id>.jwt` | each agent | its access token (and nothing else) |
-//! | `operator.jwt` | operators | an operator token |
+//! | `operator.jwt` | operators | an operator token (`admins`, and `change-approvers` so that only the distinct-identity rule, not the role, refuses its own approval) |
+//! | `approver.jwt` | whoever approves a change | a second principal's token (`change-approvers`): the kill switch's reinstatement needs one, and `kavach attack` uses it to bring an agent back |
 //! | `sor/` | system of record | the event-signing key, used by `kavach-dev sor-event` |
 //! | `signing/` | offline | the tool-registry signing key |
 //! | `auditor/` | whoever exports evidence | the export key `dev-export-1`, which signs evidence bundles, and `trusted-keys.json`, the public keys for `kavach-evidence verify-bundle --dev` (never mounted into Kavach) |
@@ -459,7 +460,16 @@ fn write_identity(
         &mint(
             &idp_seed,
             OPERATOR_AUDIENCE,
-            json!({ "sub": "dev-operator", "groups": ["admins"] }),
+            json!({ "sub": "dev-operator", "groups": ["admins", "change-approvers"] }),
+            hours,
+        )?,
+    )?;
+    write_secret(
+        &out.join("approver.jwt"),
+        &mint(
+            &idp_seed,
+            OPERATOR_AUDIENCE,
+            json!({ "sub": "dev-approver", "groups": ["change-approvers"] }),
             hours,
         )?,
     )?;

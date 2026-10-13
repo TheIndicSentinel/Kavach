@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 
 use crate::agents::{decide, retries, Memory};
 use crate::calendar::slot;
-use crate::ledger::{Entry, SorEntry};
+use crate::ledger::{AgentEntry, Entry, SorEntry};
+use crate::oracle::{Standing, Verb};
 use crate::rng::Rng;
 use crate::scenario::{minute_of_day, EventSpec, Scenario};
 use crate::world::World;
@@ -30,6 +31,15 @@ pub trait Stack {
     ) -> impl Future<Output = Result<(u16, Value), String>>;
     /// Moves the stack's fixed clock forward to `at`.
     fn move_clock(&self, at: DateTime<Utc>) -> impl Future<Output = Result<(), String>>;
+    /// An operator's change of `agent`'s state (`restrict`, `quarantine`,
+    /// `revoke`, `reinstate`; a reinstatement is proposed by the operator
+    /// and approved by a second principal): status and a body with the
+    /// agent's `state` afterwards and, for a revoke, `mandates_revoked`.
+    fn set_agent_state(
+        &self,
+        agent: &str,
+        verb: &str,
+    ) -> impl Future<Output = Result<(u16, Value), String>>;
     /// A revoking system-of-record event (`loan.paid`, `loan.disputed`)
     /// for `subject_ref`'s loan, at the stack's time: status and body.
     fn revoke(
@@ -45,10 +55,13 @@ pub trait Stack {
 pub struct Run {
     pub calls: Vec<Entry>,
     pub events: Vec<SorEntry>,
+    /// Operators' changes of agents' states (ADR-013).
+    pub agent_events: Vec<AgentEntry>,
 }
 
 /// One mandate the run obtained, in the simulator's own record.
 struct Held {
+    agent: usize,
     borrower: usize,
     id: String,
     issued_at: DateTime<Utc>,
@@ -78,6 +91,7 @@ impl Mandates {
             .await
             .map_err(|e| format!("issuing a mandate: {e}"))?;
         self.all.push(Held {
+            agent,
             borrower,
             id,
             issued_at: at,
@@ -89,6 +103,21 @@ impl Mandates {
 
     fn current(&self, pair: (usize, usize)) -> &Held {
         &self.all[self.current[&pair]]
+    }
+
+    /// What revoking `agent` must revoke: the mandates it holds that the
+    /// run has not seen revoked. Marks them revoked.
+    fn revoke_agent(&mut self, agent: usize) -> Vec<String> {
+        let mut ids = Vec::new();
+        for held in self
+            .all
+            .iter_mut()
+            .filter(|h| h.agent == agent && !h.revoked)
+        {
+            held.revoked = true;
+            ids.push(held.id.clone());
+        }
+        ids
     }
 
     /// What an event for `borrower` at `at` must revoke: its mandates
@@ -123,6 +152,9 @@ pub async fn run<S: Stack>(stack: &S, scenario: &Scenario, world: &World) -> Res
 
     let (mut rng, mut memory, mut out) =
         (Rng::new(scenario.seed), Memory::default(), Run::default());
+    // The simulator's own record of how each agent stands (its model, never
+    // Kavach's replies).
+    let mut standing: BTreeMap<String, Standing> = BTreeMap::new();
     let slots = scenario.slots()?;
     for day in 1..=scenario.days {
         for minute in timeline(scenario, day, &slots)? {
@@ -137,6 +169,19 @@ pub async fn run<S: Stack>(stack: &S, scenario: &Scenario, world: &World) -> Res
             for event in scenario.events.iter().filter(|e| e.day == day) {
                 if minute_of_day(&event.at)? == minute {
                     let n = out.events.len();
+                    if event.kind.is_agent_event() {
+                        agent_event(
+                            stack,
+                            world,
+                            &mut mandates,
+                            &mut standing,
+                            event,
+                            at,
+                            &mut out,
+                        )
+                        .await?;
+                        continue;
+                    }
                     send_event(
                         stack,
                         scenario,
@@ -210,6 +255,59 @@ fn timeline(scenario: &Scenario, day: u32, slots: &[u32]) -> Result<Vec<u32>, St
     minutes.sort_unstable();
     minutes.dedup();
     Ok(minutes)
+}
+
+/// An operator's change of one agent's state. The expected state and the
+/// expected revocations come from the simulator's own record.
+async fn agent_event<S: Stack>(
+    stack: &S,
+    world: &World,
+    mandates: &mut Mandates,
+    standing: &mut BTreeMap<String, Standing>,
+    event: &EventSpec,
+    at: DateTime<Utc>,
+    out: &mut Run,
+) -> Result<(), String> {
+    let (Some(agent_id), Some(verb)) = (event.agent.as_deref(), crate::world::verb_of(event.kind))
+    else {
+        return Err("an agent event without an agent".into());
+    };
+    let index = world
+        .agents
+        .iter()
+        .position(|a| a.id == agent_id)
+        .ok_or_else(|| format!("no agent {agent_id} in this world"))?;
+    let before = standing.get(agent_id).copied().unwrap_or_default();
+    let after = before.after(verb);
+    standing.insert(agent_id.to_string(), after);
+    let expected_revoked = if verb == Verb::Revoke && before != Standing::Revoked {
+        mandates.revoke_agent(index)
+    } else {
+        Vec::new()
+    };
+    let (status, reply) = stack
+        .set_agent_state(agent_id, verb.as_str())
+        .await
+        .map_err(|e| format!("{} {agent_id}: {e}", verb.as_str()))?;
+    out.agent_events.push(AgentEntry {
+        day: event.day,
+        at,
+        agent: agent_id.to_string(),
+        verb: verb.as_str().into(),
+        status,
+        state: reply["state"].as_str().map(str::to_string),
+        expected_state: after.name().into(),
+        revoked: reply["mandates_revoked"]
+            .as_array()
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        expected_revoked,
+    });
+    Ok(())
 }
 
 /// One event, for each of its borrowers: a payment or dispute revokes

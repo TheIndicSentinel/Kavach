@@ -89,6 +89,9 @@ struct Live {
     agent: String,
     other_agent: String,
     operator: String,
+    /// A second principal's token, from `approver.jwt` (projects made
+    /// before catalog v5 have none: `kavach init --force`).
+    approver: Option<String>,
     mandate: String,
     /// The event that issued the mandate, kept to replay it.
     event: String,
@@ -111,6 +114,47 @@ impl Target for Live {
 
     fn mandate(&self) -> String {
         self.mandate.clone()
+    }
+
+    fn has_principal(&self, who: kavach_attacks::Principal) -> bool {
+        match who {
+            kavach_attacks::Principal::Operator => true,
+            kavach_attacks::Principal::Approver => self.approver.is_some(),
+            // A development stack serves plain HTTP: no client certificate.
+            kavach_attacks::Principal::Certificate => false,
+        }
+    }
+
+    async fn operator_request(
+        &self,
+        who: kavach_attacks::Principal,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<(u16, Value), String> {
+        let token = match who {
+            kavach_attacks::Principal::Operator => self.operator.clone(),
+            kavach_attacks::Principal::Approver => self
+                .approver
+                .clone()
+                .ok_or("this project has no approver token")?,
+            kavach_attacks::Principal::Certificate => {
+                return Err("a development stack has no client-certificate principal".into())
+            }
+        };
+        let url = format!("http://{}{path}", self.run.operator);
+        let request = match method {
+            "GET" => self.http.get(url),
+            _ => self.http.post(url),
+        }
+        .bearer_auth(token);
+        let request = match body {
+            Some(body) => request.json(&body),
+            None => request,
+        };
+        let response = request.send().await.map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        Ok((status, response.json().await.unwrap_or(Value::Null)))
     }
 
     async fn post_agent(
@@ -459,6 +503,9 @@ pub async fn run(ui: &Ui, dir: &Path) -> Result<i32, CliError> {
         agent,
         other_agent: read(&bundle.join("agents/translation-agent.jwt"))?,
         operator,
+        approver: std::fs::read_to_string(bundle.join("approver.jwt"))
+            .ok()
+            .map(|t| t.trim().to_string()),
         mandate,
         event,
         http,
