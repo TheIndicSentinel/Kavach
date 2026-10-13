@@ -352,6 +352,8 @@ pub fn chain_v3() -> Vec<ChainRecord> {
             reason_digest: digest,
             changed_by: "ops-kat-1".into(),
             approved_by: approver,
+            // Absent: bundle-v3 stays byte-identical.
+            change_request_id: None,
             changed_at: when,
         };
         let now = TrustedNow {

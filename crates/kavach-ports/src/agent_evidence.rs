@@ -1437,6 +1437,9 @@ mod tests {
     /// An agent-state record's own rules (spec §4.5) hold even when its hash
     /// and signature are genuine: a signer that wrote one of these wrote
     /// something that is not evidence of a change.
+    // One table of broken records beside the good ones: splitting it would
+    // hide which case is which.
+    #[allow(clippy::too_many_lines)]
     #[test]
     fn an_agent_state_record_must_be_a_real_change() {
         use crate::chain_record::{seal_agent_state, AgentStateDraft};
@@ -1453,6 +1456,7 @@ mod tests {
             reason_digest: Some(format!("mac:{}", "ab".repeat(32))),
             changed_by: "ops-1".into(),
             approved_by: None,
+            change_request_id: None,
             changed_at: DateTime::from_timestamp(1_790_000_000, 0).unwrap(),
         };
         let now = crate::TrustedNow {
@@ -1516,6 +1520,20 @@ mod tests {
                 },
             ),
             ("loosening without one", loosen(None)),
+            (
+                "a request id on a tightening",
+                AgentStateDraft {
+                    change_request_id: Some("cr-1".into()),
+                    ..base.clone()
+                },
+            ),
+            (
+                "an empty request id",
+                AgentStateDraft {
+                    change_request_id: Some(String::new()),
+                    ..loosen(Some("ops-2"))
+                },
+            ),
             ("approving one's own change", loosen(Some("ops-1"))),
         ];
         for (what, draft) in broken {

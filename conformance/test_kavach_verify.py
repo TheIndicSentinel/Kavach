@@ -242,6 +242,8 @@ class Mutations(unittest.TestCase):
             "loosening without approver": (6, {"approved_by": None}),
             "approves their own change": (6, {"approved_by": "ops-kat-1"}),
             "change number zero": (5, {"change_no": 0}),
+            "request id on a tightening": (5, {"change_request_id": "cr-1"}),
+            "empty request id": (6, {"change_request_id": ""}),
         }
         for what, (index, edit) in cases.items():
             with self.subTest(what):
@@ -250,6 +252,15 @@ class Mutations(unittest.TestCase):
                 self.reseal(rows)
                 with self.structural():
                     self.refuse("malformed record")
+
+    def test_a_loosening_may_name_the_change_request_that_carried_it_out(self):
+        rows = self._v3()
+        reinstatement = dict(rows[6], change_request_id="cr-7f3a")
+        kv.Verifier._agent_state_form(reinstatement, "record 7")
+        # ...and a tightening may not.
+        stop = dict(rows[5], change_request_id="cr-7f3a")
+        with self.assertRaises(kv.Refused):
+            kv.Verifier._agent_state_form(stop, "record 6")
 
     def test_a_version_2_bundle_refuses_an_agent_state_record(self):
         rows = self._v3()

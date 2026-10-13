@@ -813,6 +813,9 @@ fn state_row(row: &sqlx::postgres::PgRow) -> Result<StoredAgentState, PortError>
         note: get("reason")?,
         changed_by: get("changed_by")?,
         approved_by: row.try_get("approved_by").map_err(|e| unavailable(&e))?,
+        change_request_id: row
+            .try_get("change_request_id")
+            .map_err(|e| unavailable(&e))?,
         changed_at: row.try_get("changed_at").map_err(|e| unavailable(&e))?,
     })
 }
@@ -831,14 +834,17 @@ fn change_row(row: &sqlx::postgres::PgRow) -> Result<StoredAgentChange, PortErro
         note: get("note")?,
         changed_by: get("changed_by")?,
         approved_by: row.try_get("approved_by").map_err(|e| unavailable(&e))?,
+        change_request_id: row
+            .try_get("change_request_id")
+            .map_err(|e| unavailable(&e))?,
         changed_at: row.try_get("changed_at").map_err(|e| unavailable(&e))?,
     })
 }
 
-const STATE_COLUMNS: &str =
-    "tenant_id, agent_id, state, change_no, reason_code, reason, changed_by, approved_by, changed_at";
+const STATE_COLUMNS: &str = "tenant_id, agent_id, state, change_no, reason_code, reason, \
+     changed_by, approved_by, change_request_id, changed_at";
 const CHANGE_COLUMNS: &str = "tenant_id, agent_id, change_no, from_state, to_state, reason_code, \
-     note, changed_by, approved_by, changed_at";
+     note, changed_by, approved_by, change_request_id, changed_at";
 
 impl PostgresAgentEvidenceStore {
     /// Takes the agent's lock, checks `change` against the stored state and
@@ -877,7 +883,7 @@ impl PostgresAgentEvidenceStore {
         let change_no = last_no + 1;
         let history = sqlx::query(&format!(
             "INSERT INTO agent_state_changes ({CHANGE_COLUMNS}) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING {CHANGE_COLUMNS}"
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING {CHANGE_COLUMNS}"
         ))
         .bind(&change.tenant_id)
         .bind(&change.agent_id)
@@ -888,16 +894,20 @@ impl PostgresAgentEvidenceStore {
         .bind(&change.note)
         .bind(&change.changed_by)
         .bind(&change.approved_by)
+        .bind(&change.change_request_id)
         .bind(change.at)
         .fetch_one(&mut **tx)
         .await
         .map_err(|e| unavailable(&e))?;
         let row = sqlx::query(&format!(
-            "INSERT INTO agent_states ({STATE_COLUMNS}) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
+            "INSERT INTO agent_states ({STATE_COLUMNS}) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              ON CONFLICT (tenant_id, agent_id) DO UPDATE SET state = EXCLUDED.state, \
              change_no = EXCLUDED.change_no, reason_code = EXCLUDED.reason_code, \
              reason = EXCLUDED.reason, changed_by = EXCLUDED.changed_by, \
-             approved_by = EXCLUDED.approved_by, changed_at = EXCLUDED.changed_at \
+             approved_by = EXCLUDED.approved_by, \
+             change_request_id = EXCLUDED.change_request_id, \
+             changed_at = EXCLUDED.changed_at \
              RETURNING {STATE_COLUMNS}"
         ))
         .bind(&change.tenant_id)
@@ -908,6 +918,7 @@ impl PostgresAgentEvidenceStore {
         .bind(&change.note)
         .bind(&change.changed_by)
         .bind(&change.approved_by)
+        .bind(&change.change_request_id)
         .bind(change.at)
         .fetch_one(&mut **tx)
         .await
@@ -1050,6 +1061,7 @@ impl AgentStateStore for PostgresAgentEvidenceStore {
             },
             changed_by: history.changed_by.clone(),
             approved_by: history.approved_by.clone(),
+            change_request_id: history.change_request_id.clone(),
             changed_at: history.changed_at,
         };
         let payload = draft.complete(

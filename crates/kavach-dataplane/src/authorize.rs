@@ -418,6 +418,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             }),
             changed_by: change.changed_by.clone(),
             approved_by: change.approved_by.clone(),
+            change_request_id: change.change_request_id.clone(),
             changed_at: change.changed_at,
         };
         self.store
@@ -486,6 +487,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             note: state.note.clone(),
             changed_by: state.changed_by.clone(),
             approved_by: state.approved_by.clone(),
+            change_request_id: state.change_request_id.clone(),
             changed_at: state.changed_at,
         };
         Ok(match self.record_agent_change(&stored).await {

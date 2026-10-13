@@ -96,6 +96,33 @@ struct UpdateRetentionParams {
     evidence_retention_days: u32,
 }
 
+/// What an agent is brought back to (never past `active`; `revoked` cannot
+/// be reinstated at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReinstateTo {
+    Active,
+    Restricted,
+}
+
+fn default_reason_code() -> kavach_domain::ReasonCode {
+    kavach_domain::ReasonCode::Reviewed
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReinstateAgentParams {
+    agent_id: String,
+    to: ReinstateTo,
+    /// Why, from the closed set: this is what the evidence chain carries.
+    #[serde(default = "default_reason_code")]
+    reason_code: kavach_domain::ReasonCode,
+    /// The operator's words: kept in the store and the audit log, never in
+    /// the chain.
+    #[serde(default)]
+    note: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct EraseEvidenceParams {
@@ -133,13 +160,20 @@ struct Prepared {
     resource_id: String,
     audit_payload: Value,
     outcome: Value,
+    /// A change of an agent's state to carry out before the approval is
+    /// committed (a reinstatement), idempotent on the request's id. `None`
+    /// when it was already carried out by an earlier attempt.
+    agent_change: Option<kavach_ports::agent_state::AgentStateChange>,
 }
 
-/// Principals named in refusal audits while preparing.
+/// Principals named in refusal audits while preparing, and, at approval, the
+/// request being approved and what it was bound to.
 #[derive(Clone, Copy)]
 struct Actors<'a> {
     proposer: &'a str,
     approver: &'a str,
+    request_id: Option<&'a str>,
+    frozen_binding: Option<&'a Value>,
 }
 
 fn change_digest(request: &ChangeRequest) -> Result<String, ApiError> {
@@ -202,6 +236,8 @@ impl AppState {
         let actors = Actors {
             proposer: &proposer.id,
             approver: NO_APPROVER,
+            request_id: None,
+            frozen_binding: None,
         };
         let prepared = self
             .prepare(proposal.kind, &proposal.params, actors, None)
@@ -293,6 +329,8 @@ impl AppState {
         let actors = Actors {
             proposer: &request.proposer,
             approver: &approver.id,
+            request_id: Some(&request.id),
+            frozen_binding: Some(&request.binding),
         };
         let cutoff = request
             .binding
@@ -335,6 +373,9 @@ impl AppState {
         prepared: Prepared,
         now: DateTime<Utc>,
     ) -> Result<ChangeRequest, ApiError> {
+        if let Some(change) = prepared.agent_change.clone() {
+            self.carry_out_agent_change(change).await?;
+        }
         let version_before = self.runtime().pointer_version;
         let moves_pointer = prepared
             .effects
@@ -487,6 +528,184 @@ impl AppState {
                 self.prepare_apply_retention(retention_cutoff).await
             }
             ChangeKind::ActivateModel => self.prepare_activate_model(parse(params)?, actors).await,
+            ChangeKind::ReinstateAgent => {
+                self.prepare_reinstate_agent(parse(params)?, actors).await
+            }
+        }
+    }
+
+    /// A reinstatement whose own change is already written (an earlier
+    /// attempt crashed between the two stores): the approval completes
+    /// instead of failing. `None` when it is not this request's change.
+    fn already_applied(
+        params: &ReinstateAgentParams,
+        to: kavach_domain::AgentState,
+        actors: Actors<'_>,
+        current: Option<&kavach_ports::agent_state::StoredAgentState>,
+        frozen_change_no: Option<i64>,
+        resource_id: &str,
+        outcome: &Value,
+    ) -> Result<Option<Prepared>, ApiError> {
+        let (Some(id), Some(row), Some(frozen)) =
+            (actors.request_id, current, actors.frozen_binding)
+        else {
+            return Ok(None);
+        };
+        if row.change_request_id.as_deref() != Some(id)
+            || row.state != to
+            || frozen_change_no.is_none_or(|n| row.change_no != n + 1)
+        {
+            return Ok(None);
+        }
+        Ok(Some(Prepared {
+            params: to_value(params)?,
+            binding: frozen.clone(),
+            expected_version: None,
+            effects: vec![GovernanceEffect::None],
+            live: None,
+            resource_type: "agent",
+            resource_id: resource_id.to_string(),
+            audit_payload: json!({
+                "agent_id": params.agent_id,
+                "to": to.as_str(),
+                "already_applied": true,
+            }),
+            outcome: outcome.clone(),
+            agent_change: None,
+        }))
+    }
+
+    /// `reinstate_agent` (ADR-013 §3): bring a restricted or quarantined
+    /// agent back, with a second principal's approval.
+    ///
+    /// The change lives in the agent evidence store, not the admin store, so
+    /// carrying it out and committing the approval are two steps. They are
+    /// made safe by keying the first on this request's id: the state row and
+    /// its record carry it, so an approval that finds its own change already
+    /// written (a crash between the steps) completes instead of failing, and
+    /// any other change of the agent since the proposal fails the request
+    /// closed.
+    async fn prepare_reinstate_agent(
+        &self,
+        params: ReinstateAgentParams,
+        actors: Actors<'_>,
+    ) -> Result<Prepared, ApiError> {
+        use kavach_domain::AgentState;
+        use kavach_ports::agent_state::{AgentStateChange, AgentStateStore as _};
+
+        let dp = self
+            .dataplane()
+            .ok_or_else(|| ApiError::NotFound("agent surfaces are not configured".into()))?;
+        let core = dp.core();
+        let tenant = core.tenant_id().to_string();
+        // An exact match with a passport: a typo must not look like a change.
+        if !dp.mandates().has_passport(&tenant, &params.agent_id) {
+            return Err(ApiError::NotFound(format!(
+                "no agent {} in this configuration",
+                params.agent_id
+            )));
+        }
+        let current = core
+            .store()
+            .current(&tenant, &params.agent_id)
+            .await
+            .map_err(|e| ApiError::Unavailable(format!("agent state: {}", e.message)))?;
+        let to = match params.to {
+            ReinstateTo::Active => AgentState::Active,
+            ReinstateTo::Restricted => AgentState::Restricted,
+        };
+        let resource_id = params.agent_id.clone();
+        let frozen_change_no = actors
+            .frozen_binding
+            .and_then(|b| b.get("change_no"))
+            .and_then(Value::as_i64);
+        let outcome = json!({ "agent_id": params.agent_id, "to": to.as_str() });
+        // This request's own change, already written: complete the approval.
+        if let Some(prepared) = Self::already_applied(
+            &params,
+            to,
+            actors,
+            current.as_ref(),
+            frozen_change_no,
+            &resource_id,
+            &outcome,
+        )? {
+            return Ok(prepared);
+        }
+        let (from, change_no) = match current {
+            None => (AgentState::Active, 0),
+            Some(row) => (row.state, row.change_no),
+        };
+        if from == AgentState::Revoked {
+            return Err(ApiError::Conflict(
+                "a revoked agent cannot be reinstated: issue a new passport with a new agent id"
+                    .into(),
+            ));
+        }
+        if !from.loosens_to(to) {
+            return Err(ApiError::Conflict(format!(
+                "the agent is {}; reinstating it to {} would not loosen anything",
+                from.as_str(),
+                to.as_str()
+            )));
+        }
+        let note = params.note.trim().to_string();
+        let change = AgentStateChange {
+            tenant_id: tenant,
+            agent_id: params.agent_id.clone(),
+            to,
+            reason_code: params.reason_code,
+            note,
+            changed_by: actors.proposer.to_string(),
+            approved_by: (actors.approver != NO_APPROVER).then(|| actors.approver.to_string()),
+            change_request_id: actors.request_id.map(str::to_string),
+            at: core.clock_now(),
+        };
+        Ok(Prepared {
+            params: to_value(&params)?,
+            binding: json!({
+                "agent_id": params.agent_id,
+                "from_state": from.as_str(),
+                "change_no": change_no,
+            }),
+            expected_version: None,
+            effects: vec![GovernanceEffect::None],
+            live: None,
+            resource_type: "agent",
+            resource_id,
+            audit_payload: json!({
+                "agent_id": params.agent_id,
+                "from_state": from.as_str(),
+                "to": to.as_str(),
+                "reason_code": params.reason_code.as_str(),
+            }),
+            outcome,
+            agent_change: Some(change),
+        })
+    }
+
+    /// Carries out a reinstatement's change of state, once. A refusal means
+    /// the agent changed since the proposal.
+    async fn carry_out_agent_change(
+        &self,
+        change: kavach_ports::agent_state::AgentStateChange,
+    ) -> Result<(), ApiError> {
+        let dp = self
+            .dataplane()
+            .ok_or_else(|| ApiError::NotFound("agent surfaces are not configured".into()))?;
+        match dp.core().change_agent_state(change).await {
+            Ok(_) => Ok(()),
+            Err(err) => Err(match err.class {
+                kavach_ports::ErrorClass::Unavailable => {
+                    ApiError::Unavailable(format!("agent state: {}", err.message))
+                }
+                kavach_ports::ErrorClass::Rejected | kavach_ports::ErrorClass::Invalid => {
+                    ApiError::Conflict(format!(
+                        "agent state changed since the proposal: {}",
+                        err.message
+                    ))
+                }
+            }),
         }
     }
 
@@ -593,6 +812,7 @@ impl AppState {
                 model,
                 runtime,
             }),
+            agent_change: None,
         })
     }
 
@@ -652,6 +872,7 @@ impl AppState {
                 model,
                 runtime,
             }),
+            agent_change: None,
         })
     }
 
@@ -760,6 +981,7 @@ impl AppState {
                 model,
                 runtime,
             }),
+            agent_change: None,
         })
     }
 
@@ -900,6 +1122,7 @@ impl AppState {
                 model,
                 runtime,
             }),
+            agent_change: None,
         })
     }
 
@@ -934,6 +1157,7 @@ impl AppState {
             }),
             outcome: json!({ "evidence_retention_days": params.evidence_retention_days }),
             live: None,
+            agent_change: None,
         })
     }
 
@@ -970,6 +1194,7 @@ impl AppState {
             audit_payload: json!({ "reason": TombstoneReason::DpdpErasure.as_str() }),
             outcome: json!({ "evidence_id": params.evidence_id, "reason": "dpdp_erasure" }),
             live: None,
+            agent_change: None,
         })
     }
 
@@ -1028,6 +1253,7 @@ impl AppState {
             }),
             outcome: json!({ "tombstoned_count": ids.len(), "evidence_ids": ids }),
             live: None,
+            agent_change: None,
         })
     }
 

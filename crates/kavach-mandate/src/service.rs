@@ -1,6 +1,7 @@
 //! Mandate issuance, verification, delegation and revocation (ADR-004).
 
 use std::collections::BTreeSet;
+use std::future::Future;
 
 use chrono::{DateTime, Duration, DurationRound, TimeDelta, Utc};
 use kavach_domain::mandate::{
@@ -142,9 +143,24 @@ pub struct MandateDeps<K, R, C, S, E, T> {
     pub clock: T,
 }
 
+/// Whether an agent may be given authority at all (ADR-013): a revoked
+/// agent is issued nothing and delegated nothing, so a mandate cannot be
+/// handed to it between its state changing and its mandates being revoked.
+pub trait AgentGate: Send + Sync {
+    /// `Ok` when `agent_id` may hold a new mandate; `Rejected` when it may
+    /// not; `Unavailable` when that could not be read (the caller fails
+    /// closed).
+    fn may_hold<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        agent_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), PortError>> + Send + 'a>>;
+}
+
 pub struct MandateService<K, R, C, S, E, T> {
     deps: MandateDeps<K, R, C, S, E, T>,
     config: MandateConfig,
+    gate: Option<std::sync::Arc<dyn AgentGate>>,
 }
 
 impl<K, R, C, S, E, T> MandateService<K, R, C, S, E, T>
@@ -163,7 +179,26 @@ where
         config: MandateConfig,
     ) -> Result<Self, PortError> {
         config.validate()?;
-        Ok(Self { deps, config })
+        Ok(Self {
+            deps,
+            config,
+            gate: None,
+        })
+    }
+
+    /// Refuses to issue or delegate to an agent the gate says may not hold
+    /// a mandate.
+    #[must_use]
+    pub fn with_agent_gate(mut self, gate: std::sync::Arc<dyn AgentGate>) -> Self {
+        self.gate = Some(gate);
+        self
+    }
+
+    async fn check_gate(&self, tenant_id: &str, agent_id: &str) -> Result<(), PortError> {
+        match &self.gate {
+            Some(gate) => gate.may_hold(tenant_id, agent_id).await,
+            None => Ok(()),
+        }
     }
 
     pub fn store(&self) -> &S {
@@ -178,6 +213,13 @@ where
         &self.deps.clock
     }
 
+    /// Whether `agent_id` has a passport for `tenant_id` (exact match, no
+    /// case folding): an agent this configuration knows.
+    #[must_use]
+    pub fn has_passport(&self, tenant_id: &str, agent_id: &str) -> bool {
+        self.config.passport(tenant_id, agent_id).is_some()
+    }
+
     /// Creates a mandate from a signed system-of-record event (ADR-004 §4–5).
     /// Every field comes from the verified event or the governed template.
     pub async fn issue_from_event(&self, event_token: &str) -> Result<IssuedMandate, PortError> {
@@ -190,6 +232,8 @@ where
                 PortError::rejected(format!("no mandate template for {}", event.event_type))
             })?;
         let passport = self.check_holder(&event, template)?;
+        self.check_gate(&event.tenant_id, &event.assigned_agent)
+            .await?;
         check_scope_within_passport(template, passport)?;
         if requires_window(&template.actions) && template.window.is_none() {
             return Err(PortError::rejected(
@@ -415,6 +459,8 @@ where
         if parent.holder != by_agent {
             return Err(PortError::rejected("only the mandate holder may delegate"));
         }
+        self.check_gate(tenant_id, by_agent).await?;
+        self.check_gate(tenant_id, to_agent).await?;
         if parent.depth >= parent.delegation.max_depth || parent.depth >= MAX_DELEGATION_DEPTH {
             return Err(PortError::rejected("delegation depth limit reached"));
         }

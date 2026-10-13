@@ -26,10 +26,14 @@ pub enum ChangeKind {
     EraseEvidence,
     ApplyRetention,
     ActivateModel,
+    /// Bring a restricted or quarantined agent back (ADR-013 §3). Carried
+    /// out against the agent evidence store, not the admin store, so its
+    /// apply is idempotent on the change request's id.
+    ReinstateAgent,
 }
 
 impl ChangeKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::ActivatePack,
         Self::RollbackPack,
         Self::UpdateModel,
@@ -37,6 +41,7 @@ impl ChangeKind {
         Self::EraseEvidence,
         Self::ApplyRetention,
         Self::ActivateModel,
+        Self::ReinstateAgent,
     ];
 
     #[must_use]
@@ -49,6 +54,7 @@ impl ChangeKind {
             Self::EraseEvidence => "erase_evidence",
             Self::ApplyRetention => "apply_retention",
             Self::ActivateModel => "activate_model",
+            Self::ReinstateAgent => "reinstate_agent",
         }
     }
 

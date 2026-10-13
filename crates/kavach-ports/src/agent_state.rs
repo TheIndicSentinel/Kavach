@@ -28,6 +28,9 @@ pub struct StoredAgentState {
     pub changed_by: String,
     /// The second principal, for a change that loosens.
     pub approved_by: Option<String>,
+    /// The change request that made this change (a reinstatement), so a
+    /// retried approval can tell its own change from another.
+    pub change_request_id: Option<String>,
     pub changed_at: DateTime<Utc>,
 }
 
@@ -43,6 +46,7 @@ pub struct StoredAgentChange {
     pub note: String,
     pub changed_by: String,
     pub approved_by: Option<String>,
+    pub change_request_id: Option<String>,
     pub changed_at: DateTime<Utc>,
 }
 
@@ -84,6 +88,9 @@ pub struct AgentStateChange {
     /// Required, and a principal other than `changed_by`, when the change
     /// loosens (ADR-013 §3).
     pub approved_by: Option<String>,
+    /// The change request this change carries out, if any: required when it
+    /// loosens through the API, absent for an operator's stop.
+    pub change_request_id: Option<String>,
     /// Trusted time.
     pub at: DateTime<Utc>,
 }
@@ -210,6 +217,7 @@ mod tests {
             note: "outside its task".into(),
             changed_by: by.into(),
             approved_by: approved.map(String::from),
+            change_request_id: None,
             at: DateTime::from_timestamp(1_790_000_000, 0).unwrap(),
         }
     }

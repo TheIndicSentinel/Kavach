@@ -226,6 +226,7 @@ pub mod agent_state_store {
             note: "behaving outside its task".into(),
             changed_by: by.into(),
             approved_by: approved.map(String::from),
+            change_request_id: None,
             at: Utc.with_ymd_and_hms(2026, 10, 1, 6, 0, 0).unwrap(),
         }
     }
@@ -399,9 +400,11 @@ pub mod agent_state_store {
             .await
             .unwrap();
         let digest = |n: i64| Some(format!("mac:{}", format!("{n:02x}").repeat(32)));
+        let mut loosen = change(t, agent, AgentState::Active, "ops-1", Some("ops-2"));
+        loosen.change_request_id = Some("cr-1".into());
         let (row, record) = store
             .set_recorded(
-                change(t, agent, AgentState::Active, "ops-1", Some("ops-2")),
+                loosen,
                 Recording {
                     partition_id: 0,
                     clock: &clock,
@@ -417,6 +420,8 @@ pub mod agent_state_store {
         assert_eq!(p.from_state, AgentState::Quarantined);
         assert_eq!(p.to_state, AgentState::Active);
         assert_eq!(p.approved_by.as_deref(), Some("ops-2"));
+        assert_eq!(p.change_request_id.as_deref(), Some("cr-1"));
+        assert_eq!(row.change_request_id.as_deref(), Some("cr-1"));
         assert_eq!(p.reason_code, ReasonCode::RogueBehaviour);
         assert_eq!(
             p.reason_digest,
@@ -451,6 +456,7 @@ pub mod agent_state_store {
             reason_digest: digest(2),
             changed_by: "ops-1".into(),
             approved_by: Some("ops-2".into()),
+            change_request_id: Some("cr-1".into()),
             changed_at: row.changed_at,
         };
         let again = store
@@ -542,6 +548,7 @@ pub mod agent_state_store {
                     reason_digest: None,
                     changed_by: c.changed_by.clone(),
                     approved_by: c.approved_by.clone(),
+                    change_request_id: c.change_request_id.clone(),
                     changed_at: c.changed_at,
                 };
                 store
@@ -686,6 +693,68 @@ pub mod mandate_store {
         delegation_racing_revocation(store).await;
     }
 
+    /// ADR-013: the active mandates an agent holds, roots and delegated
+    /// children alike, and only those.
+    async fn held_by_an_agent<S: MandateStore>(store: &S) {
+        // `record(.., depth)` is held by `agent-<depth>`.
+        let held = |id: &str, holder: &str| {
+            let mut r = root_about(id, "lms", "held-loan");
+            r.mandate.holder = holder.into();
+            r
+        };
+        for (id, holder) in [("h-1", "agent-A"), ("h-2", "agent-A"), ("h-3", "agent-B")] {
+            store.insert(held(id, holder)).await.expect("root");
+        }
+        let mut child = record("h-child", Some("h-1"), 1);
+        child.mandate.holder = "agent-A".into();
+        store
+            .insert_child(child)
+            .await
+            .expect("child held by A too");
+        let mut gone = held("h-gone", "agent-A");
+        gone.mandate.source.event_id = "evt-h-gone".into();
+        store.insert(gone).await.expect("root");
+        store
+            .revoke_tree(TENANT, "h-gone", RevocationReason::Manual)
+            .await
+            .expect("revoked");
+        let mut other_tenant = held("h-other", "agent-A");
+        other_tenant.mandate.tenant_id = "another-tenant".into();
+        store.insert(other_tenant).await.expect("another tenant's");
+
+        let mut a = store.active_held_by(TENANT, "agent-A").await.unwrap();
+        a.sort();
+        assert_eq!(
+            a,
+            ["h-1", "h-2", "h-child"],
+            "roots and delegated children; not revoked, not another tenant's, not another agent's"
+        );
+        assert_eq!(
+            store.active_held_by(TENANT, "agent-B").await.unwrap(),
+            ["h-3"]
+        );
+        assert!(store
+            .active_held_by(TENANT, "nobody")
+            .await
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .active_held_by("another-tenant", "agent-A")
+                .await
+                .unwrap(),
+            ["h-other"]
+        );
+        // Revoking a root takes its children with it, and they leave the list.
+        store
+            .revoke_tree(TENANT, "h-1", RevocationReason::Manual)
+            .await
+            .unwrap();
+        let mut a = store.active_held_by(TENANT, "agent-A").await.unwrap();
+        a.sort();
+        assert_eq!(a, ["h-2"]);
+    }
+
     /// A root about `record_ref` of `system` (ADR-012).
     fn root_about(id: &str, system: &str, record_ref: &str) -> StoredMandate {
         let mut r = record(id, None, 0);
@@ -730,6 +799,8 @@ pub mod mandate_store {
             ["loan-a-1", "loan-a-2"],
             "active roots of this system and record only: not children, revoked ones, other records or systems"
         );
+
+        held_by_an_agent(store).await;
 
         let revocation = StoredRevocation {
             tenant_id: TENANT.into(),

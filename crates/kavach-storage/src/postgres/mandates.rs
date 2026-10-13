@@ -288,6 +288,26 @@ impl MandateStore for PostgresMandateStore {
         rows.iter().map(row_to_stored).collect()
     }
 
+    async fn active_held_by(
+        &self,
+        tenant_id: &str,
+        holder: &str,
+    ) -> Result<Vec<String>, PortError> {
+        let rows = sqlx::query(
+            "SELECT id FROM mandates \
+            WHERE tenant_id = $1 AND mandate ->> 'holder' = $2 AND status = 'active' \
+            ORDER BY created_at, id",
+        )
+        .bind(tenant_id)
+        .bind(holder)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter()
+            .map(|row| row.try_get("id").map_err(|e| unavailable(&e)))
+            .collect()
+    }
+
     async fn record_revocation(&self, revocation: StoredRevocation) -> Result<(), PortError> {
         let revoked = serde_json::to_value(&revocation.revoked)
             .map_err(|e| PortError::invalid(format!("revoked ids: {e}")))?;
