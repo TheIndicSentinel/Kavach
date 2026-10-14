@@ -1263,15 +1263,14 @@ def run_mandate(path):
             raise Refused(f"event {item['name']}: legacy_content_sha256 differs")
         at = datetime.fromtimestamp(item["fresh_at"], timezone.utc)
         # `age` is how long ago the event occurred at the reference time
-        # (negative: in the future). An event more than `freshness` in the
-        # future is refused; an issuing event more than `freshness` old is
-        # refused; a revoking event has no maximum age.
+        # (negative: in the future). An issuing event more than `freshness`
+        # old or ahead is refused; a revoking event has no bound either way.
         revoking = payload["event_type"] in ("loan.paid", "loan.disputed")
         for delta, issuing_fresh in ((0, True), (freshness, True), (-freshness, True),
                                      (freshness + 1, False), (-freshness - 1, False)):
             age = (at + timedelta(seconds=delta) - occurred).total_seconds()
-            fresh = age >= -freshness if revoking else abs(age) <= freshness
-            expected = issuing_fresh or (revoking and delta > 0)
+            fresh = True if revoking else abs(age) <= freshness
+            expected = issuing_fresh or revoking
             if fresh != expected:
                 raise Refused(f"event {item['name']}: freshness is wrong at {delta:+d}s")
         checks.append(item["name"])

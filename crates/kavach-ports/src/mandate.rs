@@ -70,6 +70,23 @@ pub struct RevocationApply {
     pub revoked_at: chrono::DateTime<chrono::Utc>,
     /// Whether the clock was synchronised when this was applied.
     pub clock_synced: bool,
+    /// Roots whose source time (the issuing event's `occurred_at`, or `nbf`
+    /// for a row that has none) is at or before this are revoked: the
+    /// event's `occurred_at` plus the skew margin (B2).
+    pub reach_until: chrono::DateTime<chrono::Utc>,
+}
+
+/// When a record is closed to new authority (B2): by a recorded payment
+/// whose time the event is not after, or by a dispute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClosureRule {
+    /// A recorded revocation closes the record to events that occurred at
+    /// or before `min(occurred_at, revoked_at + this)`: a source clock that
+    /// runs ahead cannot hold a record closed for long.
+    pub future_allowance_seconds: i64,
+    /// Events within this much *after* the barrier are also refused: when
+    /// the order of two events is within the skew, contact stops.
+    pub skew_margin_seconds: i64,
 }
 
 /// What [`MandateStore::apply_revocation`] did.
@@ -119,6 +136,21 @@ pub trait MandateStore: Send + Sync {
     /// Inserts a root mandate (`parent_id` must be `None`). An existing id
     /// → `Rejected`.
     fn insert(&self, record: StoredMandate) -> impl Future<Output = Result<(), PortError>> + Send;
+
+    /// Inserts a root mandate unless the record is closed, atomically with
+    /// that check (under the same lock `apply_revocation` takes). `source_
+    /// occurred_at` is the issuing event's `occurred_at`, kept to scope a
+    /// later revocation. Closed → `Rejected` with the reason: a recorded
+    /// `loan.disputed` holds the record whatever the time; otherwise the
+    /// record is closed to an event at or before
+    /// `max(min(occurred_at, revoked_at + future_allowance))` of its
+    /// recorded revocations, plus the skew margin.
+    fn insert_unless_closed(
+        &self,
+        record: StoredMandate,
+        source_occurred_at: chrono::DateTime<chrono::Utc>,
+        rule: ClosureRule,
+    ) -> impl Future<Output = Result<(), PortError>> + Send;
 
     /// Inserts a delegated mandate only if its parent (`mandate.parent_id`)
     /// exists in the same tenant and is `Active`, atomically with that check.

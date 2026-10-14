@@ -273,6 +273,23 @@ impl MandateStore for MandateStoreBackend {
             Self::Postgres(s) => s.apply_revocation(request).await,
         }
     }
+    async fn insert_unless_closed(
+        &self,
+        record: StoredMandate,
+        source_occurred_at: chrono::DateTime<chrono::Utc>,
+        rule: kavach_ports::ClosureRule,
+    ) -> Result<(), PortError> {
+        match self {
+            Self::Memory(s) => {
+                s.insert_unless_closed(record, source_occurred_at, rule)
+                    .await
+            }
+            Self::Postgres(s) => {
+                s.insert_unless_closed(record, source_occurred_at, rule)
+                    .await
+            }
+        }
+    }
     async fn record_revocation(&self, revocation: StoredRevocation) -> Result<(), PortError> {
         match self {
             Self::Memory(s) => s.record_revocation(revocation).await,

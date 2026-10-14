@@ -6,7 +6,7 @@ use std::sync::Mutex;
 
 use kavach_domain::mandate::{ConsentRecord, MandateStatus, RevocationReason};
 use kavach_ports::{
-    AppliedRevocation, ConsentSource, DomainEvent, EventBus, MandateStore, PortError,
+    AppliedRevocation, ClosureRule, ConsentSource, DomainEvent, EventBus, MandateStore, PortError,
     RevocationApply, RevocationCursor, StoredMandate, StoredRevocation,
 };
 
@@ -21,6 +21,8 @@ pub struct InMemoryMandateStore {
     records: Mutex<HashMap<Key, StoredMandate>>,
     /// Revocations by (tenant, system, event id).
     revocations: Mutex<HashMap<(String, String, String), StoredRevocation>>,
+    /// The issuing event's `occurred_at` of a root, where it was kept.
+    source_times: Mutex<HashMap<Key, chrono::DateTime<chrono::Utc>>>,
 }
 
 impl InMemoryMandateStore {
@@ -101,6 +103,38 @@ impl InMemoryMandateStore {
         revoke_tree_in(&mut records, tenant_id, id, reason)
     }
 
+    /// Why `record_ref` is closed to an event that occurred at `at`, if it
+    /// is (B2). The caller holds the revocations lock.
+    fn closed_reason(
+        revocations: &HashMap<(String, String, String), StoredRevocation>,
+        tenant: &str,
+        system: &str,
+        record_ref: &str,
+        at: chrono::DateTime<chrono::Utc>,
+        rule: ClosureRule,
+    ) -> Option<String> {
+        let mut barrier: Option<chrono::DateTime<chrono::Utc>> = None;
+        for r in revocations
+            .values()
+            .filter(|r| r.tenant_id == tenant && r.system == system && r.record_ref == record_ref)
+        {
+            if r.event_type == "loan.disputed" {
+                return Some(format!(
+                    "record {record_ref} is held after a dispute; a new mandate needs it released"
+                ));
+            }
+            let clamped = r
+                .occurred_at
+                .min(r.revoked_at + chrono::Duration::seconds(rule.future_allowance_seconds));
+            barrier = Some(barrier.map_or(clamped, |b| b.max(clamped)));
+        }
+        barrier
+            .filter(|b| at <= *b + chrono::Duration::seconds(rule.skew_margin_seconds))
+            .map(|_| {
+                format!("the event occurred at or before a revocation recorded for {record_ref}")
+            })
+    }
+
     /// One step under both locks (revocations first, then records, the
     /// only place both are taken): nothing is changed unless the whole
     /// revocation and its record are.
@@ -130,6 +164,7 @@ impl InMemoryMandateStore {
                 replayed: true,
             });
         }
+        let times = self.source_times.lock().map_err(|_| poisoned())?;
         let mut roots: Vec<(chrono::DateTime<chrono::Utc>, String)> = records
             .values()
             .filter(|s| {
@@ -138,10 +173,19 @@ impl InMemoryMandateStore {
                     && s.status == MandateStatus::Active
                     && s.mandate.source.system == request.system
                     && s.mandate.source.record_ref == request.record_ref
-                    && s.mandate.nbf <= request.occurred_at
             })
-            .map(|s| (s.mandate.nbf, s.mandate.id.clone()))
+            .map(|s| {
+                // When the source says it happened; `nbf` for a root that
+                // has no source time (written before it was kept).
+                let at = times
+                    .get(&(s.mandate.tenant_id.clone(), s.mandate.id.clone()))
+                    .copied()
+                    .unwrap_or(s.mandate.nbf);
+                (at, s.mandate.id.clone())
+            })
+            .filter(|(at, _)| *at <= request.reach_until)
             .collect();
+        drop(times);
         roots.sort();
         let mut changed = Vec::new();
         for (_, id) in roots {
@@ -322,6 +366,38 @@ impl MandateStore for InMemoryMandateStore {
         request: RevocationApply,
     ) -> impl Future<Output = Result<AppliedRevocation, PortError>> + Send {
         ready(self.apply_revocation_sync(request))
+    }
+
+    fn insert_unless_closed(
+        &self,
+        record: StoredMandate,
+        source_occurred_at: chrono::DateTime<chrono::Utc>,
+        rule: ClosureRule,
+    ) -> impl Future<Output = Result<(), PortError>> + Send {
+        let result = (|| {
+            // The same lock order as `apply_revocation`: revocations, then
+            // records. The check and the insert are one step.
+            let revocations = self.revocations.lock().map_err(|_| poisoned())?;
+            let m = &record.mandate;
+            if let Some(why) = Self::closed_reason(
+                &revocations,
+                &m.tenant_id,
+                &m.source.system,
+                &m.source.record_ref,
+                source_occurred_at,
+                rule,
+            ) {
+                return Err(PortError::rejected(why));
+            }
+            let key = (m.tenant_id.clone(), m.id.clone());
+            self.insert_sync(record, false)?;
+            self.source_times
+                .lock()
+                .map_err(|_| poisoned())?
+                .insert(key, source_occurred_at);
+            Ok(())
+        })();
+        ready(result)
     }
 
     fn record_revocation(

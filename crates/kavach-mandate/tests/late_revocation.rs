@@ -62,24 +62,33 @@ async fn an_old_payment_revokes_the_older_mandate_and_leaves_the_newer() {
 }
 
 /// The replay guard expires after 24 h; the stored revocation does not. A
-/// repeat 25 h later is answered from the stored row and changes nothing,
-/// including a mandate issued after the first processing whose `nbf` is
-/// still at or before the payment's `occurred_at` (the future-skew gap).
+/// repeat 25 h later is answered from the stored row and changes nothing.
+/// (Before B2 the test used a mandate issued in the future-skew gap; the
+/// record is now closed to it. A default provably after the payment is
+/// issued, and the repeat leaves it alone.)
 #[tokio::test]
 async fn a_repeat_after_the_guard_expired_revokes_nothing() {
     let f = fixture();
-    // The payment occurred 200 s ahead of this stack's clock (inside the
-    // skew bound) and finds nothing to revoke.
+    // The payment occurred 200 s ahead of this stack's clock and finds
+    // nothing to revoke.
     let paid = at(f.now + Duration::seconds(200), "pay-1", "loan.paid");
     let token = sign(&f, &paid).await;
     let first = f.service.revoke_from_event(&token).await.expect("first");
     assert!(first.revoked.is_empty() && !first.replayed);
 
-    // A default is then processed; its mandate's nbf is before the payment's
-    // occurred_at.
+    // A default that occurred before the payment is refused (B2: the
+    // record is closed to it)...
+    let err = f
+        .service
+        .issue_from_event(&sign(&f, &event(f.now, "dpd-before")).await)
+        .await
+        .unwrap_err();
+    assert_eq!(err.class, ErrorClass::Rejected);
+    // ...and one provably after it is issued.
+    let after = at(f.now + Duration::seconds(280), "dpd-after", "loan.dpd30");
     let issued = f
         .service
-        .issue_from_event(&sign(&f, &event(f.now, "dpd-1")).await)
+        .issue_from_event(&sign(&f, &after).await)
         .await
         .expect("issued");
 

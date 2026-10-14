@@ -25,7 +25,7 @@ mod agent_state;
 mod revocation;
 
 /// Bumped whenever an attack is added, removed or its expectation changes.
-pub const CATALOG_VERSION: &str = "7";
+pub const CATALOG_VERSION: &str = "8";
 
 /// The borrower the dev mandate covers, and one it does not.
 pub const SUBJECT: &str = "ref:borrower:B-9382";
@@ -135,7 +135,6 @@ pub enum RevocationAttack {
     /// A payment dated 15 minutes ago: outside the freshness window.
     Late,
     /// A payment dated 15 minutes ahead: outside the freshness window.
-    Future,
     /// A validly signed event of a type no template or revocation knows.
     UnknownType,
     /// A validly signed payment for the same loan, for another tenant.
@@ -258,7 +257,7 @@ const STOPPED: &str =
     "A stopped agent does nothing, from its next call, on every replica (ADR-013, K1-1):";
 
 /// The catalog, in the order it runs.
-pub const CATALOG: [Attack; 36] = [
+pub const CATALOG: [Attack; 35] = [
     Attack {
         id: "raw-phone-number",
         group: "identifiers",
@@ -591,15 +590,6 @@ pub const CATALOG: [Attack; 36] = [
         bypass: Some(SOR_KEY),
     },
     Attack {
-        id: "future-revocation",
-        group: "revocation",
-        tries: "a validly signed payment dated 15 minutes ahead, outside the freshness window",
-        probe: Probe::Revocation(RevocationAttack::Future),
-        expect: Expect::EventRefused,
-        security_property: REVOCATION,
-        bypass: Some(SOR_KEY),
-    },
-    Attack {
         id: "unknown-event-type",
         group: "revocation",
         tries: "a validly signed event of a type nothing is registered for",
@@ -811,7 +801,13 @@ pub trait Target {
     fn has_attack_borrower(&self) -> bool;
     /// Assigns [`ATTACK_SUBJECT`] to the holder agent with a fresh event:
     /// the new mandate's id.
-    fn assign_attack_borrower(&self) -> impl Future<Output = Result<String, String>>;
+    /// Assigns the attack borrower: an issuing event dated `offset_seconds`
+    /// from the stack's clock (so an attack can order events more than the
+    /// skew margin apart).
+    fn assign_attack_borrower(
+        &self,
+        offset_seconds: i64,
+    ) -> impl Future<Output = Result<String, String>>;
     /// Signs a system-of-record event to `spec`.
     fn sign_sor_event(&self, spec: &SorSpec) -> impl Future<Output = Result<String, String>>;
     /// Sends a signed system-of-record event: status and body.

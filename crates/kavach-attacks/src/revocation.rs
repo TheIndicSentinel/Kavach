@@ -64,10 +64,6 @@ fn event_for(kind: RevocationAttack, id: String) -> SorSpec {
             offset_seconds: -OUTSIDE_WINDOW,
             ..paid
         },
-        RevocationAttack::Future => SorSpec {
-            offset_seconds: OUTSIDE_WINDOW,
-            ..paid
-        },
         RevocationAttack::UnknownType => SorSpec {
             event_type: "loan.closed",
             ..paid
@@ -161,7 +157,7 @@ async fn attempt<T: Target>(
     if kind == RevocationAttack::Replayed {
         return replayed(target, expect, event_id, n).await;
     }
-    let mandate = target.assign_attack_borrower().await?;
+    let mandate = target.assign_attack_borrower(0).await?;
     let setup = json!({
         "declared": format!("{ATTACK_SUBJECT} assigned: a mandate, nothing sent"),
         "mandate": mandate,
@@ -203,9 +199,12 @@ async fn replayed<T: Target>(
     event_id: String,
     n: &str,
 ) -> Result<(Verdict, Value, Option<Value>), String> {
-    let first = target.assign_attack_borrower().await?;
+    // Dated apart by more than the skew margin, in the order they happened:
+    // the default, the payment 45 s later, a new default 45 s after that
+    // (inside the freshness window; the order is not in doubt).
+    let first = target.assign_attack_borrower(-90).await?;
     let token = target
-        .sign_sor_event(&spec(event_id.clone(), "loan.paid", 0))
+        .sign_sor_event(&spec(event_id.clone(), "loan.paid", -45))
         .await?;
     let (status, reply) = target.post_sor_event(&token).await?;
     let revoked_first: Vec<String> = reply["revoked"]
@@ -222,7 +221,7 @@ async fn replayed<T: Target>(
         ));
     }
     let record_first = target.revocation_record(&event_id).await?;
-    let second = target.assign_attack_borrower().await?;
+    let second = target.assign_attack_borrower(0).await?;
     let setup = json!({
         "declared": "a mandate, a payment that revoked it, and a new mandate for the same loan",
         "revoked_by_the_payment": revoked_first,
@@ -274,7 +273,6 @@ mod tests {
     enum Broken {
         Nothing,
         Signature,
-        Freshness,
         EventType,
         Tenant,
         Loan,
@@ -313,7 +311,6 @@ mod tests {
             let at = event["at"].as_i64().unwrap();
             let refused = if (event["other_issuer"] == true && b != Broken::IssuerTenant)
                 || (event["forged"] == true && b != Broken::Signature)
-                || (at - NOW > 300 && b != Broken::Freshness)
             {
                 Some(422)
             } else if event["other_tenant"] == true && b != Broken::Tenant {
@@ -336,7 +333,7 @@ mod tests {
             let ours = event["loan"] == "attack" || b == Broken::Loan;
             let mut revoked = Vec::new();
             for (mandate, nbf, live) in &mut state.mandates {
-                if ours && *live && (*nbf <= at || b == Broken::Ordering) {
+                if ours && *live && (*nbf <= at + 30 || b == Broken::Ordering) {
                     *live = false;
                     revoked.push(mandate.clone());
                 }
@@ -406,10 +403,12 @@ mod tests {
         fn has_attack_borrower(&self) -> bool {
             true
         }
-        async fn assign_attack_borrower(&self) -> Result<String, String> {
+        async fn assign_attack_borrower(&self, offset_seconds: i64) -> Result<String, String> {
             let mut state = self.state.lock().unwrap();
             let id = format!("m-{}", state.mandates.len());
-            state.mandates.push((id.clone(), NOW, true));
+            state
+                .mandates
+                .push((id.clone(), NOW + offset_seconds, true));
             Ok(id)
         }
         async fn sign_sor_event(&self, spec: &SorSpec) -> Result<String, String> {
@@ -475,7 +474,6 @@ mod tests {
         for kind in [
             R::Forged,
             R::Late,
-            R::Future,
             R::UnknownType,
             R::OtherTenant,
             R::WrongLoan,
@@ -494,7 +492,6 @@ mod tests {
         for (broken, kind) in [
             (Broken::Signature, R::Forged),
             (Broken::Ordering, R::Late),
-            (Broken::Freshness, R::Future),
             (Broken::EventType, R::UnknownType),
             (Broken::Tenant, R::OtherTenant),
             (Broken::Loan, R::WrongLoan),

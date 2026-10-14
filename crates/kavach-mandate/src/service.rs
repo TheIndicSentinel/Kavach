@@ -137,6 +137,23 @@ pub fn legacy_content_sha256(event: &SorEvent) -> Result<String, PortError> {
 
 /// Whether `stored` (a digest as kept in a revocation row) is `event`'s,
 /// in the current form or the legacy one.
+/// How far after a revocation's `occurred_at` an event is still treated as
+/// not provably later (B2): inside it the order of two events from two
+/// clocks is not known, and when in doubt contact stops. A named constant
+/// until the lender's measured drift says otherwise.
+pub const REVOCATION_SKEW_MARGIN_SECONDS: i64 = 30;
+
+/// The longest a revocation dated ahead of Kavach's clock can hold its
+/// record closed: its barrier is `min(occurred_at, revoked_at + this)`.
+pub const REVOCATION_FUTURE_ALLOWANCE_SECONDS: i64 = 300;
+
+fn closure_rule() -> kavach_ports::ClosureRule {
+    kavach_ports::ClosureRule {
+        future_allowance_seconds: REVOCATION_FUTURE_ALLOWANCE_SECONDS,
+        skew_margin_seconds: REVOCATION_SKEW_MARGIN_SECONDS,
+    }
+}
+
 fn same_event(stored: &str, event: &SorEvent) -> Result<bool, PortError> {
     Ok(stored == event_digest(event)? || stored == legacy_content_sha256(event)?)
 }
@@ -239,7 +256,7 @@ where
             .clock
             .now()
             .require_synced(self.config.max_clock_error_ms)?;
-        let event = self.verify_event(event_token, now, true).await?;
+        let event = self.verify_event(event_token, now).await?;
         let template = self
             .config
             .template(&event.tenant_id, &event.event_type)
@@ -290,7 +307,8 @@ where
             exp,
             nonce: uuid::Uuid::new_v4().to_string(),
         };
-        self.sign_store_publish(mandate, false).await
+        self.sign_store_publish(mandate, Some(event.occurred_at))
+            .await
     }
 
     /// For a retried system-of-record event: the root mandate it already
@@ -509,7 +527,7 @@ where
             ));
         }
         // Inserted only while the parent is still active (atomic in the store).
-        self.sign_store_publish(child, true).await
+        self.sign_store_publish(child, None).await
     }
 
     /// Revokes a mandate and every mandate delegated from it, atomically in
@@ -579,7 +597,7 @@ where
         // On an unsynchronised clock the future bound is not evaluated (the
         // time it would be measured against cannot be trusted); the event
         // is applied and flagged.
-        let event = self.verify_event(event_token, now, clock_synced).await?;
+        let event = self.verify_event(event_token, now).await?;
         if !clock_synced {
             tracing::warn!(
                 event_id = %event.event_id,
@@ -612,6 +630,7 @@ where
                 reason,
                 revoked_at: micros(self.deps.clock.now().utc),
                 clock_synced,
+                reach_until: event.occurred_at + Duration::seconds(REVOCATION_SKEW_MARGIN_SECONDS),
             })
             .await?;
         // Published after the commit; a lost notification does not undo it.
@@ -698,30 +717,21 @@ where
         Ok(event)
     }
 
-    /// `check_future`: whether to refuse an event dated ahead of `now`. It
-    /// is false only for a revocation on a clock that is not synchronised:
-    /// the bound would be measured against a time that cannot be trusted,
-    /// and a clock that is behind would make a genuine payment look
-    /// future-dated and leave contact running.
-    async fn verify_event(
-        &self,
-        token: &str,
-        now: DateTime<Utc>,
-        check_future: bool,
-    ) -> Result<SorEvent, PortError> {
+    async fn verify_event(&self, token: &str, now: DateTime<Utc>) -> Result<SorEvent, PortError> {
         let event = self.verified_event(token)?;
-        // How long ago the fact occurred (negative: in the future). An
-        // event from the future is refused whatever it says. An old
-        // *issuing* event is refused (a mandate is not made from a stale
-        // fact); an old *revoking* event is not: a payment that reaches
-        // Kavach late must still stop contact, and a revocation only ever
-        // tightens (ADR-012 addendum, B1).
+        // An *issuing* event must be fresh, in the past and in the future: a
+        // mandate is not made from a stale fact or a clock that is ahead. A
+        // *revoking* event has no bound either way (B1, B2): it only ever
+        // tightens; a payment that reaches Kavach late still stops contact,
+        // and one dated ahead is accepted and clamped, because refusing it
+        // would leave contact running. How far it reaches is scoped by its
+        // own `occurred_at` and the closure rule in the store.
         let age = (now - event.occurred_at).num_seconds();
         let revoking = REVOKING_EVENTS
             .iter()
             .any(|(name, _)| *name == event.event_type);
         let window = self.config.event_freshness_seconds;
-        if (check_future && age < -window) || (age > window && !revoking) {
+        if !revoking && age.abs() > window {
             return Err(PortError::rejected(format!(
                 "event {} is stale or from the future ({}s)",
                 event.event_id,
@@ -809,7 +819,9 @@ where
     async fn sign_store_publish(
         &self,
         mandate: Mandate,
-        child: bool,
+        // The issuing event's `occurred_at` for a root; `None` for a
+        // delegation.
+        source_occurred_at: Option<DateTime<Utc>>,
     ) -> Result<IssuedMandate, PortError> {
         let token = jws::sign(
             &self.deps.keys,
@@ -824,10 +836,16 @@ where
             status: MandateStatus::Active,
             revoked_reason: None,
         };
-        if child {
-            self.deps.store.insert_child(record).await?;
-        } else {
-            self.deps.store.insert(record).await?;
+        match source_occurred_at {
+            Some(at) => {
+                // Checked and inserted in one step against the record's
+                // recorded revocations (B2).
+                self.deps
+                    .store
+                    .insert_unless_closed(record, at, closure_rule())
+                    .await?;
+            }
+            None => self.deps.store.insert_child(record).await?,
         }
         self.deps
             .events

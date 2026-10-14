@@ -32,6 +32,14 @@ impl MandateStore for FailsOnce {
     fn insert(&self, r: StoredMandate) -> impl Future<Output = Result<(), PortError>> + Send {
         self.inner.insert(r)
     }
+    fn insert_unless_closed(
+        &self,
+        r: StoredMandate,
+        at: chrono::DateTime<chrono::Utc>,
+        rule: kavach_ports::ClosureRule,
+    ) -> impl Future<Output = Result<(), PortError>> + Send {
+        self.inner.insert_unless_closed(r, at, rule)
+    }
     fn insert_child(&self, r: StoredMandate) -> impl Future<Output = Result<(), PortError>> + Send {
         self.inner.insert_child(r)
     }
