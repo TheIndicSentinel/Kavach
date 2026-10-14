@@ -471,16 +471,21 @@ fn the_loan_is_paid_and_contact_stops(dir: &Path, mandate: &str) {
     assert_eq!(again.status.code(), Some(1), "{doc}");
     assert_eq!(doc["error"]["code"], "conflict", "{doc}");
 
-    let disputed = kavach(dir, &["sor", "event", "--type", "loan.disputed"]);
-    let text = String::from_utf8_lossy(&disputed.stdout);
-    assert_eq!(disputed.status.code(), Some(0), "{text}");
-    assert!(text.contains("Revoked nothing"), "{text}");
-
     // No backdating from the CLI: only the three types, dated now.
     let usage = kavach(dir, &["sor", "event", "--type", "loan.closed"]);
     assert_eq!(usage.status.code(), Some(64));
 
-    // A new default after the payment: a new mandate, and contact works.
+    // A default dated now, seconds after the payment, is inside the skew
+    // margin: the order of the two is not provable, so the record stays
+    // closed to it (B2).
+    let too_soon = kavach(dir, &["--json", "sor", "event"]);
+    let doc = json(&too_soon);
+    assert_eq!(too_soon.status.code(), Some(1), "{doc}");
+    assert_eq!(doc["error"]["code"], "event_rejected", "{doc}");
+
+    // Provably after the payment (past the 30 s margin on this running
+    // clock): a new default, a new mandate, and contact works.
+    std::thread::sleep(std::time::Duration::from_secs(32));
     let issued = kavach(dir, &["--json", "sor", "event"]);
     let fresh = json(&issued)["mandate_id"].as_str().unwrap().to_string();
     let call = kavach(
@@ -490,6 +495,29 @@ fn the_loan_is_paid_and_contact_stops(dir: &Path, mandate: &str) {
     let doc = json(&call);
     assert_eq!(call.status.code(), Some(0), "{doc}");
     assert_eq!(doc["decision"], "PASS", "{doc}");
+
+    // A dispute revokes that mandate and holds the loan: a new default is
+    // refused however long after, and a payment does not release it.
+    let disputed = kavach(dir, &["--json", "sor", "event", "--type", "loan.disputed"]);
+    let doc = json(&disputed);
+    assert_eq!(disputed.status.code(), Some(0), "{doc}");
+    assert!(
+        doc["revoked"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|id| id == fresh.as_str()),
+        "{doc}"
+    );
+    let held = kavach(dir, &["--json", "sor", "event"]);
+    let doc = json(&held);
+    assert_eq!(held.status.code(), Some(1), "{doc}");
+    assert!(
+        doc["error"]["why"]
+            .as_str()
+            .is_some_and(|m| m.contains("held after a dispute")),
+        "{doc}"
+    );
 }
 
 #[test]

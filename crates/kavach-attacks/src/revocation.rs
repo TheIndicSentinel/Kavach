@@ -16,7 +16,10 @@ use crate::{
 /// Outside the 300 s freshness window either way, with a wide margin.
 const OUTSIDE_WINDOW: i64 = 15 * 60;
 /// Before the attack mandate was issued, well inside the window.
-const BEFORE_ISSUE: i64 = -60;
+/// Dated this much before the attack mandate was issued: further back than
+/// the skew margin (30 s) plus the slack the later attacks need, so its
+/// recorded barrier (B2) sits well before their own events.
+const BEFORE_ISSUE: i64 = -120;
 
 /// Whether `mandate` still authorises: a pre-check that names no
 /// `mandate_invalid`. The hour does not matter (out of hours is another
@@ -199,10 +202,12 @@ async fn replayed<T: Target>(
     event_id: String,
     n: &str,
 ) -> Result<(Verdict, Value, Option<Value>), String> {
-    // Dated apart by more than the skew margin, in the order they happened:
-    // the default, the payment 45 s later, a new default 45 s after that
-    // (inside the freshness window; the order is not in doubt).
-    let first = target.assign_attack_borrower(-90).await?;
+    // Dated in the order they happened, and apart by more than the skew
+    // margin where the order must not be in doubt: the default at -50 s
+    // (after the barrier an earlier attack's payment left, at most -90 s +
+    // margin), the payment at -45 s (it reaches the default: -45 + 30 >=
+    // -50), and a new default at 0 (after the payment's -45 + 30).
+    let first = target.assign_attack_borrower(-50).await?;
     let token = target
         .sign_sor_event(&spec(event_id.clone(), "loan.paid", -45))
         .await?;
@@ -236,13 +241,22 @@ async fn replayed<T: Target>(
         reply,
     };
     let same_record = seen.record.is_some() && seen.record == record_first;
-    let verdict = verdict(expect, &seen, |s| {
-        let revoked: Vec<&str> = s.reply["revoked"]
-            .as_array()
-            .map(|ids| ids.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
-        s.reply["replayed"] == true && revoked == revoked_first && same_record
-    });
+    // The same payment processed a second time (answered 200 but not as the
+    // stored result) is the breach, whatever it revoked: scope by source
+    // time means an old payment no longer reaches the newer mandate, so the
+    // mandate staying live is not what shows the replay defence held.
+    let reprocessed = status == 200 && seen.reply["replayed"] != true;
+    let verdict = if reprocessed {
+        Verdict::Succeeded
+    } else {
+        verdict(expect, &seen, |s| {
+            let revoked: Vec<&str> = s.reply["revoked"]
+                .as_array()
+                .map(|ids| ids.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            s.reply["replayed"] == true && revoked == revoked_first && same_record
+        })
+    };
     let observed = json!({
         "status": seen.status,
         "replayed": seen.reply["replayed"],

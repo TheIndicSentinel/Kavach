@@ -83,7 +83,7 @@ pub const CODES: &[(&str, &str, &str)] = &[
     (
         "event_rejected",
         "Event rejected",
-        "the system-of-record event is stale, unsigned, or outside its template",
+        "the system-of-record event is stale, unsigned, outside its template, or the loan is closed to it (a payment or dispute is recorded for it; a dispute holds the loan until released)",
     ),
     (
         "unprocessable",
