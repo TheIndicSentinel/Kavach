@@ -83,6 +83,14 @@ Each revocation is also a signed record in the agent evidence chain (kind `manda
 - **Lock.** The step holds the tenant's mandate lock, the one delegation and `revoke_tree` already take, so it serialises with every other mandate write. A per-record lock would not have excluded those; it becomes useful only once issuance takes the same lock (B2).
 - **Publication** of `MandateRevoked` stays after the commit; a lost notification does not undo it.
 
+*Amended (S4, clock gating):*
+- **Issuing and delegating authority need a synchronised clock.** Freshness, `nbf` and `exp` rest on Kavach's trusted time. `issue_from_event` and `delegate` call `require_synced(max_clock_error_ms)` (500 ms, the bound the gateway holds a decision to) and fail closed with `Unavailable` otherwise. Nothing is spent: the event is retried once the clock is back.
+- **Revoking applies on any clock.** Stopping contact is the safe direction, so it is flagged rather than refused. On an unsynchronised clock the future bound is **not evaluated** either: it would be measured against a time that cannot be trusted, and a clock that is behind would make a genuine payment look future-dated and leave contact running. The event is applied, with the same signature, issuer, scope and idempotency checks.
+- **The flag is stored with the revocation.** `mandate_revocations.clock_synced` (migration 020, additive and nullable; `NULL` is a row written before it, unknown), returned as `RevokedByEvent.clock_synced` (the value from when it was *applied*, also on a retry), and written to the admin audit entry and a warning log. Because it is on the row, an audit entry derived from the row later (S3) says the same.
+- **It is not in the evidence record.** The `mandate_revocation` record has its own `time_sync`, taken from the clock when the record was *written* (possibly by the reconciler, later). `clock_synced` on the row is the only application-time flag; putting it in the signed record would be a format change.
+- **A signal.** `kavach_sor_events_unavailable_total{kind}` counts events answered 503, and the `KavachSorEventsUnavailable` alert fires when it keeps rising: refused issuance would otherwise stop new mandates silently.
+- **One bar.** The 500 ms bound is `DEFAULT_MAX_CLOCK_ERROR_MS`, used by the data plane's `AuthorizeConfig` and by the mandate service.
+
 ## Consequences
 
 - **The pay-and-stop case works end to end.** `kavach simulate` gains its scenarios 4 (payment) and 5 (dispute), and the oracle models revocation.

@@ -735,6 +735,7 @@ pub mod mandate_store {
             occurred_at: issued_at + Duration::seconds(60),
             reason: RevocationReason::Payment,
             revoked_at: issued_at + Duration::seconds(120),
+            clock_synced: false,
         };
         let done = store
             .apply_revocation(request.clone())
@@ -870,6 +871,7 @@ pub mod mandate_store {
             occurred_at: Utc.with_ymd_and_hms(2026, 10, 1, 7, 0, 0).unwrap(),
             revoked: vec![],
             revoked_at: Utc.with_ymd_and_hms(2026, 10, 1, 7, 0, 1).unwrap(),
+            clock_synced: Some(true),
         };
         store
             .record_revocation(revocation(TENANT, "shared-loan"))
@@ -1013,6 +1015,7 @@ pub mod mandate_store {
             // Microseconds survive storage.
             revoked_at: Utc.with_ymd_and_hms(2026, 10, 1, 6, 0, 1).unwrap()
                 + chrono::TimeDelta::microseconds(123_456),
+            clock_synced: Some(false),
         };
         store
             .record_revocation(revocation.clone())

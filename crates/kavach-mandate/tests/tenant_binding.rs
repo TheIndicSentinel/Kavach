@@ -63,6 +63,7 @@ fn config(issuers: Vec<SorIssuer>, kavach: &mut InMemoryKeyProvider) -> MandateC
         passports,
         event_freshness_seconds: 300,
         replay_window_seconds: 24 * 3600,
+        max_clock_error_ms: kavach_mandate::DEFAULT_MAX_CLOCK_ERROR_MS,
     }
 }
 
