@@ -537,6 +537,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .into_config()
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
     let state = Arc::new(AppState::from_config(&config).await?);
+    kavach_api::revocation_audit::start(&state);
     let pack_sha256 = state.runtime().pack_sha256.unwrap_or_else(|| "none".into());
     let http_app = router(state.clone());
     let sor_app = state

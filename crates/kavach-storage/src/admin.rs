@@ -103,6 +103,8 @@ pub enum AdminStoreError {
 #[derive(Default)]
 pub struct MemoryAdminStore {
     audit: Mutex<Vec<AuditEntry>>,
+    /// Idempotency keys of entries written with `append_audit_once`.
+    once: Mutex<std::collections::HashSet<String>>,
     pointers: Mutex<Option<RuntimePointers>>,
     next_id: Mutex<i64>,
     models: Mutex<HashMap<String, ModelState>>,
@@ -134,6 +136,25 @@ impl MemoryAdminStore {
             .map_err(|_| AdminStoreError::Io("lock poisoned".into()))?
             .push(entry.clone());
         Ok(entry)
+    }
+
+    /// Writes the entry unless one with `key` was written already. `true`
+    /// when this call wrote it.
+    pub fn append_audit_once(
+        &self,
+        key: &str,
+        insert: AuditInsert,
+    ) -> Result<bool, AdminStoreError> {
+        let mut once = self
+            .once
+            .lock()
+            .map_err(|_| AdminStoreError::Io("lock poisoned".into()))?;
+        if !once.insert(key.to_string()) {
+            return Ok(false);
+        }
+        drop(once);
+        self.append_audit(insert)?;
+        Ok(true)
     }
 
     pub fn list_audit(&self, limit: u32) -> Result<Vec<AuditEntry>, AdminStoreError> {
