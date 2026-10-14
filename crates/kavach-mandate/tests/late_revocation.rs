@@ -84,8 +84,10 @@ async fn a_repeat_after_the_guard_expired_revokes_nothing() {
         .await
         .unwrap_err();
     assert_eq!(err.class, ErrorClass::Rejected);
-    // ...and one provably after it is issued.
-    let after = at(f.now + Duration::seconds(280), "dpd-after", "loan.dpd30");
+    // ...and one provably after it is issued (once the clock has caught up
+    // enough for it to be within the 60 s the future bound allows).
+    f.clock().advance(Duration::seconds(200));
+    let after = at(f.now + Duration::seconds(240), "dpd-after", "loan.dpd30");
     let issued = f
         .service
         .issue_from_event(&sign(&f, &after).await)

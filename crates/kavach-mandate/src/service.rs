@@ -137,6 +137,13 @@ pub fn legacy_content_sha256(event: &SorEvent) -> Result<String, PortError> {
 
 /// Whether `stored` (a digest as kept in a revocation row) is `event`'s,
 /// in the current form or the legacy one.
+/// How far ahead of Kavach's clock an *issuing* event may be dated (T1).
+/// Tighter than the past bound (the freshness window): a source whose clock
+/// runs ahead can otherwise date a default after the payment it preceded and
+/// walk past the barrier. A named constant until the lender's measured drift
+/// says otherwise.
+pub const ISSUING_FUTURE_BOUND_SECONDS: i64 = 60;
+
 /// How far after a revocation's `occurred_at` an event is still treated as
 /// not provably later (B2): inside it the order of two events from two
 /// clocks is not known, and when in doubt contact stops. A named constant
@@ -731,7 +738,12 @@ where
             .iter()
             .any(|(name, _)| *name == event.event_type);
         let window = self.config.event_freshness_seconds;
-        if !revoking && age.abs() > window {
+        // Ahead of the clock by less than the freshness window, but never by
+        // more than `ISSUING_FUTURE_BOUND_SECONDS` (T1): the later an issuing
+        // event may be dated, the later a default that really preceded a
+        // payment can claim to have occurred and slip past its barrier.
+        let future_bound = window.min(ISSUING_FUTURE_BOUND_SECONDS);
+        if !revoking && (age > window || age < -future_bound) {
             return Err(PortError::rejected(format!(
                 "event {} is stale or from the future ({}s)",
                 event.event_id,

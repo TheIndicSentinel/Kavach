@@ -82,12 +82,12 @@ async fn a_recorded_payment_closes_the_record_to_earlier_events() {
             .unwrap_err();
         assert_eq!(err.class, ErrorClass::Rejected, "{id}: {err}");
     }
-    // Provably after (past the margin).
+    // Provably after (past the 30 s margin, within the 60 s future bound).
     f.service
         .issue_from_event(
             &sign(
                 &f,
-                &at(f.now + Duration::seconds(120), "dpd-after", "loan.dpd30"),
+                &at(f.now + Duration::seconds(50), "dpd-after", "loan.dpd30"),
             )
             .await,
         )
