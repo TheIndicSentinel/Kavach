@@ -48,7 +48,7 @@ Members (all required, no others):
 1. Section 1.
 2. **Issuer binding.** The signing key is registered for exactly one `tenant_id` and one `system`, and `tenant_id` and `system` in the payload MUST equal them. A key registered for `crm` cannot state a fact about `lms`; a key registered for one tenant cannot state a fact about another. The same public key is never registered twice (not under two key ids, not for two tenants). A refusal for an unknown key id, a key of another tenant or system, or a bad signature is the same refusal: it does not say which keys exist.
 3. **Freshness.** An event more than 300 s in the future is refused. An **issuing** event more than 300 s in the past is refused. A **revoking** event (`loan.paid`, `loan.disputed`) has no maximum age: it is accepted however late it arrives, because it only ever tightens and is scoped by its own `occurred_at` (section 5). Its single use is the stored revocation for `(tenant_id, system, event_id)`, which is permanent.
-4. **Replay.** `(tenant_id, system, event_id)` is accepted once within 24 hours of first acceptance (single use). A retry of the *same content* is answered with the stored result, not refused (section 5).
+4. **Replay.** An issuing event's `(tenant_id, system, event_id)` is accepted once within 24 hours of first acceptance (single use). A revoking event is not subject to that window: its single use is its stored revocation (below), which does not expire and is written in the same step as the revocation itself. A retry of the *same content* is answered with the stored result, not refused (section 5).
 5. `subject_ref` is a capability reference.
 
 The vector file lists, per event, the reference time at which it is fresh (`fresh_at`).

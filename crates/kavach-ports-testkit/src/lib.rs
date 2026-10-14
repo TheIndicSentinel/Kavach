@@ -692,6 +692,116 @@ pub mod mandate_store {
         revocations(&*store).await;
         delegation_racing_revocation(store.clone()).await;
         tenants_are_separate(&*store).await;
+        applying_a_revocation(&*store).await;
+    }
+
+    /// B3: `apply_revocation` revokes and records in one step, is
+    /// idempotent by event id, and refuses the same id with other content
+    /// without revoking anything.
+    async fn applying_a_revocation<S: MandateStore>(store: &S) {
+        use kavach_ports::RevocationApply;
+        let loan = "apply-loan";
+        let issued_at = Utc.with_ymd_and_hms(2026, 10, 1, 5, 30, 0).unwrap();
+        // Two roots about the loan (one issued after the event occurred),
+        // a delegation under the first, a root about another loan, and the
+        // same loan in another system.
+        let root = |id: &str, system: &str, record: &str, nbf_offset: i64| {
+            let mut r = root_about(id, system, record);
+            r.mandate.nbf = issued_at + Duration::seconds(nbf_offset);
+            r.mandate.exp = r.mandate.nbf + Duration::days(1);
+            r
+        };
+        for r in [
+            root("ap-old", "lms", loan, 0),
+            root("ap-new", "lms", loan, 600),
+            root("ap-other-loan", "lms", "apply-other", 0),
+            root("ap-other-system", "crm", loan, 0),
+        ] {
+            store.insert(r).await.expect("root");
+        }
+        store
+            .insert_child(record("ap-child", Some("ap-old"), 1))
+            .await
+            .expect("child");
+
+        let request = RevocationApply {
+            tenant_id: TENANT.into(),
+            system: "lms".into(),
+            event_id: "apply-pay-1".into(),
+            event_digest: format!("sha256-jcs-v1:{}", "ef".repeat(32)),
+            legacy_digest: "01".repeat(32),
+            event_type: "loan.paid".into(),
+            record_ref: loan.into(),
+            occurred_at: issued_at + Duration::seconds(60),
+            reason: RevocationReason::Payment,
+            revoked_at: issued_at + Duration::seconds(120),
+        };
+        let done = store
+            .apply_revocation(request.clone())
+            .await
+            .expect("applied");
+        assert!(!done.replayed);
+        let mut changed: Vec<String> = done.changed.iter().map(|(id, _)| id.clone()).collect();
+        changed.sort();
+        assert_eq!(
+            changed,
+            ["ap-child", "ap-old"],
+            "the older root and its child"
+        );
+        assert_eq!(done.stored.revoked.len(), 2);
+        assert_eq!(status(store, "ap-old").await, Some(MandateStatus::Revoked));
+        assert_eq!(
+            status(store, "ap-child").await,
+            Some(MandateStatus::Revoked)
+        );
+        for live in ["ap-new", "ap-other-loan", "ap-other-system"] {
+            assert_eq!(
+                status(store, live).await,
+                Some(MandateStatus::Active),
+                "{live} stays"
+            );
+        }
+        let kept = store
+            .revocation_for_event(TENANT, "lms", "apply-pay-1")
+            .await
+            .expect("lookup")
+            .expect("recorded with the revocation");
+        assert_eq!(kept, done.stored);
+
+        // The same event again, and in the legacy digest form: the stored
+        // result, nothing changed now.
+        for digest in [request.event_digest.clone(), request.legacy_digest.clone()] {
+            let mut again = request.clone();
+            again.event_digest = digest.clone();
+            if digest == request.legacy_digest {
+                // A row in the legacy form is recognised by its bare digest.
+                again.legacy_digest = request.event_digest.clone();
+            }
+            let repeat = store.apply_revocation(again).await.expect("retry");
+            assert!(repeat.replayed && repeat.changed.is_empty());
+            assert_eq!(repeat.stored, done.stored);
+        }
+
+        // Another content under the same id: refused, and a mandate that
+        // would have been revoked stays.
+        let mut other = request.clone();
+        other.event_digest = format!("sha256-jcs-v1:{}", "aa".repeat(32));
+        other.legacy_digest = "bb".repeat(32);
+        other.occurred_at = issued_at + Duration::seconds(900);
+        let err = store.apply_revocation(other).await.expect_err("conflict");
+        assert_eq!(err.class, ErrorClass::Rejected);
+        assert!(err.message.contains("different content"), "{err}");
+        assert_eq!(status(store, "ap-new").await, Some(MandateStatus::Active));
+
+        // A later event reaches the newer root, and records its own result.
+        let mut later = request;
+        later.event_id = "apply-pay-2".into();
+        later.event_digest = format!("sha256-jcs-v1:{}", "cc".repeat(32));
+        later.legacy_digest = "dd".repeat(32);
+        later.occurred_at = issued_at + Duration::seconds(900);
+        let second = store.apply_revocation(later).await.expect("second");
+        assert_eq!(second.stored.revoked, ["ap-new"]);
+        assert_eq!(status(store, "ap-new").await, Some(MandateStatus::Revoked));
     }
 
     /// ADR-014 §2.1: the same system, record reference, source event id and

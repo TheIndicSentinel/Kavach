@@ -74,7 +74,14 @@ Each revocation is also a signed record in the agent evidence chain (kind `manda
 - **A revoking event has no maximum age.** Freshness (300 s) applies to *issuing* events and to the future bound of every event. A `loan.paid` or `loan.disputed` that reaches Kavach ten minutes, or a day, late is accepted and revokes: before this, such an event was refused and nothing retried it, so contact continued after a payment (fail open).
 - **Why it is safe:** a revocation only tightens; it is signed by a registered issuer key bound to the tenant and system; it is scoped by its own `occurred_at` (a mandate issued after it stays live); and a repeat is answered from the stored revocation for `(tenant_id, system, event_id)`, which does not expire.
 - **Attack catalog 7:** `stale-revocation` becomes `late-revocation`: a payment dated 15 minutes ago is *accepted* and revokes nothing issued after it. `future-revocation` stays refused.
-- **Still open (B2, B3):** a payment that arrives before the default it follows does not yet stop that default's mandate, and a crash between revoking and recording is repaired only by the reconciler.
+- **Still open (B2):** a payment that arrives before the default it follows does not yet stop that default's mandate.
+
+*Amended (B3, one-step apply):*
+- **Revoke and record are one step.** The store's `apply_revocation` revokes every active root of the record with `nbf <= occurred_at` and its delegations, and writes the revocation row, in one transaction. A crash leaves all of it or none of it; before, each root was revoked in its own transaction and the row written afterwards, so a crash could leave some mandates live and the revocation unrecorded.
+- **A revoking event spends no time-limited guard.** Its single use is the stored revocation, applied in that same step. A retry after any failure therefore completes the revocation instead of looking like a replay. Issuing events keep the 24 h replay guard.
+- **Idempotent by event id.** The same event again returns the stored result (`replayed`) and changes nothing; the same id with other content is refused, and revokes nothing.
+- **Lock.** The step holds the tenant's mandate lock, the one delegation and `revoke_tree` already take, so it serialises with every other mandate write. A per-record lock would not have excluded those; it becomes useful only once issuance takes the same lock (B2).
+- **Publication** of `MandateRevoked` stays after the commit; a lost notification does not undo it.
 
 ## Consequences
 

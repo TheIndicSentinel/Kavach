@@ -9,7 +9,8 @@
 use chrono::{DateTime, Utc};
 use kavach_domain::mandate::{Mandate, MandateStatus, RevocationReason};
 use kavach_ports::{
-    MandateStore, PortError, ReplayGuard, RevocationCursor, StoredMandate, StoredRevocation,
+    AppliedRevocation, MandateStore, PortError, ReplayGuard, RevocationApply, RevocationCursor,
+    StoredMandate, StoredRevocation,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
@@ -57,6 +58,57 @@ impl PostgresMandateStore {
             .await
             .map_err(|e| unavailable(&e))?;
         Ok(())
+    }
+
+    /// Revokes `id` and its active descendants inside a transaction that
+    /// already holds the tenant lock.
+    async fn revoke_tree_in(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: &str,
+        id: &str,
+        reason: RevocationReason,
+    ) -> Result<Vec<(String, RevocationReason)>, PortError> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM mandates WHERE tenant_id = $1 AND id = $2)",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        if !exists {
+            return Err(PortError::rejected(format!("unknown mandate {id}")));
+        }
+        let rows = sqlx::query(
+            "WITH RECURSIVE sub AS ( \
+                SELECT id, 0 AS lvl FROM mandates WHERE tenant_id = $1 AND id = $2 \
+              UNION ALL \
+                SELECT m.id, sub.lvl + 1 FROM mandates m JOIN sub ON m.parent_id = sub.id \
+                WHERE m.tenant_id = $1 AND sub.lvl < $5 \
+            ) \
+            UPDATE mandates SET status = 'revoked', \
+                revoked_reason = CASE WHEN id = $2 THEN $3 ELSE $4 END \
+            WHERE tenant_id = $1 AND status = 'active' AND id IN (SELECT id FROM sub) \
+            RETURNING id, revoked_reason",
+        )
+        .bind(tenant_id)
+        .bind(id)
+        .bind(reason_str(reason))
+        .bind(reason_str(RevocationReason::ParentRevoked))
+        .bind(WALK_LIMIT)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter()
+            .map(|row| {
+                let id: String = row.try_get("id").map_err(|e| unavailable(&e))?;
+                let why: String = row.try_get("revoked_reason").map_err(|e| unavailable(&e))?;
+                Ok((
+                    id,
+                    parse_reason(&why).unwrap_or(RevocationReason::ParentRevoked),
+                ))
+            })
+            .collect()
     }
 
     async fn insert_row<'e>(
@@ -222,48 +274,111 @@ impl MandateStore for PostgresMandateStore {
     ) -> Result<Vec<(String, RevocationReason)>, PortError> {
         let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
         Self::lock_tenant(&mut tx, tenant_id).await?;
-        let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM mandates WHERE tenant_id = $1 AND id = $2)",
-        )
-        .bind(tenant_id)
-        .bind(id)
-        .fetch_one(&mut *tx)
+        let changed = Self::revoke_tree_in(&mut tx, tenant_id, id, reason).await?;
+        tx.commit().await.map_err(|e| unavailable(&e))?;
+        Ok(changed)
+    }
+
+    async fn apply_revocation(
+        &self,
+        request: RevocationApply,
+    ) -> Result<AppliedRevocation, PortError> {
+        let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
+        // The tenant lock every mandate write takes (delegation, revoke
+        // tree), so the revocation serialises with all of them.
+        Self::lock_tenant(&mut tx, &request.tenant_id).await?;
+        let existing = sqlx::query(&format!(
+            "SELECT {REVOCATION_COLUMNS} FROM mandate_revocations \
+            WHERE tenant_id = $1 AND source_system = $2 AND event_id = $3"
+        ))
+        .bind(&request.tenant_id)
+        .bind(&request.system)
+        .bind(&request.event_id)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|e| unavailable(&e))?;
-        if !exists {
-            return Err(PortError::rejected(format!("unknown mandate {id}")));
+        if let Some(row) = existing {
+            let stored = row_to_revocation(&row)?;
+            if stored.event_digest != request.event_digest
+                && stored.event_digest != request.legacy_digest
+            {
+                return Err(PortError::rejected(format!(
+                    "event {} was already used with different content",
+                    request.event_id
+                )));
+            }
+            return Ok(AppliedRevocation {
+                stored,
+                changed: Vec::new(),
+                replayed: true,
+            });
         }
         let rows = sqlx::query(
-            "WITH RECURSIVE sub AS ( \
-                SELECT id, 0 AS lvl FROM mandates WHERE tenant_id = $1 AND id = $2 \
-              UNION ALL \
-                SELECT m.id, sub.lvl + 1 FROM mandates m JOIN sub ON m.parent_id = sub.id \
-                WHERE m.tenant_id = $1 AND sub.lvl < $5 \
-            ) \
-            UPDATE mandates SET status = 'revoked', \
-                revoked_reason = CASE WHEN id = $2 THEN $3 ELSE $4 END \
-            WHERE tenant_id = $1 AND status = 'active' AND id IN (SELECT id FROM sub) \
-            RETURNING id, revoked_reason",
+            "SELECT id, mandate, token, status, revoked_reason FROM mandates \
+            WHERE tenant_id = $1 AND source_system = $2 \
+            AND mandate -> 'source' ->> 'record_ref' = $3 \
+            AND parent_id IS NULL AND status = 'active' \
+            ORDER BY created_at, id",
         )
-        .bind(tenant_id)
-        .bind(id)
-        .bind(reason_str(reason))
-        .bind(reason_str(RevocationReason::ParentRevoked))
-        .bind(WALK_LIMIT)
+        .bind(&request.tenant_id)
+        .bind(&request.system)
+        .bind(&request.record_ref)
         .fetch_all(&mut *tx)
         .await
         .map_err(|e| unavailable(&e))?;
+        let mut changed = Vec::new();
+        for row in &rows {
+            let root = row_to_stored(row)?;
+            // A revocation never reaches forward (ADR-012 §3).
+            if root.mandate.nbf <= request.occurred_at {
+                changed.extend(
+                    Self::revoke_tree_in(
+                        &mut tx,
+                        &request.tenant_id,
+                        &root.mandate.id,
+                        request.reason,
+                    )
+                    .await?,
+                );
+            }
+        }
+        let stored = StoredRevocation {
+            tenant_id: request.tenant_id,
+            system: request.system,
+            event_id: request.event_id,
+            event_digest: request.event_digest,
+            event_type: request.event_type,
+            record_ref: request.record_ref,
+            occurred_at: request.occurred_at,
+            revoked: changed.iter().map(|(id, _)| id.clone()).collect(),
+            revoked_at: request.revoked_at,
+        };
+        let revoked = serde_json::to_value(&stored.revoked)
+            .map_err(|e| PortError::invalid(format!("revoked ids: {e}")))?;
+        sqlx::query(
+            "INSERT INTO mandate_revocations (tenant_id, source_system, event_id, \
+            content_sha256, event_type, record_ref, occurred_at, revoked, created_at) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind(&stored.tenant_id)
+        .bind(&stored.system)
+        .bind(&stored.event_id)
+        .bind(&stored.event_digest)
+        .bind(&stored.event_type)
+        .bind(&stored.record_ref)
+        .bind(stored.occurred_at)
+        .bind(revoked)
+        .bind(stored.revoked_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        // Commits the revocation and its record together, or neither.
         tx.commit().await.map_err(|e| unavailable(&e))?;
-        rows.iter()
-            .map(|row| {
-                let id: String = row.try_get("id").map_err(|e| unavailable(&e))?;
-                let why: String = row.try_get("revoked_reason").map_err(|e| unavailable(&e))?;
-                Ok((
-                    id,
-                    parse_reason(&why).unwrap_or(RevocationReason::ParentRevoked),
-                ))
-            })
-            .collect()
+        Ok(AppliedRevocation {
+            stored,
+            changed,
+            replayed: false,
+        })
     }
 
     async fn live_roots_for_record(
