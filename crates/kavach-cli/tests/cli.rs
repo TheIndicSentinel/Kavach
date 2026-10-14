@@ -903,7 +903,7 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
         };
         assert_eq!(o["verdict"], expected, "{o}");
     }
-    assert_eq!(doc["catalog_version"], "6");
+    assert_eq!(doc["catalog_version"], "7");
     // Again on the same stack: nothing a run sends is reused by the next.
     let again = kavach(&dir, &["--json", "attack"]);
     let doc = json(&again);

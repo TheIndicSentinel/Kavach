@@ -60,7 +60,7 @@ fn event_for(kind: RevocationAttack, id: String) -> SorSpec {
             key: SorKey::Unregistered,
             ..paid
         },
-        RevocationAttack::Stale => SorSpec {
+        RevocationAttack::Late => SorSpec {
             offset_seconds: -OUTSIDE_WINDOW,
             ..paid
         },
@@ -116,8 +116,8 @@ fn verdict(expect: Expect, seen: &Seen, extra: impl Fn(&Seen) -> bool) -> Verdic
                 }
             } else if (200..300).contains(&seen.status) {
                 // Accepted: the event got through, which is the breach
-                // (a stale one, say, revokes nothing newer, yet a system of
-                // record could replay it at will).
+                // (a future-dated one, say, would otherwise sit ahead of
+                // every mandate issued until its time comes).
                 Verdict::Succeeded
             } else {
                 Verdict::Error
@@ -313,7 +313,7 @@ mod tests {
             let at = event["at"].as_i64().unwrap();
             let refused = if (event["other_issuer"] == true && b != Broken::IssuerTenant)
                 || (event["forged"] == true && b != Broken::Signature)
-                || ((at - NOW).abs() > 300 && b != Broken::Freshness)
+                || (at - NOW > 300 && b != Broken::Freshness)
             {
                 Some(422)
             } else if event["other_tenant"] == true && b != Broken::Tenant {
@@ -474,7 +474,7 @@ mod tests {
         use RevocationAttack as R;
         for kind in [
             R::Forged,
-            R::Stale,
+            R::Late,
             R::Future,
             R::UnknownType,
             R::OtherTenant,
@@ -493,7 +493,7 @@ mod tests {
         use RevocationAttack as R;
         for (broken, kind) in [
             (Broken::Signature, R::Forged),
-            (Broken::Freshness, R::Stale),
+            (Broken::Ordering, R::Late),
             (Broken::Freshness, R::Future),
             (Broken::EventType, R::UnknownType),
             (Broken::Tenant, R::OtherTenant),

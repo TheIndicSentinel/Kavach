@@ -25,7 +25,7 @@ mod agent_state;
 mod revocation;
 
 /// Bumped whenever an attack is added, removed or its expectation changes.
-pub const CATALOG_VERSION: &str = "6";
+pub const CATALOG_VERSION: &str = "7";
 
 /// The borrower the dev mandate covers, and one it does not.
 pub const SUBJECT: &str = "ref:borrower:B-9382";
@@ -133,7 +133,7 @@ pub enum RevocationAttack {
     /// A payment signed with a key no system of record is registered with.
     Forged,
     /// A payment dated 15 minutes ago: outside the freshness window.
-    Stale,
+    Late,
     /// A payment dated 15 minutes ahead: outside the freshness window.
     Future,
     /// A validly signed event of a type no template or revocation knows.
@@ -582,11 +582,11 @@ pub const CATALOG: [Attack; 36] = [
         bypass: None,
     },
     Attack {
-        id: "stale-revocation",
+        id: "late-revocation",
         group: "revocation",
-        tries: "a validly signed payment dated 15 minutes ago, outside the freshness window",
-        probe: Probe::Revocation(RevocationAttack::Stale),
-        expect: Expect::EventRefused,
+        tries: "a validly signed payment dated 15 minutes ago, delivered late: accepted, and it revokes nothing issued after it",
+        probe: Probe::Revocation(RevocationAttack::Late),
+        expect: Expect::RevokesNothing,
         security_property: REVOCATION,
         bypass: Some(SOR_KEY),
     },

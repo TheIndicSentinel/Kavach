@@ -712,9 +712,10 @@ async fn catalog_attacks_are_refused(store: Store) {
 
 /// The revocation attacks (catalog v4) on a fixed clock either side of
 /// midnight IST: at 23:58 the future-dated event falls on the next IST day,
-/// at 00:05 the stale one on the day before. The freshness window is
-/// measured in time, not in calendar days, so every attack is refused the
-/// same way, and nothing is minted or sent (outside contact hours, too).
+/// at 00:05 the late one on the day before. The windows are measured in
+/// time, not in calendar days, so every attack gets the same verdict
+/// either side of midnight, and nothing is minted or sent (outside contact
+/// hours, too).
 async fn revocation_attacks_hold_across_midnight_ist(store: Store) {
     let Some(gw) = world(store, Some(NUMBER), true).await else {
         return;

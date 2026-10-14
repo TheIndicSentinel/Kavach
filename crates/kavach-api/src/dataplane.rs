@@ -1721,6 +1721,12 @@ async fn revoke_by_event(
         )
     };
     match dp.mandates.revoke_from_event(event).await {
+        Ok(done) if done.replayed => {
+            // Already applied: nothing is revoked or audited again, and a
+            // record still missing is written.
+            record_revocation_evidence(dp, &done.stored).await;
+            Ok(reply(done.revoked, true))
+        }
         Ok(done) => {
             let audited = state
                 .admin()
