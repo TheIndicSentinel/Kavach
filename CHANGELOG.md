@@ -4,6 +4,10 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
+### Fixed
+
+- **A payment (or dispute) event that reaches Kavach late still stops contact (B1, ADR-012 addendum).** Revoking events had the same 300 s freshness window as issuing events, so a `loan.paid` delivered ten minutes late was refused, nothing retried it, and contact continued. A revoking event now has no maximum age; an event from the future, and an old *issuing* event, are still refused. It is scoped by its own `occurred_at` (it never reaches a mandate issued after it) and its single use is the permanent stored revocation, which is now looked up before the (24 h) replay guard, so a repeat after a day revokes nothing. Attack catalog version 7: `stale-revocation` is replaced by `late-revocation` (accepted, revokes nothing newer); the independent verifier and the specification say the same. Still open: B2 (a payment before the default it follows) and B3 (a crash between revoking and recording).
+
 ### Changed
 
 - **Breaking (configuration): each system-of-record issuer key is registered for one tenant and one system (ADR-014 §2.1).** `sor_issuers` entries need `tenant_id` (a file without it does not load). An event is accepted only from a key registered for its own tenant and system; one tenant's key can no longer sign for another on a shared stack. An unknown key id, another tenant's key and a bad signature are refused with the same message (`the event is not accepted from this issuer`), and the detail goes to the redacted log only. Startup refuses a key id used twice and the same public key under two ids or two tenants. Existing projects: add `tenant_id` to each issuer, or run `kavach init --force` (a development project needs the new second issuer key for the `issuer-for-another-tenant` attack; without it the attack is inconclusive, never a pass).

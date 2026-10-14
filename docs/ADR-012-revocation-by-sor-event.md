@@ -57,7 +57,7 @@ Each revocation is also a signed record in the agent evidence chain (kind `manda
 ### 8. Attacks (catalog version 4)
 - `forged-revocation`: a bad signature is refused.
 - `replayed-revocation`: the replay guard refuses it.
-- `stale-revocation`: outside the freshness window, refused.
+- `stale-revocation` (superseded by `late-revocation` in catalog 7, see the addendum): outside the freshness window, refused.
 - `revocation-for-another-tenant`: changes nothing.
 - `revocation-reaches-forward`: an old `loan.paid` against a newer mandate leaves it live.
 
@@ -69,6 +69,12 @@ Each revocation is also a signed record in the agent evidence chain (kind `manda
 - **Ground truth:** every attack is judged on the attack mandate (a pre-check) and on the evidence chain, not only the reply. A refused event adds no `mandate_revocation` record, and the replay adds no second one. An accepted event that should have been refused is a breach, whatever it revoked.
 - **`revocation-for-another-tenant`:** the tenant is part of the signed event and every revocation is scoped by it. A stack serves one tenant and now refuses an event for any other (400) before acting on it.
 - **`replayed-revocation`:** the replay returns the stored result (`replayed: true`); the replay guard is not what answers a retry.
+
+*Amended (B1, late revocations):*
+- **A revoking event has no maximum age.** Freshness (300 s) applies to *issuing* events and to the future bound of every event. A `loan.paid` or `loan.disputed` that reaches Kavach ten minutes, or a day, late is accepted and revokes: before this, such an event was refused and nothing retried it, so contact continued after a payment (fail open).
+- **Why it is safe:** a revocation only tightens; it is signed by a registered issuer key bound to the tenant and system; it is scoped by its own `occurred_at` (a mandate issued after it stays live); and a repeat is answered from the stored revocation for `(tenant_id, system, event_id)`, which does not expire.
+- **Attack catalog 7:** `stale-revocation` becomes `late-revocation`: a payment dated 15 minutes ago is *accepted* and revokes nothing issued after it. `future-revocation` stays refused.
+- **Still open (B2, B3):** a payment that arrives before the default it follows does not yet stop that default's mandate, and a crash between revoking and recording is repaired only by the reconciler.
 
 ## Consequences
 

@@ -537,6 +537,13 @@ where
     /// issuing one: a registered issuer key for its system, freshness, the
     /// replay guard. Its result is kept for retries.
     pub async fn revoke_from_event(&self, event_token: &str) -> Result<RevokedByEvent, PortError> {
+        // The stored result first, before freshness or the replay guard
+        // (which expires): an event that was applied is never applied
+        // again, however long ago, and the same id with other content is
+        // refused. A revoking event's single use is this stored row.
+        if let Some(done) = self.existing_revocation(event_token).await? {
+            return Ok(done);
+        }
         let now = self.deps.clock.now().utc;
         let event = self.verify_event(event_token, now).await?;
         let reason = REVOKING_EVENTS
@@ -651,11 +658,22 @@ where
 
     async fn verify_event(&self, token: &str, now: DateTime<Utc>) -> Result<SorEvent, PortError> {
         let event = self.verified_event(token)?;
-        let age = (now - event.occurred_at).num_seconds().abs();
-        if age > self.config.event_freshness_seconds {
+        // How long ago the fact occurred (negative: in the future). An
+        // event from the future is refused whatever it says. An old
+        // *issuing* event is refused (a mandate is not made from a stale
+        // fact); an old *revoking* event is not: a payment that reaches
+        // Kavach late must still stop contact, and a revocation only ever
+        // tightens (ADR-012 addendum, B1).
+        let age = (now - event.occurred_at).num_seconds();
+        let revoking = REVOKING_EVENTS
+            .iter()
+            .any(|(name, _)| *name == event.event_type);
+        let window = self.config.event_freshness_seconds;
+        if age < -window || (age > window && !revoking) {
             return Err(PortError::rejected(format!(
-                "event {} is stale or from the future ({age}s)",
-                event.event_id
+                "event {} is stale or from the future ({}s)",
+                event.event_id,
+                age.abs()
             )));
         }
         self.deps

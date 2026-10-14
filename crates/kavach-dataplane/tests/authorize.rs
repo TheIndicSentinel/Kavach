@@ -930,9 +930,11 @@ async fn a_payment_event_revokes_the_loans_mandates_and_their_delegations() {
     }
 
     // The same event again: the stored result, nothing revoked now.
-    assert!(
-        w.mandates.revoke_from_event(&paid).await.is_err(),
-        "the replay guard"
+    let repeat = w.mandates.revoke_from_event(&paid).await.unwrap();
+    assert_eq!(
+        (repeat.revoked, repeat.replayed),
+        (done.revoked.clone(), true),
+        "answered from the stored revocation"
     );
     let again = w
         .mandates
@@ -949,7 +951,7 @@ async fn a_payment_event_revokes_the_loans_mandates_and_their_delegations() {
         "{conflict:?}"
     );
 
-    // Forged (another key), stale, and not a revoking type.
+    // Forged (another key), an old dispute (accepted: no maximum age), and not a revoking type.
     let mut other_keys = InMemoryKeyProvider::new();
     other_keys.insert_seed("lms-issuer-1", [99u8; 32]).unwrap();
     let forged = revocation(
@@ -964,10 +966,14 @@ async fn a_payment_event_revokes_the_loans_mandates_and_their_delegations() {
         w.mandates.revoke_from_event(&forged).await.is_err(),
         "forged"
     );
-    let stale = revocation(&w.sor, "B-9382", "loan.disputed", "pay-3", ist(11, 0, 0)).await;
+    // Forged, not stale: a revoking event has no maximum age (B1), so an
+    // hour-old dispute is accepted; everything it could reach is already
+    // revoked.
+    let late = revocation(&w.sor, "B-9382", "loan.disputed", "pay-3", ist(11, 0, 0)).await;
+    let accepted = w.mandates.revoke_from_event(&late).await.unwrap();
     assert!(
-        w.mandates.revoke_from_event(&stale).await.is_err(),
-        "stale (an hour old)"
+        accepted.revoked.is_empty(),
+        "an hour-old dispute is accepted"
     );
     let wrong = revocation(&w.sor, "B-9382", "loan.dpd30", "pay-4", w.clock.now().utc).await;
     assert!(!kavach_mandate::is_revoking_event(&wrong));
