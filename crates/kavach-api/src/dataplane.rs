@@ -264,6 +264,15 @@ impl MandateStore for MandateStoreBackend {
             Self::Postgres(s) => s.active_held_by(tenant_id, holder).await,
         }
     }
+    async fn apply_revocation(
+        &self,
+        request: kavach_ports::RevocationApply,
+    ) -> Result<kavach_ports::AppliedRevocation, PortError> {
+        match self {
+            Self::Memory(s) => s.apply_revocation(request).await,
+            Self::Postgres(s) => s.apply_revocation(request).await,
+        }
+    }
     async fn record_revocation(&self, revocation: StoredRevocation) -> Result<(), PortError> {
         match self {
             Self::Memory(s) => s.record_revocation(revocation).await,

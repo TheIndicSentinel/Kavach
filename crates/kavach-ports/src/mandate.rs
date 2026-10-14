@@ -47,6 +47,38 @@ impl StoredRevocation {
     }
 }
 
+/// A revocation to apply (ADR-012, B3): everything the store needs to
+/// revoke and record in one step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevocationApply {
+    pub tenant_id: String,
+    pub system: String,
+    pub event_id: String,
+    /// The event's digest (`sha256-jcs-v1:<hex>`), stored with the result.
+    pub event_digest: String,
+    /// The same content in the legacy bare form, so a row written before
+    /// that form is recognised as a retry.
+    pub legacy_digest: String,
+    pub event_type: String,
+    pub record_ref: String,
+    pub occurred_at: chrono::DateTime<chrono::Utc>,
+    pub reason: RevocationReason,
+    /// When Kavach revoked (trusted time, whole microseconds).
+    pub revoked_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// What [`MandateStore::apply_revocation`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedRevocation {
+    /// The revocation as stored (the first one, for a retry).
+    pub stored: StoredRevocation,
+    /// The mandates whose status changed now, with their reason: empty
+    /// for a retry.
+    pub changed: Vec<(String, RevocationReason)>,
+    /// The event had been applied before; nothing was revoked now.
+    pub replayed: bool,
+}
+
 /// A place in the order of revocations: by time, then tenant, system and
 /// event id. Ordered the same way, so paging resumes exactly after it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -144,6 +176,21 @@ pub trait MandateStore: Send + Sync {
         tenant_id: &str,
         holder: &str,
     ) -> impl Future<Output = Result<Vec<String>, PortError>> + Send;
+
+    /// Applies a revoking event **atomically**: revokes every active root
+    /// mandate of `(tenant, system, record_ref)` with `nbf <= occurred_at`
+    /// and everything delegated from it, and records the revocation, all
+    /// or nothing. A crash leaves either the whole revocation or none of
+    /// it, so a retry always completes it.
+    ///
+    /// Idempotent by `(tenant, system, event_id)`: the same event again
+    /// (either digest form) returns the stored revocation with `replayed`
+    /// and changes nothing; the same id with another digest → `Rejected`
+    /// ("different content") and nothing is revoked.
+    fn apply_revocation(
+        &self,
+        request: RevocationApply,
+    ) -> impl Future<Output = Result<AppliedRevocation, PortError>> + Send;
 
     /// Keeps a revocation's result. An existing `(tenant, system,
     /// event_id)` → `Rejected`.

@@ -6,8 +6,8 @@ use std::sync::Mutex;
 
 use kavach_domain::mandate::{ConsentRecord, MandateStatus, RevocationReason};
 use kavach_ports::{
-    ConsentSource, DomainEvent, EventBus, MandateStore, PortError, RevocationCursor, StoredMandate,
-    StoredRevocation,
+    AppliedRevocation, ConsentSource, DomainEvent, EventBus, MandateStore, PortError,
+    RevocationApply, RevocationCursor, StoredMandate, StoredRevocation,
 };
 
 type Key = (String, String);
@@ -98,35 +98,115 @@ impl InMemoryMandateStore {
         reason: RevocationReason,
     ) -> Result<Vec<(String, RevocationReason)>, PortError> {
         let mut records = self.records.lock().map_err(|_| poisoned())?;
-        if !records.contains_key(&(tenant_id.to_string(), id.to_string())) {
-            return Err(PortError::rejected(format!("unknown mandate {id}")));
-        }
-        let mut changed = Vec::new();
-        let mut pending = vec![(id.to_string(), reason)];
-        while let Some((current, why)) = pending.pop() {
-            let children: Vec<String> = records
-                .values()
-                .filter(|s| {
-                    s.mandate.tenant_id == tenant_id
-                        && s.mandate.parent_id.as_deref() == Some(current.as_str())
-                })
-                .map(|s| s.mandate.id.clone())
-                .collect();
-            if let Some(record) = records.get_mut(&(tenant_id.to_string(), current.clone())) {
-                if record.status != MandateStatus::Revoked {
-                    record.status = MandateStatus::Revoked;
-                    record.revoked_reason = Some(why);
-                    changed.push((current.clone(), why));
-                }
-            }
-            pending.extend(
-                children
-                    .into_iter()
-                    .map(|child| (child, RevocationReason::ParentRevoked)),
-            );
-        }
-        Ok(changed)
+        revoke_tree_in(&mut records, tenant_id, id, reason)
     }
+
+    /// One step under both locks (revocations first, then records, the
+    /// only place both are taken): nothing is changed unless the whole
+    /// revocation and its record are.
+    fn apply_revocation_sync(
+        &self,
+        request: RevocationApply,
+    ) -> Result<AppliedRevocation, PortError> {
+        let mut revocations = self.revocations.lock().map_err(|_| poisoned())?;
+        let mut records = self.records.lock().map_err(|_| poisoned())?;
+        let key = (
+            request.tenant_id.clone(),
+            request.system.clone(),
+            request.event_id.clone(),
+        );
+        if let Some(stored) = revocations.get(&key) {
+            if stored.event_digest != request.event_digest
+                && stored.event_digest != request.legacy_digest
+            {
+                return Err(PortError::rejected(format!(
+                    "event {} was already used with different content",
+                    request.event_id
+                )));
+            }
+            return Ok(AppliedRevocation {
+                stored: stored.clone(),
+                changed: Vec::new(),
+                replayed: true,
+            });
+        }
+        let mut roots: Vec<(chrono::DateTime<chrono::Utc>, String)> = records
+            .values()
+            .filter(|s| {
+                s.mandate.tenant_id == request.tenant_id
+                    && s.mandate.parent_id.is_none()
+                    && s.status == MandateStatus::Active
+                    && s.mandate.source.system == request.system
+                    && s.mandate.source.record_ref == request.record_ref
+                    && s.mandate.nbf <= request.occurred_at
+            })
+            .map(|s| (s.mandate.nbf, s.mandate.id.clone()))
+            .collect();
+        roots.sort();
+        let mut changed = Vec::new();
+        for (_, id) in roots {
+            changed.extend(revoke_tree_in(
+                &mut records,
+                &request.tenant_id,
+                &id,
+                request.reason,
+            )?);
+        }
+        let stored = StoredRevocation {
+            tenant_id: request.tenant_id,
+            system: request.system,
+            event_id: request.event_id,
+            event_digest: request.event_digest,
+            event_type: request.event_type,
+            record_ref: request.record_ref,
+            occurred_at: request.occurred_at,
+            revoked: changed.iter().map(|(id, _)| id.clone()).collect(),
+            revoked_at: request.revoked_at,
+        };
+        revocations.insert(key, stored.clone());
+        Ok(AppliedRevocation {
+            stored,
+            changed,
+            replayed: false,
+        })
+    }
+}
+
+/// Revokes `id` and every descendant not yet revoked, in `records`.
+fn revoke_tree_in(
+    records: &mut HashMap<Key, StoredMandate>,
+    tenant_id: &str,
+    id: &str,
+    reason: RevocationReason,
+) -> Result<Vec<(String, RevocationReason)>, PortError> {
+    if !records.contains_key(&(tenant_id.to_string(), id.to_string())) {
+        return Err(PortError::rejected(format!("unknown mandate {id}")));
+    }
+    let mut changed = Vec::new();
+    let mut pending = vec![(id.to_string(), reason)];
+    while let Some((current, why)) = pending.pop() {
+        let children: Vec<String> = records
+            .values()
+            .filter(|s| {
+                s.mandate.tenant_id == tenant_id
+                    && s.mandate.parent_id.as_deref() == Some(current.as_str())
+            })
+            .map(|s| s.mandate.id.clone())
+            .collect();
+        if let Some(record) = records.get_mut(&(tenant_id.to_string(), current.clone())) {
+            if record.status != MandateStatus::Revoked {
+                record.status = MandateStatus::Revoked;
+                record.revoked_reason = Some(why);
+                changed.push((current.clone(), why));
+            }
+        }
+        pending.extend(
+            children
+                .into_iter()
+                .map(|child| (child, RevocationReason::ParentRevoked)),
+        );
+    }
+    Ok(changed)
 }
 
 impl MandateStore for InMemoryMandateStore {
@@ -234,6 +314,13 @@ impl MandateStore for InMemoryMandateStore {
             held.into_iter().map(|s| s.mandate.id.clone()).collect()
         });
         ready(result)
+    }
+
+    fn apply_revocation(
+        &self,
+        request: RevocationApply,
+    ) -> impl Future<Output = Result<AppliedRevocation, PortError>> + Send {
+        ready(self.apply_revocation_sync(request))
     }
 
     fn record_revocation(

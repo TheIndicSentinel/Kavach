@@ -11,7 +11,7 @@ use kavach_domain::mandate::{
 };
 use kavach_ports::{
     ConsentSource, DomainEvent, EventBus, KeyProvider, MandateStore, PortError, ReplayGuard,
-    StoredMandate, StoredRevocation, TimeSource,
+    RevocationApply, StoredMandate, StoredRevocation, TimeSource,
 };
 use sha2::{Digest, Sha256};
 
@@ -507,10 +507,21 @@ where
         reason: RevocationReason,
     ) -> Result<RevokeOutcome, PortError> {
         let changed = self.deps.store.revoke_tree(tenant_id, id, reason).await?;
-        let mut outcome = RevokeOutcome {
-            revoked: Vec::with_capacity(changed.len()),
-            publish_errors: Vec::new(),
-        };
+        let publish_errors = self.publish_revoked(tenant_id, &changed).await;
+        Ok(RevokeOutcome {
+            revoked: changed.into_iter().map(|(id, _)| id).collect(),
+            publish_errors,
+        })
+    }
+
+    /// Publishes `MandateRevoked` for each; the ids whose notification
+    /// failed (the revocation itself stands).
+    async fn publish_revoked(
+        &self,
+        tenant_id: &str,
+        changed: &[(String, RevocationReason)],
+    ) -> Vec<(String, String)> {
+        let mut errors = Vec::new();
         for (mandate_id, why) in changed {
             if let Err(err) = self
                 .deps
@@ -518,17 +529,15 @@ where
                 .publish(DomainEvent::MandateRevoked {
                     tenant_id: tenant_id.to_string(),
                     mandate_id: mandate_id.clone(),
-                    reason: why,
+                    reason: *why,
                 })
                 .await
             {
-                outcome
-                    .publish_errors
-                    .push((mandate_id.clone(), err.to_string()));
+                tracing::warn!(error = %err, mandate_id = %mandate_id, "MandateRevoked not published");
+                errors.push((mandate_id.clone(), err.to_string()));
             }
-            outcome.revoked.push(mandate_id);
         }
-        Ok(outcome)
+        errors
     }
 
     /// ADR-012: a signed `loan.paid` or `loan.disputed` revokes the live
@@ -551,40 +560,38 @@ where
             .find(|(name, _)| *name == event.event_type)
             .map(|(_, reason)| *reason)
             .ok_or_else(|| PortError::rejected(format!("{} does not revoke", event.event_type)))?;
-        let roots = self
+        // Revoke and record in one step: all or nothing, and a retry after
+        // any failure completes it (B3). A revocation never reaches
+        // forward: a mandate issued after the event occurred (a new
+        // default after a payment) stays; one issued at the same instant
+        // is revoked (when in doubt, contact stops).
+        let applied = self
             .deps
             .store
-            .live_roots_for_record(&event.tenant_id, &event.system, &event.record_ref)
+            .apply_revocation(RevocationApply {
+                tenant_id: event.tenant_id.clone(),
+                system: event.system.clone(),
+                event_id: event.event_id.clone(),
+                event_digest: event_digest(&event)?,
+                legacy_digest: legacy_content_sha256(&event)?,
+                event_type: event.event_type.clone(),
+                record_ref: event.record_ref.clone(),
+                occurred_at: event.occurred_at,
+                reason,
+                revoked_at: micros(self.deps.clock.now().utc),
+            })
             .await?;
-        let mut revoked = Vec::new();
-        // A revocation never reaches forward: a mandate issued after the
-        // event occurred (a new default after a payment) stays. One issued
-        // at the same instant is revoked: when in doubt, contact stops.
-        for root in roots.iter().filter(|r| r.mandate.nbf <= event.occurred_at) {
-            let outcome = self
-                .revoke(&event.tenant_id, &root.mandate.id, reason)
-                .await?;
-            revoked.extend(outcome.revoked);
-        }
-        let stored = StoredRevocation {
-            tenant_id: event.tenant_id.clone(),
-            system: event.system.clone(),
-            event_id: event.event_id.clone(),
-            event_digest: event_digest(&event)?,
-            event_type: event.event_type.clone(),
-            record_ref: event.record_ref.clone(),
-            occurred_at: event.occurred_at,
-            revoked: revoked.clone(),
-            revoked_at: micros(self.deps.clock.now().utc),
-        };
-        self.deps.store.record_revocation(stored.clone()).await?;
+        // Published after the commit; a lost notification does not undo it.
+        let _ = self
+            .publish_revoked(&event.tenant_id, &applied.changed)
+            .await;
         Ok(RevokedByEvent {
             event_id: event.event_id,
             event_type: event.event_type,
             record_ref: event.record_ref,
-            revoked,
-            replayed: false,
-            stored,
+            revoked: applied.stored.revoked.clone(),
+            replayed: applied.replayed,
+            stored: applied.stored,
         })
     }
 
@@ -676,15 +683,23 @@ where
                 age.abs()
             )));
         }
-        self.deps
-            .replay
-            .check_and_record(
-                &event.tenant_id,
-                &format!("sor:{}:{}", event.system, event.event_id),
-                now,
-                now + Duration::seconds(self.config.replay_window_seconds),
-            )
-            .await?;
+        // A revoking event's single use is the stored revocation
+        // (`apply_revocation`), which does not expire and is written
+        // atomically with the revocation. It must not also consume a
+        // time-limited guard: a crash after the guard and before the
+        // revocation would make the retry look like a replay and leave
+        // the revocation unapplied (B3).
+        if !revoking {
+            self.deps
+                .replay
+                .check_and_record(
+                    &event.tenant_id,
+                    &format!("sor:{}:{}", event.system, event.event_id),
+                    now,
+                    now + Duration::seconds(self.config.replay_window_seconds),
+                )
+                .await?;
+        }
         if !is_capability_ref(&event.subject_ref) {
             return Err(PortError::invalid(
                 "subject_ref must be a capability reference (ref:<type>:<id>)",
