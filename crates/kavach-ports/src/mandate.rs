@@ -32,6 +32,9 @@ pub struct StoredRevocation {
     pub revoked: Vec<String>,
     /// When Kavach revoked them (trusted time, whole microseconds).
     pub revoked_at: chrono::DateTime<chrono::Utc>,
+    /// Whether the clock was synchronised when it was applied; `None` for
+    /// a row written before this was recorded (unknown).
+    pub clock_synced: Option<bool>,
 }
 
 impl StoredRevocation {
@@ -65,6 +68,8 @@ pub struct RevocationApply {
     pub reason: RevocationReason,
     /// When Kavach revoked (trusted time, whole microseconds).
     pub revoked_at: chrono::DateTime<chrono::Utc>,
+    /// Whether the clock was synchronised when this was applied.
+    pub clock_synced: bool,
 }
 
 /// What [`MandateStore::apply_revocation`] did.

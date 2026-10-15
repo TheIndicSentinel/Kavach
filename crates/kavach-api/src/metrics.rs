@@ -16,6 +16,7 @@ pub struct Metrics {
     model_pack_mismatch: prometheus::IntGauge,
     gateway_calls: IntCounterVec,
     gateway_malformed: prometheus::IntCounter,
+    sor_unavailable: IntCounterVec,
     gateway_jti_conflicts: prometheus::IntCounter,
     gateway_outcome_write_failures: prometheus::IntCounter,
     agent_state_changes: IntCounterVec,
@@ -226,6 +227,17 @@ impl Metrics {
             ),
             &["to", "result"],
         )?;
+        let sor_unavailable = IntCounterVec::new(
+            Opts::new(
+                "kavach_sor_events_unavailable_total",
+                "System-of-record events answered 503 because Kavach could not act on them \
+                 now (clock not synchronised, store unreachable), by kind (issuing, \
+                 revoking). The sender retries; alert when it keeps rising: no new mandates \
+                 are being made",
+            ),
+            &["kind"],
+        )?;
+        registry.register(Box::new(sor_unavailable.clone()))?;
         registry.register(Box::new(agent_state_changes.clone()))?;
         registry.register(Box::new(gateway_calls.clone()))?;
         registry.register(Box::new(gateway_malformed.clone()))?;
@@ -243,6 +255,7 @@ impl Metrics {
             model_pack_mismatch,
             gateway_calls,
             gateway_malformed,
+            sor_unavailable,
             gateway_jti_conflicts,
             gateway_outcome_write_failures,
             agent_state_changes,
@@ -280,6 +293,11 @@ impl Metrics {
         self.evaluate_total
             .with_label_values(&[transport, "none", "5xx"])
             .inc();
+    }
+
+    /// An event answered 503 (`kind`: `issuing` or `revoking`).
+    pub fn observe_sor_unavailable(&self, kind: &str) {
+        self.sor_unavailable.with_label_values(&[kind]).inc();
     }
 
     pub fn observe_gateway_malformed(&self) {

@@ -27,7 +27,16 @@ pub struct MandateConfig {
     pub event_freshness_seconds: i64,
     /// How long event ids are remembered for replay protection.
     pub replay_window_seconds: i64,
+    /// The largest clock error (ms) at which authority is issued or
+    /// delegated; beyond it, or when the clock is not synchronised, the
+    /// service fails closed (`Unavailable`). Revocation does not need a
+    /// synchronised clock: stopping contact is always the safe direction.
+    pub max_clock_error_ms: u64,
 }
+
+/// The clock error the data plane tolerates for a decision (ADR-003 §7),
+/// used here so issuing authority is held to the same bar as using it.
+pub const DEFAULT_MAX_CLOCK_ERROR_MS: u64 = 500;
 
 /// A registered system-of-record signing key (ADR-014 §2.1). A key is
 /// registered for exactly one tenant and one system, never a set of

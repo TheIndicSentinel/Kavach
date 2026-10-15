@@ -352,13 +352,14 @@ impl MandateStore for PostgresMandateStore {
             occurred_at: request.occurred_at,
             revoked: changed.iter().map(|(id, _)| id.clone()).collect(),
             revoked_at: request.revoked_at,
+            clock_synced: Some(request.clock_synced),
         };
         let revoked = serde_json::to_value(&stored.revoked)
             .map_err(|e| PortError::invalid(format!("revoked ids: {e}")))?;
         sqlx::query(
             "INSERT INTO mandate_revocations (tenant_id, source_system, event_id, \
-            content_sha256, event_type, record_ref, occurred_at, revoked, created_at) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            content_sha256, event_type, record_ref, occurred_at, revoked, created_at, \
+            clock_synced) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(&stored.tenant_id)
         .bind(&stored.system)
@@ -369,6 +370,7 @@ impl MandateStore for PostgresMandateStore {
         .bind(stored.occurred_at)
         .bind(revoked)
         .bind(stored.revoked_at)
+        .bind(stored.clock_synced)
         .execute(&mut *tx)
         .await
         .map_err(|e| unavailable(&e))?;
@@ -428,8 +430,8 @@ impl MandateStore for PostgresMandateStore {
             .map_err(|e| PortError::invalid(format!("revoked ids: {e}")))?;
         let inserted = sqlx::query(
             "INSERT INTO mandate_revocations (tenant_id, source_system, event_id, \
-            content_sha256, event_type, record_ref, occurred_at, revoked, created_at) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+            content_sha256, event_type, record_ref, occurred_at, revoked, created_at, \
+            clock_synced) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(&revocation.tenant_id)
         .bind(&revocation.system)
@@ -440,6 +442,7 @@ impl MandateStore for PostgresMandateStore {
         .bind(revocation.occurred_at)
         .bind(revoked)
         .bind(revocation.revoked_at)
+        .bind(revocation.clock_synced)
         .execute(&self.pool)
         .await;
         match inserted {
@@ -495,7 +498,7 @@ impl MandateStore for PostgresMandateStore {
 }
 
 const REVOCATION_COLUMNS: &str = "tenant_id, source_system, event_id, content_sha256, \
-    event_type, record_ref, occurred_at, revoked, created_at";
+    event_type, record_ref, occurred_at, revoked, created_at, clock_synced";
 
 fn row_to_revocation(row: &sqlx::postgres::PgRow) -> Result<StoredRevocation, PortError> {
     let revoked: serde_json::Value = row.try_get("revoked").map_err(|e| unavailable(&e))?;
@@ -510,6 +513,7 @@ fn row_to_revocation(row: &sqlx::postgres::PgRow) -> Result<StoredRevocation, Po
         revoked: serde_json::from_value(revoked)
             .map_err(|e| PortError::invalid(format!("stored revoked ids: {e}")))?,
         revoked_at: row.try_get("created_at").map_err(|e| unavailable(&e))?,
+        clock_synced: row.try_get("clock_synced").map_err(|e| unavailable(&e))?,
     })
 }
 

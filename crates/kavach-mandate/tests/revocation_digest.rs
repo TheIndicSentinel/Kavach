@@ -27,6 +27,7 @@ fn row(event: &SorEvent, digest: String) -> StoredRevocation {
         occurred_at: event.occurred_at,
         revoked: vec![],
         revoked_at: event.occurred_at,
+        clock_synced: None,
     }
 }
 

@@ -162,6 +162,7 @@ impl InMemoryMandateStore {
             occurred_at: request.occurred_at,
             revoked: changed.iter().map(|(id, _)| id.clone()).collect(),
             revoked_at: request.revoked_at,
+            clock_synced: Some(request.clock_synced),
         };
         revocations.insert(key, stored.clone());
         Ok(AppliedRevocation {

@@ -67,6 +67,10 @@ pub struct RevokedByEvent {
     pub revoked: Vec<String>,
     /// The same event again: the stored result, nothing revoked now.
     pub replayed: bool,
+    /// Whether the clock was synchronised when it was **applied** (S4): the
+    /// stored value, also for a retry; `None` for a row written before it
+    /// was recorded. A revocation applies either way.
+    pub clock_synced: Option<bool>,
     /// The revocation as stored (its evidence-chain record is made from it).
     pub stored: StoredRevocation,
 }
@@ -227,8 +231,15 @@ where
     /// Creates a mandate from a signed system-of-record event (ADR-004 §4–5).
     /// Every field comes from the verified event or the governed template.
     pub async fn issue_from_event(&self, event_token: &str) -> Result<IssuedMandate, PortError> {
-        let now = self.deps.clock.now().utc;
-        let event = self.verify_event(event_token, now).await?;
+        // Authority is made only on a clock that is synchronised within the
+        // bound the data plane holds decisions to (S4): freshness, `nbf`
+        // and `exp` all rest on it. Unsynchronised: fail closed.
+        let now = self
+            .deps
+            .clock
+            .now()
+            .require_synced(self.config.max_clock_error_ms)?;
+        let event = self.verify_event(event_token, now, true).await?;
         let template = self
             .config
             .template(&event.tenant_id, &event.event_type)
@@ -446,6 +457,11 @@ where
         to_agent: &str,
         request: &DelegationRequest,
     ) -> Result<IssuedMandate, PortError> {
+        // As for issuing: a delegation is new authority (S4).
+        self.deps
+            .clock
+            .now()
+            .require_synced(self.config.max_clock_error_ms)?;
         let parent = self
             .deps
             .store
@@ -553,8 +569,24 @@ where
         if let Some(done) = self.existing_revocation(event_token).await? {
             return Ok(done);
         }
-        let now = self.deps.clock.now().utc;
-        let event = self.verify_event(event_token, now).await?;
+        // A revocation applies on any clock: stopping contact is the safe
+        // direction, so an unsynchronised clock is flagged, not refused (S4).
+        let trusted = self.deps.clock.now();
+        let clock_synced = trusted
+            .require_synced(self.config.max_clock_error_ms)
+            .is_ok();
+        let now = trusted.utc;
+        // On an unsynchronised clock the future bound is not evaluated (the
+        // time it would be measured against cannot be trusted); the event
+        // is applied and flagged.
+        let event = self.verify_event(event_token, now, clock_synced).await?;
+        if !clock_synced {
+            tracing::warn!(
+                event_id = %event.event_id,
+                sync = ?trusted.sync,
+                "revocation applied on a clock that is not synchronised"
+            );
+        }
         let reason = REVOKING_EVENTS
             .iter()
             .find(|(name, _)| *name == event.event_type)
@@ -579,6 +611,7 @@ where
                 occurred_at: event.occurred_at,
                 reason,
                 revoked_at: micros(self.deps.clock.now().utc),
+                clock_synced,
             })
             .await?;
         // Published after the commit; a lost notification does not undo it.
@@ -591,6 +624,7 @@ where
             record_ref: event.record_ref,
             revoked: applied.stored.revoked.clone(),
             replayed: applied.replayed,
+            clock_synced: applied.stored.clock_synced,
             stored: applied.stored,
         })
     }
@@ -624,6 +658,7 @@ where
             record_ref: stored.record_ref.clone(),
             revoked: stored.revoked.clone(),
             replayed: true,
+            clock_synced: stored.clock_synced,
             stored,
         }))
     }
@@ -663,7 +698,17 @@ where
         Ok(event)
     }
 
-    async fn verify_event(&self, token: &str, now: DateTime<Utc>) -> Result<SorEvent, PortError> {
+    /// `check_future`: whether to refuse an event dated ahead of `now`. It
+    /// is false only for a revocation on a clock that is not synchronised:
+    /// the bound would be measured against a time that cannot be trusted,
+    /// and a clock that is behind would make a genuine payment look
+    /// future-dated and leave contact running.
+    async fn verify_event(
+        &self,
+        token: &str,
+        now: DateTime<Utc>,
+        check_future: bool,
+    ) -> Result<SorEvent, PortError> {
         let event = self.verified_event(token)?;
         // How long ago the fact occurred (negative: in the future). An
         // event from the future is refused whatever it says. An old
@@ -676,7 +721,7 @@ where
             .iter()
             .any(|(name, _)| *name == event.event_type);
         let window = self.config.event_freshness_seconds;
-        if age < -window || (age > window && !revoking) {
+        if (check_future && age < -window) || (age > window && !revoking) {
             return Err(PortError::rejected(format!(
                 "event {} is stale or from the future ({}s)",
                 event.event_id,

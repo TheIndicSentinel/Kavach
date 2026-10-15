@@ -13,6 +13,7 @@ pub mod jws;
 pub mod memory;
 mod service;
 
+pub use config::DEFAULT_MAX_CLOCK_ERROR_MS;
 pub use config::{MandateConfig, SorIssuer};
 pub use service::{
     claimed_tenant, event_digest, is_revoking_event, legacy_content_sha256, AgentGate,

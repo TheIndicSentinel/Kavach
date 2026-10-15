@@ -1472,6 +1472,7 @@ async fn load_mandate_config(
         passports: file.passports,
         event_freshness_seconds: file.event_freshness_seconds,
         replay_window_seconds: file.replay_window_seconds,
+        max_clock_error_ms: kavach_mandate::DEFAULT_MAX_CLOCK_ERROR_MS,
     };
     Ok((mandate_config, passports))
 }
@@ -1696,7 +1697,12 @@ pub async fn sor_event(
             {
                 Err(refuse(StatusCode::CONFLICT, conflict.message))
             }
-            _ => Err(event_refusal(&issue_err)),
+            _ => {
+                if issue_err.class == ErrorClass::Unavailable {
+                    state.metrics().observe_sor_unavailable("issuing");
+                }
+                Err(event_refusal(&issue_err))
+            }
         },
     }
 }
@@ -1749,6 +1755,7 @@ async fn revoke_by_event(
                         "event_id": done.event_id,
                         "event_type": done.event_type,
                         "revoked": done.revoked,
+                        "clock_synced": done.clock_synced,
                     }),
                 })
                 .await;
@@ -1772,7 +1779,12 @@ async fn revoke_by_event(
             {
                 Err(refuse(StatusCode::CONFLICT, conflict.message))
             }
-            _ => Err(event_refusal(&err)),
+            _ => {
+                if err.class == ErrorClass::Unavailable {
+                    state.metrics().observe_sor_unavailable("revoking");
+                }
+                Err(event_refusal(&err))
+            }
         },
     }
 }

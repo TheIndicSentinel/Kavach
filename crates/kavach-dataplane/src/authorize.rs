@@ -181,7 +181,7 @@ impl Default for AuthorizeConfig {
             tenant_id: "default".into(),
             partition_id: 0,
             credential_ttl: Duration::seconds(15),
-            max_clock_error_ms: 500,
+            max_clock_error_ms: kavach_mandate::DEFAULT_MAX_CLOCK_ERROR_MS,
         }
     }
 }

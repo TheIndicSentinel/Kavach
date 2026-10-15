@@ -37,6 +37,17 @@ groups:
           description: >-
             The `reason` label is a fixed vocabulary. A checkpoint is never dated by a
             guess: if trusted time is unavailable it is skipped and counted.
+      - alert: KavachSorEventsUnavailable
+        expr: increase(kavach_sor_events_unavailable_total[10m]) > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: 'System-of-record events are answered 503 (kind: {{ $labels.kind }})'
+          description: >-
+            Kavach could not act on the events now: the clock is not synchronised within
+            the bound (check trusted time) or a store is unreachable. No new mandate is
+            made while `kind="issuing"` rises; the sender retries. A `revoking` event is
+            refused only when the store is down, never for the clock.
       - alert: KavachRevocationRecordMissing
         expr: kavach_revocation_records_missing > 0
         for: 2m

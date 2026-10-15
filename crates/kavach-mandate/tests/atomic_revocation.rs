@@ -140,6 +140,7 @@ fn world() -> (Flaky, InMemoryKeyProvider) {
         passports: passports(),
         event_freshness_seconds: 300,
         replay_window_seconds: 24 * 3600,
+        max_clock_error_ms: kavach_mandate::DEFAULT_MAX_CLOCK_ERROR_MS,
     };
     let service = MandateService::new(
         MandateDeps {
