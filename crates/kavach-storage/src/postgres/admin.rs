@@ -36,6 +36,33 @@ impl PostgresAdminStore {
         Ok(row.into_entry())
     }
 
+    /// Writes the entry unless one with `key` exists. `true` when this call
+    /// wrote it (S3: an entry derived from a stored row is written once).
+    pub async fn append_audit_once(
+        &self,
+        key: &str,
+        insert: AuditInsert,
+    ) -> Result<bool, AdminStoreError> {
+        let result = sqlx::query(
+            "INSERT INTO admin_audit_log \
+                (action, resource_type, resource_id, actor_principal, approver_principal, \
+                 payload, idempotency_key) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7) \
+            ON CONFLICT (idempotency_key) DO NOTHING",
+        )
+        .bind(&insert.action)
+        .bind(&insert.resource_type)
+        .bind(&insert.resource_id)
+        .bind(&insert.actor_principal)
+        .bind(&insert.approver_principal)
+        .bind(insert.payload)
+        .bind(key)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| AdminStoreError::Io(err.to_string()))?;
+        Ok(result.rows_affected() == 1)
+    }
+
     pub async fn list_audit(&self, limit: i64) -> Result<Vec<AuditEntry>, AdminStoreError> {
         let rows = sqlx::query_as::<_, AuditRow>(
             "SELECT id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at \

@@ -187,6 +187,45 @@ async fn runtime_pointers_and_audit_round_trip() {
     assert_eq!(listed[0].payload["n"], "third");
 }
 
+/// S3: an entry derived from stored state is written once per key; entries
+/// without a key are unaffected (NULLs are distinct in the unique index).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_audit_entry_with_a_key_is_written_once() {
+    let Some(pool) = pool().await else { return };
+    let admin = pool.admin_store();
+    let entry = |n: &str| AuditInsert {
+        action: "mandates_revoked_by_event".into(),
+        resource_type: "loan".into(),
+        resource_id: "lms:loan/L-1".into(),
+        actor_principal: "system-of-record".into(),
+        approver_principal: String::new(),
+        payload: serde_json::json!({ "n": n }),
+    };
+    assert!(admin
+        .append_audit_once("revocation:t:lms:e-1", entry("first"))
+        .await
+        .unwrap());
+    assert!(!admin
+        .append_audit_once("revocation:t:lms:e-1", entry("again"))
+        .await
+        .unwrap());
+    assert!(admin
+        .append_audit_once("revocation:t:lms:e-2", entry("other"))
+        .await
+        .unwrap());
+    // Plain entries have no key and are never merged.
+    admin.append_audit(entry("plain-1")).await.unwrap();
+    admin.append_audit(entry("plain-2")).await.unwrap();
+    let listed = admin.list_audit(10).await.unwrap();
+    let ns: Vec<&str> = listed
+        .iter()
+        .filter_map(|e| e.payload["n"].as_str())
+        .collect();
+    assert_eq!(ns.iter().filter(|n| **n == "first").count(), 1);
+    assert_eq!(ns.iter().filter(|n| **n == "again").count(), 0);
+    assert_eq!(ns.len(), 4);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn retention_tombstones_only_expired_untombstoned_evidence() {
     let Some(pool) = pool().await else { return };

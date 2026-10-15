@@ -134,6 +134,18 @@ impl AdminBackend {
         }
     }
 
+    /// Writes the entry once per `key` (see the stores); `true` if written.
+    pub async fn append_audit_once(
+        &self,
+        key: &str,
+        insert: AuditInsert,
+    ) -> Result<bool, AdminStoreError> {
+        match self {
+            Self::Memory(store) => store.append_audit_once(key, insert),
+            Self::Postgres(store) => store.append_audit_once(key, insert).await,
+        }
+    }
+
     pub async fn list_audit(&self, limit: u32) -> Result<Vec<AuditEntry>, AdminStoreError> {
         match self {
             Self::Memory(store) => store.list_audit(limit),

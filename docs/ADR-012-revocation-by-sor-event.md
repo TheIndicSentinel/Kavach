@@ -91,6 +91,11 @@ Each revocation is also a signed record in the agent evidence chain (kind `manda
 - **A signal.** `kavach_sor_events_unavailable_total{kind}` counts events answered 503, and the `KavachSorEventsUnavailable` alert fires when it keeps rising: refused issuance would otherwise stop new mandates silently.
 - **One bar.** The 500 ms bound is `DEFAULT_MAX_CLOCK_ERROR_MS`, used by the data plane's `AuthorizeConfig` and by the mandate service.
 
+*Amended (S3, the audit entry is derived from the row):*
+- **The admin audit entry of a revocation is a function of its stored row** (`event_id`, `event_type`, `revoked`, `clock_synced`; the loan is the resource). It is written once per `(tenant, system, event id)` (`append_audit_once`, migration 021: a nullable unique `idempotency_key` on `admin_audit_log`; entries without a key are unaffected).
+- **Two writers, one entry.** The request writes it after the commit; a reconciler pages through the stored revocations and writes any that is missing. Whichever is first wins and the content is the same, so a crash or a failed write between the commit and the entry no longer leaves the audit log short. `revocation audit entry missing` is logged as an alert if the entry cannot be written.
+- **Limits.** The reconciler scans from the start after a restart (idempotent, one attempt per stored row); at very large volumes that wants a persisted watermark, which is deferred. Entries for revocations applied before migration 021 are written on the first pass with `clock_synced: null` where unknown.
+
 ## Consequences
 
 - **The pay-and-stop case works end to end.** `kavach simulate` gains its scenarios 4 (payment) and 5 (dispute), and the oracle models revocation.

@@ -49,7 +49,7 @@ use kavach_ports::{
     RevocationCursor, StoredMandate, StoredRevocation, SyncStatus, TimeSource, TrustedNow,
 };
 use kavach_storage::{
-    AuditInsert, MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, PostgresMandateStore,
+    MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, PostgresMandateStore,
     PostgresReplayGuard, StoragePool,
 };
 use serde::{Deserialize, Serialize};
@@ -1743,25 +1743,18 @@ async fn revoke_by_event(
             Ok(reply(done.revoked, true))
         }
         Ok(done) => {
+            // The same entry the reconciler would derive from the stored
+            // row, written once per event (S3): whichever writes first wins.
             let audited = state
                 .admin()
-                .append_audit(AuditInsert {
-                    action: "mandates_revoked_by_event".into(),
-                    resource_type: "loan".into(),
-                    resource_id: done.record_ref.clone(),
-                    actor_principal: "system-of-record".into(),
-                    approver_principal: String::new(),
-                    payload: serde_json::json!({
-                        "event_id": done.event_id,
-                        "event_type": done.event_type,
-                        "revoked": done.revoked,
-                        "clock_synced": done.clock_synced,
-                    }),
-                })
+                .append_audit_once(
+                    &crate::revocation_audit::key(&done.stored),
+                    crate::revocation_audit::entry(&done.stored),
+                )
                 .await;
             if let Err(e) = audited {
                 // The revocation stands (it only ever stops contact); the
-                // missing audit entry is reported.
+                // missing audit entry is written by the reconciler.
                 tracing::error!(error = %e, event_id = %done.event_id, "revocation not audited");
             }
             record_revocation_evidence(dp, &done.stored).await;
