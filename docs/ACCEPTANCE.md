@@ -4,7 +4,7 @@ The PRD's 13 acceptance scenarios, what the automated suite proves today, and wh
 
 **Where:** `crates/kavach-api/tests/acceptance.rs`. Every scenario runs through the real stack (agent listener over HTTP → gateway → authorization core and signed evidence → resolver → credential broker → the real mock provider on loopback), on the in-memory stores **and** on Postgres as the least-privilege runtime role (`<scenario>::memory`, `<scenario>::postgres`).
 
-**Flakiness gate:** the *Acceptance gate* workflow runs this suite, the gateway end-to-end tests and `kavach attack` against a real dev stack **20 times back to back**, nightly and on demand. Run it before tagging a release.
+**Flakiness gate:** the *Acceptance gate* workflow runs this suite, the gateway end-to-end tests and `kavach attack` against a real dev stack **20 times back to back**, weekly and on demand (nightly was a drain on a private repository's free Actions minutes). Run it before tagging a release.
 
 | # | Scenario (PRD) | Status | What the suite proves | Remaining (milestone) |
 |---|---|---|---|---|

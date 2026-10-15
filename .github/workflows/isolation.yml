@@ -16,12 +16,16 @@ name: Network isolation
 # REQUIRE_DELIVERY, so anything but a delivery fails loudly.
 #
 # A required check on main (promoted after 11 consecutive green runs).
+concurrency:
+  group: isolation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
   pull_request:
   push:
     branches: [main]
   schedule:
-    - cron: "30 6 * * *" # 12:00 IST
+    - cron: "30 6 * * 1" # Mondays 12:00 IST (weekly; it also runs on every push to main)
   workflow_dispatch:
     inputs:
       require_delivery:
