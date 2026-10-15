@@ -1,7 +1,7 @@
 name: Supply chain
 
 # Runs weekly (so a new advisory is caught even when nothing is pushed), on
-# demand, and on every push to main. Not a required PR check: CI's own
+# demand, and on a push to main that changes the dependency set. Not a required PR check: CI's own
 # audit/deny jobs gate merges; this catches what changes in the world.
 on:
   schedule:
@@ -9,6 +9,11 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "deny.toml"
+      - "**/Cargo.toml"
 
 permissions:
   contents: read

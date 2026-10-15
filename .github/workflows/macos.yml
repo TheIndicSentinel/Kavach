@@ -2,12 +2,10 @@ name: CLI on macOS
 
 # The developer preview runs on developers' Macs, so the CLI and its suites
 # are built and run there too. macOS minutes are billed at about ten times
-# Linux minutes, which a private repository's free allowance cannot carry on
-# every push: this runs weekly and on demand (and before a release), not on
-# every pull request. It is not a required check.
+# Linux minutes (a 15-minute run is about 150 of the allowance), which a
+# private repository's free allowance cannot carry on a schedule: this runs
+# **on demand only**, and before a release. It is not a required check.
 on:
-  schedule:
-    - cron: "30 4 * * 1" # Mondays 10:00 IST
   workflow_dispatch:
 
 permissions:
@@ -20,7 +18,7 @@ env:
 jobs:
   cli-macos:
     name: CLI on macOS
-    timeout-minutes: 45
+    timeout-minutes: 25
     # The developer preview runs on developers' Macs: build the CLI there and
     # run its suites, including dev up, kavach attack and kavach demo end to
     # end (the stack runs in-process with --insecure-dev; macOS has no

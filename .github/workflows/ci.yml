@@ -17,9 +17,42 @@ env:
   RUSTFLAGS: "-Dwarnings"
 
 jobs:
+  # Documentation-only pull requests do not need the build and the suites.
+  # Decided in a job (not a `paths-ignore`) so every other job still reports
+  # (skipped counts as passing) and a required check cannot hang.
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Does this change touch more than documentation?
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          files=$(git diff --name-only "$BASE" HEAD)
+          # Anything outside documentation, and the OpenAPI document (which
+          # the lint job checks), is a code change.
+          other=$(printf '%s\n' "$files" | grep -vE '^docs/|\.md$|^LICENSE$|^NOTICE$' || true)
+          api=$(printf '%s\n' "$files" | grep -E '^docs/openapi\.yaml$' || true)
+          if [ -n "$other$api" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+          printf 'changed files:\n%s\n' "$files"
+
   check:
     name: Format, Clippy, Test
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     services:
       # Postgres integration tests (kavach-storage, kavach-api). Each test uses
       # its own schema; tests fail rather than skip when CI lacks the database.
@@ -127,6 +160,8 @@ jobs:
   audit:
     name: Security audit
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -147,6 +182,8 @@ jobs:
   deny:
     name: License and dependency policy
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -167,6 +204,8 @@ jobs:
   openapi-lint:
     name: OpenAPI lint (Redocly, pinned)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -183,6 +222,8 @@ jobs:
   jose-crosscheck:
     name: Credential interop (independent jose)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -204,6 +245,8 @@ jobs:
   conformance:
     name: Independent verifier (Python, standard library only)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -213,6 +256,8 @@ jobs:
   cedar-analysis:
     name: Agent policy analysis (Cedar + cvc5)
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
@@ -241,6 +286,8 @@ jobs:
   clock-sync-probe:
     name: Trusted-time probe (host and container)
     runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     env:
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "0"
