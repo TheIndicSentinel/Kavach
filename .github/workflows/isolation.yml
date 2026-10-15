@@ -24,7 +24,12 @@ concurrency:
 on:
   pull_request:
     # Only changes that can alter what an agent container can reach: the
-    # deployment, the processes it runs, and this workflow.
+    # deployment, the processes it runs, and this workflow. This is narrower
+    # than what the job builds (the whole API binary): a change confined to
+    # the mandate, storage, evidence, keys or ports crates does not trigger
+    # it, and only the weekly run, or a manual dispatch for a change to that
+    # path, would catch an integration regression there: a detection lag of
+    # up to seven days, accepted for the minutes (private-repo allowance).
     paths:
       - "deploy/**"
       - "crates/kavach-api/**"

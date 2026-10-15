@@ -41,11 +41,22 @@ jobs:
             echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           files=$(git diff --name-only "$BASE" HEAD)
-          # Anything outside documentation, and the OpenAPI document (which
-          # the lint job checks), is a code change.
+          # A document the Rust sources name (an `include_str!`, a
+          # `read_to_string`, a path helper) is read by a test: a change to
+          # it is a code change, and the set is computed, not listed, so a
+          # new reference is covered without editing this job. Over-inclusive
+          # on purpose (a path in a comment counts): the safe direction.
+          referenced=$(grep -rhoE 'docs/[A-Za-z0-9_./-]+\.(md|yaml|yml|json)' crates --include='*.rs' | sort -u || true)
+          printf 'documents the sources read:\n%s\n' "$referenced"
+          # Everything outside documentation is code.
           other=$(printf '%s\n' "$files" | grep -vE '^docs/|\.md$|^LICENSE$|^NOTICE$' || true)
-          api=$(printf '%s\n' "$files" | grep -E '^docs/openapi\.yaml$' || true)
-          if [ -n "$other$api" ]; then echo "code=true" >> "$GITHUB_OUTPUT"; else echo "code=false" >> "$GITHUB_OUTPUT"; fi
+          # ...and so is a documentation file a test reads.
+          read_by_tests=$(printf '%s\n' "$files" | grep -Fx -f <(printf '%s\n' "$referenced") || true)
+          if [ -n "$other$read_by_tests" ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "code=false" >> "$GITHUB_OUTPUT"
+          fi
           printf 'changed files:\n%s\n' "$files"
 
   check:
