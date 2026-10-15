@@ -210,7 +210,7 @@ async fn attempt<T: Target>(
     reason: &'static str,
     n: &str,
 ) -> Result<(Verdict, Value, Option<Value>), String> {
-    let mandate = target.assign_attack_borrower().await?;
+    let mandate = target.assign_attack_borrower(0).await?;
     let verb = if state == "restricted" {
         "restrict"
     } else {
@@ -520,7 +520,7 @@ mod tests {
         fn has_attack_borrower(&self) -> bool {
             true
         }
-        async fn assign_attack_borrower(&self) -> Result<String, String> {
+        async fn assign_attack_borrower(&self, _: i64) -> Result<String, String> {
             Ok("m-attack".into())
         }
         async fn sign_sor_event(&self, _: &SorSpec) -> Result<String, String> {

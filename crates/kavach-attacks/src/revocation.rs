@@ -16,7 +16,10 @@ use crate::{
 /// Outside the 300 s freshness window either way, with a wide margin.
 const OUTSIDE_WINDOW: i64 = 15 * 60;
 /// Before the attack mandate was issued, well inside the window.
-const BEFORE_ISSUE: i64 = -60;
+/// Dated this much before the attack mandate was issued: further back than
+/// the skew margin (30 s) plus the slack the later attacks need, so its
+/// recorded barrier (B2) sits well before their own events.
+const BEFORE_ISSUE: i64 = -120;
 
 /// Whether `mandate` still authorises: a pre-check that names no
 /// `mandate_invalid`. The hour does not matter (out of hours is another
@@ -62,10 +65,6 @@ fn event_for(kind: RevocationAttack, id: String) -> SorSpec {
         },
         RevocationAttack::Late => SorSpec {
             offset_seconds: -OUTSIDE_WINDOW,
-            ..paid
-        },
-        RevocationAttack::Future => SorSpec {
-            offset_seconds: OUTSIDE_WINDOW,
             ..paid
         },
         RevocationAttack::UnknownType => SorSpec {
@@ -161,7 +160,7 @@ async fn attempt<T: Target>(
     if kind == RevocationAttack::Replayed {
         return replayed(target, expect, event_id, n).await;
     }
-    let mandate = target.assign_attack_borrower().await?;
+    let mandate = target.assign_attack_borrower(0).await?;
     let setup = json!({
         "declared": format!("{ATTACK_SUBJECT} assigned: a mandate, nothing sent"),
         "mandate": mandate,
@@ -203,9 +202,14 @@ async fn replayed<T: Target>(
     event_id: String,
     n: &str,
 ) -> Result<(Verdict, Value, Option<Value>), String> {
-    let first = target.assign_attack_borrower().await?;
+    // Dated in the order they happened, and apart by more than the skew
+    // margin where the order must not be in doubt: the default at -50 s
+    // (after the barrier an earlier attack's payment left, at most -90 s +
+    // margin), the payment at -45 s (it reaches the default: -45 + 30 >=
+    // -50), and a new default at 0 (after the payment's -45 + 30).
+    let first = target.assign_attack_borrower(-50).await?;
     let token = target
-        .sign_sor_event(&spec(event_id.clone(), "loan.paid", 0))
+        .sign_sor_event(&spec(event_id.clone(), "loan.paid", -45))
         .await?;
     let (status, reply) = target.post_sor_event(&token).await?;
     let revoked_first: Vec<String> = reply["revoked"]
@@ -222,7 +226,7 @@ async fn replayed<T: Target>(
         ));
     }
     let record_first = target.revocation_record(&event_id).await?;
-    let second = target.assign_attack_borrower().await?;
+    let second = target.assign_attack_borrower(0).await?;
     let setup = json!({
         "declared": "a mandate, a payment that revoked it, and a new mandate for the same loan",
         "revoked_by_the_payment": revoked_first,
@@ -237,13 +241,22 @@ async fn replayed<T: Target>(
         reply,
     };
     let same_record = seen.record.is_some() && seen.record == record_first;
-    let verdict = verdict(expect, &seen, |s| {
-        let revoked: Vec<&str> = s.reply["revoked"]
-            .as_array()
-            .map(|ids| ids.iter().filter_map(Value::as_str).collect())
-            .unwrap_or_default();
-        s.reply["replayed"] == true && revoked == revoked_first && same_record
-    });
+    // The same payment processed a second time (answered 200 but not as the
+    // stored result) is the breach, whatever it revoked: scope by source
+    // time means an old payment no longer reaches the newer mandate, so the
+    // mandate staying live is not what shows the replay defence held.
+    let reprocessed = status == 200 && seen.reply["replayed"] != true;
+    let verdict = if reprocessed {
+        Verdict::Succeeded
+    } else {
+        verdict(expect, &seen, |s| {
+            let revoked: Vec<&str> = s.reply["revoked"]
+                .as_array()
+                .map(|ids| ids.iter().filter_map(Value::as_str).collect())
+                .unwrap_or_default();
+            s.reply["replayed"] == true && revoked == revoked_first && same_record
+        })
+    };
     let observed = json!({
         "status": seen.status,
         "replayed": seen.reply["replayed"],
@@ -274,7 +287,6 @@ mod tests {
     enum Broken {
         Nothing,
         Signature,
-        Freshness,
         EventType,
         Tenant,
         Loan,
@@ -313,7 +325,6 @@ mod tests {
             let at = event["at"].as_i64().unwrap();
             let refused = if (event["other_issuer"] == true && b != Broken::IssuerTenant)
                 || (event["forged"] == true && b != Broken::Signature)
-                || (at - NOW > 300 && b != Broken::Freshness)
             {
                 Some(422)
             } else if event["other_tenant"] == true && b != Broken::Tenant {
@@ -336,7 +347,7 @@ mod tests {
             let ours = event["loan"] == "attack" || b == Broken::Loan;
             let mut revoked = Vec::new();
             for (mandate, nbf, live) in &mut state.mandates {
-                if ours && *live && (*nbf <= at || b == Broken::Ordering) {
+                if ours && *live && (*nbf <= at + 30 || b == Broken::Ordering) {
                     *live = false;
                     revoked.push(mandate.clone());
                 }
@@ -406,10 +417,12 @@ mod tests {
         fn has_attack_borrower(&self) -> bool {
             true
         }
-        async fn assign_attack_borrower(&self) -> Result<String, String> {
+        async fn assign_attack_borrower(&self, offset_seconds: i64) -> Result<String, String> {
             let mut state = self.state.lock().unwrap();
             let id = format!("m-{}", state.mandates.len());
-            state.mandates.push((id.clone(), NOW, true));
+            state
+                .mandates
+                .push((id.clone(), NOW + offset_seconds, true));
             Ok(id)
         }
         async fn sign_sor_event(&self, spec: &SorSpec) -> Result<String, String> {
@@ -475,7 +488,6 @@ mod tests {
         for kind in [
             R::Forged,
             R::Late,
-            R::Future,
             R::UnknownType,
             R::OtherTenant,
             R::WrongLoan,
@@ -494,7 +506,6 @@ mod tests {
         for (broken, kind) in [
             (Broken::Signature, R::Forged),
             (Broken::Ordering, R::Late),
-            (Broken::Freshness, R::Future),
             (Broken::EventType, R::UnknownType),
             (Broken::Tenant, R::OtherTenant),
             (Broken::Loan, R::WrongLoan),

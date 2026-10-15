@@ -94,7 +94,7 @@ async fn a_revocation_applies_on_an_unsynchronised_clock_and_is_flagged() {
 /// payment look like it is from the future (it would be refused and
 /// contact would continue): it is applied and flagged.
 #[tokio::test]
-async fn a_revocation_on_a_clock_that_is_behind_is_applied_not_refused_as_future() {
+async fn a_revocation_on_a_clock_that_is_behind_is_applied() {
     let f = fixture();
     let issued = f
         .service
@@ -116,18 +116,19 @@ async fn a_revocation_on_a_clock_that_is_behind_is_applied_not_refused_as_future
     assert_eq!(done.revoked, vec![issued.mandate.id.clone()]);
     assert_eq!(done.clock_synced, Some(false));
 
-    // On a synchronised clock the same event is a future event: refused.
+    // On a synchronised clock the same event is accepted as well: a
+    // revocation is not refused for being dated ahead (B2 clamps it).
     f.clock().set_sync(SyncStatus::Synced { max_error_ms: 10 });
     let again = SorEvent {
         event_id: "pay-skew-2".into(),
         ..late_by_the_clock
     };
-    let err = f
+    let done = f
         .service
         .revoke_from_event(&sign_event(&f.sor, "lms-issuer-1", &again).await)
         .await
-        .unwrap_err();
-    assert_eq!(err.class, ErrorClass::Rejected);
+        .expect("accepted");
+    assert_eq!(done.clock_synced, Some(true));
 }
 
 /// The bar: 500 ms of clock error issues, 501 does not; a development

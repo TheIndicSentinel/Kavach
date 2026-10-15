@@ -9,8 +9,8 @@
 use chrono::{DateTime, Utc};
 use kavach_domain::mandate::{Mandate, MandateStatus, RevocationReason};
 use kavach_ports::{
-    AppliedRevocation, MandateStore, PortError, ReplayGuard, RevocationApply, RevocationCursor,
-    StoredMandate, StoredRevocation,
+    AppliedRevocation, ClosureRule, MandateStore, PortError, ReplayGuard, RevocationApply,
+    RevocationCursor, StoredMandate, StoredRevocation,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
@@ -114,6 +114,7 @@ impl PostgresMandateStore {
     async fn insert_row<'e>(
         executor: impl sqlx::PgExecutor<'e>,
         record: &StoredMandate,
+        source_occurred_at: Option<DateTime<Utc>>,
     ) -> Result<(), PortError> {
         let m = &record.mandate;
         let json = serde_json::to_value(m)
@@ -124,8 +125,8 @@ impl PostgresMandateStore {
         };
         sqlx::query(
             "INSERT INTO mandates (tenant_id, id, parent_id, depth, status, revoked_reason, token, \
-                mandate, source_system, source_event_id) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                mandate, source_system, source_event_id, source_occurred_at) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&m.tenant_id)
         .bind(&m.id)
@@ -137,6 +138,7 @@ impl PostgresMandateStore {
         .bind(json)
         .bind(&m.source.system)
         .bind(&m.source.event_id)
+        .bind(source_occurred_at)
         .execute(executor)
         .await
         .map_err(|e| {
@@ -178,7 +180,7 @@ impl MandateStore for PostgresMandateStore {
                 "a delegated mandate needs insert_child",
             ));
         }
-        Self::insert_row(&self.pool, &record).await
+        Self::insert_row(&self.pool, &record, None).await
     }
 
     async fn insert_child(&self, record: StoredMandate) -> Result<(), PortError> {
@@ -200,7 +202,7 @@ impl MandateStore for PostgresMandateStore {
                 "parent mandate {parent_id} is not active"
             )));
         }
-        Self::insert_row(&mut *tx, &record).await?;
+        Self::insert_row(&mut *tx, &record, None).await?;
         tx.commit().await.map_err(|e| unavailable(&e))
     }
 
@@ -279,6 +281,60 @@ impl MandateStore for PostgresMandateStore {
         Ok(changed)
     }
 
+    async fn insert_unless_closed(
+        &self,
+        record: StoredMandate,
+        source_occurred_at: DateTime<Utc>,
+        rule: ClosureRule,
+    ) -> Result<(), PortError> {
+        if record.mandate.parent_id.is_some() {
+            return Err(PortError::rejected(
+                "a delegated mandate needs insert_child",
+            ));
+        }
+        let m = &record.mandate;
+        let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
+        // The lock `apply_revocation` takes: the check and the insert are
+        // one step with respect to a revocation.
+        Self::lock_tenant(&mut tx, &m.tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT event_type, occurred_at, created_at FROM mandate_revocations \
+            WHERE tenant_id = $1 AND source_system = $2 AND record_ref = $3",
+        )
+        .bind(&m.tenant_id)
+        .bind(&m.source.system)
+        .bind(&m.source.record_ref)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        let mut barrier: Option<DateTime<Utc>> = None;
+        for row in &rows {
+            let kind: String = row.try_get("event_type").map_err(|e| unavailable(&e))?;
+            if kind == "loan.disputed" {
+                return Err(PortError::rejected(format!(
+                    "record {} is held after a dispute; a new mandate needs it released",
+                    m.source.record_ref
+                )));
+            }
+            let occurred: DateTime<Utc> =
+                row.try_get("occurred_at").map_err(|e| unavailable(&e))?;
+            let revoked: DateTime<Utc> = row.try_get("created_at").map_err(|e| unavailable(&e))?;
+            let clamped =
+                occurred.min(revoked + chrono::Duration::seconds(rule.future_allowance_seconds));
+            barrier = Some(barrier.map_or(clamped, |b| b.max(clamped)));
+        }
+        if barrier.is_some_and(|b| {
+            source_occurred_at <= b + chrono::Duration::seconds(rule.skew_margin_seconds)
+        }) {
+            return Err(PortError::rejected(format!(
+                "the event occurred at or before a revocation recorded for {}",
+                m.source.record_ref
+            )));
+        }
+        Self::insert_row(&mut *tx, &record, Some(source_occurred_at)).await?;
+        tx.commit().await.map_err(|e| unavailable(&e))
+    }
+
     async fn apply_revocation(
         &self,
         request: RevocationApply,
@@ -314,7 +370,8 @@ impl MandateStore for PostgresMandateStore {
             });
         }
         let rows = sqlx::query(
-            "SELECT id, mandate, token, status, revoked_reason FROM mandates \
+            "SELECT id, mandate, token, status, revoked_reason, source_occurred_at \
+            FROM mandates \
             WHERE tenant_id = $1 AND source_system = $2 \
             AND mandate -> 'source' ->> 'record_ref' = $3 \
             AND parent_id IS NULL AND status = 'active' \
@@ -329,8 +386,12 @@ impl MandateStore for PostgresMandateStore {
         let mut changed = Vec::new();
         for row in &rows {
             let root = row_to_stored(row)?;
-            // A revocation never reaches forward (ADR-012 §3).
-            if root.mandate.nbf <= request.occurred_at {
+            // A revocation reaches what the source says happened at or
+            // before it (B2); `nbf` for a root that has no source time.
+            let source_time: Option<DateTime<Utc>> = row
+                .try_get("source_occurred_at")
+                .map_err(|e| unavailable(&e))?;
+            if source_time.unwrap_or(root.mandate.nbf) <= request.reach_until {
                 changed.extend(
                     Self::revoke_tree_in(
                         &mut tx,

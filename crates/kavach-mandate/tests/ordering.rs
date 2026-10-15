@@ -43,10 +43,11 @@ async fn b1_a_payment_event_delivered_late_still_revokes() {
 }
 
 /// B1, the bounds (decision A1): a revocation has no maximum age, so a
-/// payment found in a backlog a day later still stops contact; an event
-/// from the future is still refused.
+/// payment found in a backlog a day later still stops contact. A payment
+/// dated ahead of Kavach's clock is accepted too (refusing it would leave
+/// contact running); B2 clamps how long it can hold the record closed.
 #[tokio::test]
-async fn b1_a_revocation_has_no_maximum_age_but_not_from_the_future() {
+async fn b1_a_revocation_has_no_maximum_age_and_a_future_one_is_accepted() {
     let f = fixture();
     let issued = f
         .service
@@ -67,18 +68,15 @@ async fn b1_a_revocation_has_no_maximum_age_but_not_from_the_future() {
         "pay-future",
         "loan.paid",
     );
-    let err = f
-        .service
+    f.service
         .revoke_from_event(&sign(&f, &future).await)
         .await
-        .unwrap_err();
-    assert_eq!(err.class, ErrorClass::Rejected);
+        .expect("a payment dated ahead is accepted, not refused");
 }
 
 /// B2, arrival order 1: the payment event arrives first and finds no
 /// mandate; the default it follows arrives afterwards.
 #[tokio::test]
-#[ignore = "B2 (scope by source time, per-record barrier): fails until that change lands"]
 async fn b2_a_default_that_arrives_after_the_payment_issues_nothing() {
     let f = fixture();
     let paid = at(f.now, "pay-1", "loan.paid");
@@ -103,7 +101,6 @@ async fn b2_a_default_that_arrives_after_the_payment_issues_nothing() {
 /// payment already occurred (within the 300 s freshness window); the
 /// payment event then arrives.
 #[tokio::test]
-#[ignore = "B2 (scope by source time, per-record barrier): fails until that change lands"]
 async fn b2_a_payment_that_occurred_before_the_default_was_processed_still_revokes() {
     let f = fixture();
     // The default occurred at t0 and is processed two minutes later.

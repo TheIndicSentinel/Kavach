@@ -257,7 +257,7 @@ impl Target for Live {
             .is_ok_and(|consents| consents.contains(&format!("\"{ATTACK_SUBJECT}\"")))
     }
 
-    async fn assign_attack_borrower(&self) -> Result<String, String> {
+    async fn assign_attack_borrower(&self, offset_seconds: i64) -> Result<String, String> {
         let event = kavach_devkit::sor_event(
             &self.project.bundle(),
             &format!("attack-assign-{}", uuid::Uuid::new_v4().simple()),
@@ -266,7 +266,8 @@ impl Target for Live {
             self.run
                 .stack_now(&self.project)
                 .await
-                .map_err(|e| e.what)?,
+                .map_err(|e| e.what)?
+                + chrono::Duration::seconds(offset_seconds),
         )
         .await?;
         let (status, reply) = self.post_sor_event(&event).await?;

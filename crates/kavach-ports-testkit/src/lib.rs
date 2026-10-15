@@ -693,6 +693,105 @@ pub mod mandate_store {
         delegation_racing_revocation(store.clone()).await;
         tenants_are_separate(&*store).await;
         applying_a_revocation(&*store).await;
+        closing_a_record(&*store).await;
+    }
+
+    /// B2: roots are scoped by their source time, and a record is closed to
+    /// new roots by its recorded revocations (checked atomically with the
+    /// insert).
+    async fn closing_a_record<S: MandateStore>(store: &S) {
+        use kavach_ports::{ClosureRule, RevocationApply};
+        let rule = ClosureRule {
+            future_allowance_seconds: 300,
+            skew_margin_seconds: 30,
+        };
+        let t = Utc.with_ymd_and_hms(2026, 10, 2, 5, 0, 0).unwrap();
+        let s = |n: i64| t + Duration::seconds(n);
+        let root = |id: &str, loan: &str| {
+            let mut r = root_about(id, "lms", loan);
+            r.mandate.nbf = s(600); // processed ten minutes after it occurred
+            r.mandate.exp = s(600) + Duration::days(1);
+            r
+        };
+        let apply =
+            |loan: &str, id: &str, kind: &str, occurred: i64, revoked: i64| RevocationApply {
+                tenant_id: TENANT.into(),
+                system: "lms".into(),
+                event_id: id.into(),
+                event_digest: format!("sha256-jcs-v1:{}", "12".repeat(32)),
+                legacy_digest: "34".repeat(32),
+                event_type: kind.into(),
+                record_ref: loan.into(),
+                occurred_at: s(occurred),
+                reason: RevocationReason::Payment,
+                revoked_at: s(revoked),
+                clock_synced: true,
+                reach_until: s(occurred + 30),
+            };
+
+        // A root that occurred at +0 but was processed at +600 is reached
+        // by a payment that occurred at +60: by source time, not `nbf`.
+        store
+            .insert_unless_closed(root("cl-late", "cl-a"), s(0), rule)
+            .await
+            .expect("an open record");
+        let done = store
+            .apply_revocation(apply("cl-a", "cl-pay-a", "loan.paid", 60, 700))
+            .await
+            .expect("applied");
+        assert_eq!(done.stored.revoked, ["cl-late"]);
+
+        // A root with no source time (plain `insert`) is scoped by `nbf`,
+        // as before: a payment at +60 does not reach one processed at +600.
+        store
+            .insert(root("cl-legacy", "cl-b"))
+            .await
+            .expect("legacy root");
+        let done = store
+            .apply_revocation(apply("cl-b", "cl-pay-b", "loan.paid", 60, 700))
+            .await
+            .expect("applied");
+        assert!(done.stored.revoked.is_empty());
+
+        // The record is now closed to events at or before the payment (+60)
+        // plus the margin, and open after.
+        for (n, at) in [("cl-x", 40), ("cl-y", 90)] {
+            let err = store
+                .insert_unless_closed(root(n, "cl-a"), s(at), rule)
+                .await
+                .expect_err("closed");
+            assert_eq!(err.class, ErrorClass::Rejected, "{n}");
+        }
+        store
+            .insert_unless_closed(root("cl-open", "cl-a"), s(91), rule)
+            .await
+            .expect("after the payment and its margin");
+
+        // A payment dated far ahead is clamped to receipt + the allowance.
+        store
+            .apply_revocation(apply("cl-c", "cl-pay-c", "loan.paid", 10_000, 700))
+            .await
+            .expect("applied");
+        assert!(store
+            .insert_unless_closed(root("cl-c1", "cl-c"), s(700 + 300 + 31), rule)
+            .await
+            .is_ok());
+        let err = store
+            .insert_unless_closed(root("cl-c2", "cl-c"), s(700 + 300), rule)
+            .await
+            .expect_err("still inside the clamped barrier");
+        assert_eq!(err.class, ErrorClass::Rejected);
+
+        // A dispute holds the record whatever the time.
+        store
+            .apply_revocation(apply("cl-d", "cl-dis", "loan.disputed", 0, 700))
+            .await
+            .expect("applied");
+        let err = store
+            .insert_unless_closed(root("cl-d1", "cl-d"), s(50_000), rule)
+            .await
+            .expect_err("held");
+        assert!(err.message.contains("held after a dispute"), "{err}");
     }
 
     /// B3: `apply_revocation` revokes and records in one step, is
@@ -736,6 +835,7 @@ pub mod mandate_store {
             reason: RevocationReason::Payment,
             revoked_at: issued_at + Duration::seconds(120),
             clock_synced: false,
+            reach_until: issued_at + Duration::seconds(60),
         };
         let done = store
             .apply_revocation(request.clone())
@@ -800,6 +900,7 @@ pub mod mandate_store {
         later.event_digest = format!("sha256-jcs-v1:{}", "cc".repeat(32));
         later.legacy_digest = "dd".repeat(32);
         later.occurred_at = issued_at + Duration::seconds(900);
+        later.reach_until = issued_at + Duration::seconds(900);
         let second = store.apply_revocation(later).await.expect("second");
         assert_eq!(second.stored.revoked, ["ap-new"]);
         assert_eq!(status(store, "ap-new").await, Some(MandateStatus::Revoked));

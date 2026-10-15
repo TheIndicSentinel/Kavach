@@ -726,7 +726,7 @@ async fn revocation_attacks_hold_across_midnight_ist(store: Store) {
         .filter(|a| a.group == "revocation")
         .copied()
         .collect();
-    assert_eq!(revocations.len(), 8);
+    assert_eq!(revocations.len(), 7);
     for (hour, minute) in [(23, 58), (0, 5)] {
         let now = gw.clock.now().utc;
         gw.clock.advance(next_ist(now, hour, minute, false) - now);
@@ -932,7 +932,7 @@ impl kavach_attacks::Target for InProcess<'_> {
         true
     }
 
-    async fn assign_attack_borrower(&self) -> Result<String, String> {
+    async fn assign_attack_borrower(&self, offset_seconds: i64) -> Result<String, String> {
         let event = any_event(&AnyEvent {
             event_id: &format!("attack-assign-{}", uuid::Uuid::new_v4().simple()),
             event_type: "loan.dpd30",
@@ -941,7 +941,7 @@ impl kavach_attacks::Target for InProcess<'_> {
             record_ref: "lms:loan/B-ATTACK",
             consent_refs: &["C-attack"],
             assigned_agent: "collections-agent",
-            at: self.0.clock.now().utc,
+            at: self.0.clock.now().utc + chrono::Duration::seconds(offset_seconds),
             key: EventKey::Registered,
         })
         .await;
