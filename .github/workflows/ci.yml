@@ -37,8 +37,13 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -eu
+          # If anything below fails, the answer is "run everything", never
+          # "skip everything": a skipped job counts as passing.
+          emitted=0
+          emit() { echo "code=$1" >> "$GITHUB_OUTPUT"; emitted=1; }
+          trap '[ "$emitted" = 1 ] || echo "code=true" >> "$GITHUB_OUTPUT"' EXIT
           if [ "$EVENT" != "pull_request" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"; exit 0
+            emit true; exit 0
           fi
           files=$(git diff --name-only "$BASE" HEAD)
           # A document the Rust sources name (an `include_str!`, a
@@ -53,9 +58,9 @@ jobs:
           # ...and so is a documentation file a test reads.
           read_by_tests=$(printf '%s\n' "$files" | grep -Fx -f <(printf '%s\n' "$referenced") || true)
           if [ -n "$other$read_by_tests" ]; then
-            echo "code=true" >> "$GITHUB_OUTPUT"
+            emit true
           else
-            echo "code=false" >> "$GITHUB_OUTPUT"
+            emit false
           fi
           printf 'changed files:\n%s\n' "$files"
 
