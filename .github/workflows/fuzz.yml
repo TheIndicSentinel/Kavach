@@ -18,7 +18,7 @@ on:
       - "fuzz/**"
       - ".github/workflows/fuzz.yml"
   schedule:
-    - cron: "30 20 * * *" # 02:00 IST, before the acceptance gate
+    - cron: "30 20 * * 0" # Sundays 02:00 IST, before the acceptance gate (weekly)
   workflow_dispatch:
     inputs:
       seconds:

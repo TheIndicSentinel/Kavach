@@ -59,3 +59,18 @@ Changes that need a second reviewer before v0.1 is tagged. One person wrote and 
 ## Done
 
 None yet. When a reviewer has worked through an entry, move it here with the reviewer and the date, and link any follow-up.
+
+## Owed CI evidence (merged while Actions was unavailable)
+
+S4 (#180), S3 (#182) and B2/T1 (#183) merged on 2026-10-15 with **local** evidence (a local Postgres 16.4, full workspace run) because GitHub refused every job (billing). Until the entries below are green in an Actions log, no pilot claim rests on them and the revocation row's caveat stays.
+
+| Owed | What the log must show |
+|---|---|
+| CI on `main` after the reset | `closing_a_record`, `applying_a_revocation`, `an_audit_entry_with_a_key_is_written_once`, `postgres_migration_compat` executed on Postgres (not skipped); the acceptance suite on Postgres under the runtime role; `agent_surfaces_on_postgres` and the key-rotation test (macOS cannot run them) |
+| 20x acceptance gate, **once**, on the head | Both B2 arrival orders; the attack catalog version 8 |
+| Network isolation, **once**, on the head | The probe, and the evidence export verified offline, on the deployed stack |
+| Fuzz, **once** | No crash after the B1 to B3 parser and store changes |
+| macOS | `cargo test -p kavach-cli` (locally on a Mac before a release, or one dispatch) |
+| Rollout rehearsal with two real binaries | Old and new against one Postgres, then rollback (the schema-compatibility half is in `postgres_migration_compat`) |
+
+Any further merge to `main` while CI is unavailable carries the same kind of attached log (the pull request template asks for it).

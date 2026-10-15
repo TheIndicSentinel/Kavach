@@ -23,6 +23,8 @@ A pull request that changes the workflow, or a manual run (*Actions → Release 
 
 ## Cutting a release (owner only, after name clearance)
 
+**Before tagging, on a Mac:** `cargo test -p kavach-cli --locked -- --skip evidence_export_from_postgres`. The `CLI on macOS` workflow runs on demand only (macOS minutes are billed at about ten times Linux, which a private repository's free allowance cannot carry per push), so this local run, or one dispatch of that workflow, is the macOS gate. Run the 20x *Acceptance gate* and *Network isolation* once on the release head as well.
+
 1. **Version.** Set `[workspace.package] version` in `Cargo.toml`, and the internal dependency versions in `[workspace.dependencies]`, to the new `0.1.0-alpha.N`. Check: `cargo build -p kavach-cli && target/debug/kavach --version`.
 2. **Changelog.** Move the `[Unreleased]` entries in `CHANGELOG.md` under a heading for the version.
 3. **Gates.** Run the privacy and guardrails review (and any other gate the project requires) on the release commit. Each review records its pass in `.harness/gates.json`, tied to that commit. Without them, the local `release_gate` hook blocks release commands.

@@ -15,13 +15,31 @@ name: Network isolation
 # probe expects a window BLOCK. The scheduled run at 12:00 IST sets
 # REQUIRE_DELIVERY, so anything but a delivery fails loudly.
 #
-# A required check on main (promoted after 11 consecutive green runs).
+# Weekly, on demand, and on a pull request that touches the paths below; no
+# longer on every push to main (private-repo Actions minutes).
+concurrency:
+  group: isolation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 on:
   pull_request:
-  push:
-    branches: [main]
+    # Only changes that can alter what an agent container can reach: the
+    # deployment, the processes it runs, and this workflow. This is narrower
+    # than what the job builds (the whole API binary): a change confined to
+    # the mandate, storage, evidence, keys or ports crates does not trigger
+    # it, and only the weekly run, or a manual dispatch for a change to that
+    # path, would catch an integration regression there: a detection lag of
+    # up to seven days, accepted for the minutes (private-repo allowance).
+    paths:
+      - "deploy/**"
+      - "crates/kavach-api/**"
+      - "crates/kavach-dataplane/**"
+      - "crates/kavach-credential/**"
+      - "crates/kavach-mock-provider/**"
+      - "crates/kavach-devkit/**"
+      - ".github/workflows/isolation.yml"
   schedule:
-    - cron: "30 6 * * *" # 12:00 IST
+    - cron: "30 6 * * 1" # Mondays 12:00 IST (weekly)
   workflow_dispatch:
     inputs:
       require_delivery:

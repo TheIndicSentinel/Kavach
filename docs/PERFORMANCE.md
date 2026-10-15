@@ -101,4 +101,4 @@ Run once, on a fixed cloud VM matching NFR-2, then whenever a release is tagged.
 The *Benchmarks* workflow runs on demand (`gh workflow run bench.yml --ref <branch>`), when a change or decision needs the data, on a shared GitHub runner. A pull request that changes the harness gets a short run that checks it still works. A full run is one run against Postgres with TLS (`verify-full`), every scenario at pool sizes 5, 16 and 32, and one without TLS (the baseline), the gateway scenarios at pool size 5. Each run's tables appear in its summary, and the JSON reports are kept for 90 days.
 
 - **No pass/fail threshold.** On-demand runs are too few and too noisy to set one. Compare a change against a run of its base commit made in the same session.
-- **Not a required check.** Neither is the nightly 20× acceptance gate.
+- **Not a required check.** Neither is the 20× acceptance gate (weekly and on demand).
