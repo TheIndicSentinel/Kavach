@@ -1,5 +1,6 @@
 //! Snapshot reconciliation: the lender's list of closed loans against the
-//! authority Kavach still holds for them.
+//! authority Kavach still holds for them (scoped by the same rule the
+//! revocation path uses).
 //!
 //! Kavach revokes on the events it receives. A payment or dispute event that
 //! never arrives leaves a mandate live, and no transaction design can fix
@@ -100,12 +101,19 @@ where
         for record in closed {
             let roots = self
                 .store()
-                .live_roots_for_record(tenant_id, &record.system, &record.record_ref)
+                .live_roots_scoped(tenant_id, &record.system, &record.record_ref)
                 .await?;
-            for root in roots.iter().filter(|r| r.mandate.exp > now) {
+            for scoped in roots.iter().filter(|r| r.mandate.mandate.exp > now) {
+                let root = &scoped.mandate;
+                // The rule the revocation path applies (`scope_time`: when
+                // the source says the default occurred, `nbf` only for a root
+                // written before that was kept): a root the payment's event
+                // would have revoked is a mismatch, so detection and
+                // enforcement cannot disagree. A default that occurred before
+                // the payment but was processed after it is therefore found.
                 let kind = match record.state {
                     ClosedState::Disputed => FindingKind::ShouldHaveBeenRevoked,
-                    ClosedState::Paid if root.mandate.nbf <= record.closed_at + margin => {
+                    ClosedState::Paid if scoped.scope_time() <= record.closed_at + margin => {
                         FindingKind::ShouldHaveBeenRevoked
                     }
                     ClosedState::Paid => FindingKind::IssuedAfterClosure,

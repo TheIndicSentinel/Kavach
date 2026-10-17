@@ -32,8 +32,8 @@ pub use evidence::{
 };
 pub use keys::{verify_ed25519, KeyAlgorithm, KeyProvider, PublicKey};
 pub use mandate::{
-    AppliedRevocation, ClosureRule, ConsentSource, DomainEvent, EventBus, MandateStore,
-    RevocationApply, RevocationCursor, StoredMandate, StoredRevocation,
+    scope_time, AppliedRevocation, ClosureRule, ConsentSource, DomainEvent, EventBus, MandateStore,
+    RevocationApply, RevocationCursor, ScopedRoot, StoredMandate, StoredRevocation,
 };
 pub use policy::PolicyEngine;
 pub use reference::ReferenceResolver;

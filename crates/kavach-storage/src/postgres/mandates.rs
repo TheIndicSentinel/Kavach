@@ -9,8 +9,8 @@
 use chrono::{DateTime, Utc};
 use kavach_domain::mandate::{Mandate, MandateStatus, RevocationReason};
 use kavach_ports::{
-    AppliedRevocation, ClosureRule, MandateStore, PortError, ReplayGuard, RevocationApply,
-    RevocationCursor, StoredMandate, StoredRevocation,
+    scope_time, AppliedRevocation, ClosureRule, MandateStore, PortError, ReplayGuard,
+    RevocationApply, RevocationCursor, ScopedRoot, StoredMandate, StoredRevocation,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
@@ -391,7 +391,7 @@ impl MandateStore for PostgresMandateStore {
             let source_time: Option<DateTime<Utc>> = row
                 .try_get("source_occurred_at")
                 .map_err(|e| unavailable(&e))?;
-            if source_time.unwrap_or(root.mandate.nbf) <= request.reach_until {
+            if scope_time(source_time, root.mandate.nbf) <= request.reach_until {
                 changed.extend(
                     Self::revoke_tree_in(
                         &mut tx,
@@ -464,6 +464,37 @@ impl MandateStore for PostgresMandateStore {
         .await
         .map_err(|e| unavailable(&e))?;
         rows.iter().map(row_to_stored).collect()
+    }
+
+    async fn live_roots_scoped(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        record_ref: &str,
+    ) -> Result<Vec<ScopedRoot>, PortError> {
+        let rows = sqlx::query(
+            "SELECT mandate, token, status, revoked_reason, source_occurred_at FROM mandates \
+            WHERE tenant_id = $1 AND source_system = $2 \
+            AND mandate -> 'source' ->> 'record_ref' = $3 \
+            AND parent_id IS NULL AND status = 'active' \
+            ORDER BY created_at",
+        )
+        .bind(tenant_id)
+        .bind(system)
+        .bind(record_ref)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter()
+            .map(|row| {
+                Ok(ScopedRoot {
+                    mandate: row_to_stored(row)?,
+                    source_occurred_at: row
+                        .try_get("source_occurred_at")
+                        .map_err(|e| unavailable(&e))?,
+                })
+            })
+            .collect()
     }
 
     async fn active_held_by(

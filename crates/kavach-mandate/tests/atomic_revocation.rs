@@ -74,6 +74,14 @@ impl MandateStore for FailsOnce {
     ) -> impl Future<Output = Result<Vec<(String, RevocationReason)>, PortError>> + Send {
         self.inner.revoke_tree(t, id, r)
     }
+    fn live_roots_scoped(
+        &self,
+        t: &str,
+        s: &str,
+        r: &str,
+    ) -> impl Future<Output = Result<Vec<kavach_ports::ScopedRoot>, PortError>> + Send {
+        self.inner.live_roots_scoped(t, s, r)
+    }
     fn live_roots_for_record(
         &self,
         t: &str,

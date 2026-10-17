@@ -696,6 +696,37 @@ pub mod mandate_store {
         closing_a_record(&*store).await;
     }
 
+    /// The scoped lookup returns the source time kept with a root (and `None`
+    /// for one written without it), under the one `scope_time` rule the
+    /// revocation path uses. Follows `closing_a_record`, which inserted the
+    /// roots (`t` is its base time).
+    async fn scoped_lookup_keeps_the_source_time<S: MandateStore>(
+        store: &S,
+        t: chrono::DateTime<Utc>,
+    ) {
+        let s = |n: i64| t + Duration::seconds(n);
+        let scoped = store
+            .live_roots_scoped(TENANT, "lms", "cl-c")
+            .await
+            .expect("scoped roots");
+        let kept = scoped
+            .iter()
+            .find(|r| r.mandate.mandate.id == "cl-c1")
+            .expect("the root inserted with a source time");
+        assert_eq!(kept.source_occurred_at, Some(s(700 + 300 + 31)));
+        assert_eq!(kept.scope_time(), s(700 + 300 + 31));
+        let scoped_legacy = store
+            .live_roots_scoped(TENANT, "lms", "cl-b")
+            .await
+            .expect("scoped roots");
+        let legacy = scoped_legacy
+            .iter()
+            .find(|r| r.mandate.mandate.id == "cl-legacy")
+            .expect("the root inserted without one");
+        assert_eq!(legacy.source_occurred_at, None);
+        assert_eq!(legacy.scope_time(), legacy.mandate.mandate.nbf);
+    }
+
     /// B2: roots are scoped by their source time, and a record is closed to
     /// new roots by its recorded revocations (checked atomically with the
     /// insert).
@@ -781,6 +812,8 @@ pub mod mandate_store {
             .await
             .expect_err("still inside the clamped barrier");
         assert_eq!(err.class, ErrorClass::Rejected);
+
+        scoped_lookup_keeps_the_source_time(store, t).await;
 
         // A dispute holds the record whatever the time.
         store

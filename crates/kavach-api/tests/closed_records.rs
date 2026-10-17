@@ -65,6 +65,23 @@ async fn only_an_admin_may_reconcile_and_the_body_is_checked() {
     )
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    // An agent's token is for the agent listener: the operator route refuses it.
+    let (status, _) = reconcile(
+        &gw.state,
+        &format!("Bearer {}", agent_token("collections-agent")),
+        snapshot("paid", at),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    // No credentials at all.
+    let (status, _) = send(
+        operator_router(gw.state.clone()),
+        "/v1/reconciliation/closed-records",
+        &[],
+        snapshot("paid", at),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
     // Strict: no unknown member, a known state, at least one record.
     for body in [
         json!({ "system": "lms", "records": [], }),

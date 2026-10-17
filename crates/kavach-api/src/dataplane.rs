@@ -243,6 +243,17 @@ impl MandateStore for MandateStoreBackend {
             Self::Postgres(s) => s.revoke_tree(tenant_id, id, reason).await,
         }
     }
+    async fn live_roots_scoped(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        record_ref: &str,
+    ) -> Result<Vec<kavach_ports::ScopedRoot>, PortError> {
+        match self {
+            Self::Memory(s) => s.live_roots_scoped(tenant_id, system, record_ref).await,
+            Self::Postgres(s) => s.live_roots_scoped(tenant_id, system, record_ref).await,
+        }
+    }
     async fn live_roots_for_record(
         &self,
         tenant_id: &str,
