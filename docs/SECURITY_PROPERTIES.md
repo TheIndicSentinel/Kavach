@@ -100,6 +100,17 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 
 ## Not guaranteed
 
+**Revocation and time (ADR-012, ADR-016):**
+
+- **A payment or dispute event that never arrives.** Kavach acts on the events it receives. If a `loan.paid` is lost, the loan's mandate stays live until it expires (at most the template's `ttl_seconds`, itself capped at 30 days) or an operator stops the agent. Nothing in the transaction design can prevent this. Detecting it needs the lender's list of closed loans (snapshot reconciliation, planned).
+- **Releasing a dispute hold.** There is no release path: a loan with a recorded dispute stays held against new mandates until one is accepted and built (ADR-016, Proposed).
+- **The skew margin and the future clamp are provisional.** 30 s (how close in time two events from two clocks may be before the order is treated as unknown) and 300 s (how long a payment dated ahead can hold a record closed) are named constants, not measured from any lender's source system. A genuine new default within 30 s after a payment is refused, or its mandate revoked if it was already issued, by design.
+- **A mixed-version upgrade.** The source-time scope, the closure check and the audit-from-row repair hold only when every replica runs the version with migrations 020 to 022. An older replica neither keeps the source time nor enforces the closure, and an older binary cannot start against the migrated database (it refuses migrations it does not know); a rollback drops the three columns first.
+- **Issuing while the clock is not synchronised.** Authority is not issued or delegated then (503); nothing is spent and the sender retries. That is a fail-closed behaviour with no alert yet (planned), so it looks like an outage.
+- **A revocation applied on an unsynchronised clock** is flagged on its stored row and in the audit entry (`clock_synced`), not in the signed evidence record.
+- **Throughput of issuing and revoking.** The closure check and the revocation take the tenant's mandate lock, so they serialise per tenant. A correctness choice, a throughput limit.
+- **Evidence for the newest revocation work.** The source-time scope, barrier, dispute hold, audit-from-row, clock gating and the 60 s issuing bound merged while Actions was unavailable; their evidence is a local Postgres run, and the CI log is owed (`docs/SECOND_REVIEW.md`, "Owed CI evidence").
+
 - **Client certificates to Postgres.** Kavach authenticates to Postgres with a role and password over verified TLS. Mutual TLS (a client certificate for the database connection) is not supported or tested; `sslcert`/`sslkey` in a URL are passed to the driver untested.
 - **A Postgres server you run that also accepts plaintext.** Kavach never connects in plaintext outside a development mode, but it cannot stop other clients from doing so: require TLS on the server too (`hostssl` in `pg_hba.conf`). The bundled compose stacks do (`deploy/postgres/pg_hba.conf`), and the Network isolation job checks that their Postgres refuses a plaintext client.
 - **One evidence chain.** Agent records chain separately from v1 `decision_events` until M2 (ADR-005 §12).
