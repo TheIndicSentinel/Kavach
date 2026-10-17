@@ -11,10 +11,12 @@ mod config;
 pub mod delegation;
 pub mod jws;
 pub mod memory;
+mod reconcile;
 mod service;
 
 pub use config::DEFAULT_MAX_CLOCK_ERROR_MS;
 pub use config::{MandateConfig, SorIssuer};
+pub use reconcile::{ClosedRecord, ClosedState, Finding, FindingKind, Reconciliation};
 pub use service::{
     claimed_tenant, event_digest, is_revoking_event, legacy_content_sha256, AgentGate,
     IssuedMandate, MandateDeps, MandateService, RevokedByEvent, VerifiedChain, REVOKING_EVENTS,

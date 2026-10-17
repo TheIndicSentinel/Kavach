@@ -4,6 +4,10 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ## [Unreleased]
 
+### Added
+
+- **Snapshot reconciliation (ADR-012 addendum).** `POST /v1/reconciliation/closed-records` and `kavach reconcile <file>`: the lender sends the loans it considers paid or disputed, with the time each was closed; Kavach returns the live mandates still held for them. A mismatch (a mandate for a paid loan processed at or before the closure, or any live mandate for a disputed loan) means a payment or dispute event most likely never arrived; it is the only thing that can find that. It **reports and revokes nothing**: resend the signed event or stop the agent. New Cedar action `reconcile_closed_records` (admins; the proven policy properties are unchanged), a rate limit (six a minute), an audit entry by counts, the gauge `kavach_snapshot_mismatches` and the alert `KavachClosedLoanWithLiveAuthority`. Nothing runs it on a schedule.
+
 ### Fixed
 
 - **Upgrade note (migrations 020, 021, 022).** All three are additive and nullable (`mandate_revocations.clock_synced`, `admin_audit_log.idempotency_key`, `mandates.source_occurred_at`, an index on revocations by record). Rows written before them read back with the new fields unknown; scope for an older root stays `nbf`. A binary from before them cannot start against the migrated database (it refuses migrations it does not know); roll back by dropping the columns first. The B2 guarantee holds only once every replica runs the new version.

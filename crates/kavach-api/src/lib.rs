@@ -6,6 +6,7 @@ pub mod auth;
 pub mod batch_jobs;
 pub mod change_requests;
 pub mod checkpoints;
+pub mod closed_records;
 pub mod config;
 pub mod console;
 pub mod convert;

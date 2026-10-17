@@ -17,6 +17,7 @@ pub struct Metrics {
     gateway_calls: IntCounterVec,
     gateway_malformed: prometheus::IntCounter,
     sor_unavailable: IntCounterVec,
+    snapshot: SnapshotMetrics,
     gateway_jti_conflicts: prometheus::IntCounter,
     gateway_outcome_write_failures: prometheus::IntCounter,
     agent_state_changes: IntCounterVec,
@@ -94,6 +95,32 @@ impl CheckpointMetrics {
         registry.register(Box::new(metrics.uncovered_records.clone()))?;
         registry.register(Box::new(metrics.last_covered.clone()))?;
         registry.register(Box::new(metrics.stalled.clone()))?;
+        Ok(metrics)
+    }
+}
+
+/// Snapshot reconciliation (ADR-012 addendum): the last run's result.
+#[derive(Clone)]
+struct SnapshotMetrics {
+    mismatches: prometheus::IntGauge,
+    last_run: prometheus::IntGauge,
+}
+
+impl SnapshotMetrics {
+    fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
+        let metrics = Self {
+            mismatches: prometheus::IntGauge::new(
+                "kavach_snapshot_mismatches",
+                "Live mandates for loans the lender reported closed, from the last snapshot \
+                 reconciliation; alert when above 0 (a payment or dispute event was likely lost)",
+            )?,
+            last_run: prometheus::IntGauge::new(
+                "kavach_snapshot_last_run_timestamp_seconds",
+                "Unix time of the last snapshot reconciliation; 0 until one has run",
+            )?,
+        };
+        registry.register(Box::new(metrics.mismatches.clone()))?;
+        registry.register(Box::new(metrics.last_run.clone()))?;
         Ok(metrics)
     }
 }
@@ -227,6 +254,7 @@ impl Metrics {
             ),
             &["to", "result"],
         )?;
+        let snapshot = SnapshotMetrics::register(&registry)?;
         let sor_unavailable = IntCounterVec::new(
             Opts::new(
                 "kavach_sor_events_unavailable_total",
@@ -256,6 +284,7 @@ impl Metrics {
             gateway_calls,
             gateway_malformed,
             sor_unavailable,
+            snapshot,
             gateway_jti_conflicts,
             gateway_outcome_write_failures,
             agent_state_changes,
@@ -293,6 +322,13 @@ impl Metrics {
         self.evaluate_total
             .with_label_values(&[transport, "none", "5xx"])
             .inc();
+    }
+
+    /// One snapshot reconciliation: how many live mandates it found for
+    /// loans reported closed.
+    pub fn observe_snapshot_reconciliation(&self, mismatches: i64) {
+        self.snapshot.mismatches.set(mismatches);
+        self.snapshot.last_run.set(chrono::Utc::now().timestamp());
     }
 
     /// An event answered 503 (`kind`: `issuing` or `revoking`).

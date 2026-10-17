@@ -240,6 +240,16 @@ permit (
   resource == Kavach::System::"api"
 );
 
+// Snapshot reconciliation (ADR-012 addendum): lists the live authority held
+// for loans the lender reports closed. It reads and reports; it changes
+// nothing, so it is its own action and who may run it is a policy edit.
+@id("admins-may-reconcile-closed-records")
+permit (
+  principal in Kavach::Group::"admins",
+  action == Kavach::Action::"reconcile_closed_records",
+  resource == Kavach::System::"api"
+);
+
 @id("admins-may-read-agent-state")
 permit (
   principal in Kavach::Group::"admins",

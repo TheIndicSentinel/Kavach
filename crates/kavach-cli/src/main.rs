@@ -21,6 +21,7 @@ mod output;
 mod policy_test;
 mod problem;
 mod project;
+mod reconcile;
 mod run;
 mod scene;
 mod simulate;
@@ -79,6 +80,17 @@ enum Command {
     /// reinstating is proposed here and approved by a second principal.
     #[command(subcommand)]
     Agent(AgentCommand),
+    /// Closed loans against live authority: send the lender's list of paid
+    /// and disputed loans to the running stack and see which still hold a live
+    /// mandate (a payment or dispute event that never arrived). Reports only;
+    /// revokes nothing. Exit 0 if none, 1 if any.
+    #[command(
+        after_help = "The file is JSON: {\"system\": \"lms\", \"records\": [{\"record_ref\": \"lms:loan/L-1\", \"state\": \"paid\", \"closed_at\": \"2026-10-01T06:00:00Z\"}]}"
+    )]
+    Reconcile {
+        /// The lender's closed loans.
+        file: PathBuf,
+    },
     /// What the gateway would decide for a tool call: offline, in this
     /// process, nothing recorded. Exit 0 if allowed, 1 if not.
     #[command(
@@ -518,6 +530,7 @@ async fn dispatch(ui: Ui, cli: &Cli) -> (&'static str, Result<i32, CliError>) {
             .await,
         ),
         Command::Attack { list } => ("attack", attack_command(ui, cli, *list).await),
+        Command::Reconcile { file } => ("reconcile", reconcile::run(&ui, &cli.project, file).await),
         Command::Demo {
             keep,
             step,

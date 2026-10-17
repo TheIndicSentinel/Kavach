@@ -1748,3 +1748,49 @@ fn simulate_shows_what_each_rule_does() {
         Some(64)
     );
 }
+
+/// `kavach reconcile` (snapshot reconciliation): a loan the lender reports
+/// paid, whose payment event never arrived, still holds live authority; it is
+/// reported (exit 1) and nothing is revoked; once the payment event arrives
+/// the same file is clean (exit 0).
+#[test]
+fn reconcile_finds_authority_for_a_loan_whose_payment_never_arrived() {
+    let dir = scratch("reconcile");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    use_free_ports(&dir);
+    let _stack = dev_up(&dir, &["--at", "11:00"]);
+
+    let assigned = kavach(&dir, &["--json", "sor", "event"]);
+    let mandate = json(&assigned)["mandate_id"].as_str().unwrap().to_string();
+
+    let file = dir.join("closed.json");
+    std::fs::write(
+        &file,
+        r#"{"system":"lms","records":[{"record_ref":"lms:loan/B-9382","state":"paid","closed_at":"2030-01-01T00:00:00Z"}]}"#,
+    )
+    .unwrap();
+    let found = kavach(&dir, &["--json", "reconcile", file.to_str().unwrap()]);
+    let doc = json(&found);
+    assert_eq!(found.status.code(), Some(1), "{doc}");
+    assert_eq!(doc["mismatches"], 1, "{doc}");
+    assert_eq!(doc["findings"][0]["mandate_id"], mandate.as_str(), "{doc}");
+
+    // It revoked nothing: the mandate still authorises a call.
+    let call = kavach(
+        &dir,
+        &["--json", "call", "send_reminder", "--mandate", &mandate],
+    );
+    assert_eq!(call.status.code(), Some(0), "{}", json(&call));
+
+    // The payment event is sent (the lender resends it): clean.
+    assert_eq!(
+        kavach(&dir, &["sor", "event", "--type", "loan.paid"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let clean = kavach(&dir, &["--json", "reconcile", file.to_str().unwrap()]);
+    let doc = json(&clean);
+    assert_eq!(clean.status.code(), Some(0), "{doc}");
+    assert_eq!(doc["mismatches"], 0, "{doc}");
+}
