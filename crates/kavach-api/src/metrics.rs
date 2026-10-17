@@ -18,6 +18,7 @@ pub struct Metrics {
     gateway_malformed: prometheus::IntCounter,
     sor_unavailable: IntCounterVec,
     snapshot: SnapshotMetrics,
+    revocation_audit: RevocationAuditMetrics,
     gateway_jti_conflicts: prometheus::IntCounter,
     gateway_outcome_write_failures: prometheus::IntCounter,
     agent_state_changes: IntCounterVec,
@@ -95,6 +96,41 @@ impl CheckpointMetrics {
         registry.register(Box::new(metrics.uncovered_records.clone()))?;
         registry.register(Box::new(metrics.last_covered.clone()))?;
         registry.register(Box::new(metrics.stalled.clone()))?;
+        Ok(metrics)
+    }
+}
+
+/// The audit entries of revocations (S3): what the reconciler could not write
+/// and what it had to repair.
+#[derive(Clone)]
+struct RevocationAuditMetrics {
+    missing: prometheus::IntGauge,
+    written: prometheus::IntCounter,
+    last_pass: prometheus::IntGauge,
+}
+
+impl RevocationAuditMetrics {
+    fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
+        let metrics = Self {
+            missing: prometheus::IntGauge::new(
+                "kavach_revocation_audit_entries_missing",
+                "Revocations whose audit entry could not be written in the last reconcile \
+                 pass; alert when above 0 (the revocation stands, the audit trail has a gap)",
+            )?,
+            written: prometheus::IntCounter::new(
+                "kavach_revocation_audit_entries_written_total",
+                "Audit entries written by the reconciler because the request that revoked \
+                 could not write them",
+            )?,
+            last_pass: prometheus::IntGauge::new(
+                "kavach_revocation_audit_last_pass_timestamp_seconds",
+                "Unix time of the last reconcile pass that could read every revocation; \
+                 alert when it is old",
+            )?,
+        };
+        registry.register(Box::new(metrics.missing.clone()))?;
+        registry.register(Box::new(metrics.written.clone()))?;
+        registry.register(Box::new(metrics.last_pass.clone()))?;
         Ok(metrics)
     }
 }
@@ -255,6 +291,7 @@ impl Metrics {
             &["to", "result"],
         )?;
         let snapshot = SnapshotMetrics::register(&registry)?;
+        let revocation_audit = RevocationAuditMetrics::register(&registry)?;
         let sor_unavailable = IntCounterVec::new(
             Opts::new(
                 "kavach_sor_events_unavailable_total",
@@ -285,6 +322,7 @@ impl Metrics {
             gateway_malformed,
             sor_unavailable,
             snapshot,
+            revocation_audit,
             gateway_jti_conflicts,
             gateway_outcome_write_failures,
             agent_state_changes,
@@ -322,6 +360,21 @@ impl Metrics {
         self.evaluate_total
             .with_label_values(&[transport, "none", "5xx"])
             .inc();
+    }
+
+    /// One pass of the revocation audit reconciler: entries it wrote, entries
+    /// it could not write, and whether it could read every revocation.
+    pub fn observe_revocation_audit_pass(&self, written: usize, failed: usize, complete: bool) {
+        let metrics = &self.revocation_audit;
+        metrics
+            .written
+            .inc_by(u64::try_from(written).unwrap_or(u64::MAX));
+        if complete {
+            metrics
+                .missing
+                .set(i64::try_from(failed).unwrap_or(i64::MAX));
+            metrics.last_pass.set(chrono::Utc::now().timestamp());
+        }
     }
 
     /// One snapshot reconciliation: how many live mandates it found for

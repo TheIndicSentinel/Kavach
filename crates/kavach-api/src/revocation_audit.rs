@@ -50,17 +50,30 @@ pub fn entry(stored: &StoredRevocation) -> AuditInsert {
     }
 }
 
-/// One pass over the revocations after `cursor`: writes each missing entry.
-/// Returns where the next pass starts, and how many entries this pass wrote.
-pub async fn pass(
-    state: &AppState,
-    cursor: Option<RevocationCursor>,
-) -> (Option<RevocationCursor>, usize) {
+/// What one scan found.
+struct Scan {
+    /// Where the next pass starts: after the last row, or before the first
+    /// row that could not be written, so it is tried again.
+    resume: Option<RevocationCursor>,
+    written: usize,
+    failed: usize,
+    /// Every revocation could be read.
+    complete: bool,
+}
+
+async fn scan(state: &AppState, from: Option<RevocationCursor>) -> Scan {
     let Some(dataplane) = state.dataplane() else {
-        return (cursor, 0);
+        return Scan {
+            resume: from,
+            written: 0,
+            failed: 0,
+            complete: true,
+        };
     };
-    let mut cursor = cursor;
-    let mut written = 0;
+    let mut cursor = from;
+    // The cursor before the first row that could not be written.
+    let mut retry_from: Option<Option<RevocationCursor>> = None;
+    let (mut written, mut failed) = (0, 0);
     loop {
         let page = match dataplane
             .mandates()
@@ -71,10 +84,14 @@ pub async fn pass(
             Ok(page) => page,
             Err(e) => {
                 tracing::error!(error = %e, "revocation audit pass could not read the revocations");
-                return (cursor, written);
+                return Scan {
+                    resume: retry_from.unwrap_or(cursor),
+                    written,
+                    failed,
+                    complete: false,
+                };
             }
         };
-        let last = page.last().map(StoredRevocation::cursor);
         for stored in &page {
             match state
                 .admin()
@@ -90,20 +107,40 @@ pub async fn pass(
                 }
                 Ok(false) => {}
                 Err(e) => {
-                    // Stop here and retry from this row next time.
+                    // Keep scanning (to count them all) but retry from here.
+                    failed += 1;
+                    retry_from.get_or_insert_with(|| cursor.clone());
                     tracing::error!(
                         event_id = %stored.event_id, error = %e,
                         "ALERT revocation audit entry missing: could not be written"
                     );
-                    return (cursor, written);
                 }
             }
             cursor = Some(stored.cursor());
         }
         if page.len() < PAGE as usize {
-            return (cursor.or(last), written);
+            return Scan {
+                resume: retry_from.unwrap_or(cursor),
+                written,
+                failed,
+                complete: true,
+            };
         }
     }
+}
+
+/// One pass over the revocations after `cursor`: writes each missing entry
+/// and reports what it found. Returns where the next pass starts, and how
+/// many entries this pass wrote.
+pub async fn pass(
+    state: &AppState,
+    cursor: Option<RevocationCursor>,
+) -> (Option<RevocationCursor>, usize) {
+    let scan = scan(state, cursor).await;
+    state
+        .metrics()
+        .observe_revocation_audit_pass(scan.written, scan.failed, scan.complete);
+    (scan.resume, scan.written)
 }
 
 async fn run(state: Arc<AppState>) {

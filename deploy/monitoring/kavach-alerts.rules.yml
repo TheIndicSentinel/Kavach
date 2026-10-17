@@ -61,6 +61,39 @@ groups:
             reconciliation itself changed nothing. Run `POST
             /v1/reconciliation/closed-records` again after fixing; the gauge is the last
             run's count.
+      - alert: KavachRevocationAuditEntryMissing
+        expr: kavach_revocation_audit_entries_missing > 0
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: A revocation has no audit entry
+          description: >-
+            The revocation stands (contact has stopped) but its admin audit entry could not
+            be written, even by the reconciler: the audit trail has a gap. Check the admin
+            store. The reconciler retries every 30 seconds, so this clears when the store
+            recovers. `ALERT revocation audit entry missing` in the logs names the events.
+      - alert: KavachRevocationAuditReconcilerStopped
+        expr: time() - kavach_revocation_audit_last_pass_timestamp_seconds > 300
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: The revocation audit reconciler has not completed a pass for 5 minutes
+          description: >-
+            It runs every 30 seconds and is restarted if it exits. A pass that cannot read
+            the revocations does not count as complete.
+      - alert: KavachSnapshotNotRunRecently
+        expr: >-
+          kavach_snapshot_last_run_timestamp_seconds > 0
+          and time() - kavach_snapshot_last_run_timestamp_seconds > 604800
+        labels: { severity: warning }
+        annotations:
+          summary: Snapshot reconciliation has not been run for a week
+          description: >-
+            It only runs when the lender's list of closed loans is sent (`kavach reconcile`),
+            so a lost payment event is found only that often. The gauge
+            `kavach_snapshot_mismatches` is the last run's result and keeps its value until
+            the next run. This does not fire until the first run; adjust the week to the
+            lender's cadence.
       - alert: KavachRevocationRecordMissing
         expr: kavach_revocation_records_missing > 0
         for: 2m
