@@ -243,6 +243,17 @@ impl MandateStore for MandateStoreBackend {
             Self::Postgres(s) => s.revoke_tree(tenant_id, id, reason).await,
         }
     }
+    async fn live_roots_scoped(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        record_ref: &str,
+    ) -> Result<Vec<kavach_ports::ScopedRoot>, PortError> {
+        match self {
+            Self::Memory(s) => s.live_roots_scoped(tenant_id, system, record_ref).await,
+            Self::Postgres(s) => s.live_roots_scoped(tenant_id, system, record_ref).await,
+        }
+    }
     async fn live_roots_for_record(
         &self,
         tenant_id: &str,
@@ -659,7 +670,9 @@ pub type Mandates = MandateService<
 >;
 
 /// The system-of-record listener's limit and the operator stop limit.
-fn limiters(sor_rate_per_second: u32) -> (Mutex<TokenBucket>, Mutex<TokenBucket>) {
+fn limiters(
+    sor_rate_per_second: u32,
+) -> (Mutex<TokenBucket>, Mutex<TokenBucket>, Mutex<TokenBucket>) {
     let rate = f64::from(sor_rate_per_second.max(1));
     let bucket = |rate: f64, burst: f64| {
         Mutex::new(TokenBucket {
@@ -669,7 +682,11 @@ fn limiters(sor_rate_per_second: u32) -> (Mutex<TokenBucket>, Mutex<TokenBucket>
             last: Instant::now(),
         })
     };
-    (bucket(rate, rate), bucket(STOPS_PER_SECOND, STOP_BURST))
+    (
+        bucket(rate, rate),
+        bucket(STOPS_PER_SECOND, STOP_BURST),
+        bucket(RECONCILE_PER_SECOND, RECONCILE_BURST),
+    )
 }
 
 /// The mandate service, refusing to issue or delegate to a revoked agent
@@ -699,6 +716,10 @@ fn mandate_service(
 /// incident may stop a handful of agents at once, never hundreds.
 const STOPS_PER_SECOND: f64 = 1.0;
 const STOP_BURST: f64 = 10.0;
+/// Snapshot reconciliations (a store read per loan): six a minute, a burst of
+/// three.
+const RECONCILE_PER_SECOND: f64 = 0.1;
+const RECONCILE_BURST: f64 = 3.0;
 
 struct TokenBucket {
     rate: f64,
@@ -735,6 +756,8 @@ pub struct Dataplane {
     /// Operator stops of agents (ADR-013): a global limit, because a stolen
     /// operator credential must not be able to stop every agent at once.
     stop_limiter: Mutex<TokenBucket>,
+    /// Snapshot reconciliations: a read per loan listed, so a limit of its own.
+    reconcile_limiter: Mutex<TokenBucket>,
     broker: Broker,
     resolver: FixtureResolver,
     forwarder: crate::forward::HttpForwarder,
@@ -829,7 +852,7 @@ impl Dataplane {
             .await
             .map_err(|e| format!("agent token verifier: {e}"))?;
         agents.spawn_refresher();
-        let (sor_limiter, stop_limiter) = limiters(config.sor_rate_per_second);
+        let (sor_limiter, stop_limiter, reconcile_limiter) = limiters(config.sor_rate_per_second);
         Ok(Self {
             dev_clock: config.dev_clock.clone(),
             mandates,
@@ -840,6 +863,7 @@ impl Dataplane {
             tenant: config.tenant_id.clone(),
             sor_limiter,
             stop_limiter,
+            reconcile_limiter,
             broker,
             resolver,
             forwarder,
@@ -852,6 +876,13 @@ impl Dataplane {
     /// Takes one operator stop from the global limit (ADR-013).
     pub fn admit_stop(&self) -> bool {
         self.stop_limiter
+            .lock()
+            .is_ok_and(|mut bucket| bucket.take())
+    }
+
+    /// Takes one snapshot reconciliation from its limit.
+    pub fn admit_reconcile(&self) -> bool {
+        self.reconcile_limiter
             .lock()
             .is_ok_and(|mut bucket| bucket.take())
     }

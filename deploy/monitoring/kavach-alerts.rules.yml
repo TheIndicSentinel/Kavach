@@ -48,6 +48,19 @@ groups:
             the bound (check trusted time) or a store is unreachable. No new mandate is
             made while `kind="issuing"` rises; the sender retries. A `revoking` event is
             refused only when the store is down, never for the clock.
+      - alert: KavachClosedLoanWithLiveAuthority
+        expr: kavach_snapshot_mismatches > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: A loan the lender reports closed still has live authority
+          description: >-
+            The last snapshot reconciliation found live mandates for loans reported paid
+            or disputed: a payment or dispute event most likely never arrived. Resend the
+            signed event (it revokes through the normal path) or stop the agent. The
+            reconciliation itself changed nothing. Run `POST
+            /v1/reconciliation/closed-records` again after fixing; the gauge is the last
+            run's count.
       - alert: KavachRevocationRecordMissing
         expr: kavach_revocation_records_missing > 0
         for: 2m

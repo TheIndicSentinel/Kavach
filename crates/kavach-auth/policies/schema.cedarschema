@@ -138,6 +138,11 @@ namespace Kavach {
     resource: [System],
   };
 
+  action reconcile_closed_records appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
   action read_agent_state appliesTo {
     principal: [User],
     resource: [System],

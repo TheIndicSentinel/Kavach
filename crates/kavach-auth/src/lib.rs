@@ -61,6 +61,7 @@ pub enum KavachAction {
     /// one principal. A separate action, so who may stop an agent is a
     /// policy change (an incident-responder role), not a code change.
     StopAgent,
+    ReconcileClosedRecords,
     /// Read an agent's state.
     ReadAgentState,
     /// Propose bringing a stopped agent back (ADR-013 §3): needs a second
@@ -99,6 +100,7 @@ impl KavachAction {
             Self::ProposeActivateModel => "propose_activate_model",
             Self::ApproveActivateModel => "approve_activate_model",
             Self::StopAgent => "stop_agent",
+            Self::ReconcileClosedRecords => "reconcile_closed_records",
             Self::ReadAgentState => "read_agent_state",
             Self::ProposeReinstateAgent => "propose_reinstate_agent",
             Self::ApproveReinstateAgent => "approve_reinstate_agent",

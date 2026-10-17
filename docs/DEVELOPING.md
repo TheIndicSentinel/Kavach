@@ -117,6 +117,10 @@ kavach why adr:default:0:1 --bundle ./export      # offline, from an evidence bu
 
 This evidence is hash-chained but **not signed** (v1). Anyone with write access to the database could rewrite a record and rehash the chain, so the output says "hash matches the content; not signed, so this does not prove the record wasn't rewritten". `--export <file>` checks the whole chain of a decision event export first, and reports a break before showing anything. There are no counterfactuals for credit decisions. A record written before schema 1.1.0 and read back from Postgres may fail only because storage dropped its nanoseconds. `why` then says it **cannot be re-checked (legacy precision)** and exits 2: never "verified", and not called tampered either. Re-baseline such chains (export, then start a fresh one).
 
+### Closed loans against live authority (`kavach reconcile`)
+
+`kavach reconcile closed.json` sends the loans a lender reports paid or disputed to the running stack and prints which of them still hold a live mandate. The file is `{"system": "lms", "records": [{"record_ref": "lms:loan/L-1", "state": "paid", "closed_at": "2026-10-01T06:00:00Z"}]}` (up to 1000 records). Exit 0 when none do, 1 when one does. A mismatch means the payment or dispute event never arrived; **the command revokes nothing**: resend the signed event (`kavach sor event --type loan.paid`) or stop the agent. A mandate processed after the closure is listed as "confirm" (usually a new default). Reconciliation is not run on a schedule: how soon a lost event is found is how often the list is sent.
+
 ### Evidence bundles (`kavach evidence`)
 
 `kavach evidence export <dir>` writes the agent evidence chain as a bundle (`docs/EVIDENCE_BUNDLE.md`), signed with the auditor's export key in `.kavach/auditor/`, never a key of the stack. It needs `[database]` in `kavach.toml`: the memory store keeps nothing once `dev up` stops. A dev project reads with a role that can write, which a production export (`kavach-evidence export`, as `kavach_auditor`) refuses; the output says so.

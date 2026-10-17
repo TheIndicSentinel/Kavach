@@ -76,6 +76,36 @@ pub struct RevocationApply {
     pub reach_until: chrono::DateTime<chrono::Utc>,
 }
 
+/// The time a root mandate's revocation scope is measured by (B2): when the
+/// source says the issuing event occurred, or `nbf` (when Kavach processed
+/// it) for a root written before the source time was kept. **The one rule**
+/// the revocation path and snapshot reconciliation both use, so detection
+/// and enforcement cannot drift apart.
+#[must_use]
+pub fn scope_time(
+    source_occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+    nbf: chrono::DateTime<chrono::Utc>,
+) -> chrono::DateTime<chrono::Utc> {
+    source_occurred_at.unwrap_or(nbf)
+}
+
+/// A live root with the source time its scope is measured by.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedRoot {
+    pub mandate: StoredMandate,
+    /// The issuing event's `occurred_at`, `None` for a root written before it
+    /// was kept (scoped by `nbf`; see [`scope_time`]).
+    pub source_occurred_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl ScopedRoot {
+    /// [`scope_time`] for this root.
+    #[must_use]
+    pub fn scope_time(&self) -> chrono::DateTime<chrono::Utc> {
+        scope_time(self.source_occurred_at, self.mandate.mandate.nbf)
+    }
+}
+
 /// When a record is closed to new authority (B2): by a recorded payment
 /// whose time the event is not after, or by a dispute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -203,6 +233,16 @@ pub trait MandateStore: Send + Sync {
         system: &str,
         record_ref: &str,
     ) -> impl Future<Output = Result<Vec<StoredMandate>, PortError>> + Send;
+
+    /// [`MandateStore::live_roots_for_record`] with each root's source time,
+    /// for snapshot reconciliation: the same roots, scoped by the same rule
+    /// (`scope_time`) the revocation path uses.
+    fn live_roots_scoped(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        record_ref: &str,
+    ) -> impl Future<Output = Result<Vec<ScopedRoot>, PortError>> + Send;
 
     /// The ids of the active mandates `holder` holds, roots and delegated
     /// children alike, oldest first (ADR-013: revoking an agent revokes

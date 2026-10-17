@@ -533,6 +533,35 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /v1/reconciliation/closed-records:
+    post:
+      operationId: reconcileClosedRecords
+      tags: [agents]
+      summary: Find live authority for loans the lender reports closed (`reconcile_closed_records`; reports only).
+      description: >-
+        ADR-012 addendum (snapshot reconciliation). The lender lists the loans it considers
+        paid or disputed; Kavach returns the live mandates it still holds for them. A
+        `should_have_been_revoked` finding means a payment or dispute event did not arrive:
+        resend the signed event (it revokes through the normal path) or stop the agent. **This
+        call revokes nothing.** `issued_after_closure` is information (usually a new default).
+        Loans are named by reference only. Rate limited; every run is audited (counts, never
+        references).
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ClosedRecordsRequest" } } } }
+      responses:
+        "200":
+          description: What was found. `mismatches` is the number of `should_have_been_revoked` findings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ClosedRecordsResult" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /v1/agents/{agent_id}/quarantine:
     post:
       operationId: quarantineAgent
@@ -1269,6 +1298,45 @@ components:
         - operator_request
         - reviewed
         - other
+    ClosedRecordsRequest:
+      type: object
+      additionalProperties: false
+      required: [system, records]
+      properties:
+        system: { type: string, minLength: 1, maxLength: 64, description: "The system of record the references belong to." }
+        records:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: object
+            additionalProperties: false
+            required: [record_ref, state, closed_at]
+            properties:
+              record_ref: { type: string, minLength: 1, maxLength: 256 }
+              state: { type: string, enum: [paid, disputed] }
+              closed_at: { type: string, format: date-time, description: "When the lender says it was paid or disputed." }
+    ClosedRecordsResult:
+      type: object
+      required: [checked, mismatches, information, findings, remedy]
+      properties:
+        checked: { type: integer, minimum: 0 }
+        mismatches: { type: integer, minimum: 0 }
+        information: { type: integer, minimum: 0 }
+        remedy: { type: string }
+        findings:
+          type: array
+          items:
+            type: object
+            required: [kind, record_ref, state, mandate_id, holder, issued_at, expires_at]
+            properties:
+              kind: { type: string, enum: [should_have_been_revoked, issued_after_closure] }
+              record_ref: { type: string }
+              state: { type: string, enum: [paid, disputed] }
+              mandate_id: { type: string }
+              holder: { type: string }
+              issued_at: { type: string, format: date-time }
+              expires_at: { type: string, format: date-time }
     StopAgentRequest:
       type: object
       additionalProperties: false

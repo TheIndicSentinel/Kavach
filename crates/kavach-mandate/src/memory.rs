@@ -6,8 +6,8 @@ use std::sync::Mutex;
 
 use kavach_domain::mandate::{ConsentRecord, MandateStatus, RevocationReason};
 use kavach_ports::{
-    AppliedRevocation, ClosureRule, ConsentSource, DomainEvent, EventBus, MandateStore, PortError,
-    RevocationApply, RevocationCursor, StoredMandate, StoredRevocation,
+    scope_time, AppliedRevocation, ClosureRule, ConsentSource, DomainEvent, EventBus, MandateStore,
+    PortError, RevocationApply, RevocationCursor, ScopedRoot, StoredMandate, StoredRevocation,
 };
 
 type Key = (String, String);
@@ -177,10 +177,12 @@ impl InMemoryMandateStore {
             .map(|s| {
                 // When the source says it happened; `nbf` for a root that
                 // has no source time (written before it was kept).
-                let at = times
-                    .get(&(s.mandate.tenant_id.clone(), s.mandate.id.clone()))
-                    .copied()
-                    .unwrap_or(s.mandate.nbf);
+                let at = scope_time(
+                    times
+                        .get(&(s.mandate.tenant_id.clone(), s.mandate.id.clone()))
+                        .copied(),
+                    s.mandate.nbf,
+                );
                 (at, s.mandate.id.clone())
             })
             .filter(|(at, _)| *at <= request.reach_until)
@@ -336,6 +338,37 @@ impl MandateStore for InMemoryMandateStore {
             roots.sort_by_key(|s| s.mandate.nbf);
             roots
         });
+        ready(result)
+    }
+
+    fn live_roots_scoped(
+        &self,
+        tenant_id: &str,
+        system: &str,
+        record_ref: &str,
+    ) -> impl Future<Output = Result<Vec<ScopedRoot>, PortError>> + Send {
+        let result = (|| {
+            let times = self.source_times.lock().map_err(|_| poisoned())?;
+            let records = self.records.lock().map_err(|_| poisoned())?;
+            let mut roots: Vec<ScopedRoot> = records
+                .values()
+                .filter(|s| {
+                    s.mandate.tenant_id == tenant_id
+                        && s.mandate.parent_id.is_none()
+                        && s.status == MandateStatus::Active
+                        && s.mandate.source.system == system
+                        && s.mandate.source.record_ref == record_ref
+                })
+                .map(|s| ScopedRoot {
+                    mandate: s.clone(),
+                    source_occurred_at: times
+                        .get(&(s.mandate.tenant_id.clone(), s.mandate.id.clone()))
+                        .copied(),
+                })
+                .collect();
+            roots.sort_by_key(|r| r.mandate.mandate.nbf);
+            Ok(roots)
+        })();
         ready(result)
     }
 
