@@ -13,6 +13,10 @@ use kavach_ports::agent_evidence::{
     RequestBinding, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
 };
 use kavach_ports::chain_record::{ChainRecord, RevocationDraft};
+use kavach_ports::outcome_resolution::{
+    governing, outcome_ref, sign_resolution, Governing, ResolutionDraft, ResolutionRecord,
+    ResolutionSource, ResolutionState,
+};
 use kavach_ports::{ErrorClass, KeyAlgorithm, PortError, PublicKey, SyncStatus};
 
 use crate::FakeClock;
@@ -162,6 +166,7 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     commit_time_checks(&*store, &clock, &signer).await;
     nothing_is_kept_when_signing_fails(&*store, &clock).await;
     every_outcome_kind_is_stored(&*store, &clock, &signer).await;
+    outcome_resolutions(&*store, &clock, &signer).await;
     one_creator_per_request_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     duplicates_race_near_the_cap(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     revocations_in_the_chain(&*store, &clock, &signer).await;
@@ -593,6 +598,221 @@ async fn every_outcome_kind_is_stored<S: AgentEvidenceStore>(
         store.record_outcome(written.clone()).await.unwrap();
         assert_eq!(store.outcome(t, &credential).await.unwrap(), Some(written));
     }
+}
+
+/// An allowed call whose outcome is `unknown`.
+struct Unknown {
+    tenant: String,
+    credential: String,
+    outcome: kavach_ports::agent_evidence::OutcomeRecord,
+}
+
+async fn an_unknown_outcome<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+    tenant: &str,
+    request_id: &str,
+    outcome: Outcome,
+) -> Unknown {
+    let record = committed(
+        store
+            .commit(request(tenant, request_id, 3), clock, signer)
+            .await
+            .unwrap(),
+    );
+    let credential = record.payload.credential_id.clone().expect("allow");
+    let reason = if outcome == Outcome::Unknown {
+        "timeout_after_send"
+    } else {
+        "provider_202"
+    };
+    let written = sign_outcome(
+        tenant,
+        &credential,
+        &record.hash,
+        outcome,
+        reason,
+        t0(),
+        signer,
+    )
+    .unwrap();
+    store.record_outcome(written.clone()).await.unwrap();
+    Unknown {
+        tenant: tenant.into(),
+        credential,
+        outcome: written,
+    }
+}
+
+/// A 64-hex value of the right shape (the store checks the form, not the
+/// preimage).
+fn digest_of(what: &str) -> String {
+    use std::fmt::Write as _;
+    let mut hex = String::new();
+    for b in what.bytes() {
+        let _ = write!(hex, "{b:02x}");
+    }
+    format!("{hex:0<64}")[..64].to_string()
+}
+
+/// A signed resolution of `u` from `source`.
+fn resolution(
+    u: &Unknown,
+    signer: &TestSigner,
+    (state, source): (ResolutionState, ResolutionSource),
+    evidence: Option<&str>,
+    people: (Option<&str>, Option<&str>),
+) -> Result<ResolutionRecord, PortError> {
+    sign_resolution(
+        ResolutionDraft {
+            tenant_id: u.tenant.clone(),
+            credential_id: u.credential.clone(),
+            outcome_ref: outcome_ref(&u.outcome),
+            state,
+            source,
+            reason: "provider_status".into(),
+            evidence_digest: evidence.map(digest_of),
+            resolved_by: people.0.map(str::to_string),
+            approved_by: people.1.map(str::to_string),
+        },
+        t0() + Duration::minutes(1),
+        signer,
+    )
+}
+
+/// Resolutions of an `unknown` outcome (ADR-017): kept append-only beside the
+/// outcome, once per `(source, state)`, the governing state computed from all
+/// of them: a provider answer, an opposing attestation (a conflict, never a
+/// silent flip), ambiguity that changes nothing, and a two-person closure.
+async fn outcome_resolutions<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+) {
+    use ResolutionSource::{ConflictResolution, OperatorAttested, ProviderStatus, Reconciler};
+    use ResolutionState::{
+        Ambiguous, ConfirmedDelivered as Delivered, ConfirmedNotDelivered as Not,
+    };
+    let t = "ae-resolutions";
+    let u = an_unknown_outcome(store, clock, signer, t, "res-1", Outcome::Unknown).await;
+    let rows = || async { store.resolutions(t, &u.credential).await.unwrap() };
+    assert_eq!(rows().await, []);
+    assert_eq!(governing(&[]), Governing::Unresolved);
+
+    // A provider status: kept, and a repeat is a no-op.
+    let provider = resolution(
+        &u,
+        signer,
+        (Delivered, ProviderStatus),
+        Some("answer"),
+        (None, None),
+    )
+    .unwrap();
+    assert!(store.record_resolution(provider.clone()).await.unwrap());
+    assert!(
+        !store.record_resolution(provider.clone()).await.unwrap(),
+        "a repeat"
+    );
+    assert_eq!(rows().await, std::slice::from_ref(&provider));
+    assert!(matches!(
+        governing(&rows().await),
+        Governing::Confirmed {
+            state: Delivered,
+            source: ProviderStatus
+        }
+    ));
+
+    // A person says the opposite (two people, as "not delivered" needs).
+    let attested = resolution(
+        &u,
+        signer,
+        (Not, OperatorAttested),
+        Some("console"),
+        (Some("alice"), Some("bob")),
+    )
+    .unwrap();
+    assert!(store.record_resolution(attested).await.unwrap());
+    assert_eq!(rows().await.len(), 2);
+    assert_eq!(governing(&rows().await), Governing::Conflicted);
+
+    // Ambiguous is history and changes nothing.
+    let ambiguous = resolution(&u, signer, (Ambiguous, Reconciler), None, (None, None)).unwrap();
+    assert!(store.record_resolution(ambiguous).await.unwrap());
+    assert_eq!(governing(&rows().await), Governing::Conflicted);
+
+    // Two different people close it.
+    let closing = resolution(
+        &u,
+        signer,
+        (Not, ConflictResolution),
+        Some("review"),
+        (Some("carol"), Some("dave")),
+    )
+    .unwrap();
+    assert!(store.record_resolution(closing).await.unwrap());
+    assert!(matches!(
+        governing(&rows().await),
+        Governing::Confirmed {
+            state: Not,
+            source: ConflictResolution
+        }
+    ));
+
+    resolutions_are_refused_when_wrong(store, clock, signer, &u, provider).await;
+}
+
+/// The store enforces who may say what, and what a resolution may refer to.
+async fn resolutions_are_refused_when_wrong<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+    u: &Unknown,
+    provider: ResolutionRecord,
+) {
+    use ResolutionSource::OperatorAttested;
+    use ResolutionState::ConfirmedNotDelivered as Not;
+    let t = u.tenant.as_str();
+    // "Not delivered" from one person is Invalid, whatever the signature
+    // (the signed copy with the approver removed).
+    let mut one_person = resolution(
+        u,
+        signer,
+        (Not, OperatorAttested),
+        Some("x"),
+        (Some("erin"), Some("frank")),
+    )
+    .unwrap();
+    one_person.approved_by = None;
+    assert_eq!(
+        store.record_resolution(one_person).await.unwrap_err().class,
+        ErrorClass::Invalid
+    );
+
+    // Only an unknown outcome is resolved, and only the outcome row named.
+    let settled = an_unknown_outcome(store, clock, signer, t, "res-2", Outcome::Delivered).await;
+    let mut for_settled = provider.clone();
+    for_settled.credential_id = settled.credential.clone();
+    for_settled.outcome_ref = outcome_ref(&settled.outcome);
+    let mut other_row = provider.clone();
+    other_row.outcome_ref = "00".repeat(32);
+    let mut no_outcome = provider.clone();
+    no_outcome.credential_id = "no-such-credential".into();
+    let mut other_tenant = provider;
+    other_tenant.tenant_id = "ae-resolutions-other".into();
+    for refused in [for_settled, other_row, no_outcome, other_tenant] {
+        assert_eq!(
+            store.record_resolution(refused).await.unwrap_err().class,
+            ErrorClass::Rejected
+        );
+    }
+    assert_eq!(
+        store
+            .resolutions("ae-resolutions-other", &u.credential)
+            .await
+            .unwrap(),
+        []
+    );
 }
 
 /// Outcomes: once per credential, only for an allowed record, with a signed

@@ -73,6 +73,7 @@ S4 (#180), S3 (#182) and B2/T1 (#183) merged on 2026-10-15 with **local** eviden
 | Fuzz, **once** | No crash after the B1 to B3 parser and store changes |
 | macOS | `cargo test -p kavach-cli` (locally on a Mac before a release, or one dispatch) |
 | Snapshot reconciliation | `closed_records` (API), `reconcile` and `closing_a_record` (store, Postgres) executed in the Actions log; one `kavach reconcile` on the deployed stack |
+| Outcome resolutions R1a (ADR-017) | Evidence store, migration 023 | `check_form` (who may say what: delivered one person, not delivered two different people, a conflict closure two, the reconciler only `ambiguous`) enforced in **every** store, before the row is written; `check_against_outcome` (only an `unknown` outcome, only the row named by `outcome_ref`); that the table is append-only (trigger) and the runtime role has insert and read only; `governing()` never reads time order (no latest-wins) and an ambiguous row cannot override a confirmed one; that the signed message holds every field and tells an absent optional from a value |
 | Rollout rehearsal with two real binaries | Old and new against one Postgres, then rollback (the schema-compatibility half is in `postgres_migration_compat`) |
 
 Any further merge to `main` while CI is unavailable carries the same kind of attached log (the pull request template asks for it).

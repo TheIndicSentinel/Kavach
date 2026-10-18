@@ -60,6 +60,23 @@ impl AgentEvidenceStore for WhatIfStore {
         ready(Ok(None))
     }
 
+    fn record_resolution(
+        &self,
+        _resolution: kavach_ports::outcome_resolution::ResolutionRecord,
+    ) -> impl Future<Output = Result<bool, PortError>> + Send {
+        ready(Ok(false))
+    }
+
+    fn resolutions(
+        &self,
+        _tenant_id: &str,
+        _credential_id: &str,
+    ) -> impl Future<
+        Output = Result<Vec<kavach_ports::outcome_resolution::ResolutionRecord>, PortError>,
+    > + Send {
+        ready(Ok(Vec::new()))
+    }
+
     fn records(
         &self,
         _tenant_id: &str,

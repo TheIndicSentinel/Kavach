@@ -16,6 +16,7 @@ mod evidence;
 pub mod jcs;
 mod keys;
 mod mandate;
+pub mod outcome_resolution;
 mod policy;
 mod reference;
 mod replay;
