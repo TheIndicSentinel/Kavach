@@ -22,7 +22,7 @@ pub use checkpointer::{
 };
 pub use gateway::{
     execute, ForwardResult, Forwarder, GatewayDeps, GatewayError, GatewayObserver, GatewayReply,
-    Stage,
+    ProviderStatus, Stage, StatusAnswer, StatusAsker,
 };
 pub use resolve::FixtureResolver;
 pub use revocation_evidence::{reconcile_revocations, ReconcileConfig, ReconcileReport};

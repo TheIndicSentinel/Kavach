@@ -74,6 +74,8 @@ ops_net
   | 409 `jti_conflict` | `unknown` and an alert (the `jti` was used for other claims; the first use may have delivered) |
   | 408, 5xx, timeout or connection loss after sending | `unknown` (never retried) |
 
+  A provider may also answer a status question (ADR-017 R2): `GET /v1/messages/{jti}` with `Authorization: Kavach-Status <JWS>` (a signed question with no destination, valid at most 60 seconds), reply `{"status": "delivered" | "not_delivered" | "unknown"}` and nothing else. It is read-only and delivers nothing.
+
   Reserved synthetic numbers drive fixture behaviour: `+910000000998` refused (422), `+910000000997` provider error (500), `+910000000999` delivered but the response is lost. Scenario 2 uses a real-*shaped* number that the raw-identifier detector must catch; it is only ever blocked, never stored, resolved or sent.
 - No backend secret appears in agent containers, their environment, mounted files or images. CI scans images and environments for secrets.
 - Credentials issued after human approval are single-use and bound to the approved `action_hash` (PRD D17).

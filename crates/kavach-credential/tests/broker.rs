@@ -256,3 +256,101 @@ async fn providers_refuse_other_recipients_forgeries_and_late_use() {
         ErrorClass::Invalid
     );
 }
+
+/// A status question (ADR-017 R2) is a JWS of its own type: it names the
+/// send, the tenant and the provider, lives at most a minute, holds no
+/// destination, and is not a credential.
+#[tokio::test]
+async fn a_status_question_is_signed_bounded_and_holds_no_destination() {
+    let (broker, trusted) = broker();
+    let now = at(1_800_000_000);
+    let token = broker
+        .status_request("tenant-1", AUDIENCE, "cred-1", now)
+        .await
+        .unwrap();
+
+    let claims =
+        kavach_credential::verify_status_request(token.expose(), &trusted, AUDIENCE, now, 2)
+            .unwrap();
+    assert_eq!(
+        (
+            claims.tenant.as_str(),
+            claims.jti.as_str(),
+            claims.aud.as_str()
+        ),
+        ("tenant-1", "cred-1", AUDIENCE)
+    );
+    assert_eq!(
+        claims.exp - claims.iat,
+        kavach_credential::MAX_STATUS_TTL_SECONDS
+    );
+
+    // Nothing about the recipient is in it, even encoded.
+    let payload = token.expose().split('.').nth(1).unwrap();
+    let text = String::from_utf8(URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+    for word in ["destination", "channel", "template", "+91"] {
+        assert!(!text.contains(word), "{word} in {text}");
+    }
+
+    let refused = |token: &str, audience: &str, at_time: DateTime<Utc>| {
+        kavach_credential::verify_status_request(token, &trusted, audience, at_time, 2).is_err()
+    };
+    assert!(refused(token.expose(), "other-provider", now), "audience");
+    assert!(
+        refused(token.expose(), AUDIENCE, now + Duration::seconds(63)),
+        "expired"
+    );
+    assert!(
+        refused(token.expose(), AUDIENCE, now - Duration::seconds(60)),
+        "future"
+    );
+    // Another signer is not trusted.
+    let (_, other_trusted) = {
+        let mut keys = InMemoryKeyProvider::new();
+        let public = keys.generate(KID).unwrap();
+        (keys, KeySet::new([public]))
+    };
+    assert!(kavach_credential::verify_status_request(
+        token.expose(),
+        &other_trusted,
+        AUDIENCE,
+        now,
+        2
+    )
+    .is_err());
+    // A provider the broker has no key for is never asked.
+    assert!(broker
+        .status_request("tenant-1", "unregistered", "cred-1", now)
+        .await
+        .is_err());
+}
+
+/// A send credential is not a status question, and the reverse.
+#[tokio::test]
+async fn a_status_question_and_a_credential_are_not_interchangeable() {
+    let (broker, trusted) = broker();
+    let destination = Destination::new(DESTINATION);
+    let request = credential_broker::request(&destination, "cred-1");
+    let credential = broker.issue(&request).await.unwrap().token;
+    assert!(kavach_credential::verify_status_request(
+        credential.expose(),
+        &trusted,
+        AUDIENCE,
+        request.now,
+        2
+    )
+    .is_err());
+
+    let question = broker
+        .status_request("tenant-1", AUDIENCE, "cred-1", request.now)
+        .await
+        .unwrap();
+    assert!(open_credential(
+        question.expose(),
+        &trusted,
+        &provider_key(),
+        AUDIENCE,
+        request.now
+    )
+    .is_err());
+}

@@ -54,6 +54,41 @@ pub trait Forwarder: Send + Sync {
     ) -> impl Future<Output = ForwardResult> + Send;
 }
 
+/// What a provider says became of one earlier send (the status contract,
+/// ADR-017 R2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderStatus {
+    Delivered,
+    NotDelivered,
+    /// The provider answered, and cannot say.
+    Unknown,
+}
+
+/// A provider's answer to a status question, with the digest that goes into
+/// the resolution as its evidence: the SHA-256 (lowercase hex) of the answer
+/// body, never the body itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusAnswer {
+    pub status: ProviderStatus,
+    pub digest: String,
+}
+
+/// Asks a provider what became of one earlier send. **It has no send path**:
+/// it takes a status question (a signed JWS with no destination), never a
+/// credential, so nothing the reconciler holds can deliver anything. A
+/// provider that cannot be reached, answers outside the contract, or refuses
+/// is `None`: no answer is not an answer, and never becomes a confirmed
+/// state. Implementations must not retry, must not follow redirects and must
+/// not use ambient proxies.
+pub trait StatusAsker: Send + Sync {
+    fn status(
+        &self,
+        provider: &str,
+        jti: &str,
+        question: &TokenSecret,
+    ) -> impl Future<Output = Option<StatusAnswer>> + Send;
+}
+
 /// Outcome and reason code for what the provider said (the agreed status
 /// contract, ADR-007). The second value is true for an anomaly to alert on.
 pub fn classify(result: &ForwardResult) -> (Outcome, String, bool) {

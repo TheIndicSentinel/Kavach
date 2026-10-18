@@ -54,7 +54,18 @@ A silent flip would hide exactly what an auditor needs to see, so the governing 
 
 ## Phases (each its own change, against the mock only)
 
-R1 the data, signing, store (**R1a, built**) and the verifier and bundle (**R1b**, bundle format 4). R2 the mock status endpoint and the reconciler. R3 operator attestation, signals, attacks and the simulator.
+R1 the data, signing, store (**R1a, built**) and the verifier and bundle (**R1b, built**, bundle format 4). R2 the mock status endpoint (**R2a**) and the reconciler (**R2b**). R3 operator attestation, signals, attacks and the simulator.
+
+### Amendment, R2a: how the status question is authenticated
+
+Decision 2 says the question is "authenticated by the same credential binding as the send". The gateway cannot present the send credential: it does not keep it (the credential holds the destination, and a stored one would put the recipient at rest), and it records only the `jti`. So the question is **its own signed token**, not the send credential:
+
+- A compact JWS, `typ: kavach-status+jws`, signed by the **same credential key** as the send, so a provider that already trusts that key needs nothing new. Claims: `iss`, `tenant`, `aud` (the provider), `jti` (the send asked about), `iat`, `exp` (at most 60 seconds). **No destination, channel or template.**
+- Sent as `GET /v1/messages/{jti}` with `Authorization: Kavach-Status <JWS>` and no body. The provider verifies the signature and audience, checks that the `jti` in the path is the one in the claims and that the tenant is the one the send was made for, and answers `{"status": "delivered" | "not_delivered" | "unknown"}` and nothing else. `unknown` is also the answer for a `jti` it never stored.
+- Because it is a different `typ`, a send credential is not accepted as a status question and a status question is not accepted as a send credential (the mock tests both ways).
+- The gateway side is a separate trait, `StatusAsker`, whose method takes a status question and never a credential: **the code that reconciles has no value it could send with, and no send method to call.** An answer outside the contract (another word, extra members, a non-200, a redirect, no answer) is no answer and never becomes a confirmed state. The evidence digest in the resolution is the SHA-256 of the answer body.
+
+This is a hypothesis about real providers, as decision 2 says; it does not change how a real provider is mapped (ADR-015).
 
 ## Decisions on the open questions (owner, 2026-10-18)
 

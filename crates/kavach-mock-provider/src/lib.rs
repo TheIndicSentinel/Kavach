@@ -32,6 +32,19 @@
 //! Responses carry only `status`, `message_id`, `reason` and `replayed`;
 //! never the destination.
 //!
+//! # Status (ADR-017 R2)
+//!
+//! `GET /v1/messages/{jti}` with `Authorization: Kavach-Status <JWS>` and no
+//! body asks what became of one earlier send. The question is a JWS signed
+//! by the credential key (see [`kavach_credential::StatusRequestClaims`]):
+//! it names the `jti`, the tenant and this provider, lives at most a minute,
+//! and carries no destination. The reply is `{"status": "delivered" |
+//! "not_delivered" | "unknown"}` and nothing else: never the destination,
+//! the message id or the template. `unknown` is also the honest answer for a
+//! `jti` this provider never stored (a send refused before it was recorded
+//! is not recorded). The question is answered even after the send's
+//! credential expired, and answering it never delivers anything.
+//!
 //! # Reserved synthetic numbers (test behaviour, like payment test cards)
 //!
 //! - [`REFUSE_NUMBER`]: refused by the "recipient" (422).
@@ -51,14 +64,15 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration as StdDuration;
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::{DateTime, Utc};
 use kavach_credential::{
-    check_time, claims_digest, decrypt_and_verify, CredentialClaims, DecryptionKey,
+    check_time, claims_digest, decrypt_and_verify, verify_status_request, CredentialClaims,
+    DecryptionKey,
 };
 use kavach_jws::KeySet;
 use kavach_ports::ErrorClass;
@@ -72,6 +86,8 @@ pub const HANG_NUMBER: &str = "+910000000999";
 pub const ERROR_NUMBER: &str = "+910000000997";
 
 pub const AUTH_SCHEME: &str = "Kavach-Credential";
+/// The scheme of a status question.
+pub const STATUS_SCHEME: &str = "Kavach-Status";
 
 pub type Clock = Arc<dyn Fn() -> DateTime<Utc> + Send + Sync>;
 
@@ -144,6 +160,7 @@ fn expose<S: Serializer>(d: &kavach_ports::Destination, s: S) -> Result<S::Ok, S
 }
 
 struct Stored {
+    tenant: String,
     digest: String,
     exp: i64,
     status: StatusCode,
@@ -178,9 +195,10 @@ fn refusal(status: StatusCode, reason: &'static str) -> Outcome {
 }
 
 /// Request shape checks: no body or content headers, exactly one
-/// `Authorization: Kavach-Credential <token>`, no unknown `Kavach-*`
+/// `Authorization: <scheme> <token>` (`Kavach-Credential` to send,
+/// `Kavach-Status` to ask), no unknown `Kavach-*`
 /// headers. Standard headers (Host, User-Agent, traceparent…) are ignored.
-fn credential_from(headers: &HeaderMap, body: &Bytes) -> Result<String, Outcome> {
+fn credential_from(headers: &HeaderMap, body: &Bytes, scheme: &str) -> Result<String, Outcome> {
     let has_length = headers
         .get(header::CONTENT_LENGTH)
         .is_some_and(|v| v.as_bytes() != b"0");
@@ -205,7 +223,7 @@ fn credential_from(headers: &HeaderMap, body: &Bytes) -> Result<String, Outcome>
         .to_str()
         .ok()
         .and_then(|v| v.split_once(' '))
-        .filter(|(scheme, token)| *scheme == AUTH_SCHEME && !token.is_empty())
+        .filter(|(given, token)| *given == scheme && !token.is_empty())
         .map(|(_, token)| token.to_string())
         .ok_or_else(|| refusal(StatusCode::UNAUTHORIZED, "credential_required"))
 }
@@ -276,7 +294,7 @@ impl MockProvider {
         headers: &HeaderMap,
         body: &Bytes,
     ) -> Result<(CredentialClaims, String), Outcome> {
-        let token = credential_from(headers, body)?;
+        let token = credential_from(headers, body, AUTH_SCHEME)?;
         let claims = decrypt_and_verify(
             &token,
             &self.config.credential_keys,
@@ -339,6 +357,7 @@ impl MockProvider {
         state.by_jti.insert(
             claims.jti.clone(),
             Stored {
+                tenant: claims.tenant.clone(),
                 digest,
                 exp: claims.exp,
                 status: outcome.0,
@@ -381,6 +400,74 @@ impl MockProvider {
     }
 }
 
+/// What the stored send says, in the three words of the status contract.
+fn stored_status(stored: &Stored) -> &'static str {
+    if stored.status == StatusCode::ACCEPTED {
+        "delivered"
+    } else {
+        "not_delivered"
+    }
+}
+
+impl MockProvider {
+    /// Answers a status question; read-only, it never delivers.
+    fn status_of(&self, jti: &str, headers: &HeaderMap, body: &Bytes) -> Response {
+        let refused = |(status, reply): Outcome| (status, Json(reply)).into_response();
+        let token = match credential_from(headers, body, STATUS_SCHEME) {
+            Ok(token) => token,
+            Err(outcome) => return refused(outcome),
+        };
+        let claims = match verify_status_request(
+            &token,
+            &self.config.credential_keys,
+            &self.config.audience,
+            (self.clock)(),
+            self.config.leeway_seconds,
+        ) {
+            Ok(claims) => claims,
+            Err(err) if err.class == ErrorClass::Invalid => {
+                return refused(refusal(StatusCode::BAD_REQUEST, "malformed_status_request"));
+            }
+            Err(_) => return refused(refusal(StatusCode::UNAUTHORIZED, "invalid_status_request")),
+        };
+        // The question must be about the message named in the path.
+        if claims.jti != jti {
+            return refused(refusal(StatusCode::FORBIDDEN, "jti_mismatch"));
+        }
+        let Ok(state) = self.state.lock() else {
+            return refused(refusal(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "provider_unavailable",
+            ));
+        };
+        let status = match state.by_jti.get(jti) {
+            Some(stored) if stored.tenant != claims.tenant => {
+                return refused(refusal(StatusCode::FORBIDDEN, "tenant_mismatch"));
+            }
+            Some(stored) => stored_status(stored),
+            None => "unknown",
+        };
+        tracing::info!(jti = %jti, status, "status request");
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": status })),
+        )
+            .into_response()
+    }
+}
+
+async fn message_status(
+    State(provider): State<Arc<MockProvider>>,
+    Path(jti): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !provider.config.delay.is_zero() {
+        tokio::time::sleep(provider.config.delay).await;
+    }
+    provider.status_of(&jti, &headers, &body)
+}
+
 async fn send(
     State(provider): State<Arc<MockProvider>>,
     headers: HeaderMap,
@@ -397,6 +484,7 @@ async fn health() -> Json<serde_json::Value> {
 pub fn router(provider: Arc<MockProvider>) -> Router {
     Router::new()
         .route("/v1/messages", post(send))
+        .route("/v1/messages/{jti}", get(message_status))
         .route("/health", get(health))
         .layer(DefaultBodyLimit::max(1024))
         .with_state(provider)

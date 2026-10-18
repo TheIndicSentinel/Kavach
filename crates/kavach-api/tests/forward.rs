@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use axum::routing::{any, post};
 use axum::Router;
 use kavach_api::forward::{messages_url, HttpForwarder};
-use kavach_dataplane::{ForwardResult, Forwarder};
+use kavach_dataplane::{ForwardResult, Forwarder, ProviderStatus, StatusAsker};
 use kavach_ports::TokenSecret;
 
 /// A loopback server; returns its base URL.
@@ -284,4 +284,139 @@ async fn provider_tls_is_verified_against_the_configured_ca() {
     )
     .is_err());
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A provider whose status endpoint answers `body` with `status` and counts
+/// the questions; returns its base URL.
+async fn status_server(status: u16, body: &'static str) -> (String, Arc<AtomicUsize>) {
+    let hits = Arc::new(AtomicUsize::new(0));
+    let seen = Arc::clone(&hits);
+    let app = Router::new().route(
+        "/v1/messages/{jti}",
+        axum::routing::get(move |headers: HeaderMap| {
+            let seen = Arc::clone(&seen);
+            async move {
+                seen.fetch_add(1, Ordering::SeqCst);
+                assert!(headers["authorization"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("Kavach-Status "));
+                (StatusCode::from_u16(status).unwrap(), body)
+            }
+        }),
+    );
+    (serve(app).await, hits)
+}
+
+fn question() -> TokenSecret {
+    TokenSecret::new("a.b.c")
+}
+
+/// The status contract: exactly one member, one of three words. Anything
+/// else is no answer, and no answer is never a confirmed state.
+#[tokio::test]
+async fn a_status_answer_is_one_of_three_words_or_nothing() {
+    for (body, expected) in [
+        (r#"{"status":"delivered"}"#, Some(ProviderStatus::Delivered)),
+        (
+            r#"{"status":"not_delivered"}"#,
+            Some(ProviderStatus::NotDelivered),
+        ),
+        (r#"{"status":"unknown"}"#, Some(ProviderStatus::Unknown)),
+        // Outside the contract.
+        (
+            r#"{"status":"delivered","destination":"+910000000001"}"#,
+            None,
+        ),
+        (r#"{"status":"sent"}"#, None),
+        (r#"{"status":1}"#, None),
+        (r"{}", None),
+        ("delivered", None),
+        ("", None),
+    ] {
+        let (base, hits) = status_server(200, body).await;
+        let answer = forwarder(&base, 500)
+            .status("mock-messaging", "cred-1", &question())
+            .await;
+        assert_eq!(answer.as_ref().map(|a| a.status), expected, "{body}");
+        if let Some(answer) = answer {
+            // The evidence is the digest of the answer, never the answer.
+            use sha2::Digest;
+            assert_eq!(answer.digest, hex::encode(sha2::Sha256::digest(body)));
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1, "asked once, never retried");
+    }
+}
+
+#[tokio::test]
+async fn a_refused_or_unreachable_status_question_is_no_answer() {
+    for status in [400, 401, 403, 404, 429, 500, 503] {
+        let (base, hits) = status_server(status, r#"{"status":"delivered"}"#).await;
+        let answer = forwarder(&base, 500)
+            .status("mock-messaging", "cred-1", &question())
+            .await;
+        assert_eq!(answer, None, "{status}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+    // A provider that is not registered, and one that is not there.
+    let (base, hits) = status_server(200, r#"{"status":"delivered"}"#).await;
+    assert_eq!(
+        forwarder(&base, 500)
+            .status("other-provider", "cred-1", &question())
+            .await,
+        None
+    );
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "nothing was sent");
+    assert_eq!(
+        forwarder("http://127.0.0.1:1", 200)
+            .status("mock-messaging", "cred-1", &question())
+            .await,
+        None
+    );
+}
+
+/// A redirect is never followed, so the question cannot be carried to
+/// another host.
+#[tokio::test]
+async fn a_status_question_does_not_follow_redirects() {
+    let (elsewhere, hits) = counter().await;
+    let target = format!("{elsewhere}/v1/messages/cred-1");
+    let app = Router::new().route(
+        "/v1/messages/{jti}",
+        axum::routing::get(move || {
+            let target = target.clone();
+            async move { (StatusCode::TEMPORARY_REDIRECT, [("location", target)]) }
+        }),
+    );
+    let base = serve(app).await;
+    let answer = forwarder(&base, 500)
+        .status("mock-messaging", "cred-1", &question())
+        .await;
+    assert_eq!(answer, None);
+    assert_eq!(hits.load(Ordering::SeqCst), 0);
+}
+
+/// The jti is one path segment: nothing in it can add a segment or a query.
+#[tokio::test]
+async fn a_jti_cannot_change_the_path_of_a_status_question() {
+    let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let log = Arc::clone(&seen);
+    let app = Router::new().fallback(any(move |uri: axum::http::Uri| {
+        let log = Arc::clone(&log);
+        async move {
+            log.lock().unwrap().push(uri.to_string());
+            (StatusCode::OK, r#"{"status":"delivered"}"#)
+        }
+    }));
+    let base = serve(app).await;
+    let answer = forwarder(&base, 500)
+        .status("mock-messaging", "a/b?x=1#y", &question())
+        .await;
+    assert!(answer.is_some());
+    let uris = seen.lock().unwrap();
+    let [uri] = uris.as_slice() else {
+        panic!("one request, got {uris:?}");
+    };
+    let rest = uri.strip_prefix("/v1/messages/").expect(uri);
+    assert!(!rest.contains(['/', '?', '#']), "{uri}");
 }

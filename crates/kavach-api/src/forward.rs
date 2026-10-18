@@ -11,12 +11,15 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use kavach_dataplane::{ForwardResult, Forwarder};
+use kavach_dataplane::{ForwardResult, Forwarder, ProviderStatus, StatusAnswer, StatusAsker};
 use kavach_ports::TokenSecret;
 use reqwest::Url;
+use sha2::Digest;
 
 const MAX_RESPONSE_BYTES: usize = 4096;
 pub const AUTH_SCHEME: &str = "Kavach-Credential";
+/// The scheme of a status question (ADR-017 R2).
+pub const STATUS_SCHEME: &str = "Kavach-Status";
 
 pub struct HttpForwarder {
     client: reqwest::Client,
@@ -82,6 +85,39 @@ impl HttpForwarder {
     }
 }
 
+/// At most [`MAX_RESPONSE_BYTES`] of the body; empty if it is longer or cut off.
+async fn read_bounded(response: &mut reqwest::Response) -> Vec<u8> {
+    let mut body = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if body.len() + chunk.len() <= MAX_RESPONSE_BYTES => {
+                body.extend_from_slice(&chunk);
+            }
+            // Too long or cut off: keep the status, drop the body.
+            Ok(Some(_)) | Err(_) => {
+                body.clear();
+                break;
+            }
+            Ok(None) => break,
+        }
+    }
+    body
+}
+
+/// The status contract's reply: exactly `{"status": <one of three words>}`.
+/// Anything else (more members, another word, not JSON) is outside the
+/// contract and is no answer.
+fn parse_status(body: &[u8]) -> Option<ProviderStatus> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let object = value.as_object().filter(|o| o.len() == 1)?;
+    match object.get("status")?.as_str()? {
+        "delivered" => Some(ProviderStatus::Delivered),
+        "not_delivered" => Some(ProviderStatus::NotDelivered),
+        "unknown" => Some(ProviderStatus::Unknown),
+        _ => None,
+    }
+}
+
 impl Forwarder for HttpForwarder {
     async fn forward(&self, provider: &str, credential: &TokenSecret) -> ForwardResult {
         let Some(url) = self.endpoints.get(provider) else {
@@ -104,24 +140,43 @@ impl Forwarder for HttpForwarder {
             Err(_) => return ForwardResult::Lost,
         };
         let status = response.status().as_u16();
-        let mut body = Vec::new();
-        loop {
-            match response.chunk().await {
-                Ok(Some(chunk)) if body.len() + chunk.len() <= MAX_RESPONSE_BYTES => {
-                    body.extend_from_slice(&chunk);
-                }
-                // Too long or cut off: keep the status, drop the body.
-                Ok(Some(_)) | Err(_) => {
-                    body.clear();
-                    break;
-                }
-                Ok(None) => break,
-            }
-        }
+        let body = read_bounded(&mut response).await;
         let message_id = serde_json::from_slice::<serde_json::Value>(&body)
             .ok()
             .and_then(|v| v.get("message_id")?.as_str().map(str::to_string));
         ForwardResult::Responded { status, message_id }
+    }
+}
+
+impl StatusAsker for HttpForwarder {
+    async fn status(
+        &self,
+        provider: &str,
+        jti: &str,
+        question: &TokenSecret,
+    ) -> Option<StatusAnswer> {
+        let mut url = self.endpoints.get(provider)?.clone();
+        // The jti is one path segment, whatever it contains.
+        url.path_segments_mut().ok()?.push(jti);
+        let mut response = self
+            .client
+            .get(url)
+            .header(
+                reqwest::header::AUTHORIZATION,
+                format!("{STATUS_SCHEME} {}", question.expose()),
+            )
+            .send()
+            .await
+            .ok()?;
+        if response.status().as_u16() != 200 {
+            return None;
+        }
+        let body = read_bounded(&mut response).await;
+        let status = parse_status(&body)?;
+        Some(StatusAnswer {
+            status,
+            digest: hex::encode(sha2::Sha256::digest(&body)),
+        })
     }
 }
 
