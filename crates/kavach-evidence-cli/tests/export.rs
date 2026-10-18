@@ -12,9 +12,12 @@ use kavach_evidence_cli::export::{export, ExportError, ExportRequest, ExportSour
 use kavach_evidence_cli::writer::BundleError;
 use kavach_ports::agent_evidence::ChainEntry as _;
 use kavach_ports::agent_evidence::{AgentDecisionRecord, OutcomeRecord};
-use kavach_ports::bundle::{CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE, RECORDS_FILE};
+use kavach_ports::bundle::{
+    CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE, RECORDS_FILE, RESOLUTIONS_FILE,
+};
 use kavach_ports::chain_record::ChainRecord;
 use kavach_ports::checkpoint::Checkpoint;
+use kavach_ports::outcome_resolution::ResolutionRecord;
 use kavach_ports::PortError;
 
 use common::*;
@@ -25,6 +28,8 @@ struct Memory {
     records: Vec<ChainRecord>,
     outcomes: Vec<(i64, OutcomeRecord)>,
     checkpoints: Vec<Checkpoint>,
+    /// Each resolution with its outcome's record `seq`.
+    resolutions: Vec<(i64, ResolutionRecord)>,
     reads: usize,
 }
 
@@ -42,12 +47,36 @@ impl Memory {
         )
     }
 
-    /// The decisions, the revocation and the two agent-state records: the
-    /// format 3 vector's run (an export always writes the newest format).
-    fn fixture_v3() -> Self {
+    /// The decisions, the revocation and the two agent-state records, with
+    /// two unknown outcomes and their resolutions: the format 4 vector's run
+    /// (an export always writes the newest format).
+    fn fixture_v4() -> Self {
         let chain = chain_v3();
         let checkpoints = checkpoints_v2(&chain);
-        Self::of(chain, checkpoints)
+        let mut source = Self::of(chain, checkpoints);
+        let decisions: Vec<AgentDecisionRecord> = source
+            .records
+            .iter()
+            .filter_map(|r| r.as_decision().cloned())
+            .collect();
+        let outcomes = outcomes_v4(&decisions);
+        let seq_of = |credential: &str| {
+            decisions
+                .iter()
+                .find(|r| r.payload.credential_id.as_deref() == Some(credential))
+                .unwrap()
+                .payload
+                .seq
+        };
+        source.outcomes = outcomes
+            .iter()
+            .map(|o| (seq_of(&o.credential_id), o.clone()))
+            .collect();
+        source.resolutions = resolutions_v4(&outcomes)
+            .into_iter()
+            .map(|r| (seq_of(&r.credential_id), r))
+            .collect();
+        source
     }
 
     fn of(records: Vec<ChainRecord>, checkpoints: Vec<Checkpoint>) -> Self {
@@ -72,6 +101,7 @@ impl Memory {
             checkpoints,
             outcomes,
             records,
+            resolutions: Vec::new(),
             reads: 0,
         }
     }
@@ -119,6 +149,19 @@ impl ExportSource for Memory {
             .filter(|c| c.payload.seq > after_seq);
         ready(Ok(page(rows.cloned(), limit)))
     }
+    fn resolutions(
+        &mut self,
+        after_seq: i64,
+        through_seq: i64,
+    ) -> impl Future<Output = Result<Vec<ResolutionRecord>, PortError>> {
+        self.reads += 1;
+        ready(Ok(self
+            .resolutions
+            .iter()
+            .filter(|(seq, _)| *seq > after_seq && *seq <= through_seq)
+            .map(|(_, r)| r.clone())
+            .collect()))
+    }
 }
 
 fn request<'a>(out: &'a Path, after_checkpoint: Option<i64>, key: &'a Key) -> ExportRequest<'a> {
@@ -135,7 +178,7 @@ fn request<'a>(out: &'a Path, after_checkpoint: Option<i64>, key: &'a Key) -> Ex
 
 fn vector(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/vectors/bundle-v3")
+        .join("tests/vectors/bundle-v4")
         .join(name)
 }
 
@@ -152,7 +195,7 @@ async fn a_paged_export_is_the_checked_in_bundle_byte_for_byte() {
     let key = export_key();
     for page in [1, 2, 3, 1000] {
         let out = scratch("export");
-        let mut source = Memory::fixture_v3();
+        let mut source = Memory::fixture_v4();
         let summary = export(
             &mut source,
             ExportRequest {
@@ -162,7 +205,13 @@ async fn a_paged_export_is_the_checked_in_bundle_byte_for_byte() {
         )
         .await
         .unwrap();
-        for name in [MANIFEST_FILE, RECORDS_FILE, OUTCOMES_FILE, CHECKPOINTS_FILE] {
+        for name in [
+            MANIFEST_FILE,
+            RECORDS_FILE,
+            OUTCOMES_FILE,
+            CHECKPOINTS_FILE,
+            RESOLUTIONS_FILE,
+        ] {
             assert_eq!(
                 fs::read(out.join(name)).unwrap(),
                 fs::read(vector(name)).unwrap(),
@@ -251,6 +300,7 @@ async fn an_empty_chain_exports_as_an_empty_bundle() {
         records: vec![],
         outcomes: vec![],
         checkpoints: vec![],
+        resolutions: vec![],
         reads: 0,
     };
     let summary = export(&mut source, request(&out, None, &key))

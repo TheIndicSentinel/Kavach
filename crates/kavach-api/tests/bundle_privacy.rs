@@ -154,7 +154,7 @@ async fn a_bundle_of_a_real_run_holds_no_destination_and_no_raw_reference() {
         assert_eq!(leak(&text), None, "{} leaks personal data", path.display());
         scanned += 1;
     }
-    assert_eq!(scanned, 4);
+    assert_eq!(scanned, 5);
     // The subject is there only as a keyed pseudonym.
     let records_text = std::fs::read_to_string(out.join("records.jsonl")).unwrap();
     assert!(records_text.contains("subject_pseudonym"), "{records_text}");

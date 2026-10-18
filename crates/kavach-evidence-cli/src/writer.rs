@@ -1,4 +1,4 @@
-//! Writes an evidence bundle (format v1, `docs/EVIDENCE_BUNDLE.md`).
+//! Writes an evidence bundle (format version 4, `docs/specs/evidence-bundle.md`).
 //!
 //! The bundle is built in `<out>.partial` and renamed to `<out>` only when
 //! it is complete, so a directory at `<out>` is always a whole bundle. The
@@ -18,9 +18,10 @@ use chrono::{DateTime, Utc};
 use kavach_ports::agent_evidence::{ChainEntry, EvidenceSigner, OutcomeRecord, SegmentStart};
 use kavach_ports::bundle::{
     seal_manifest, Exporter, FileEntry, Files, Manifest, ManifestDraft, Segment, CHECKPOINTS_FILE,
-    MANIFEST_FILE, OUTCOMES_FILE, RECORDS_FILE,
+    MANIFEST_FILE, OUTCOMES_FILE, RECORDS_FILE, RESOLUTIONS_FILE,
 };
 use kavach_ports::checkpoint::{Checkpoint, Scope};
+use kavach_ports::outcome_resolution::ResolutionRecord;
 use kavach_ports::PortError;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -155,6 +156,7 @@ pub struct BundleWriter {
     records: Sink,
     outcomes: Sink,
     checkpoints: Sink,
+    resolutions: Sink,
 }
 
 impl BundleWriter {
@@ -178,6 +180,7 @@ impl BundleWriter {
         let records = Sink::create(&partial.path, RECORDS_FILE)?;
         let outcomes = Sink::create(&partial.path, OUTCOMES_FILE)?;
         let checkpoints = Sink::create(&partial.path, CHECKPOINTS_FILE)?;
+        let resolutions = Sink::create(&partial.path, RESOLUTIONS_FILE)?;
         Ok(Self {
             out: out.to_path_buf(),
             partial,
@@ -193,6 +196,7 @@ impl BundleWriter {
             records,
             outcomes,
             checkpoints,
+            resolutions,
         })
     }
 
@@ -243,6 +247,16 @@ impl BundleWriter {
         self.outcomes.line(outcome)
     }
 
+    /// A resolution of an unknown outcome of this tenant (bundle version 4).
+    /// The exporter writes them in the order of their outcomes, then by time,
+    /// source and state.
+    pub fn resolution(&mut self, resolution: &ResolutionRecord) -> Result<(), BundleError> {
+        if resolution.tenant_id != self.tenant_id {
+            return inconsistent("a resolution of another tenant");
+        }
+        self.resolutions.line(resolution)
+    }
+
     /// The next checkpoint, in `seq` order.
     pub fn checkpoint(&mut self, checkpoint: &Checkpoint) -> Result<(), BundleError> {
         let p = &checkpoint.payload;
@@ -278,6 +292,9 @@ impl BundleWriter {
             records: self.records.finish()?,
             outcomes: self.outcomes.finish()?,
             checkpoints: self.checkpoints.finish()?,
+            // Always written, empty when there are none: a version 4 bundle
+            // has the file.
+            resolutions: Some(self.resolutions.finish()?),
         };
 
         let manifest = seal_manifest(

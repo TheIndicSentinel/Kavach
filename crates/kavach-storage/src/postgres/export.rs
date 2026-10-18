@@ -172,6 +172,39 @@ impl EvidenceSnapshot {
             .collect()
     }
 
+    /// Every resolution of the unknown outcomes of the records with
+    /// `after_seq < seq <= through_seq`, in the order of their records, then
+    /// by time, source and state (ADR-017).
+    pub async fn resolutions(
+        &mut self,
+        after_seq: i64,
+        through_seq: i64,
+    ) -> Result<Vec<kavach_ports::outcome_resolution::ResolutionRecord>, PortError> {
+        let rows = sqlx::query(
+            "SELECT r.credential_id, r.outcome_ref, r.state, r.source, r.reason, \
+                r.evidence_digest, r.resolved_by, r.approved_by, r.ts, r.key_id, r.sig \
+            FROM agent_outcome_resolutions r \
+            JOIN agent_decisions d \
+                ON d.tenant_id = r.tenant_id AND d.credential_id = r.credential_id \
+            WHERE r.tenant_id = $1 AND d.partition_id = $2 AND d.seq > $3 AND d.seq <= $4 \
+            ORDER BY d.seq, r.ts, r.source, r.state",
+        )
+        .bind(&self.tenant_id)
+        .bind(self.partition_id)
+        .bind(after_seq)
+        .bind(through_seq)
+        .fetch_all(&mut *self.tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter()
+            .map(|row| {
+                let credential_id: String =
+                    row.try_get("credential_id").map_err(|e| unavailable(&e))?;
+                super::agent_evidence::resolution_from_row(row, &self.tenant_id, &credential_id)
+            })
+            .collect()
+    }
+
     /// Checkpoints with `seq > after_seq`, in `seq` order, at most `limit`.
     pub async fn checkpoints(
         &mut self,

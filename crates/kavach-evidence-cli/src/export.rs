@@ -15,6 +15,7 @@ use kavach_ports::agent_evidence::{
 use kavach_ports::bundle::{Exporter, Manifest};
 use kavach_ports::chain_record::ChainRecord;
 use kavach_ports::checkpoint::{Checkpoint, Scope};
+use kavach_ports::outcome_resolution::ResolutionRecord;
 use kavach_ports::PortError;
 
 use crate::writer::{BundleError, BundleWriter};
@@ -49,6 +50,16 @@ pub trait ExportSource {
         after_seq: i64,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<Checkpoint>, PortError>>;
+
+    /// Every resolution of the unknown outcomes of the records with
+    /// `after_seq < seq <= through_seq`: in the order of their records, then
+    /// by time, source and state. Not paged: there is at most a handful per
+    /// unknown outcome.
+    fn resolutions(
+        &mut self,
+        after_seq: i64,
+        through_seq: i64,
+    ) -> impl Future<Output = Result<Vec<ResolutionRecord>, PortError>>;
 }
 
 /// A chain already read into memory: what a store without paging (the
@@ -59,6 +70,8 @@ pub struct Snapshot {
     /// Each outcome with its record's `seq`, in `seq` order.
     outcomes: Vec<(i64, OutcomeRecord)>,
     checkpoints: Vec<Checkpoint>,
+    /// Each resolution with its outcome's record `seq`.
+    resolutions: Vec<(i64, ResolutionRecord)>,
 }
 
 impl Snapshot {
@@ -76,7 +89,17 @@ impl Snapshot {
             records,
             outcomes,
             checkpoints,
+            resolutions: Vec::new(),
         }
+    }
+
+    /// The resolutions of the unknown outcomes, each keyed by its outcome's
+    /// record `seq` (ADR-017).
+    #[must_use]
+    pub fn with_resolutions(mut self, mut resolutions: Vec<(i64, ResolutionRecord)>) -> Self {
+        resolutions.sort_by_key(|(seq, r)| (*seq, r.ts, r.source.as_str(), r.state.as_str()));
+        self.resolutions = resolutions;
+        self
     }
 }
 
@@ -129,6 +152,24 @@ impl ExportSource for Snapshot {
             .cloned()
             .collect();
         std::future::ready(Ok(page))
+    }
+
+    fn resolutions(
+        &mut self,
+        after_seq: i64,
+        through_seq: i64,
+    ) -> impl Future<Output = Result<Vec<ResolutionRecord>, PortError>> {
+        std::future::ready(Ok(self.resolutions_between(after_seq, through_seq)))
+    }
+}
+
+impl Snapshot {
+    fn resolutions_between(&self, after_seq: i64, through_seq: i64) -> Vec<ResolutionRecord> {
+        self.resolutions
+            .iter()
+            .filter(|(seq, _)| *seq > after_seq && *seq <= through_seq)
+            .map(|(_, r)| r.clone())
+            .collect()
     }
 }
 
@@ -232,6 +273,10 @@ pub async fn export<S: ExportSource>(
         for (_, outcome) in &outcomes {
             writer.outcome(outcome)?;
         }
+    }
+
+    for resolution in source.resolutions(start.seq, head_seq).await? {
+        writer.resolution(&resolution)?;
     }
 
     // From the checkpoint the segment follows (so its link to the chain is

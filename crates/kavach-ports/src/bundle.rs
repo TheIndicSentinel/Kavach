@@ -26,12 +26,15 @@ use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
 
 pub const BUNDLE_FORMAT: &str = "kavach-evidence-bundle";
-/// The format version an export writes. Version 3 (ADR-013 §4) adds
-/// `agent_state` records to version 2's decisions and revocations
-/// (ADR-012 §7); version 1 carried decisions only.
-pub const BUNDLE_VERSION: u32 = 3;
+/// The format version an export writes. Version 4 (ADR-017) adds a fifth
+/// file, `resolutions.jsonl`, with the resolutions of `unknown` outcomes;
+/// version 3 (ADR-013 §4) added `agent_state` records to version 2's decisions
+/// and revocations (ADR-012 §7); version 1 carried decisions only.
+pub const BUNDLE_VERSION: u32 = 4;
 /// The versions a verifier reads; it refuses any other.
-pub const BUNDLE_VERSIONS: [u32; 3] = [1, 2, 3];
+pub const BUNDLE_VERSIONS: [u32; 4] = [1, 2, 3, 4];
+/// The first version with a resolutions file.
+pub const RESOLUTIONS_SINCE: u32 = 4;
 pub const BUNDLE_HASH_PREFIX: &[u8] = b"kavach-evidence-bundle-v1";
 pub const BUNDLE_SIG_PREFIX: &[u8] = b"kavach-evidence-bundle-v1:";
 
@@ -40,6 +43,8 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const RECORDS_FILE: &str = "records.jsonl";
 pub const OUTCOMES_FILE: &str = "outcomes.jsonl";
 pub const CHECKPOINTS_FILE: &str = "checkpoints.jsonl";
+/// Resolutions of unknown outcomes (version 4 only).
+pub const RESOLUTIONS_FILE: &str = "resolutions.jsonl";
 
 /// Export key ids start with this (after `dev-`, for a development key).
 pub const EXPORT_KEY_PREFIX: &str = "export-";
@@ -65,6 +70,9 @@ pub struct Files {
     pub records: FileEntry,
     pub outcomes: FileEntry,
     pub checkpoints: FileEntry,
+    /// Version 4 only: present exactly when the bundle has the file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolutions: Option<FileEntry>,
 }
 
 /// The records in the bundle: those after record `after_seq` (0 and 64
@@ -242,10 +250,22 @@ fn check_shape(p: &ManifestPayload) -> Result<(), ManifestError> {
     if p.files.records.count != records {
         return format("the record count does not match the segment");
     }
-    for file in [&p.files.records, &p.files.outcomes, &p.files.checkpoints] {
+    for file in [&p.files.records, &p.files.outcomes, &p.files.checkpoints]
+        .into_iter()
+        .chain(p.files.resolutions.as_ref())
+    {
         if !is_hash(&file.sha256) {
             return format("file digests must be 64 lowercase hex");
         }
+    }
+    // A resolutions file exists in version 4 and only there: never accepted
+    // inside a format that did not define it, never absent from one that did.
+    if p.files.resolutions.is_some() != (p.version >= RESOLUTIONS_SINCE) {
+        return format(if p.version >= RESOLUTIONS_SINCE {
+            "a version 4 bundle lists its resolutions file"
+        } else {
+            "a resolutions file is not part of bundle versions before 4"
+        });
     }
     Ok(())
 }
@@ -354,6 +374,7 @@ mod tests {
                 records: entry("a1", 3),
                 outcomes: entry("a2", 2),
                 checkpoints: entry("a3", 1),
+                resolutions: Some(entry("a4", 0)),
             },
             exported_at: DateTime::from_timestamp(1_790_000_000, 123_456_789).unwrap(),
             exporter: Exporter {
@@ -492,7 +513,10 @@ mod tests {
             verify(&m)
         };
         for change in [
-            (|p| p.version = 4) as fn(&mut ManifestPayload),
+            (|p| p.version = 5) as fn(&mut ManifestPayload),
+            // The resolutions file belongs to version 4 and only there.
+            |p| p.files.resolutions = None,
+            |p| p.version = 3,
             |p| p.format = "something-else".into(),
             |p| p.segment.last_seq = -1,
             |p| p.files.records.count = 4,

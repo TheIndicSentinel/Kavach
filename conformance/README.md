@@ -23,7 +23,7 @@ They check that every published vector verifies with the warnings the specificat
 ## What it is not
 
 - **Not for production secrets.** The credential command takes a provider's private key, and pure-Python big-integer arithmetic is not constant-time. It is for conformance checking and audit.
-- **Not a replacement for the Rust verifier** in a deployment: it is slower and covers the formats in `docs/specs/` only (bundle versions 1 and 2, checkpoints, credentials, mandates and system-of-record events).
+- **Not a replacement for the Rust verifier** in a deployment: it is slower and covers the formats in `docs/specs/` only (bundle versions 1 to 4, checkpoints, credentials, mandates and system-of-record events).
 - **Not covering** mandate *status* (live or revoked) or the evidence record's own fields beyond the bundle spec: status lives in Kavach's store, not in a token.
 
 ## Found so far

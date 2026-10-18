@@ -29,6 +29,12 @@ use common::*;
 
 // ---------------------------------------------------------------- in memory
 
+/// The resolutions stream of a bundle that has none to give.
+fn no_resolutions(
+) -> impl Iterator<Item = Result<kavach_ports::outcome_resolution::ResolutionRecord, String>> {
+    std::iter::empty()
+}
+
 /// A manifest for `records` following `start` (file digests are not what
 /// these tests are about).
 fn manifest(start: SegmentStart<'_>, records: &[AgentDecisionRecord], signed: bool) -> Manifest {
@@ -52,6 +58,7 @@ fn manifest(start: SegmentStart<'_>, records: &[AgentDecisionRecord], signed: bo
                 records: entry(records.len() as u64),
                 outcomes: entry(0),
                 checkpoints: entry(0),
+                resolutions: Some(entry(0)),
             },
             exported_at: exported_at(),
             exporter: exporter(),
@@ -82,6 +89,7 @@ impl Case<'_> {
                 .map(Ok),
             self.outcomes.iter().cloned().map(Ok),
             self.checkpoints.iter().cloned().map(Ok),
+            no_resolutions(),
             &VerifyOptions {
                 validity: &std::collections::BTreeMap::new(),
                 keys: &keys,
@@ -108,6 +116,7 @@ fn verify_limited(
             .map(Ok),
         case.outcomes.iter().cloned().map(Ok),
         case.checkpoints.iter().cloned().map(Ok),
+        no_resolutions(),
         &VerifyOptions {
             validity,
             keys: &keys,
@@ -210,6 +219,7 @@ fn a_bundle_verifies_and_says_what_it_does_not_protect() {
         records.iter().cloned().map(ChainRecord::Decision).map(Ok),
         outcomes.iter().cloned().map(Ok),
         checkpoints.iter().cloned().map(Ok),
+        no_resolutions(),
         &VerifyOptions {
             validity: &std::collections::BTreeMap::new(),
             keys: &keys,
@@ -392,6 +402,7 @@ fn records_outcomes_and_checkpoints_that_do_not_belong_are_refused() {
             .map(Ok),
         outcomes.iter().cloned().map(Ok),
         checkpoints.iter().cloned().map(Ok),
+        no_resolutions(),
         &VerifyOptions {
             validity: &std::collections::BTreeMap::new(),
             keys: &keys,
@@ -493,6 +504,7 @@ fn checkpoints_that_do_not_fit_the_records_and_unreadable_lines_are_refused() {
             .chain([Err("expected value at line 1 column 1".to_string())]),
         outcomes.iter().cloned().map(Ok),
         checkpoints.iter().cloned().map(Ok),
+        no_resolutions(),
         &VerifyOptions {
             validity: &std::collections::BTreeMap::new(),
             keys: &keys,

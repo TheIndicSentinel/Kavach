@@ -57,6 +57,69 @@ class AgentStates(unittest.TestCase):
         self.assertEqual(kinds(r), ["no_kept_checkpoint", "outcome_missing", "outcome_unknown"])
 
 
+class Resolutions(unittest.TestCase):
+    """Version 4: resolutions.jsonl, the file the manifest lists."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.bundle = os.path.join(self.dir, "b")
+        shutil.copytree(f"{BUNDLES}/bundle-v4", self.bundle)
+        self.keys = f"{BUNDLES}/bundle-v2.keys.json"
+
+    def tearDown(self):
+        shutil.rmtree(self.dir)
+
+    def path(self, name):
+        return os.path.join(self.bundle, name)
+
+    def lines(self, name):
+        with open(self.path(name), encoding="utf-8") as h:
+            return h.read().splitlines()
+
+    def refuse(self, fragment):
+        with self.assertRaises(kv.Refused) as ctx:
+            kv.verify_bundle(self.bundle, self.keys, now=NOW)
+        self.assertIn(fragment, str(ctx.exception))
+
+    def test_a_resolved_and_a_conflicted_outcome(self):
+        r = kv.verify_bundle(self.bundle, self.keys, now=NOW)
+        self.assertEqual((r["version"], r["resolutions"]), (4, 3))
+        # cred-3 is resolved by the provider; cred-4 holds two confirmed states.
+        self.assertEqual(kinds(r), ["no_kept_checkpoint", "outcome_conflicted"])
+        self.assertEqual([w["detail"] for w in r["warnings"] if w["kind"] == "outcome_conflicted"],
+                         ["cred-4"])
+
+    def test_a_missing_resolutions_file(self):
+        os.remove(self.path("resolutions.jsonl"))
+        self.refuse("must hold exactly")
+
+    def test_a_removed_resolution(self):
+        rows = self.lines("resolutions.jsonl")[:-1]
+        with open(self.path("resolutions.jsonl"), "w", encoding="utf-8") as h:
+            h.write("".join(row + "\n" for row in rows))
+        self.refuse("digest does not match")
+
+    def test_a_tampered_resolution(self):
+        rows = [json.loads(row) for row in self.lines("resolutions.jsonl")]
+        rows[0]["state"] = "confirmed_not_delivered"
+        with open(self.path("resolutions.jsonl"), "w", encoding="utf-8") as h:
+            h.write("".join(kv.jcs(row).decode() + "\n" for row in rows))
+        self.refuse("digest does not match")
+
+    def test_a_resolution_in_a_version_3_bundle_is_refused(self):
+        shutil.rmtree(self.bundle)
+        shutil.copytree(f"{BUNDLES}/bundle-v3", self.bundle)
+        shutil.copy(f"{BUNDLES}/bundle-v4/resolutions.jsonl", self.path("resolutions.jsonl"))
+        self.refuse("must hold exactly")
+
+    def test_an_unknown_member_is_refused(self):
+        rows = [json.loads(row) for row in self.lines("resolutions.jsonl")]
+        rows[0]["note"] = "x"
+        with open(self.path("resolutions.jsonl"), "w", encoding="utf-8") as h:
+            h.write("".join(kv.jcs(row).decode() + "\n" for row in rows))
+        self.refuse("digest does not match")
+
+
 class DigestForms(unittest.TestCase):
     def test_bundle_with_a_tagged_event_digest(self):
         r = kv.verify_bundle(f"{BUNDLES}/bundle-v2-digest", f"{BUNDLES}/bundle-v2.keys.json",

@@ -29,10 +29,13 @@ use kavach_ports::agent_evidence::{
 };
 use kavach_ports::bundle::{
     verify_manifest, Manifest, ManifestSignature, CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE,
-    RECORDS_FILE,
+    RECORDS_FILE, RESOLUTIONS_FILE,
 };
 use kavach_ports::chain_record::ChainRecord;
 use kavach_ports::checkpoint::{verify_checkpoints, ChainSegment, Checkpoint};
+use kavach_ports::outcome_resolution::{
+    resolution_message, ResolutionRecord, ResolutionSource, ResolutionState,
+};
 use kavach_ports::{KeyAlgorithm, PublicKey};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -62,6 +65,38 @@ fn write_chain(out: &Path, chain: &[ChainRecord]) {
     writer
         .finish(exported_at(), exporter(), Some(&export_key()))
         .unwrap();
+}
+
+/// The format 4 run (`bundle-v4`): the format 3 chain with two unknown
+/// outcomes and their resolutions.
+fn write_v4(out: &Path) {
+    let chain = chain_v3();
+    let decisions = records();
+    let outcomes = outcomes_v4(&decisions);
+    let mut writer = BundleWriter::create(out, SCOPE, SegmentStart::GENESIS).unwrap();
+    for record in &chain {
+        writer.record(record).unwrap();
+    }
+    for outcome in &outcomes {
+        writer.outcome(outcome).unwrap();
+    }
+    for checkpoint in checkpoints_v2(&chain) {
+        writer.checkpoint(&checkpoint).unwrap();
+    }
+    for resolution in resolutions_v4(&outcomes) {
+        writer.resolution(&resolution).unwrap();
+    }
+    writer
+        .finish(exported_at(), exporter(), Some(&export_key()))
+        .unwrap();
+}
+
+#[test]
+#[ignore = "regenerates the checked-in vector; run only on a deliberate format change"]
+fn generate_v4() {
+    let bundle = vectors().join("bundle-v4");
+    let _ = fs::remove_dir_all(&bundle);
+    write_v4(&bundle);
 }
 
 #[test]
@@ -119,14 +154,22 @@ fn keys_from_file(vector: &str) -> BTreeMap<String, PublicKey> {
         .collect()
 }
 
+/// What the writer writes now is bundle version 4: bundles of versions 1 to 3
+/// are checked in and verified, but they are never rewritten.
 #[test]
 fn the_writer_reproduces_the_checked_in_bundle_byte_for_byte() {
     let out = scratch("vector");
-    write_chain(&out, &chain_v3());
-    for name in [MANIFEST_FILE, RECORDS_FILE, OUTCOMES_FILE, CHECKPOINTS_FILE] {
+    write_v4(&out);
+    for name in [
+        MANIFEST_FILE,
+        RECORDS_FILE,
+        OUTCOMES_FILE,
+        CHECKPOINTS_FILE,
+        RESOLUTIONS_FILE,
+    ] {
         assert_eq!(
             fs::read(out.join(name)).unwrap(),
-            fs::read(vectors().join("bundle-v3").join(name)).unwrap(),
+            fs::read(vectors().join("bundle-v4").join(name)).unwrap(),
             "{name}: the bundle format changed (see the module docs)"
         );
     }
@@ -299,6 +342,9 @@ fn an_unknown_kind_or_a_revocation_in_format_1_is_refused() {
     };
     let seal = |out: &Path, mut manifest: Manifest, version: u32| {
         manifest.payload.version = version;
+        // A bundle before version 4 has no resolutions file.
+        manifest.payload.files.resolutions = None;
+        let _ = fs::remove_file(out.join(RESOLUTIONS_FILE));
         manifest.hash = kavach_ports::bundle::manifest_hash(&manifest.payload).unwrap();
         manifest.sig = None;
         fs::write(
@@ -457,6 +503,9 @@ fn a_version_2_bundle_refuses_an_agent_state_record() {
     let mut manifest: Manifest =
         serde_json::from_slice(&fs::read(out.join(MANIFEST_FILE)).unwrap()).unwrap();
     manifest.payload.version = 2;
+    // A bundle before version 4 has no resolutions file.
+    manifest.payload.files.resolutions = None;
+    fs::remove_file(out.join(RESOLUTIONS_FILE)).unwrap();
     manifest.payload.key_id = None;
     manifest.sig = None;
     manifest.hash = kavach_ports::bundle::manifest_hash(&manifest.payload).unwrap();
@@ -479,4 +528,321 @@ fn a_version_2_bundle_refuses_an_agent_state_record() {
         err.contains("a version 2 bundle holds decisions and revocations only"),
         "{err}"
     );
+}
+
+// ------------------------------------------------------------------ version 4
+
+fn verify_dir(dir: &Path) -> Result<kavach_ports::bundle_verify::BundleReport, String> {
+    kavach_evidence_cli::verify::verify_dir(&kavach_evidence_cli::verify::VerifyRequest {
+        bundle: dir,
+        keys: &vectors().join("bundle-v2.keys.json"),
+        expect_checkpoint: None,
+        dev: false,
+        now: exported_at(),
+    })
+    .map_err(|e| e.to_string())
+}
+
+#[test]
+fn the_format_4_bundle_verifies_and_reports_the_governing_states() {
+    let bundle = vectors().join("bundle-v4");
+    let manifest: Manifest =
+        serde_json::from_slice(&fs::read(bundle.join(MANIFEST_FILE)).unwrap()).unwrap();
+    assert_eq!(manifest.payload.version, 4);
+    assert_eq!(
+        manifest.payload.files.resolutions.as_ref().unwrap().count,
+        3
+    );
+    let report = verify_dir(&bundle).expect("the bundle verifies");
+    assert_eq!((report.records, report.last_seq), (7, 7));
+    assert_eq!((report.outcomes, report.resolutions), (3, 3));
+    // Record 3's result is confirmed delivered by the provider (settled, so
+    // not a warning); record 4's has two different confirmed answers and
+    // nothing closes the conflict.
+    assert_eq!(
+        report.outcome_resolved.count, 1,
+        "{:?}",
+        report.outcome_resolved
+    );
+    assert!(report.outcome_resolved.first[0].contains("confirmed_delivered by provider_status"));
+    assert_eq!(report.outcome_conflicted.count, 1);
+    assert_eq!(report.outcome_unknown.count, 0);
+    let kinds: Vec<&str> = report.not_protected().iter().map(|f| f.kind).collect();
+    assert_eq!(kinds, ["no_kept_checkpoint", "outcome_conflicted"]);
+}
+
+/// A bundle of version 4 whose resolutions are `resolutions` and whose
+/// outcomes are the format 4 run's.
+fn v4_with(name: &str, resolutions: &[ResolutionRecord]) -> PathBuf {
+    let out = scratch(name);
+    let chain = chain_v3();
+    let outcomes = outcomes_v4(&records());
+    let mut writer = BundleWriter::create(&out, SCOPE, SegmentStart::GENESIS).unwrap();
+    for record in &chain {
+        writer.record(record).unwrap();
+    }
+    for outcome in &outcomes {
+        writer.outcome(outcome).unwrap();
+    }
+    for checkpoint in checkpoints_v2(&chain) {
+        writer.checkpoint(&checkpoint).unwrap();
+    }
+    for resolution in resolutions {
+        writer.resolution(resolution).unwrap();
+    }
+    writer
+        .finish(exported_at(), exporter(), Some(&export_key()))
+        .unwrap();
+    out
+}
+
+/// Re-signs `record` as written (the form is whatever was set), so that only
+/// the form or the reference is what is wrong, never the signature.
+fn resigned(mut record: ResolutionRecord, key: &Key) -> ResolutionRecord {
+    use ed25519_dalek::Signer as _;
+    record.key_id = key.0.to_string();
+    record.sig = hex::encode(key.1.sign(&resolution_message(&record)).to_bytes());
+    record
+}
+
+/// Resolutions that break a rule of the format, each with the reason the
+/// verifier must give (the cases of docs/specs/evidence-bundle.md section 10.1).
+fn rule_breaking_resolutions() -> Vec<(&'static str, ResolutionRecord, &'static str)> {
+    use ResolutionSource::{ConflictResolution, OperatorAttested, ProviderStatus, Reconciler};
+    use ResolutionState::{
+        Ambiguous, ConfirmedDelivered as Delivered, ConfirmedNotDelivered as Not,
+    };
+    let outcomes = outcomes_v4(&records());
+    let (settled, unknown) = (&outcomes[0], &outcomes[1]);
+    let key = evidence_key();
+    let valid = resolution_of(
+        unknown,
+        (Delivered, ProviderStatus),
+        Some("answer"),
+        (None, None),
+        5,
+    );
+    let with = |change: &dyn Fn(&mut ResolutionRecord)| {
+        let mut r = valid.clone();
+        change(&mut r);
+        resigned(r, &key)
+    };
+    let people = |by: Option<&str>, approver: Option<&str>| {
+        let by = by.map(str::to_string);
+        let approver = approver.map(str::to_string);
+        move |r: &mut ResolutionRecord| {
+            r.source = OperatorAttested;
+            r.state = Not;
+            r.resolved_by.clone_from(&by);
+            r.approved_by.clone_from(&approver);
+        }
+    };
+    vec![
+        (
+            "settled",
+            resigned(
+                resolution_of(
+                    settled,
+                    (Delivered, ProviderStatus),
+                    Some("answer"),
+                    (None, None),
+                    5,
+                ),
+                &key,
+            ),
+            "no unknown outcome of this bundle",
+        ),
+        (
+            "other-row",
+            with(&|r| r.outcome_ref = "00".repeat(32)),
+            "another outcome row",
+        ),
+        (
+            "no-outcome",
+            with(&|r| r.credential_id = "cred-none".into()),
+            "no unknown outcome of this bundle",
+        ),
+        (
+            "one-person-not-delivered",
+            with(&|r| people(Some("alice"), None)(r)),
+            "second, different person",
+        ),
+        (
+            "same-person",
+            with(&|r| people(Some("alice"), Some("alice"))(r)),
+            "second, different person",
+        ),
+        (
+            "reconciler-confirming",
+            with(&|r| {
+                r.source = Reconciler;
+                r.evidence_digest = None;
+            }),
+            "only says ambiguous",
+        ),
+        (
+            "closure-by-one",
+            with(&|r| {
+                r.source = ConflictResolution;
+                r.resolved_by = Some("carol".into());
+                r.approved_by = None;
+            }),
+            "two different people",
+        ),
+        (
+            "ambiguous-closure",
+            with(&|r| {
+                r.source = ConflictResolution;
+                r.state = Ambiguous;
+                r.resolved_by = Some("carol".into());
+                r.approved_by = Some("dave".into());
+            }),
+            "closed by a confirmed state",
+        ),
+    ]
+}
+
+/// Resolutions that are wrong in time or in their signature.
+fn untrustworthy_resolutions() -> Vec<(&'static str, ResolutionRecord, &'static str)> {
+    use ResolutionSource::ProviderStatus;
+    use ResolutionState::ConfirmedDelivered as Delivered;
+    let outcomes = outcomes_v4(&records());
+    let unknown = &outcomes[1];
+    let key = evidence_key();
+    let valid = resolution_of(
+        unknown,
+        (Delivered, ProviderStatus),
+        Some("answer"),
+        (None, None),
+        5,
+    );
+    vec![
+        (
+            "before-its-outcome",
+            resigned(
+                resolution_of(
+                    unknown,
+                    (Delivered, ProviderStatus),
+                    Some("answer"),
+                    (None, None),
+                    -5,
+                ),
+                &key,
+            ),
+            "before the outcome",
+        ),
+        (
+            "forged",
+            {
+                let mut r = valid.clone();
+                r.sig = "00".repeat(64);
+                r
+            },
+            "does not verify",
+        ),
+        (
+            "development-key",
+            resigned(
+                valid.clone(),
+                &Key(
+                    "dev-evidence-kat",
+                    ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]),
+                ),
+            ),
+            "development key",
+        ),
+    ]
+}
+
+/// Every way a resolution can be wrong is refused by the verifier, for its
+/// own reason (docs/specs/evidence-bundle.md section 10.1).
+#[test]
+fn a_version_4_bundle_refuses_a_resolution_that_breaks_the_rules() {
+    let valid = resolutions_v4(&outcomes_v4(&records())).remove(0);
+    for (name, resolution, expected) in rule_breaking_resolutions()
+        .into_iter()
+        .chain(untrustworthy_resolutions())
+    {
+        let out = v4_with(&format!("v4-{name}"), &[resolution]);
+        let err = verify_dir(&out).expect_err(name);
+        assert!(
+            err.contains("resolutions.jsonl line 1") && err.contains(expected),
+            "{name}: {err}"
+        );
+    }
+    // A repeat of (credential, source, state) is refused at its second line.
+    let out = v4_with("v4-repeat", &[valid.clone(), valid]);
+    let err = verify_dir(&out).unwrap_err();
+    assert!(err.contains("line 2") && err.contains("repeats"), "{err}");
+}
+
+/// A member the format does not define is refused: nothing unsigned rides
+/// along with a signed resolution.
+#[test]
+fn a_resolution_with_an_unknown_member_is_refused() {
+    let outcomes = outcomes_v4(&records());
+    let valid = resolutions_v4(&outcomes).remove(0);
+    let out = v4_with("v4-extra-member", &[]);
+    let mut line: Value = serde_json::to_value(&valid).unwrap();
+    line["note"] = "unsigned words".into();
+    let text = line.to_string() + "\n";
+    fs::write(out.join(RESOLUTIONS_FILE), &text).unwrap();
+    let mut manifest: Manifest =
+        serde_json::from_slice(&fs::read(out.join(MANIFEST_FILE)).unwrap()).unwrap();
+    let entry = manifest.payload.files.resolutions.as_mut().unwrap();
+    entry.sha256 = format!("{:x}", Sha256::digest(text.as_bytes()));
+    entry.count = 1;
+    manifest.payload.key_id = None;
+    manifest.sig = None;
+    manifest.hash = kavach_ports::bundle::manifest_hash(&manifest.payload).unwrap();
+    fs::write(
+        out.join(MANIFEST_FILE),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let err = verify_dir(&out).unwrap_err();
+    assert!(
+        err.contains("resolutions.jsonl") && err.contains("unknown field"),
+        "{err}"
+    );
+}
+
+/// A resolution is never accepted inside a format that did not define it, and
+/// never missing from one that did.
+#[test]
+fn the_resolutions_file_belongs_to_version_4_only() {
+    // A resolutions file inside a version 3 bundle.
+    let out = scratch("v3-with-resolutions");
+    for name in [MANIFEST_FILE, RECORDS_FILE, OUTCOMES_FILE, CHECKPOINTS_FILE] {
+        fs::copy(vectors().join("bundle-v3").join(name), out.join(name)).unwrap_or_else(|_| {
+            fs::create_dir_all(&out).unwrap();
+            fs::copy(vectors().join("bundle-v3").join(name), out.join(name)).unwrap()
+        });
+    }
+    verify_dir(&out).expect("the untouched version 3 bundle verifies");
+    fs::write(out.join(RESOLUTIONS_FILE), "").unwrap();
+    let err = verify_dir(&out).unwrap_err();
+    assert!(err.contains("unexpected entry resolutions.jsonl"), "{err}");
+
+    // A version 4 bundle without its resolutions file.
+    let v4 = v4_with("v4-missing-file", &[]);
+    fs::remove_file(v4.join(RESOLUTIONS_FILE)).unwrap();
+    let err = verify_dir(&v4).unwrap_err();
+    assert!(err.contains("resolutions.jsonl is missing"), "{err}");
+
+    // A version 4 manifest that does not list the file.
+    let v4 = v4_with("v4-unlisted", &[]);
+    let mut manifest: Manifest =
+        serde_json::from_slice(&fs::read(v4.join(MANIFEST_FILE)).unwrap()).unwrap();
+    manifest.payload.files.resolutions = None;
+    manifest.payload.key_id = None;
+    manifest.sig = None;
+    manifest.hash = kavach_ports::bundle::manifest_hash(&manifest.payload).unwrap();
+    fs::write(
+        v4.join(MANIFEST_FILE),
+        serde_json::to_vec(&manifest).unwrap(),
+    )
+    .unwrap();
+    let err = verify_dir(&v4).unwrap_err();
+    assert!(err.contains("lists its resolutions file"), "{err}");
 }

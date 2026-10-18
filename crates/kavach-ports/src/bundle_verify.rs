@@ -30,11 +30,14 @@ use crate::agent_evidence::{
 };
 use crate::bundle::{
     verify_manifest, Manifest, ManifestError, ManifestSignature, Segment, CHECKPOINTS_FILE,
-    OUTCOMES_FILE, RECORDS_FILE,
+    OUTCOMES_FILE, RECORDS_FILE, RESOLUTIONS_FILE, RESOLUTIONS_SINCE,
 };
 use crate::chain_record::ChainRecord;
 use crate::checkpoint::{check_one, Checkpoint, CheckpointError, Scope};
 use crate::keys::PublicKey;
+use crate::outcome_resolution::{
+    check_against_outcome, check_form, governing, resolution_verifies, Governing, ResolutionRecord,
+};
 
 /// At most this many ids or notes are kept per finding; the count is exact.
 pub const SAMPLE: usize = 20;
@@ -128,6 +131,8 @@ pub enum BundleFailure {
     Segment(String),
     #[error("{OUTCOMES_FILE} line {line}: {reason}")]
     Outcome { line: u64, reason: String },
+    #[error("{RESOLUTIONS_FILE} line {line}: {reason}")]
+    Resolution { line: u64, reason: String },
     #[error(transparent)]
     Checkpoint(#[from] CheckpointError),
     #[error(
@@ -173,6 +178,8 @@ pub struct BundleReport {
     pub head_hash: String,
     pub records: u64,
     pub outcomes: u64,
+    /// Lines of the resolutions file (version 4; zero before).
+    pub resolutions: u64,
     pub checkpoints: u64,
     /// `seq` of the newest checkpoint that covers a record of the bundle
     /// (or the record it follows).
@@ -183,8 +190,15 @@ pub struct BundleReport {
     pub kept_checkpoint: Option<i64>,
     /// Allows past their credential's expiry with no outcome.
     pub outcome_missing: Tally,
-    /// Outcomes recorded as `unknown` (sent, result not known).
+    /// Outcomes recorded as `unknown` (sent, result not known). In version 4,
+    /// only those no resolution has settled: unresolved or only ambiguous.
     pub outcome_unknown: Tally,
+    /// Version 4: unknown outcomes with two different confirmed answers and
+    /// no two-person closure. Neither answer is reported as true.
+    pub outcome_conflicted: Tally,
+    /// Version 4: unknown outcomes a resolution has settled (informational;
+    /// not a warning).
+    pub outcome_resolved: Tally,
     /// Checkpoints dated before the one preceding them.
     pub clock_notes: Tally,
 }
@@ -259,6 +273,17 @@ impl BundleReport {
                     "{} outcome(s) are recorded as unknown (sent, result not known): {}",
                     self.outcome_unknown.count,
                     sample(&self.outcome_unknown)
+                ),
+            );
+        }
+        if self.outcome_conflicted.count > 0 {
+            finding(
+                "outcome_conflicted",
+                format!(
+                    "{} unknown outcome(s) have two different confirmed answers and no \
+                     two-person resolution: {}",
+                    self.outcome_conflicted.count,
+                    sample(&self.outcome_conflicted)
                 ),
             );
         }
@@ -494,7 +519,7 @@ fn take_outcome<O: Lines<OutcomeRecord>>(
     outcomes: &mut Numbered<O>,
     record: &AgentDecisionRecord,
     opts: &VerifyOptions<'_>,
-) -> Result<Option<Outcome>, BundleFailure> {
+) -> Result<Option<OutcomeRecord>, BundleFailure> {
     let Some(credential_id) = record.payload.credential_id.as_deref() else {
         return Ok(None);
     };
@@ -526,7 +551,147 @@ fn take_outcome<O: Lines<OutcomeRecord>>(
         record.payload.seq,
         outcome.ts,
     )?;
-    Ok(Some(outcome.outcome))
+    Ok(Some(outcome))
+}
+
+/// An `unknown` outcome the bundle holds, with its record's `seq`.
+struct UnknownOutcome {
+    seq: i64,
+    outcome: OutcomeRecord,
+}
+
+/// What the resolutions of a version 4 bundle say, per unknown outcome.
+struct Resolutions {
+    lines: u64,
+    by_credential: BTreeMap<String, Vec<ResolutionRecord>>,
+}
+
+/// Verifies `resolutions.jsonl` (version 4): every line refers to an
+/// `unknown` outcome of this bundle, by the hash of its signature; is of a
+/// well-formed shape (who may say what); is signed by a trusted key within
+/// its limits; is not before its outcome; and is not a repeat.
+fn check_resolutions<Z: Lines<ResolutionRecord>>(
+    p: &crate::bundle::ManifestPayload,
+    resolutions: Z,
+    unknowns: &[UnknownOutcome],
+    opts: &VerifyOptions<'_>,
+) -> Result<Resolutions, BundleFailure> {
+    let mut lines = Numbered::new(resolutions, RESOLUTIONS_FILE);
+    let mut found = Resolutions {
+        lines: 0,
+        by_credential: BTreeMap::new(),
+    };
+    if p.version < RESOLUTIONS_SINCE {
+        // The layout and manifest checks refuse a resolutions file before
+        // version 4; a stream here is refused as well.
+        if lines.peek()?.is_some() {
+            return Err(BundleFailure::Resolution {
+                line: 1,
+                reason: format!("bundle version {} has no resolutions", p.version),
+            });
+        }
+        return Ok(found);
+    }
+    let by_credential: BTreeMap<&str, &UnknownOutcome> = unknowns
+        .iter()
+        .map(|u| (u.outcome.credential_id.as_str(), u))
+        .collect();
+    let mut seen = std::collections::BTreeSet::new();
+    while let Some(resolution) = lines.next()? {
+        let invalid = |reason: String| BundleFailure::Resolution {
+            line: lines.line,
+            reason,
+        };
+        if resolution.tenant_id != p.tenant_id {
+            return Err(invalid("belongs to another tenant".into()));
+        }
+        let Some(unknown) = by_credential.get(resolution.credential_id.as_str()) else {
+            return Err(invalid(format!(
+                "the resolution of {} refers to no unknown outcome of this bundle",
+                resolution.credential_id
+            )));
+        };
+        check_against_outcome(&resolution, Some(&unknown.outcome))
+            .and_then(|()| check_form(&resolution))
+            .map_err(|e| invalid(e.message))?;
+        if opts.dev_keys == DevKeys::Refuse && is_dev_key(&resolution.key_id) {
+            return Err(invalid("is signed with a development key".into()));
+        }
+        if !resolution_verifies(&resolution, opts.keys) {
+            return Err(invalid("does not verify".into()));
+        }
+        opts.within_validity(
+            || format!("the resolution of {}", resolution.credential_id),
+            &resolution.key_id,
+            unknown.seq,
+            resolution.ts,
+        )?;
+        if resolution.ts < unknown.outcome.ts {
+            return Err(invalid("is dated before the outcome it resolves".into()));
+        }
+        if !seen.insert((
+            resolution.credential_id.clone(),
+            resolution.source.as_str(),
+            resolution.state.as_str(),
+        )) {
+            return Err(invalid("repeats an earlier resolution".into()));
+        }
+        found
+            .by_credential
+            .entry(resolution.credential_id.clone())
+            .or_default()
+            .push(resolution);
+    }
+    found.lines = lines.line;
+    Ok(found)
+}
+
+/// What a record's outcome (or its absence) adds to the report: an allow
+/// whose credential has expired with no outcome is `outcome_missing`; an
+/// `unknown` outcome is kept for step 6a.
+fn note_outcome(
+    decision: &AgentDecisionRecord,
+    outcome: Option<OutcomeRecord>,
+    opts: &VerifyOptions<'_>,
+    (missing, unknown, unknown_outcomes): (&mut Tally, &mut Tally, &mut Vec<UnknownOutcome>),
+) {
+    let rp = &decision.payload;
+    match outcome {
+        Some(outcome) if outcome.outcome == Outcome::Unknown => {
+            unknown.add(|| rp.credential_id.clone().unwrap_or_default());
+            unknown_outcomes.push(UnknownOutcome {
+                seq: rp.seq,
+                outcome,
+            });
+        }
+        Some(_) => {}
+        None => {
+            let expired = rp.credential_expires_at.is_none_or(|exp| exp <= opts.now);
+            if let (true, true, Some(id)) = (decision.is_allow(), expired, &rp.credential_id) {
+                missing.add(|| id.clone());
+            }
+        }
+    }
+}
+
+/// Sorts the unknown outcomes by what their resolutions say (§5.3.3): still
+/// unknown (unresolved, or only ambiguous), conflicted, or resolved.
+fn settle_unknowns(
+    unknowns: &[UnknownOutcome],
+    found: &Resolutions,
+    (unknown, conflicted, resolved): (&mut Tally, &mut Tally, &mut Tally),
+) {
+    for u in unknowns {
+        let id = &u.outcome.credential_id;
+        let rows = found.by_credential.get(id).map_or(&[][..], Vec::as_slice);
+        match governing(rows) {
+            Governing::Unresolved | Governing::Ambiguous => unknown.add(|| id.clone()),
+            Governing::Conflicted => conflicted.add(|| id.clone()),
+            Governing::Confirmed { state, source } => {
+                resolved.add(|| format!("{id}: {} by {}", state.as_str(), source.as_str()));
+            }
+        }
+    }
 }
 
 /// One record of the bundle: of its chain, of a kind its format version
@@ -574,17 +739,19 @@ fn check_bundle_record(
 ///   by a checkpoint at its start, in the bundle or kept by the operator.
 /// - The caller compares each file's bytes with the manifest's digest and
 ///   count; this checks what the lines say.
-pub fn verify_bundle<R, O, C>(
+pub fn verify_bundle<R, O, C, Z>(
     manifest: &Manifest,
     records: R,
     outcomes: O,
     checkpoints: C,
+    resolutions: Z,
     opts: &VerifyOptions<'_>,
 ) -> Result<BundleReport, BundleFailure>
 where
     R: Lines<ChainRecord>,
     O: Lines<OutcomeRecord>,
     C: Lines<Checkpoint>,
+    Z: Lines<ResolutionRecord>,
 {
     let signature = verify_manifest(manifest, opts.keys, opts.dev_keys)?;
     let p = &manifest.payload;
@@ -620,26 +787,19 @@ where
     let mut last_seq = segment.after_seq;
     let mut prev = segment.after_hash.clone();
     let (mut missing, mut unknown) = (Tally::default(), Tally::default());
+    let mut unknown_outcomes: Vec<UnknownOutcome> = Vec::new();
     run.checkpoints_through(last_seq, &prev)?;
     while let Some(record) = records.next()? {
         let seq = record.seq();
         check_bundle_record(&record, p, (last_seq, &prev), opts)?;
         if let Some(decision) = record.as_decision() {
-            let rp = &decision.payload;
-            match take_outcome(&mut outcomes, decision, opts)? {
-                Some(Outcome::Unknown) => {
-                    unknown.add(|| rp.credential_id.clone().unwrap_or_default());
-                }
-                Some(_) => {}
-                None => {
-                    let expired = rp.credential_expires_at.is_none_or(|exp| exp <= opts.now);
-                    if let (true, true, Some(id)) =
-                        (decision.is_allow(), expired, &rp.credential_id)
-                    {
-                        missing.add(|| id.clone());
-                    }
-                }
-            }
+            let found = take_outcome(&mut outcomes, decision, opts)?;
+            note_outcome(
+                decision,
+                found,
+                opts,
+                (&mut missing, &mut unknown, &mut unknown_outcomes),
+            );
         }
         last_seq = seq;
         prev = record.hash().to_string();
@@ -665,6 +825,19 @@ where
     }
     let kept_checkpoint = run.finish(segment, last_seq)?;
 
+    // Version 4: what the resolutions say about each unknown outcome. Before
+    // it every unknown outcome is simply reported.
+    let found = check_resolutions(p, resolutions, &unknown_outcomes, opts)?;
+    let (mut conflicted, mut resolved) = (Tally::default(), Tally::default());
+    if p.version >= RESOLUTIONS_SINCE {
+        unknown = Tally::default();
+        settle_unknowns(
+            &unknown_outcomes,
+            &found,
+            (&mut unknown, &mut conflicted, &mut resolved),
+        );
+    }
+
     let covered_through = run.seen.last_covering.unwrap_or(segment.after_seq);
     Ok(BundleReport {
         signature,
@@ -673,12 +846,15 @@ where
         head_hash: prev,
         records: records.line,
         outcomes: outcomes.line,
+        resolutions: found.lines,
         checkpoints: run.seen.count,
         last_checkpoint: run.seen.last_covering,
         uncovered_records: u64::try_from(last_seq - covered_through).unwrap_or(0),
         kept_checkpoint,
         outcome_missing: missing,
         outcome_unknown: unknown,
+        outcome_conflicted: conflicted,
+        outcome_resolved: resolved,
         clock_notes: run.seen.clock_notes,
     })
 }
