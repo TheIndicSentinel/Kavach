@@ -1,6 +1,6 @@
 # ADR-017: Reconciling unknown outcomes
 
-**Status:** Proposed. Not decided, and not to be implemented from this text. It needs the owner's choice between the options below and the answers to the open questions; it can be built and tested against the mock provider only.
+**Status:** Accepted (with the owner's decisions and amendments, 2026-10-18). **Implementation is gated:** it starts after the permanent Rust-versus-Python verifier-agreement test exists (because it changes the bundle format and both verifiers must keep agreeing), in the phases below, against the mock provider only. Nothing here is a claim about a real provider.
 
 ## Context
 
@@ -30,33 +30,44 @@ The mock provider already has the property that makes a resolution possible: it 
 | History visible to an auditor | Yes (every resolution, in time order) | No | Yes, ordered with decisions |
 | Format change | A new file in the bundle (`resolutions.jsonl`), so a new bundle format version and both verifiers | None, but unacceptable | A new record kind, so a new bundle version |
 | Cost | Moderate | Low | Higher (chain lock, partition ordering) |
-| Verdict | **Proposed** | Rejected | Later, only if an auditor needs resolutions ordered against decisions |
+| Verdict | **Chosen** (a separate signed list is enough for now) | Rejected | Deferred, only if an auditor needs resolutions ordered against decisions |
 
-## Proposed decision (when the questions are answered)
+## Decision
 
 1. **Data.** `outcome_resolution`: `tenant`, `credential_id`, the hash of the outcome row it resolves, `state` (`confirmed_delivered`, `confirmed_not_delivered`, `ambiguous`), `source` (`provider_status`, `operator_attested`), a closed reason code, a digest of the provider's answer or an operator reference, `resolved_at`, signed under its own prefix. Many per outcome; the latest in time governs.
-2. **Status contract (mock first).** The provider answers `GET /v1/messages/{jti}` with only the stored status (`delivered`, `not_delivered`, `unknown`), authenticated by the same credential binding as the send, and never the destination. The mock gains it; a real provider's mapping is ADR-015's work, not assumed here.
-3. **Reconciler.** A background task, like the revocation reconcilers, reads `unknown` outcomes with no governing resolution, asks the status question with bounded retries and back-off, is rate limited, and writes the resolution. After a horizon (open question 2) without an answer it writes `ambiguous` and stops asking.
-4. **Operator attestation.** A person may attest an outcome from outside Kavach (for example the provider's console): a change request kind, with the reference and a reason code, audited; whether it needs a second person is open question 3.
-5. **Verifier and bundle.** `outcome_unknown` becomes "unknown and unresolved"; resolved ones are listed with their resolution; an unsigned or inconsistent resolution is a failure (as a bad outcome signature is), not a gap. Bundle format 4, the specification, vectors and both verifiers move together.
+2. **Status contract (mock first).** The provider answers `GET /v1/messages/{jti}` with only the stored status (`delivered`, `not_delivered`, `unknown`), authenticated by the same credential binding as the send, and never the destination. The mock gains it. **A status lookup is a hypothesis about real providers, not an assumption**: many will not offer one by an idempotency key, so for them the common outcomes will be `operator_attested` and `ambiguous`, and the design must be as honest and as usable on those paths as on the mock's. A real provider's mapping is ADR-015's work.
+3. **Reconciler.** A background task, like the revocation reconcilers, reads `unknown` outcomes with no governing resolution, asks the status question with back-off for **up to an hour** after the outcome (`UNKNOWN_OUTCOME_POLL_WINDOW`, one hour), is rate limited, and writes the resolution when it gets a confirmed answer. If there is no confirmed answer **24 hours** after the outcome (`UNKNOWN_OUTCOME_AMBIGUOUS_AFTER`, 24 hours), it writes `ambiguous`. Between the two the call stays unresolved and is not polled; a person may attest at any time. Both are named constants for now, not settings.
+4. **Operator attestation follows the rule used elsewhere: tightening is one person, loosening is two.** Attesting that a contact **was delivered** (the record grows, nothing is hidden) needs one person: a change request with a reference and a reason code, audited. Attesting that a contact was **not delivered** needs **two**, a proposer and a different approver, as for agent reinstatement, because it lowers the recorded contact and could hide a violation.
+5. **Verifier and bundle.** `outcome_unknown` becomes "unknown and unresolved"; resolved ones are listed with their resolution and its source; a conflicted outcome is its own list; an unsigned or inconsistent resolution is a failure (as a bad outcome signature is), not a gap. **One bundle format bump (format 4)** covers this and the dispute-release record of ADR-016 if both are built, not two; the specification, vectors and both verifiers move together.
 6. **Signals.** The unresolved count and **the age of the oldest unresolved** (meaningful now), the ambiguous count, and resolutions written by source; alerts on the age and on ambiguous resolutions.
 7. **Attacks and simulation.** A resolution cannot be forged without the key; a reconciler that is made to resend is caught (it has no path, and a test shows the gateway's forward-once still holds); the simulator's oracle gains the resolved states from its own ground truth, not from Kavach's records.
+
+## Conflicts: no "latest wins"
+
+A silent flip would hide exactly what an auditor needs to see, so the governing state is computed from **all** of an outcome's resolutions, never from the latest:
+
+- Take the distinct *confirmed* states among them (`confirmed_delivered`, `confirmed_not_delivered`).
+- **None:** the outcome is `ambiguous` if there is an ambiguous row, else unresolved.
+- **One:** that state governs. If it was reached by a provider status and by an attestation alike, the **provider status outranks the attestation** as the stated source.
+- **Two, different:** the outcome is **`conflicted`**. It raises an alert, appears in the verifier's conflicted list, and is closed only by a **two-person** resolution (a change request that names the governing state and why). Until then, neither state is reported as true.
+- **An `ambiguous` row never overrides a confirmed one**, whenever it was written; it is kept as history and ignored for the governing state.
 
 ## Phases (each its own change, against the mock only)
 
 R1 the data, signing, store and verifier (bundle format 4). R2 the mock status endpoint and the reconciler. R3 operator attestation, signals, attacks and the simulator.
 
-## Open questions
+## Decisions on the open questions (owner, 2026-10-18)
 
-1. Which real providers expose a status lookup by an idempotency key or message id, and with what latency and retention? (This decides whether `provider_status` is ever available outside the mock.)
-2. How long before an unresolved call is `ambiguous`: minutes, hours, the provider's retention window?
-3. Who may attest an outcome, and is one person enough? (A delivered contact and a not-delivered contact have different consequences for a borrower and for the lender's conduct record.)
-4. Does a `confirmed_not_delivered` ever release the contact slot, and under whose authority? (Proposed: never automatically.)
-5. Does an auditor need resolutions ordered against decisions in the chain (option C), or is a separate signed list enough?
+1. **Real providers:** assume nothing. A provider status lookup is a hypothesis; build against the mock only. `operator_attested` and `ambiguous` will probably be the common outcomes outside it, and the ADR says so (Decision 2).
+2. **Horizon:** ask with back-off for up to an hour; write `ambiguous` at 24 hours without an answer; named constants.
+3. **Attestation:** delivered needs one person; not delivered needs two (Decision 4).
+4. **The contact slot:** a resolution **never** releases it. Any release is a separate, two-person decision, out of scope here.
+5. **Ordering against decisions:** a separate signed list is enough; option C is deferred.
 
 ## Consequences
 
 - An unknown outcome gains a way to become known, with its history, without any path that can send again.
 - Every claim about delivery has to say its source (`provider_status` or `operator_attested`); neither is "proof of delivery".
 - A bundle format version and both verifiers change, as for the kill switch.
-- Until this is accepted and built, **every unknown outcome stays reported and unresolved**, and the monitoring work does not measure its age.
+- Until this is built, **every unknown outcome stays reported and unresolved**, and the monitoring work does not measure its age. Once R1 and R2 exist, the age of the oldest unresolved outcome and the conflicted count become meaningful alerts (R3).
+- Two different non-ambiguous answers for one outcome are an incident, not a tie to break.
