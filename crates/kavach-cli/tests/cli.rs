@@ -1794,3 +1794,225 @@ fn reconcile_finds_authority_for_a_loan_whose_payment_never_arrived() {
     assert_eq!(clean.status.code(), Some(0), "{doc}");
     assert_eq!(doc["mismatches"], 0, "{doc}");
 }
+
+/// The independent Python verifier (`conformance/kavach_verify.py`) run on a
+/// bundle: its exit code and its JSON. `None` when there is no `python3`
+/// (CI must have one: the test fails there instead of skipping).
+fn python_verify(
+    bundle: &Path,
+    keys: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<(i32, Value)> {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance/kavach_verify.py");
+    let output = Command::new("python3")
+        .args(["-I"])
+        .arg(&script)
+        .args(["bundle", "--keys"])
+        .arg(keys)
+        .args([
+            "--dev",
+            "--allow-warnings",
+            "--now",
+            &now.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+        ])
+        .arg(bundle)
+        .output();
+    let Ok(output) = output else {
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "python3 is required in CI for the verifier-agreement test"
+        );
+        eprintln!("skipping the verifier-agreement test: no python3");
+        return None;
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let doc: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("the Python verifier printed no JSON ({e}): {text}"));
+    Some((output.status.code().unwrap_or(-1), doc))
+}
+
+/// A copy of a bundle directory to damage.
+fn copy_bundle(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        std::fs::copy(entry.path(), to.join(entry.file_name())).unwrap();
+    }
+}
+
+/// The Rust verifier on a bundle, as the library `kavach evidence verify`
+/// calls (development keys accepted).
+fn rust_verify(
+    bundle: &Path,
+    keys: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<kavach_ports::bundle_verify::BundleReport, String> {
+    kavach_evidence_cli::verify::verify_dir(&kavach_evidence_cli::verify::VerifyRequest {
+        bundle,
+        keys,
+        expect_checkpoint: None,
+        dev: true,
+        now,
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// A development stack taken through a decision, a refusal, a payment (a
+/// revocation record) and an agent stop (an `agent_state` record), stopped so
+/// that it exports. Returns the project and the bundle directory.
+fn export_a_rich_bundle() -> (PathBuf, PathBuf) {
+    let dir = scratch("verifier-agreement");
+    assert_eq!(kavach(&dir, &["init"]).status.code(), Some(0));
+    use_free_ports(&dir);
+    let bundle = dir.join("bundle");
+    let target = bundle.to_str().unwrap();
+    let mut stack = dev_up(&dir, &["--clock", "11:00", "--export-on-exit", target]);
+    let ok = |args: &[&str]| {
+        let out = kavach(&dir, args);
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {}", json(&out));
+    };
+    ok(&["call", "send_reminder", "--issue-mandate"]);
+    let refused = kavach(
+        &dir,
+        &[
+            "call",
+            "send_reminder",
+            "--issue-mandate",
+            "-p",
+            "channel=sms",
+        ],
+    );
+    assert_eq!(refused.status.code(), Some(1));
+    ok(&["sor", "event", "--type", "loan.paid"]);
+    ok(&["agent", "restrict", "collections-agent"]);
+    assert!(stop_with(&mut stack, "-TERM").success());
+
+    // The scenario really wrote the kinds this test is about.
+    let records = std::fs::read_to_string(bundle.join("records.jsonl")).unwrap();
+    for kind in ["agent_decision", "mandate_revocation", "agent_state"] {
+        assert!(
+            records.contains(&format!("\"kind\":\"{kind}\"")),
+            "no {kind} record"
+        );
+    }
+    (dir, bundle)
+}
+
+/// A way to damage a copy of a bundle.
+type Damage = (&'static str, Box<dyn Fn(&Path)>);
+
+/// The kinds of damage both verifiers must refuse.
+fn damages() -> Vec<Damage> {
+    let line_edit = |file: &'static str, edit: fn(&mut Vec<String>)| -> Box<dyn Fn(&Path)> {
+        Box::new(move |copy: &Path| {
+            let text = std::fs::read_to_string(copy.join(file)).unwrap();
+            let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+            edit(&mut lines);
+            std::fs::write(copy.join(file), lines.join("\n") + "\n").unwrap();
+        })
+    };
+    vec![
+        (
+            "a changed record",
+            Box::new(|copy: &Path| {
+                let text = std::fs::read_to_string(copy.join("records.jsonl")).unwrap();
+                assert!(text.contains("send_reminder"));
+                std::fs::write(
+                    copy.join("records.jsonl"),
+                    text.replacen("send_reminder", "send_remindex", 1),
+                )
+                .unwrap();
+            }),
+        ),
+        (
+            "a removed record",
+            line_edit("records.jsonl", |l| {
+                l.remove(1);
+            }),
+        ),
+        (
+            "reordered records",
+            line_edit("records.jsonl", |l| l.swap(0, 1)),
+        ),
+        (
+            "a cut tail",
+            line_edit("records.jsonl", |l| {
+                l.pop();
+            }),
+        ),
+        (
+            "a removed outcome",
+            line_edit("outcomes.jsonl", |l| {
+                l.remove(0);
+            }),
+        ),
+        (
+            "an edited manifest",
+            Box::new(|copy: &Path| {
+                let text = std::fs::read_to_string(copy.join("manifest.json")).unwrap();
+                let at = text.find("\"count\"").expect("a count in the manifest");
+                let (head, tail) = text.split_at(at);
+                let tail = tail.replacen(|c: char| c.is_ascii_digit(), "9", 1);
+                std::fs::write(copy.join("manifest.json"), format!("{head}{tail}")).unwrap();
+            }),
+        ),
+    ]
+}
+
+/// The audit claim rests on two implementations agreeing, so it is checked on
+/// what the real exporter writes (not on a hand-made vector): a stack is run
+/// through a decision, a refusal, a payment (a revocation record) and an agent
+/// stop (an `agent_state` record), stopped so that it exports, and both
+/// verifiers read the bundle. They must agree on what it holds. Then each kind
+/// of damage (a changed record, a removed or reordered one, a removed outcome,
+/// a cut tail, an edited manifest) must be refused by **both**.
+///
+/// Limit: the signed manifest holds each file's digest, so every edit here is
+/// caught at the digest check before the chain checks run. The chain-level
+/// rules (hashes, order, checkpoints) are exercised in isolation by the
+/// shared vectors in `crates/kavach-evidence-cli/tests/vectors/` and
+/// `conformance/`; this test shows the two verifiers agree on a bundle the
+/// real exporter wrote, not that each damage reaches the deepest check.
+#[test]
+fn the_rust_and_python_verifiers_agree_on_a_real_exported_bundle() {
+    let (dir, bundle) = export_a_rich_bundle();
+    let keys = dir.join(".kavach/auditor/trusted-keys.json");
+    // Whole seconds, the form the Python verifier takes, so both use one `now`.
+    let now = chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp(), 0).unwrap();
+    let rust = rust_verify(&bundle, &keys, now).expect("the Rust verifier accepts it");
+    let Some((code, python)) = python_verify(&bundle, &keys, now) else {
+        return;
+    };
+    assert_eq!(code, 0, "the Python verifier accepts it: {python}");
+    // They agree on what the bundle holds...
+    assert_eq!(python["records"], rust.records, "{python}");
+    assert_eq!(python["outcomes"], rust.outcomes, "{python}");
+    assert_eq!(python["checkpoints"], rust.checkpoints, "{python}");
+    assert_eq!(python["last_seq"], rust.last_seq, "{python}");
+    // ...and on what it does not protect.
+    let mut rust_findings: Vec<String> = rust
+        .not_protected()
+        .iter()
+        .map(|f| f.kind.to_string())
+        .collect();
+    let mut python_findings: Vec<String> = python["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["kind"].as_str().unwrap().to_string())
+        .collect();
+    rust_findings.sort();
+    python_findings.sort();
+    assert_eq!(rust_findings, python_findings, "{python}");
+
+    for (name, damage) in &damages() {
+        let copy = dir.join(format!("damaged-{}", name.replace(' ', "-")));
+        copy_bundle(&bundle, &copy);
+        damage(&copy);
+        let rust = rust_verify(&copy, &keys, now);
+        let (code, python) = python_verify(&copy, &keys, now).unwrap();
+        assert!(rust.is_err(), "{name}: the Rust verifier accepted it");
+        assert_ne!(code, 0, "{name}: the Python verifier accepted it: {python}");
+        assert_eq!(python["result"], "fail", "{name}: {python}");
+    }
+}
