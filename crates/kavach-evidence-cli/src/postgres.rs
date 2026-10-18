@@ -38,6 +38,13 @@ impl ExportSource for EvidenceSnapshot {
     ) -> Result<Vec<Checkpoint>, PortError> {
         EvidenceSnapshot::checkpoints(self, after_seq, limit).await
     }
+    async fn resolutions(
+        &mut self,
+        after_seq: i64,
+        through_seq: i64,
+    ) -> Result<Vec<kavach_ports::outcome_resolution::ResolutionRecord>, PortError> {
+        EvidenceSnapshot::resolutions(self, after_seq, through_seq).await
+    }
 }
 
 /// Which chain to read, and as whom.

@@ -493,12 +493,19 @@ KINDS = {
     1: {"agent_decision"},
     2: {"agent_decision", "mandate_revocation"},
     3: {"agent_decision", "mandate_revocation", "agent_state"},
+    4: {"agent_decision", "mandate_revocation", "agent_state"},
 }
+RESOLUTION_SIG = b"kavach-outcome-resolution-sig-v1:"
+RESOLUTION_STATES = {"confirmed_delivered", "confirmed_not_delivered", "ambiguous"}
+CONFIRMED = {"confirmed_delivered", "confirmed_not_delivered"}
+RESOLUTION_SOURCES = {"provider_status", "operator_attested", "conflict_resolution", "reconciler"}
 STATES = ["active", "restricted", "quarantined", "revoked"]
 REASON_CODES = {"rogue_behaviour", "compromise_suspected", "policy_violation",
                 "customer_complaint", "operator_request", "reviewed", "other"}
 OUTCOMES = {"delivered", "failed", "refused", "not_executed", "unknown"}
 FILES = ["manifest.json", "records.jsonl", "outcomes.jsonl", "checkpoints.jsonl"]
+RESOLUTIONS = "resolutions.jsonl"
+RESOLUTIONS_SINCE = 4
 
 
 def _members(obj, required, optional=(), what="object"):
@@ -614,8 +621,12 @@ class Verifier:
         if last == after and seg["head_hash"] != seg["after_hash"]:
             raise Refused("manifest: an empty segment must end where it starts")
         files = doc["files"]
-        _members(files, ["records", "outcomes", "checkpoints"], what="files")
-        for name in ("records", "outcomes", "checkpoints"):
+        version = doc["version"]
+        listed = ["records", "outcomes", "checkpoints"]
+        if version >= RESOLUTIONS_SINCE:
+            listed.append("resolutions")
+        _members(files, listed, what="files")
+        for name in listed:
             _members(files[name], ["sha256", "count"], what=f"files.{name}")
             if not is_hash(files[name]["sha256"]):
                 raise Refused(f"manifest: files.{name}.sha256 is not 64 lowercase hex")
@@ -796,15 +807,128 @@ class Verifier:
             self._check_sig(kid, prefix + "\n".join(body).encode("utf-8"), nxt["sig"], where)
             self._limits(kid, rec["seq"], when, where)
             if nxt["outcome"] == "unknown":
-                unknown.append(rec["credential_id"])
+                unknown.append((rec["seq"], nxt))
         if index != len(parsed):
             raise Refused(
                 f"outcomes.jsonl line {index + 1}: belongs to no record of the segment, in order"
             )
         for credential in missing:
             self.warnings.append({"kind": "outcome_missing", "detail": credential})
-        for credential in unknown:
-            self.warnings.append({"kind": "outcome_unknown", "detail": credential})
+        return unknown
+
+    # -- resolutions (version 4) --------------------------------------------
+    @staticmethod
+    def _resolution_form(res, where):
+        def bad(reason):
+            raise Refused(f"{where}: {reason}")
+
+        if not _REASON.match(res["reason"]):
+            bad("the reason is not a code")
+        if not is_hash(res["outcome_ref"]):
+            bad("outcome_ref is not a SHA-256")
+        digest = res.get("evidence_digest")
+        if digest is not None and not is_hash(digest):
+            bad("evidence_digest is not a SHA-256")
+        resolved, approved = res.get("resolved_by"), res.get("approved_by")
+        for who in (resolved, approved):
+            if who is not None and (
+                    not isinstance(who, str) or not 1 <= len(who.encode("utf-8")) <= 128
+                    or any(ord(c) < 32 or 127 <= ord(c) < 160 for c in who)):
+                bad("a principal must be 1 to 128 printable characters")
+        source, state = res["source"], res["state"]
+        if source == "reconciler":
+            if state != "ambiguous" or digest is not None or resolved is not None \
+                    or approved is not None:
+                bad("the reconciler only says ambiguous, with no evidence or principals")
+        elif source == "provider_status":
+            if digest is None or resolved is not None or approved is not None:
+                bad("a provider status carries a digest and no principals")
+        elif source == "operator_attested":
+            if resolved is None or digest is None:
+                bad("an attestation names the person and carries a digest")
+            two = state == "confirmed_not_delivered"
+            if two and (approved is None or approved == resolved):
+                bad("attesting not delivered needs a second, different person")
+            if not two and approved is not None:
+                bad("this attestation needs one person, not two")
+        else:
+            if state not in CONFIRMED:
+                bad("a conflict is closed by a confirmed state")
+            if resolved is None or approved is None or approved == resolved or digest is None:
+                bad("a conflict resolution needs two different people and a digest")
+
+    def resolutions(self, lines, unknown, manifest):
+        """Checks resolutions.jsonl; returns {credential: [rows]}."""
+        by_cred = {entry["credential_id"]: (seq, entry) for seq, entry in unknown}
+        found, seen = {}, set()
+        for number, raw in enumerate(lines, 1):
+            res = _parse_line(raw, RESOLUTIONS, number)
+            where = f"{RESOLUTIONS} line {number}"
+            _members(res, ["tenant_id", "credential_id", "outcome_ref", "state", "source",
+                           "reason", "ts", "key_id", "sig"],
+                     ["evidence_digest", "resolved_by", "approved_by"], where)
+            for name in ("tenant_id", "credential_id", "outcome_ref", "reason", "key_id", "sig"):
+                _str(res[name], f"{where}: {name}")
+            if res["tenant_id"] != manifest["tenant_id"]:
+                raise Refused(f"{where}: belongs to another tenant")
+            target = by_cred.get(res["credential_id"])
+            if target is None:
+                raise Refused(f"{where}: refers to no unknown outcome of this bundle")
+            seq, outcome = target
+            if hashlib.sha256(outcome["sig"].encode("ascii")).hexdigest() != res["outcome_ref"]:
+                raise Refused(f"{where}: it refers to another outcome row")
+            if res["state"] not in RESOLUTION_STATES or res["source"] not in RESOLUTION_SOURCES:
+                raise Refused(f"{where}: unknown state or source")
+            for name in ("evidence_digest", "resolved_by", "approved_by"):
+                if name in res:
+                    _str(res[name], f"{where}: {name}")
+            self._resolution_form(res, where)
+            kid = res["key_id"]
+            if not self.dev and kid.startswith("dev-"):
+                raise Refused(f"{where}: signed with a development key")
+            when = parse_time(res["ts"], f"{where}: ts")
+            none = lambda v: "none" if v is None else "some:" + v  # noqa: E731
+            body = "\n".join([
+                res["tenant_id"], res["credential_id"], res["outcome_ref"], res["state"],
+                res["source"], res["reason"], none(res.get("evidence_digest")),
+                none(res.get("resolved_by")), none(res.get("approved_by")),
+                six_digit_time(when)])
+            self._check_sig(kid, RESOLUTION_SIG + body.encode("utf-8"), res["sig"], where)
+            self._limits(kid, seq, when, where)
+            if when < parse_time(outcome["ts"], "outcome ts"):
+                raise Refused(f"{where}: is dated before the outcome it resolves")
+            key = (res["credential_id"], res["source"], res["state"])
+            if key in seen:
+                raise Refused(f"{where}: repeats an earlier resolution")
+            seen.add(key)
+            found.setdefault(res["credential_id"], []).append(res)
+        return found
+
+    @staticmethod
+    def _governing(rows):
+        closing = {r["state"] for r in rows
+                   if r["source"] == "conflict_resolution" and r["state"] in CONFIRMED}
+        if len(closing) == 1:
+            return "resolved", next(iter(closing)), "conflict_resolution"
+        if len(closing) > 1:
+            return "conflicted", None, None
+        states = {r["state"] for r in rows if r["state"] in CONFIRMED}
+        if not states:
+            return "unknown", None, None
+        if len(states) > 1:
+            return "conflicted", None, None
+        state = next(iter(states))
+        by_provider = any(r["state"] == state and r["source"] == "provider_status" for r in rows)
+        return "resolved", state, "provider_status" if by_provider else "operator_attested"
+
+    def settle(self, unknown, found):
+        for _seq, outcome in unknown:
+            cred = outcome["credential_id"]
+            kind, state, source = self._governing(found.get(cred, []))
+            if kind == "unknown":
+                self.warnings.append({"kind": "outcome_unknown", "detail": cred})
+            elif kind == "conflicted":
+                self.warnings.append({"kind": "outcome_conflicted", "detail": cred})
 
     # -- checkpoints -----------------------------------------------------------
     def checkpoint(self, obj, manifest, where):
@@ -876,10 +1000,20 @@ def verify_bundle(directory, keys_path, kept_path=None, dev=False, now=None):
     if os.path.commonpath([real, os.path.realpath(keys_path)]) == real:
         raise Refused("the keys file must not be inside the bundle")
     names = sorted(os.listdir(directory))
-    if names != sorted(FILES):
-        raise Refused(f"the bundle must hold exactly {FILES}, not {names}")
+    # The manifest says which files belong: a resolutions file from version 4.
+    manifest_path = os.path.join(directory, "manifest.json")
+    if not os.path.exists(manifest_path):
+        raise Refused("manifest.json is missing")
+    with open(manifest_path, "rb") as handle:
+        head = handle.read()
+    head = head[:-1] if head.endswith(b"\n") else head
+    version = _parse_line(head, "manifest.json", 1)
+    version = version.get("version") if isinstance(version, dict) else None
+    files = FILES + ([RESOLUTIONS] if isinstance(version, int) and version >= RESOLUTIONS_SINCE else [])
+    if names != sorted(files):
+        raise Refused(f"the bundle must hold exactly {files}, not {names}")
     data = {}
-    for name in FILES:
+    for name in files:
         path = os.path.join(directory, name)
         if not stat.S_ISREG(os.lstat(path).st_mode):
             raise Refused(f"{name} is not a regular file")
@@ -897,7 +1031,12 @@ def verify_bundle(directory, keys_path, kept_path=None, dev=False, now=None):
     rec_lines = _lines(data["records.jsonl"], "records.jsonl")
     out_lines = _lines(data["outcomes.jsonl"], "outcomes.jsonl")
     cp_lines = _lines(data["checkpoints.jsonl"], "checkpoints.jsonl")
-    for name, lines in (("records", rec_lines), ("outcomes", out_lines), ("checkpoints", cp_lines)):
+    res_lines = []
+    streams = [("records", rec_lines), ("outcomes", out_lines), ("checkpoints", cp_lines)]
+    if RESOLUTIONS in data:
+        res_lines = _lines(data[RESOLUTIONS], RESOLUTIONS)
+        streams.append(("resolutions", res_lines))
+    for name, lines in streams:
         entry = manifest["files"][name]
         if hashlib.sha256(data[f"{name}.jsonl"]).hexdigest() != entry["sha256"]:
             raise Refused(f"{name}.jsonl: its digest does not match the manifest")
@@ -919,7 +1058,8 @@ def verify_bundle(directory, keys_path, kept_path=None, dev=False, now=None):
     if "key_id" in manifest:
         v._limits(manifest["key_id"], manifest["segment"]["last_seq"], exported, "manifest")
     records = v.records(rec_lines, manifest)
-    v.outcomes(out_lines, records, manifest)
+    unknown = v.outcomes(out_lines, records, manifest)
+    v.settle(unknown, v.resolutions(res_lines, unknown, manifest))
     have, covered = v.checkpoints(cp_lines, records, manifest, kept)
 
     seg = manifest["segment"]
@@ -950,6 +1090,7 @@ def verify_bundle(directory, keys_path, kept_path=None, dev=False, now=None):
         "version": manifest["version"],
         "records": len(records),
         "outcomes": len(out_lines),
+        "resolutions": len(res_lines),
         "checkpoints": len(cp_lines),
         "last_seq": seg["last_seq"],
         "warnings": v.warnings,

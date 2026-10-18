@@ -96,7 +96,10 @@ impl ResolutionSource {
 }
 
 /// A signed resolution of an `unknown` outcome (off-chain, append-only).
+/// A line with a member not listed here is refused: nothing unsigned rides
+/// along.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolutionRecord {
     pub tenant_id: String,
     pub credential_id: String,
@@ -295,6 +298,18 @@ pub fn check_against_outcome(
         ));
     }
     Ok(())
+}
+
+/// Whether the resolution's signature verifies with the key it names.
+#[must_use]
+pub fn resolution_verifies(
+    record: &ResolutionRecord,
+    keys: &std::collections::BTreeMap<String, crate::keys::PublicKey>,
+) -> bool {
+    let sig = hex::decode(&record.sig).unwrap_or_default();
+    keys.get(&record.key_id).is_some_and(|key| {
+        crate::keys::verify_ed25519(key, &resolution_message(record), &sig).is_ok()
+    })
 }
 
 /// Signs a resolution at `ts` with the evidence key.

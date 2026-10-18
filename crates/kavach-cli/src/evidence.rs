@@ -19,9 +19,11 @@ use chrono::Utc;
 use kavach_evidence_cli::export::{ExportRequest, Snapshot, DEFAULT_PAGE};
 use kavach_evidence_cli::postgres::{export_key, run_export, Signing, Target};
 use kavach_evidence_cli::verify::{load_trusted_keys, verify_dir, Verdict, VerifyRequest};
-use kavach_ports::agent_evidence::{is_dev_key, AgentEvidenceStore, ChainEntry};
+use kavach_ports::agent_evidence::{is_dev_key, AgentEvidenceStore, ChainEntry, OutcomeRecord};
 use kavach_ports::bundle::Exporter;
+use kavach_ports::chain_record::ChainRecord;
 use kavach_ports::checkpoint::{CheckpointStore, Scope, CHAIN_AGENT_DECISIONS};
+use kavach_ports::outcome_resolution::ResolutionRecord;
 use serde_json::json;
 
 use crate::output::{CliError, Status, Style, Ui};
@@ -123,6 +125,40 @@ pub async fn export(
     Ok(ui.finish("evidence export", status, &data, &human))
 }
 
+/// The outcomes of the decisions in `records`, and the resolutions of the
+/// unknown ones (ADR-017), each with the sequence number of its record.
+async fn outcomes_and_resolutions<S: AgentEvidenceStore + ?Sized>(
+    store: &S,
+    tenant: &str,
+    records: &[ChainRecord],
+) -> Result<(Vec<(i64, OutcomeRecord)>, Vec<(i64, ResolutionRecord)>), String> {
+    let mut outcomes = Vec::new();
+    let mut resolutions = Vec::new();
+    for record in records.iter().filter_map(ChainEntry::as_decision) {
+        let Some(credential) = &record.payload.credential_id else {
+            continue;
+        };
+        let Some(outcome) = store
+            .outcome(tenant, credential)
+            .await
+            .map_err(|e| e.message)?
+        else {
+            continue;
+        };
+        if outcome.outcome == kavach_ports::agent_evidence::Outcome::Unknown {
+            for resolution in store
+                .resolutions(tenant, credential)
+                .await
+                .map_err(|e| e.message)?
+            {
+                resolutions.push((record.payload.seq, resolution));
+            }
+        }
+        outcomes.push((record.payload.seq, outcome));
+    }
+    Ok((outcomes, resolutions))
+}
+
 /// `kavach dev up --export-on-exit`: the running stack's chain as a bundle,
 /// written as it stops (Ctrl-C or SIGTERM; a killed stack writes nothing).
 /// A checkpoint covers every record first. Signed with the auditor's dev
@@ -151,18 +187,9 @@ pub async fn export_on_exit(
         .records(tenant, PARTITION)
         .await
         .map_err(|e| fail(&e.message))?;
-    let mut outcomes = Vec::new();
-    for record in records.iter().filter_map(ChainEntry::as_decision) {
-        if let Some(credential) = &record.payload.credential_id {
-            if let Some(outcome) = store
-                .outcome(tenant, credential)
-                .await
-                .map_err(|e| fail(&e.message))?
-            {
-                outcomes.push((record.payload.seq, outcome));
-            }
-        }
-    }
+    let (outcomes, resolutions) = outcomes_and_resolutions(&**store, tenant, &records)
+        .await
+        .map_err(|e| fail(&e))?;
     let scope = Scope {
         tenant_id: tenant,
         partition_id: PARTITION,
@@ -188,7 +215,7 @@ pub async fn export_on_exit(
     })
     .map_err(|e| fail(&e))?;
     let summary = kavach_evidence_cli::export::export(
-        &mut Snapshot::new(records, outcomes, checkpoints),
+        &mut Snapshot::new(records, outcomes, checkpoints).with_resolutions(resolutions),
         ExportRequest {
             scope,
             after_checkpoint: None,

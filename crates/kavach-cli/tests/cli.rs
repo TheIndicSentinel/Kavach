@@ -1988,6 +1988,7 @@ fn the_rust_and_python_verifiers_agree_on_a_real_exported_bundle() {
     assert_eq!(python["records"], rust.records, "{python}");
     assert_eq!(python["outcomes"], rust.outcomes, "{python}");
     assert_eq!(python["checkpoints"], rust.checkpoints, "{python}");
+    assert_eq!(python["resolutions"], rust.resolutions, "{python}");
     assert_eq!(python["last_seq"], rust.last_seq, "{python}");
     // ...and on what it does not protect.
     let mut rust_findings: Vec<String> = rust
@@ -2007,6 +2008,102 @@ fn the_rust_and_python_verifiers_agree_on_a_real_exported_bundle() {
 
     for (name, damage) in &damages() {
         let copy = dir.join(format!("damaged-{}", name.replace(' ', "-")));
+        copy_bundle(&bundle, &copy);
+        damage(&copy);
+        let rust = rust_verify(&copy, &keys, now);
+        let (code, python) = python_verify(&copy, &keys, now).unwrap();
+        assert!(rust.is_err(), "{name}: the Rust verifier accepted it");
+        assert_ne!(code, 0, "{name}: the Python verifier accepted it: {python}");
+        assert_eq!(python["result"], "fail", "{name}: {python}");
+    }
+}
+
+/// The same agreement on a version 4 bundle that holds resolutions
+/// (ADR-017): the checked-in vector has one outcome resolved by the provider
+/// and one conflicted. Both verifiers must read the same counts and the same
+/// findings, and both must refuse a tampered resolution, a removed one, a
+/// missing resolutions file and a resolutions file in a version 3 bundle.
+#[test]
+fn the_rust_and_python_verifiers_agree_on_a_bundle_with_resolutions() {
+    let vectors =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../kavach-evidence-cli/tests/vectors");
+    let keys = vectors.join("bundle-v2.keys.json");
+    let now = chrono::DateTime::parse_from_rfc3339("2026-10-02T07:00:00Z")
+        .unwrap()
+        .to_utc();
+    let bundle = vectors.join("bundle-v4");
+    let rust = rust_verify(&bundle, &keys, now).expect("the Rust verifier accepts it");
+    let Some((code, python)) = python_verify(&bundle, &keys, now) else {
+        return;
+    };
+    assert_eq!(code, 0, "verified with warnings allowed: {python}");
+    assert_eq!(python["resolutions"], rust.resolutions, "{python}");
+    assert_eq!(rust.resolutions, 3);
+    assert_eq!(python["outcomes"], rust.outcomes, "{python}");
+    let mut rust_findings: Vec<String> = rust
+        .not_protected()
+        .iter()
+        .map(|f| f.kind.to_string())
+        .collect();
+    let mut python_findings: Vec<String> = python["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|w| w["kind"].as_str().unwrap().to_string())
+        .collect();
+    rust_findings.sort();
+    python_findings.sort();
+    assert_eq!(rust_findings, python_findings, "{python}");
+    assert!(rust_findings.contains(&"outcome_conflicted".to_string()));
+
+    let scratch_dir = scratch("verifier-agreement-resolutions");
+    let line_edit = |edit: fn(&mut Vec<String>)| -> Box<dyn Fn(&Path)> {
+        Box::new(move |copy: &Path| {
+            let text = std::fs::read_to_string(copy.join("resolutions.jsonl")).unwrap();
+            let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+            edit(&mut lines);
+            std::fs::write(copy.join("resolutions.jsonl"), lines.join("\n") + "\n").unwrap();
+        })
+    };
+    let v3 = vectors.clone();
+    let damages: Vec<Damage> = vec![
+        (
+            "a tampered resolution",
+            Box::new(|copy: &Path| {
+                let text = std::fs::read_to_string(copy.join("resolutions.jsonl")).unwrap();
+                assert!(text.contains("confirmed_delivered"));
+                std::fs::write(
+                    copy.join("resolutions.jsonl"),
+                    text.replacen("confirmed_delivered", "confirmed_not_delivered", 1),
+                )
+                .unwrap();
+            }),
+        ),
+        (
+            "a removed resolution",
+            line_edit(|l| {
+                l.remove(1);
+            }),
+        ),
+        (
+            "a missing resolutions file",
+            Box::new(|copy: &Path| std::fs::remove_file(copy.join("resolutions.jsonl")).unwrap()),
+        ),
+        (
+            "a resolutions file in a version 3 bundle",
+            Box::new(move |copy: &Path| {
+                std::fs::remove_dir_all(copy).unwrap();
+                copy_bundle(&v3.join("bundle-v3"), copy);
+                std::fs::copy(
+                    v3.join("bundle-v4/resolutions.jsonl"),
+                    copy.join("resolutions.jsonl"),
+                )
+                .unwrap();
+            }),
+        ),
+    ];
+    for (name, damage) in &damages {
+        let copy = scratch_dir.join(name.replace(' ', "-"));
         copy_bundle(&bundle, &copy);
         damage(&copy);
         let rust = rust_verify(&copy, &keys, now);

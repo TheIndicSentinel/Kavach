@@ -21,6 +21,10 @@ use kavach_ports::chain_record::{
     RevocationRecord,
 };
 use kavach_ports::checkpoint::{sign_checkpoint, Checkpoint, Head, Scope, CHAIN_AGENT_DECISIONS};
+use kavach_ports::outcome_resolution::{
+    outcome_ref, sign_resolution, ResolutionDraft, ResolutionRecord, ResolutionSource,
+    ResolutionState,
+};
 use kavach_ports::{KeyAlgorithm, PortError, PublicKey, SyncStatus, TrustedNow};
 
 pub const TENANT: &str = "default";
@@ -170,6 +174,99 @@ pub fn outcomes(records: &[AgentDecisionRecord]) -> Vec<OutcomeRecord> {
     vec![
         outcome(0, Outcome::Delivered, "provider_202"),
         outcome(2, Outcome::Unknown, "timeout_after_send"),
+    ]
+}
+
+/// Bundle format 4's run: record 1 delivered, and the results of records 3
+/// and 4 both `unknown` (so there are two outcomes to resolve; record 4 has
+/// one here, unlike the format 3 run).
+pub fn outcomes_v4(records: &[AgentDecisionRecord]) -> Vec<OutcomeRecord> {
+    let key = evidence_key();
+    let outcome = |index: usize, outcome, reason| {
+        let record = &records[index];
+        sign_outcome(
+            TENANT,
+            record.payload.credential_id.as_deref().unwrap(),
+            &record.hash,
+            outcome,
+            reason,
+            record.payload.ts + Duration::seconds(2),
+            &key,
+        )
+        .unwrap()
+    };
+    vec![
+        outcome(0, Outcome::Delivered, "provider_202"),
+        outcome(2, Outcome::Unknown, "timeout_after_send"),
+        outcome(3, Outcome::Unknown, "provider_503"),
+    ]
+}
+
+/// A 64-hex value of the right shape for a resolution's evidence digest.
+pub fn digest_of(what: &str) -> String {
+    use sha2::{Digest, Sha256};
+    format!("{:x}", Sha256::digest(what.as_bytes()))
+}
+
+/// A signed resolution of `outcome`, `minutes` after it, with the evidence
+/// key.
+pub fn resolution_of(
+    outcome: &OutcomeRecord,
+    (state, source): (ResolutionState, ResolutionSource),
+    evidence: Option<&str>,
+    people: (Option<&str>, Option<&str>),
+    minutes: i64,
+) -> ResolutionRecord {
+    sign_resolution(
+        ResolutionDraft {
+            tenant_id: outcome.tenant_id.clone(),
+            credential_id: outcome.credential_id.clone(),
+            outcome_ref: outcome_ref(outcome),
+            state,
+            source,
+            reason: "provider_status".into(),
+            evidence_digest: evidence.map(digest_of),
+            resolved_by: people.0.map(str::to_string),
+            approved_by: people.1.map(str::to_string),
+        },
+        outcome.ts + Duration::minutes(minutes),
+        &evidence_key(),
+    )
+    .unwrap()
+}
+
+/// The resolutions of format 4's run, in the order an export writes them
+/// (the order of their outcomes): record 3's result is confirmed delivered by
+/// the provider; record 4's has two different confirmed answers, a provider's
+/// and a two-person attestation, and nothing closes the conflict.
+pub fn resolutions_v4(outcomes: &[OutcomeRecord]) -> Vec<ResolutionRecord> {
+    use ResolutionSource::{OperatorAttested, ProviderStatus};
+    use ResolutionState::{ConfirmedDelivered, ConfirmedNotDelivered};
+    vec![
+        resolution_of(
+            &outcomes[1],
+            (ConfirmedDelivered, ProviderStatus),
+            Some("provider answer: delivered"),
+            (None, None),
+            10,
+        ),
+        resolution_of(
+            &outcomes[2],
+            (ConfirmedDelivered, ProviderStatus),
+            Some("provider answer: delivered"),
+            (None, None),
+            10,
+        ),
+        resolution_of(
+            &outcomes[2],
+            (ConfirmedNotDelivered, OperatorAttested),
+            Some("console screenshot"),
+            (
+                Some("oidc:https://idp#ops-kat-1"),
+                Some("oidc:https://idp#ops-kat-2"),
+            ),
+            30,
+        ),
     ]
 }
 

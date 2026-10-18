@@ -395,6 +395,36 @@ impl PostgresAgentEvidenceStore {
     }
 }
 
+/// A resolution from a row that has the resolution's columns (not the
+/// tenant or credential, which the caller knows).
+pub(crate) fn resolution_from_row(
+    row: &sqlx::postgres::PgRow,
+    tenant_id: &str,
+    credential_id: &str,
+) -> Result<ResolutionRecord, PortError> {
+    let state: String = row.try_get("state").map_err(|e| unavailable(&e))?;
+    let source: String = row.try_get("source").map_err(|e| unavailable(&e))?;
+    Ok(ResolutionRecord {
+        tenant_id: tenant_id.into(),
+        credential_id: credential_id.into(),
+        outcome_ref: row.try_get("outcome_ref").map_err(|e| unavailable(&e))?,
+        // Never guess: an unrecognised value is a corrupt row.
+        state: ResolutionState::parse(&state)
+            .ok_or_else(|| PortError::invalid("stored resolution has an unknown state"))?,
+        source: ResolutionSource::parse(&source)
+            .ok_or_else(|| PortError::invalid("stored resolution has an unknown source"))?,
+        reason: row.try_get("reason").map_err(|e| unavailable(&e))?,
+        evidence_digest: row
+            .try_get("evidence_digest")
+            .map_err(|e| unavailable(&e))?,
+        resolved_by: row.try_get("resolved_by").map_err(|e| unavailable(&e))?,
+        approved_by: row.try_get("approved_by").map_err(|e| unavailable(&e))?,
+        ts: row.try_get("ts").map_err(|e| unavailable(&e))?,
+        key_id: row.try_get("key_id").map_err(|e| unavailable(&e))?,
+        sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
+    })
+}
+
 impl AgentEvidenceStore for PostgresAgentEvidenceStore {
     async fn commit(
         &self,
@@ -553,31 +583,7 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         .await
         .map_err(|e| unavailable(&e))?;
         rows.iter()
-            .map(|row| {
-                let state: String = row.try_get("state").map_err(|e| unavailable(&e))?;
-                let source: String = row.try_get("source").map_err(|e| unavailable(&e))?;
-                Ok(ResolutionRecord {
-                    tenant_id: tenant_id.into(),
-                    credential_id: credential_id.into(),
-                    outcome_ref: row.try_get("outcome_ref").map_err(|e| unavailable(&e))?,
-                    // Never guess: an unrecognised value is a corrupt row.
-                    state: ResolutionState::parse(&state).ok_or_else(|| {
-                        PortError::invalid("stored resolution has an unknown state")
-                    })?,
-                    source: ResolutionSource::parse(&source).ok_or_else(|| {
-                        PortError::invalid("stored resolution has an unknown source")
-                    })?,
-                    reason: row.try_get("reason").map_err(|e| unavailable(&e))?,
-                    evidence_digest: row
-                        .try_get("evidence_digest")
-                        .map_err(|e| unavailable(&e))?,
-                    resolved_by: row.try_get("resolved_by").map_err(|e| unavailable(&e))?,
-                    approved_by: row.try_get("approved_by").map_err(|e| unavailable(&e))?,
-                    ts: row.try_get("ts").map_err(|e| unavailable(&e))?,
-                    key_id: row.try_get("key_id").map_err(|e| unavailable(&e))?,
-                    sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
-                })
-            })
+            .map(|row| resolution_from_row(row, tenant_id, credential_id))
             .collect()
     }
 

@@ -19,12 +19,13 @@ use chrono::{DateTime, Utc};
 use kavach_ports::agent_evidence::DevKeys;
 use kavach_ports::bundle::{
     FileEntry, Manifest, ManifestSignature, CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE,
-    RECORDS_FILE,
+    RECORDS_FILE, RESOLUTIONS_FILE, RESOLUTIONS_SINCE,
 };
 use kavach_ports::bundle_verify::{
     verify_bundle, BundleFailure, BundleReport, KeyValidity, VerifyOptions,
 };
 use kavach_ports::checkpoint::Checkpoint;
+use kavach_ports::outcome_resolution::ResolutionRecord;
 use kavach_ports::{KeyAlgorithm, PublicKey};
 use serde::de::{DeserializeOwned, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
@@ -337,9 +338,14 @@ fn digest(path: &Path) -> Result<FileEntry, VerifyError> {
     })
 }
 
-/// The directory holds exactly the four files of a bundle, as plain files.
-fn check_layout(dir: &Path) -> Result<(), VerifyError> {
-    let expected = [MANIFEST_FILE, RECORDS_FILE, OUTCOMES_FILE, CHECKPOINTS_FILE];
+/// The directory holds exactly the files of a bundle of `version`, as plain
+/// files: four, and a fifth (resolutions) from version 4. A resolutions file
+/// in an older bundle is as wrong as its absence from a version 4 one.
+fn check_layout(dir: &Path, version: u32) -> Result<(), VerifyError> {
+    let mut expected = vec![MANIFEST_FILE, RECORDS_FILE, OUTCOMES_FILE, CHECKPOINTS_FILE];
+    if version >= RESOLUTIONS_SINCE {
+        expected.push(RESOLUTIONS_FILE);
+    }
     let mut found = Vec::new();
     for entry in fs::read_dir(dir).map_err(io(dir.display().to_string()))? {
         let entry = entry.map_err(io(dir.display().to_string()))?;
@@ -357,7 +363,7 @@ fn check_layout(dir: &Path) -> Result<(), VerifyError> {
         }
         found.push(name);
     }
-    for name in expected {
+    for name in &expected {
         if !found.iter().any(|f| f == name) {
             return Err(VerifyError::Layout(format!("{name} is missing")));
         }
@@ -394,18 +400,26 @@ pub struct VerifyRequest<'a> {
 /// [`BundleReport::not_protected`] before calling it protected.
 pub fn verify_dir(request: &VerifyRequest<'_>) -> Result<BundleReport, VerifyError> {
     let dir = request.bundle;
-    check_layout(dir)?;
+    // The manifest says which version, and so which files the directory holds.
+    if !dir.join(MANIFEST_FILE).is_file() {
+        return Err(VerifyError::Layout(format!("{MANIFEST_FILE} is missing")));
+    }
+    let manifest = read_manifest(dir)?;
+    check_layout(dir, manifest.payload.version)?;
     let TrustedKeys { keys, validity } = load_trusted_keys(request.keys, dir)?;
     let kept = request.expect_checkpoint.map(load_kept).transpose()?;
-    let manifest = read_manifest(dir)?;
 
     // First what the files are, then what they say.
     let files = &manifest.payload.files;
-    for (file, expected) in [
+    let mut listed = vec![
         (RECORDS_FILE, &files.records),
         (OUTCOMES_FILE, &files.outcomes),
         (CHECKPOINTS_FILE, &files.checkpoints),
-    ] {
+    ];
+    if let Some(resolutions) = &files.resolutions {
+        listed.push((RESOLUTIONS_FILE, resolutions));
+    }
+    for (file, expected) in listed {
         let actual = digest(&dir.join(file))?;
         let what = if actual.sha256 != expected.sha256 {
             "digest"
@@ -431,13 +445,24 @@ pub fn verify_dir(request: &VerifyRequest<'_>) -> Result<BundleReport, VerifyErr
         now: request.now,
         kept: kept.as_ref(),
     };
-    Ok(verify_bundle(
-        &manifest,
-        JsonLines::open(&dir.join(RECORDS_FILE))?,
-        JsonLines::open(&dir.join(OUTCOMES_FILE))?,
-        JsonLines::open(&dir.join(CHECKPOINTS_FILE))?,
-        &options,
-    )?)
+    let records = JsonLines::open(&dir.join(RECORDS_FILE))?;
+    let outcomes = JsonLines::open(&dir.join(OUTCOMES_FILE))?;
+    let checkpoints = JsonLines::open(&dir.join(CHECKPOINTS_FILE))?;
+    // A bundle before version 4 has no resolutions to read.
+    Ok(if manifest.payload.version >= RESOLUTIONS_SINCE {
+        let resolutions = JsonLines::<ResolutionRecord>::open(&dir.join(RESOLUTIONS_FILE))?;
+        verify_bundle(
+            &manifest,
+            records,
+            outcomes,
+            checkpoints,
+            resolutions,
+            &options,
+        )?
+    } else {
+        let none = std::iter::empty::<Result<ResolutionRecord, String>>();
+        verify_bundle(&manifest, records, outcomes, checkpoints, none, &options)?
+    })
 }
 
 /// The outcome of a verification, ready to print and to exit with.

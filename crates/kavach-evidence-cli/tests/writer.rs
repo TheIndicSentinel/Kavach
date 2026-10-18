@@ -10,14 +10,20 @@ use kavach_evidence_cli::writer::{BundleError, BundleWriter};
 use kavach_ports::agent_evidence::{DevKeys, SegmentStart};
 use kavach_ports::bundle::{
     verify_manifest, Manifest, ManifestSignature, CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE,
-    RECORDS_FILE,
+    RECORDS_FILE, RESOLUTIONS_FILE,
 };
 use kavach_ports::checkpoint::Scope;
 use sha2::{Digest, Sha256};
 
 use common::*;
 
-const FILES: [&str; 4] = [MANIFEST_FILE, RECORDS_FILE, OUTCOMES_FILE, CHECKPOINTS_FILE];
+const FILES: [&str; 5] = [
+    MANIFEST_FILE,
+    RECORDS_FILE,
+    OUTCOMES_FILE,
+    CHECKPOINTS_FILE,
+    RESOLUTIONS_FILE,
+];
 
 fn partial(out: &Path) -> std::path::PathBuf {
     out.with_file_name(format!(
@@ -66,7 +72,7 @@ fn a_finished_bundle_is_whole_owner_only_and_matches_its_manifest() {
     expected.sort();
     assert_eq!(
         names, expected,
-        "exactly the four files, and no public keys"
+        "exactly the five files, and no public keys"
     );
     assert!(!partial(&out).exists());
 
@@ -86,6 +92,8 @@ fn a_finished_bundle_is_whole_owner_only_and_matches_its_manifest() {
         (RECORDS_FILE, &p.files.records, 4),
         (OUTCOMES_FILE, &p.files.outcomes, 2),
         (CHECKPOINTS_FILE, &p.files.checkpoints, 2),
+        // Always written: empty when there are no resolutions.
+        (RESOLUTIONS_FILE, p.files.resolutions.as_ref().unwrap(), 0),
     ] {
         assert_eq!(entry.sha256, sha256(&out.join(name)), "{name}");
         assert_eq!(
