@@ -373,3 +373,23 @@ A verifier MUST also refuse, at least: a changed byte in any file; a record of a
 The expected result is *verified, with warnings*: `no_kept_checkpoint` and `outcome_conflicted` (`cred-4`), with no `outcome_unknown` and no `outcome_missing`.
 
 Refusal vectors for version 4, each a bundle (or a line) that MUST fail, for the reason named: a `resolutions.jsonl` inside a version 3 bundle (layout); a version 4 manifest without a `resolutions` file entry (layout); a resolution of a settled outcome; with an `outcome_ref` that does not match; for a credential with no outcome; with a member not in §5.3; "not delivered" attested by one person; "not delivered" approved by the same person; the reconciler stating a confirmed state; a conflict closed by one person; a duplicate `(credential_id, source, state)`; a `ts` before its outcome's; a forged `sig`; a `dev-` key without development allowed.
+
+### 10.2 Failure classes
+
+Two verifiers that both refuse a bundle can still disagree about *why*, and then one of them is wrong about what it checked. So a verifier that reports a failure SHOULD report one of these classes besides its reason (the reference verifiers do: `VerifyError::class()` and the `class` member of the Python verifier's JSON), and the two MUST report the same class for the same damage. The wording of the reason is free; the class is not.
+
+| Class | Meaning |
+|---|---|
+| `input` | The operator's inputs are unusable: the trusted keys file (or one inside the bundle), the kept checkpoint, an unreadable file |
+| `layout` | The directory is not laid out as §3 for the manifest's version (a file missing, extra, or not a regular file; a resolutions file in a version 1 to 3 bundle; a manifest that is not JSON) |
+| `manifest` | The manifest breaks §7 or its hash or signature does not verify (steps 2 and 3) |
+| `digest` | A file's SHA-256 or line count does not match the manifest (step 4) |
+| `read` | A line does not parse as the shape its file requires: not JSON or not UTF-8, a repeated or unknown member, a record of a kind not in the registry (§4.2) |
+| `chain` | A record breaks step 5: sequence, link, hash, signature, head, tenant or partition, development key or clock |
+| `outcome` | An outcome breaks step 6 |
+| `resolution` | A resolution breaks step 6a |
+| `checkpoint` | A checkpoint breaks §6 or step 7 |
+| `segment` | The segment is not vouched for, or differs from the kept checkpoint |
+| `key_validity` | A trusted key signed beyond the limits the operator set for it (§8.2) |
+
+The classes follow the order of §9: a verifier reports the class of the **first** step that fails, so a bundle damaged in several ways is classed by the earliest one. In particular the manifest (steps 2 and 3) is checked before the file digests (step 4), so an edited manifest is `manifest`, not `digest`. The agreement test (`crates/kavach-cli/tests/cli.rs`) requires both verifiers to report the expected class for each damaged copy.

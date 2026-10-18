@@ -675,6 +675,39 @@ fn a_bundle_changed_after_export_fails() {
     fs::remove_dir_all(&bundle).unwrap();
 }
 
+/// Both verifiers name the class of the first step that fails, and the
+/// manifest (spec section 9, steps 2 and 3) comes before the file digests
+/// (step 4): an edited manifest is `manifest` even when its counts no longer
+/// match the files. See docs/specs/evidence-bundle.md section 10.2.
+#[test]
+fn a_failure_is_classed_by_the_first_step_that_fails() {
+    let class = |bundle: &Path| verify_at(bundle, None).unwrap_err().class();
+
+    let bundle = vector_copy("class-manifest");
+    let text = fs::read_to_string(bundle.join(MANIFEST_FILE)).unwrap();
+    let at = text.find("\"count\"").unwrap();
+    let (head, tail) = text.split_at(at);
+    let tail = tail.replacen(|c: char| c.is_ascii_digit(), "9", 1);
+    fs::write(bundle.join(MANIFEST_FILE), format!("{head}{tail}")).unwrap();
+    assert_eq!(class(&bundle), "manifest");
+    fs::remove_dir_all(&bundle).unwrap();
+
+    let bundle = vector_copy("class-digest");
+    let records = fs::read_to_string(bundle.join(RECORDS_FILE)).unwrap();
+    fs::write(
+        bundle.join(RECORDS_FILE),
+        records.replacen("send_reminder", "send_remindex", 1),
+    )
+    .unwrap();
+    assert_eq!(class(&bundle), "digest");
+    fs::remove_dir_all(&bundle).unwrap();
+
+    let bundle = vector_copy("class-layout");
+    fs::remove_file(bundle.join(OUTCOMES_FILE)).unwrap();
+    assert_eq!(class(&bundle), "layout");
+    fs::remove_dir_all(&bundle).unwrap();
+}
+
 #[test]
 fn only_a_bundle_and_only_the_operators_keys_are_accepted() {
     let layout = |result: Result<BundleReport, VerifyError>, what: &str| {

@@ -64,6 +64,20 @@ pub enum VerifyError {
     Bundle(#[from] BundleFailure),
 }
 
+impl VerifyError {
+    /// The coarse, normalised class of the failure (docs/specs/evidence-bundle.md
+    /// section 10.2), the same word the independent verifier reports.
+    #[must_use]
+    pub fn class(&self) -> &'static str {
+        match self {
+            Self::Io { .. } | Self::Keys(_) | Self::Kept(_) => "input",
+            Self::Layout(_) => "layout",
+            Self::FileMismatch { .. } => "digest",
+            Self::Bundle(failure) => failure.class(),
+        }
+    }
+}
+
 fn io(what: impl Into<String>) -> impl FnOnce(std::io::Error) -> VerifyError {
     let what = what.into();
     move |source| VerifyError::Io { what, source }
@@ -409,7 +423,18 @@ pub fn verify_dir(request: &VerifyRequest<'_>) -> Result<BundleReport, VerifyErr
     let TrustedKeys { keys, validity } = load_trusted_keys(request.keys, dir)?;
     let kept = request.expect_checkpoint.map(load_kept).transpose()?;
 
-    // First what the files are, then what they say.
+    // The manifest first (spec section 9, steps 2 and 3): its shape, hash
+    // and signature. Only a manifest that is itself intact says what the
+    // files must be. The bundle check repeats this; it is cheap.
+    let dev_keys = if request.dev {
+        DevKeys::Accept
+    } else {
+        DevKeys::Refuse
+    };
+    kavach_ports::bundle::verify_manifest(&manifest, &keys, dev_keys)
+        .map_err(|e| VerifyError::Bundle(e.into()))?;
+
+    // Then what the files are, then what they say.
     let files = &manifest.payload.files;
     let mut listed = vec![
         (RECORDS_FILE, &files.records),
@@ -437,11 +462,7 @@ pub fn verify_dir(request: &VerifyRequest<'_>) -> Result<BundleReport, VerifyErr
     let options = VerifyOptions {
         keys: &keys,
         validity: &validity,
-        dev_keys: if request.dev {
-            DevKeys::Accept
-        } else {
-            DevKeys::Refuse
-        },
+        dev_keys,
         now: request.now,
         kept: kept.as_ref(),
     };
