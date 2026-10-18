@@ -23,6 +23,9 @@ use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
     CHAIN_AGENT_DECISIONS,
 };
+use kavach_ports::outcome_resolution::{
+    check_against_outcome, check_form, ResolutionRecord, ResolutionSource, ResolutionState,
+};
 use kavach_ports::{PortError, TimeSource};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 
@@ -502,6 +505,80 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
             }
         })?;
         Ok(())
+    }
+
+    async fn record_resolution(&self, resolution: ResolutionRecord) -> Result<bool, PortError> {
+        check_form(&resolution)?;
+        let outcome = self
+            .outcome(&resolution.tenant_id, &resolution.credential_id)
+            .await?;
+        check_against_outcome(&resolution, outcome.as_ref())?;
+        let result = sqlx::query(
+            "INSERT INTO agent_outcome_resolutions (tenant_id, credential_id, outcome_ref, \
+                state, source, reason, evidence_digest, resolved_by, approved_by, ts, key_id, \
+                sig) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+            ON CONFLICT (tenant_id, credential_id, source, state) DO NOTHING",
+        )
+        .bind(&resolution.tenant_id)
+        .bind(&resolution.credential_id)
+        .bind(&resolution.outcome_ref)
+        .bind(resolution.state.as_str())
+        .bind(resolution.source.as_str())
+        .bind(&resolution.reason)
+        .bind(&resolution.evidence_digest)
+        .bind(&resolution.resolved_by)
+        .bind(&resolution.approved_by)
+        .bind(resolution.ts)
+        .bind(&resolution.key_id)
+        .bind(&resolution.sig)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    async fn resolutions(
+        &self,
+        tenant_id: &str,
+        credential_id: &str,
+    ) -> Result<Vec<ResolutionRecord>, PortError> {
+        let rows = sqlx::query(
+            "SELECT outcome_ref, state, source, reason, evidence_digest, resolved_by, \
+                approved_by, ts, key_id, sig FROM agent_outcome_resolutions \
+            WHERE tenant_id = $1 AND credential_id = $2 ORDER BY ts, source, state",
+        )
+        .bind(tenant_id)
+        .bind(credential_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter()
+            .map(|row| {
+                let state: String = row.try_get("state").map_err(|e| unavailable(&e))?;
+                let source: String = row.try_get("source").map_err(|e| unavailable(&e))?;
+                Ok(ResolutionRecord {
+                    tenant_id: tenant_id.into(),
+                    credential_id: credential_id.into(),
+                    outcome_ref: row.try_get("outcome_ref").map_err(|e| unavailable(&e))?,
+                    // Never guess: an unrecognised value is a corrupt row.
+                    state: ResolutionState::parse(&state).ok_or_else(|| {
+                        PortError::invalid("stored resolution has an unknown state")
+                    })?,
+                    source: ResolutionSource::parse(&source).ok_or_else(|| {
+                        PortError::invalid("stored resolution has an unknown source")
+                    })?,
+                    reason: row.try_get("reason").map_err(|e| unavailable(&e))?,
+                    evidence_digest: row
+                        .try_get("evidence_digest")
+                        .map_err(|e| unavailable(&e))?,
+                    resolved_by: row.try_get("resolved_by").map_err(|e| unavailable(&e))?,
+                    approved_by: row.try_get("approved_by").map_err(|e| unavailable(&e))?,
+                    ts: row.try_get("ts").map_err(|e| unavailable(&e))?,
+                    key_id: row.try_get("key_id").map_err(|e| unavailable(&e))?,
+                    sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
+                })
+            })
+            .collect()
     }
 
     async fn outcome(

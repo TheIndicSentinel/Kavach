@@ -494,6 +494,26 @@ pub trait AgentEvidenceStore: Send + Sync {
         credential_id: &str,
     ) -> impl Future<Output = Result<Option<OutcomeRecord>, PortError>> + Send;
 
+    /// Keeps a resolution of an `unknown` outcome (ADR-017), append-only.
+    /// `true` when this call wrote it; `false` when the same `(source,
+    /// state)` was already kept for that outcome (a repeat changes nothing).
+    /// `Invalid` for a form that breaks the rules (who may say what);
+    /// `Rejected` unless the credential's outcome exists, is `unknown` and is
+    /// the one the resolution refers to.
+    fn record_resolution(
+        &self,
+        resolution: crate::outcome_resolution::ResolutionRecord,
+    ) -> impl Future<Output = Result<bool, PortError>> + Send;
+
+    /// Every resolution of a credential's outcome, oldest first (then by
+    /// source and state): the input of
+    /// [`crate::outcome_resolution::governing`].
+    fn resolutions(
+        &self,
+        tenant_id: &str,
+        credential_id: &str,
+    ) -> impl Future<Output = Result<Vec<crate::outcome_resolution::ResolutionRecord>, PortError>> + Send;
+
     /// All records of a partition, of every kind, in `seq` order (export /
     /// verification).
     fn records(

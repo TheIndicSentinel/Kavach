@@ -61,6 +61,10 @@ async fn runtime_role_cannot_alter_evidence_or_governance_history() {
         "ALTER TABLE admin_audit_log DISABLE TRIGGER ALL",
         "DROP TABLE admin_audit_log",
         "CREATE TABLE intruder (id INT)",
+        // Resolutions of unknown outcomes (ADR-017) are append-only too.
+        "UPDATE agent_outcome_resolutions SET reason = 'x'",
+        "DELETE FROM agent_outcome_resolutions",
+        "TRUNCATE agent_outcome_resolutions",
     ] {
         let err = sqlx::query(statement)
             .execute(&pool.pool)
@@ -97,6 +101,7 @@ async fn auditor_role_reads_agent_evidence_and_nothing_else() {
         "agent_outcomes",
         "evidence_checkpoints",
         "agent_evidence_chains",
+        "agent_outcome_resolutions",
     ] {
         sqlx::query(&format!("SELECT * FROM {table} LIMIT 1"))
             .fetch_optional(&auditor)
@@ -112,6 +117,10 @@ async fn auditor_role_reads_agent_evidence_and_nothing_else() {
         "DELETE FROM agent_outcomes",
         "DELETE FROM evidence_checkpoints",
         "TRUNCATE evidence_checkpoints",
+        "DELETE FROM agent_outcome_resolutions",
+        "INSERT INTO agent_outcome_resolutions (tenant_id, credential_id, outcome_ref, state, \
+            source, reason, ts, key_id, sig) \
+            VALUES ('t', 'c', 'x', 'ambiguous', 'reconciler', 'r', now(), 'k', 's')",
         // No access to anything else.
         "SELECT * FROM mandates",
         "SELECT * FROM contact_counters",

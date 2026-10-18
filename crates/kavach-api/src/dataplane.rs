@@ -506,6 +506,25 @@ impl AgentEvidenceStore for EvidenceBackend {
             Self::Postgres(s) => s.outcome(tenant_id, credential_id).await,
         }
     }
+    async fn record_resolution(
+        &self,
+        resolution: kavach_ports::outcome_resolution::ResolutionRecord,
+    ) -> Result<bool, PortError> {
+        match self {
+            Self::Memory(s) => s.record_resolution(resolution).await,
+            Self::Postgres(s) => s.record_resolution(resolution).await,
+        }
+    }
+    async fn resolutions(
+        &self,
+        tenant_id: &str,
+        credential_id: &str,
+    ) -> Result<Vec<kavach_ports::outcome_resolution::ResolutionRecord>, PortError> {
+        match self {
+            Self::Memory(s) => s.resolutions(tenant_id, credential_id).await,
+            Self::Postgres(s) => s.resolutions(tenant_id, credential_id).await,
+        }
+    }
     async fn records(
         &self,
         tenant_id: &str,

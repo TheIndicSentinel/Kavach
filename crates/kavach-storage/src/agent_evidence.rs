@@ -23,6 +23,7 @@ use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
     CHAIN_AGENT_DECISIONS,
 };
+use kavach_ports::outcome_resolution::{check_against_outcome, check_form, ResolutionRecord};
 use kavach_ports::{PortError, TimeSource};
 
 type RequestKey = (String, String, String);
@@ -35,6 +36,8 @@ struct State {
     requests: HashMap<RequestKey, (usize, RequestBinding)>,
     counters: HashMap<(String, String, NaiveDate), u32>,
     outcomes: HashMap<(String, String), OutcomeRecord>,
+    /// Resolutions of unknown outcomes (ADR-017), append-only.
+    resolutions: Vec<ResolutionRecord>,
     checkpoints: Vec<Checkpoint>,
     changed_state_records: Vec<AgentStateRecord>,
     /// Agent risk states (ADR-013), by `(tenant, agent)`, and the history of
@@ -163,6 +166,43 @@ impl MemoryAgentEvidenceStore {
         }
         state.outcomes.insert(key, outcome);
         Ok(())
+    }
+
+    fn record_resolution_sync(&self, resolution: ResolutionRecord) -> Result<bool, PortError> {
+        check_form(&resolution)?;
+        let mut state = self.state.lock().map_err(poisoned)?;
+        let outcome = state.outcomes.get(&(
+            resolution.tenant_id.clone(),
+            resolution.credential_id.clone(),
+        ));
+        check_against_outcome(&resolution, outcome)?;
+        let repeat = state.resolutions.iter().any(|r| {
+            r.tenant_id == resolution.tenant_id
+                && r.credential_id == resolution.credential_id
+                && r.source == resolution.source
+                && r.state == resolution.state
+        });
+        if repeat {
+            return Ok(false);
+        }
+        state.resolutions.push(resolution);
+        Ok(true)
+    }
+
+    fn resolutions_sync(
+        &self,
+        tenant_id: &str,
+        credential_id: &str,
+    ) -> Result<Vec<ResolutionRecord>, PortError> {
+        let state = self.state.lock().map_err(poisoned)?;
+        let mut rows: Vec<ResolutionRecord> = state
+            .resolutions
+            .iter()
+            .filter(|r| r.tenant_id == tenant_id && r.credential_id == credential_id)
+            .cloned()
+            .collect();
+        rows.sort_by_key(|r| (r.ts, r.source.as_str(), r.state.as_str()));
+        Ok(rows)
     }
 
     fn outcome_sync(
@@ -407,6 +447,21 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         credential_id: &str,
     ) -> impl Future<Output = Result<Option<OutcomeRecord>, PortError>> + Send {
         ready(self.outcome_sync(tenant_id, credential_id))
+    }
+
+    fn record_resolution(
+        &self,
+        resolution: ResolutionRecord,
+    ) -> impl Future<Output = Result<bool, PortError>> + Send {
+        ready(self.record_resolution_sync(resolution))
+    }
+
+    fn resolutions(
+        &self,
+        tenant_id: &str,
+        credential_id: &str,
+    ) -> impl Future<Output = Result<Vec<ResolutionRecord>, PortError>> + Send {
+        ready(self.resolutions_sync(tenant_id, credential_id))
     }
 
     fn records(

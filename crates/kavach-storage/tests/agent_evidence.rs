@@ -161,6 +161,81 @@ async fn evidence_is_append_only_even_for_its_owner() {
     }
 }
 
+/// Resolutions of unknown outcomes (ADR-017) are append-only, even against
+/// the table's owner: a written resolution cannot be changed or removed, and
+/// the table cannot be truncated.
+#[tokio::test(flavor = "multi_thread")]
+async fn resolutions_are_append_only_even_for_their_owner() {
+    use kavach_ports::agent_evidence::{sign_outcome, Outcome};
+    use kavach_ports::outcome_resolution::{
+        outcome_ref, sign_resolution, ResolutionDraft, ResolutionSource, ResolutionState,
+    };
+    let Some((owner, runtime)) = isolated_database_urls().await else {
+        return;
+    };
+    let pool = StoragePool::connect_with_roles(
+        &runtime,
+        Some(&owner),
+        &kavach_storage::DatabaseTls::development(),
+    )
+    .await
+    .unwrap();
+    let store = pool.agent_evidence_store();
+    let signer = TestSigner::new("evidence-test", 9);
+    let now = chrono::Utc::now();
+    let clock = FakeClock::synced_at(now);
+    let mut req = request("resolutions", "r-1", 3);
+    req.draft.send_by = None;
+    let CommitResult::Committed(record) = store.commit(req, &clock, &signer).await.unwrap() else {
+        panic!("a new commit");
+    };
+    let credential = record.payload.credential_id.clone().expect("allow");
+    let unknown = sign_outcome(
+        "resolutions",
+        &credential,
+        &record.hash,
+        Outcome::Unknown,
+        "timeout_after_send",
+        now,
+        &signer,
+    )
+    .unwrap();
+    store.record_outcome(unknown.clone()).await.unwrap();
+    let resolution = sign_resolution(
+        ResolutionDraft {
+            tenant_id: "resolutions".into(),
+            credential_id: credential,
+            outcome_ref: outcome_ref(&unknown),
+            state: ResolutionState::Ambiguous,
+            source: ResolutionSource::Reconciler,
+            reason: "no_answer_in_24h".into(),
+            evidence_digest: None,
+            resolved_by: None,
+            approved_by: None,
+        },
+        now,
+        &signer,
+    )
+    .unwrap();
+    assert!(store.record_resolution(resolution).await.unwrap());
+
+    let owner_pool = sqlx::PgPool::connect(&owner).await.unwrap();
+    for statement in [
+        "UPDATE agent_outcome_resolutions SET reason = 'x'",
+        "DELETE FROM agent_outcome_resolutions",
+        "TRUNCATE agent_outcome_resolutions",
+    ] {
+        let err = sqlx::query(statement)
+            .execute(&owner_pool)
+            .await
+            .expect_err(statement);
+        assert!(
+            err.to_string().contains("append-only"),
+            "{statement}: {err}"
+        );
+    }
+}
+
 /// A commit stopped by a unique key other than the request's (here: a
 /// `credential_id` already used by a different request) is an error, never
 /// treated as a retry of a stored record.
