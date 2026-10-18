@@ -64,6 +64,21 @@ async fn a_missing_audit_entry_is_written_once_from_the_stored_row() {
         "the flag as stored, not the clock now"
     );
 
+    // The pass is visible: one entry repaired, none missing, and when it ran.
+    let metrics = state.metrics().gather_text().unwrap();
+    assert!(
+        metrics.contains("kavach_revocation_audit_entries_written_total 1"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("kavach_revocation_audit_entries_missing 0"),
+        "{metrics}"
+    );
+    assert!(
+        !metrics.contains("kavach_revocation_audit_last_pass_timestamp_seconds 0\n"),
+        "{metrics}"
+    );
+
     // A second pass, and a restart from the beginning, write nothing more.
     let (_, again) = revocation_audit::pass(&state, cursor).await;
     assert_eq!(again, 0);
