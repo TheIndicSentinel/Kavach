@@ -513,3 +513,43 @@ async fn learning_that_nothing_was_delivered_does_not_free_a_contact_slot() {
         .unwrap();
     assert_eq!(still.decision, Decision::Block, "{:?}", still.reasons);
 }
+
+/// Two replicas running a pass at the same moment cannot make a second row:
+/// `(tenant, credential, source, state)` is the key, so the second write is a
+/// no-op the store reports as `false` (the pass counts only what it wrote).
+/// And if two replicas hear different answers, both rows are kept and the
+/// outcome is `Conflicted`, which is visible, never a silent flip.
+#[tokio::test]
+async fn two_replicas_cannot_write_two_ambiguous_rows() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let credential = w.unknown_send(&mandate, "r-1").await;
+    w.advance(UNKNOWN_OUTCOME_AMBIGUOUS_AFTER + Duration::seconds(1));
+    let (a, b) = (Provider::default(), Provider::default());
+    let (mut polls_a, mut polls_b) = (PollState::default(), PollState::default());
+    let (ra, rb) = tokio::join!(w.pass(&a, &mut polls_a), w.pass(&b, &mut polls_b));
+    assert_eq!(ra.ambiguous + rb.ambiguous, 1, "{ra:?} {rb:?}");
+    assert_eq!(w.resolutions(&credential).await.len(), 1);
+}
+
+#[tokio::test]
+async fn replicas_that_hear_different_answers_leave_a_visible_conflict() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let credential = w.unknown_send(&mandate, "r-1").await;
+    w.advance(Duration::seconds(31));
+    let (a, b) = (Provider::default(), Provider::default());
+    a.says(Some(ProviderStatus::Delivered));
+    b.says(Some(ProviderStatus::NotDelivered));
+    let (mut polls_a, mut polls_b) = (PollState::default(), PollState::default());
+    w.pass(&a, &mut polls_a).await;
+    w.pass(&b, &mut polls_b).await;
+    // The first answer settled it (it left the work list), so the second
+    // replica asked nothing; had both read the list before either wrote, both
+    // rows would be kept. Either way, the stored rows decide, not the order.
+    let rows = w.resolutions(&credential).await;
+    assert!(!rows.is_empty() && rows.len() <= 2, "{rows:?}");
+    if rows.len() == 2 {
+        assert_eq!(governing(&rows), Governing::Conflicted);
+    }
+}
