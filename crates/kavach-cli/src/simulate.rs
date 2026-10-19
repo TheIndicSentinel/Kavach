@@ -14,7 +14,8 @@ use chrono::{DateTime, Utc};
 use kavach_sim::driver::{self, Issued, Stack};
 use kavach_sim::oracle::Rules;
 use kavach_sim::reconcile::{
-    reconcile, Arrived, Recorded, RecordedAgentChange, RecordedRevocation,
+    reconcile, reconcile_resolutions, Arrived, Recorded, RecordedAgentChange, RecordedResolution,
+    RecordedRevocation,
 };
 use kavach_sim::report::{Bundle, Report};
 use kavach_sim::scenario::{self, Scenario, BUILTINS};
@@ -125,7 +126,7 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     let reconciliation = match &bundle {
         Bundle::Verified { .. } => {
             let (recorded, outcomes, revocations, changes) = read_bundle(&evidence)?;
-            Some(reconcile(
+            let mut rec = reconcile(
                 &run.calls,
                 &recorded,
                 &outcomes,
@@ -136,7 +137,23 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
                 &revocations,
                 &run.agent_events,
                 &changes,
-            ))
+            );
+            // The unknown outcomes' resolutions (ADR-017), against the
+            // provider's own behaviour.
+            let must_resolve = scenario
+                .events
+                .iter()
+                .any(|e| e.kind == scenario::EventKind::Settle);
+            let (findings, resolved) = reconcile_resolutions(
+                &run.calls,
+                &recorded,
+                &read_resolutions(&evidence)?,
+                &world.deliveries(),
+                must_resolve,
+            );
+            rec.findings.extend(findings);
+            rec.unknown_resolved = resolved;
+            Some(rec)
         }
         _ => None,
     };
@@ -184,6 +201,27 @@ type Read = (
     Vec<RecordedRevocation>,
     Vec<RecordedAgentChange>,
 );
+
+/// The bundle's resolutions of unknown outcomes (`resolutions.jsonl`, format
+/// 4); none for a bundle without the file.
+fn read_resolutions(dir: &Path) -> Result<Vec<RecordedResolution>, CliError> {
+    let Ok(text) = std::fs::read_to_string(dir.join("resolutions.jsonl")) else {
+        return Ok(Vec::new());
+    };
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let v: Value = serde_json::from_str(l)
+                .map_err(|e| CliError::new("resolutions.jsonl has a bad line", e))?;
+            let field = |key: &str| v[key].as_str().unwrap_or_default().to_string();
+            Ok(RecordedResolution {
+                credential_id: field("credential_id"),
+                state: field("state"),
+                source: field("source"),
+            })
+        })
+        .collect()
+}
 
 fn read_bundle(dir: &Path) -> Result<Read, CliError> {
     let lines = |file: &str| -> Result<Vec<Value>, CliError> {
@@ -308,6 +346,13 @@ fn evidence_lines(out: &mut String, r: &Report) {
             rec.inbox_messages,
             if rec.findings.is_empty() { "consistent".to_string() } else { format!("{} FINDINGS", rec.findings.len()) }
         );
+        if rec.unknown_resolved > 0 {
+            let _ = writeln!(
+                out,
+                "Unknown outcomes resolved by the provider's own status answer: {} (each must match what the provider did; nothing was sent again)",
+                rec.unknown_resolved
+            );
+        }
         if rec.revocation_events > 0 {
             let _ = writeln!(
                 out,
@@ -642,6 +687,39 @@ impl Stack for Live {
             .map_err(|e| e.to_string())?;
         let status = response.status().as_u16();
         Ok((status, response.json().await.unwrap_or(Value::Null)))
+    }
+
+    async fn settle(&self, resolved: usize) -> Result<(), String> {
+        // The reconciler passes every 15 seconds on wall-clock time and asks
+        // on the stack's clock; wait for its own gauges to say it is done.
+        let gauge = |text: &str, name: &str| {
+            text.lines().find_map(|l| {
+                l.strip_prefix(name)?
+                    .strip_prefix(' ')?
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+            })
+        };
+        for _ in 0..180 {
+            let response = self
+                .client
+                .get(format!("http://{}/metrics", self.run.operator))
+                .bearer_auth(&self.operator_token)
+                .send()
+                .await
+                .map_err(|e| e.to_string())?;
+            let text = response.text().await.map_err(|e| e.to_string())?;
+            let unresolved = gauge(&text, "kavach_outcomes_unresolved");
+            let done = gauge(&text, "kavach_outcomes_resolved");
+            if unresolved == Some(0)
+                && done.is_some_and(|d| usize::try_from(d).is_ok_and(|d| d >= resolved))
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        Err("the reconciler did not resolve the unknown outcomes within 90 seconds".into())
     }
 
     async fn revoke(

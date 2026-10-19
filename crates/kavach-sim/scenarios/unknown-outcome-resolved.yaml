@@ -1,0 +1,28 @@
+# An unknown outcome is resolved by asking the provider, never by sending
+# again (ADR-017). Three borrowers are contacted at 10:00: one message is
+# delivered normally, one is delivered but its response is lost, and one
+# meets a provider error. Both of the last two are recorded as unknown. At
+# 10:05 the run waits for Kavach's reconciler, which asks the mock provider
+# a status question for each. The provider's own behaviour is the ground
+# truth: the lost response was delivered, the error was not. Each must be
+# resolved that way, from the provider's answer, and the provider's inbox
+# must show nothing sent twice.
+version: 1
+name: unknown-outcome-resolved
+description: Unknown outcomes are resolved from the provider's status answer, and nothing is sent again.
+covers: ["Gateway", "Credential-accepting backends"]   # SECURITY_PROPERTIES.md rows
+seed: 26
+days: 1
+borrowers: 3
+schedule: ["10:00"]
+agents:
+  - type: compliant
+    behaviour: { contacts_per_day: 1 }
+provider_failures: { error: 1, lose: 1 }
+events:
+  - { day: 1, at: "10:05", type: outcomes.settle }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 3

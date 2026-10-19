@@ -60,6 +60,15 @@ pub struct Arrived {
     pub mandate_id: String,
 }
 
+/// A resolution of an unknown outcome from the evidence bundle
+/// (`resolutions.jsonl`, ADR-017).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedResolution {
+    pub credential_id: String,
+    pub state: String,
+    pub source: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Reconciliation {
     /// Ledger calls that Kavach recorded (first sends with a record id).
@@ -74,6 +83,8 @@ pub struct Reconciliation {
     /// evidence records.
     pub agent_events: usize,
     pub agent_state_records: usize,
+    /// Unknown outcomes the provider's own answer resolved.
+    pub unknown_resolved: usize,
     pub findings: Vec<String>,
 }
 
@@ -299,6 +310,97 @@ pub fn reconcile_agent_events(
     findings
 }
 
+/// What the provider's own behaviour says became of a send whose response
+/// was not known: the world's ground truth, never Kavach's records.
+fn truth(delivery: Delivery) -> Option<&'static str> {
+    match delivery {
+        // Delivered, and the response was lost.
+        Delivery::Loses => Some("confirmed_delivered"),
+        // A provider error: the mock stored it as not delivered.
+        Delivery::Errs => Some("confirmed_not_delivered"),
+        Delivery::Delivers | Delivery::Refuses => None,
+    }
+}
+
+/// The resolutions of the run's unknown outcomes (ADR-017) against the
+/// world's ground truth: a confirmed state must be the provider's own
+/// behaviour (delivered for a lost response, not delivered for an error),
+/// from the provider's answer and nobody else (the reconciler may also say
+/// `ambiguous`, which confirms nothing); and when the run waited for the
+/// reconciler (`must_resolve`) every unknown outcome must have one. Returns
+/// the findings and how many unknown outcomes the provider's answer resolved.
+#[must_use]
+pub fn reconcile_resolutions(
+    ledger: &[Entry],
+    recorded: &[Recorded],
+    resolutions: &[RecordedResolution],
+    deliveries: &BTreeMap<String, Delivery>,
+    must_resolve: bool,
+) -> (Vec<String>, usize) {
+    let by_record: BTreeMap<&str, &Recorded> =
+        recorded.iter().map(|r| (r.record_id.as_str(), r)).collect();
+    let mut findings = Vec::new();
+    let mut resolved = 0;
+    let mut unknown_credentials = BTreeSet::new();
+    for call in ledger
+        .iter()
+        .filter(|c| c.retry_of.is_none() && c.outcome.as_deref() == Some("unknown"))
+    {
+        let Some(credential) = call
+            .record_id
+            .as_deref()
+            .and_then(|id| by_record.get(id))
+            .and_then(|r| r.credential_id.as_deref())
+        else {
+            continue;
+        };
+        unknown_credentials.insert(credential);
+        let Some(expected) = deliveries.get(&call.borrower).copied().and_then(truth) else {
+            continue;
+        };
+        let rows: Vec<&RecordedResolution> = resolutions
+            .iter()
+            .filter(|r| r.credential_id == credential)
+            .collect();
+        let confirmed: Vec<&&RecordedResolution> = rows
+            .iter()
+            .filter(|r| r.state.starts_with("confirmed_"))
+            .collect();
+        for row in &confirmed {
+            if row.state != expected || row.source != "provider_status" {
+                findings.push(format!(
+                    "#{} {}: resolved as {} by {}; the provider's own behaviour says {expected} \
+                     from its status answer",
+                    call.seq, call.borrower, row.state, row.source
+                ));
+            }
+        }
+        if confirmed.is_empty() {
+            if must_resolve {
+                findings.push(format!(
+                    "#{} {}: the run waited for the reconciler, but this unknown outcome has no \
+                     confirmed resolution (expected {expected})",
+                    call.seq, call.borrower
+                ));
+            }
+        } else if confirmed
+            .iter()
+            .any(|r| r.state == expected && r.source == "provider_status")
+        {
+            resolved += 1;
+        }
+    }
+    for row in resolutions {
+        if !unknown_credentials.contains(row.credential_id.as_str()) {
+            findings.push(format!(
+                "a resolution ({}) for a send the run did not see end unknown",
+                row.state
+            ));
+        }
+    }
+    (findings, resolved)
+}
+
 /// Reconciles a run. `destinations` and `deliveries` describe the world;
 /// `outcomes` are the bundle's outcomes by credential id.
 #[allow(clippy::too_many_arguments)]
@@ -393,6 +495,7 @@ pub fn reconcile(
         revocation_records: revocations.len(),
         agent_events: agent_events.len(),
         agent_state_records: agent_changes.len(),
+        unknown_resolved: 0,
         findings,
     }
 }
@@ -679,6 +782,64 @@ mod tests {
             revoked: vec![],
             expected_revoked: vec![],
         }
+    }
+
+    fn resolution(call: &Entry, state: &str, source: &str) -> RecordedResolution {
+        RecordedResolution {
+            credential_id: format!("cred-{}", call.seq),
+            state: state.into(),
+            source: source.into(),
+        }
+    }
+
+    /// The resolutions of unknown outcomes against the provider's own
+    /// behaviour (ADR-017): each way they can be wrong is found.
+    #[test]
+    fn a_resolution_must_match_what_the_provider_did() {
+        let lost = call(1, "ref:lost", "PASS", Some("unknown"));
+        let erred = call(2, "ref:err", "PASS", Some("unknown"));
+        let ledger = [lost.clone(), erred.clone()];
+        let recorded: Vec<Recorded> = ledger.iter().map(recorded).collect();
+        let deliveries = BTreeMap::from([
+            ("ref:lost".to_string(), Delivery::Loses),
+            ("ref:err".to_string(), Delivery::Errs),
+        ]);
+        let check = |resolutions: &[RecordedResolution], must: bool| {
+            reconcile_resolutions(&ledger, &recorded, resolutions, &deliveries, must)
+        };
+        let right = [
+            resolution(&lost, "confirmed_delivered", "provider_status"),
+            resolution(&erred, "confirmed_not_delivered", "provider_status"),
+        ];
+        assert_eq!(check(&right, true), (vec![], 2));
+        // The run did not wait: no resolution yet is fine, `ambiguous` confirms nothing.
+        assert_eq!(check(&[], false), (vec![], 0));
+        let ambiguous = [resolution(&lost, "ambiguous", "reconciler")];
+        assert_eq!(check(&ambiguous, false).0, Vec::<String>::new());
+        // It did wait, and one is missing.
+        let (findings, resolved) = check(&right[..1], true);
+        assert_eq!((findings.len(), resolved), (1, 1), "{findings:?}");
+        // The opposite of what the provider did.
+        let flipped = [resolution(
+            &lost,
+            "confirmed_not_delivered",
+            "provider_status",
+        )];
+        assert!(check(&flipped, false).0[0].contains("provider's own behaviour"));
+        // Right state, wrong source: only the provider's answer counts here.
+        let attested = [resolution(
+            &lost,
+            "confirmed_delivered",
+            "operator_attested",
+        )];
+        assert_eq!(check(&attested, false).0.len(), 1);
+        // A resolution for a send that did not end unknown.
+        let stray = [RecordedResolution {
+            credential_id: "cred-99".into(),
+            state: "ambiguous".into(),
+            source: "reconciler".into(),
+        }];
+        assert!(check(&stray, false).0[0].contains("did not see end unknown"));
     }
 
     fn record(no: i64, from: &str, to: &str, approver: Option<&str>) -> RecordedAgentChange {
