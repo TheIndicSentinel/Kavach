@@ -60,6 +60,7 @@ events:                   # system-of-record events (ADR-012), for the first N b
   - { day: 1, at: "12:00", type: loan.paid, borrowers: 2 }     # or loan.disputed: revokes their mandates
   - { day: 1, at: "12:00", type: agent.quarantine, agent: sim-eager-1 }   # or agent.restrict | agent.revoke | agent.reinstate
   - { day: 2, at: "09:00", type: loan.dpd30, borrowers: 1 }    # a new default: assigned again, new mandates
+  - { day: 1, at: "12:00", type: loan.paid, borrowers: 1, lag_seconds: 9000 }   # happened at 09:30, arrives at 12:00
 expect:                   # required: what passing means
   violations: 0
   mismatches: 0
@@ -68,7 +69,7 @@ expect:                   # required: what passing means
   blocked_at_least: { contact-daily-cap: 1 }
 ```
 
-Unknown keys are refused. An event at a slot's time comes before that slot's calls, and every event is dated on the stack's clock (there is no backdating). Events never go to borrowers kept for attacks or set up to fail. `--seed`, `--days` and `--borrowers` override the file. A scenario may name the SECURITY_PROPERTIES.md rows it exercises in `covers:`. Every built-in does, and a test fails if one of those rows is renamed or removed.
+Unknown keys are refused. An event at a slot's time comes before that slot's calls. An event reaches Kavach on the stack's clock, and may have **happened earlier**: `lag_seconds: N` signs it with a time N seconds before its arrival (a late payment, a default processed late). A new default may be at most 240 s late (an older issuing event is stale), a payment or dispute at most a day; operator changes to an agent cannot be late. Events never go to borrowers kept for attacks or set up to fail. `--seed`, `--days` and `--borrowers` override the file. A scenario may name the SECURITY_PROPERTIES.md rows it exercises in `covers:`. Every built-in does, and a test fails if one of those rows is renamed or removed.
 
 ## The oracle
 
@@ -82,7 +83,7 @@ It models the product's rules, written independently of Kavach's policies, and j
 - **forward-once:** a retry (same request id) is never sent again. Once the first call's outcome is recorded, `unknown` included, it gets the stored reply (`replayed`). Only while the first call is still running is it 409 `in_flight`, and a run never retries into that;
 - **provider outcomes** follow the agreed status contract (ADR-007): 2xx delivered, 4xx refused, and a 5xx or a lost response unknown (a 5xx does not prove the message was not sent);
 - **an operator's stop or reinstatement of an agent** (ADR-013): a restricted agent may not contact (the registry's one tool contacts), a quarantined or revoked one may do nothing; a stop only ever holds an agent back further, a reinstatement frees a restricted or quarantined agent **with its same mandates** and never a revoked one; a change at a call's time comes first, and another agent is untouched. The oracle's model of this shares no code with Kavach's, and the changes come from the scenario, never from Kavach's replies. The run also checks each reply's state against the simulator's own record, a revoke's mandates against the ones the run held, and the evidence: one signed `agent_state` record per change, in order, a loosening with an approver.
-- **payments and disputes** (ADR-012): a mandate issued at or before a borrower's `loan.paid` or `loan.disputed` is refused from the event on. A mandate issued after it (a new default) is not touched. The oracle takes the events from the scenario, never from Kavach's replies, and the issue time of each mandate from the simulator's own record.
+- **payments and disputes** (ADR-012, with the B2 amendment): a payment or dispute stops contact **from the moment it reaches Kavach**, for every mandate whose default happened at or before it (give or take a 30 s margin, the simulator's own copy of the number). A default that happened after it by more than the margin is a new default and is not touched, however late the payment arrives. The other direction is checked too: Kavach must **refuse a new default** that happened before (or within the margin of) a payment that reached it first, and refuse any default after a **dispute**, which holds the loan (there is no release yet); a default it takes against this, or refuses against the model, is a mismatch. The oracle takes the events, their times and their arrival order from the scenario, never from Kavach's replies, and the time of each mandate's default from the simulator's own record. Not modelled: a payment dated ahead of the clock (the 300 s clamp).
 
 The adversarial agent's attacks are the attack catalog's own payloads (`kavach-attacks`). Each call's attack label is for the report only; the oracle never reads it, and a test checks that.
 
@@ -119,6 +120,10 @@ The same seed gives the same digest over the ledger (who did what, when, and wha
 | `provider-failures` | 422 is recorded as refused, and a 500 or a lost response as unknown | Credential broker / gateway (outcomes) |
 | `payment-stops-contact` | A payment at 12:00 revokes two borrowers' mandates: their later calls are refused, one revocation record each, nothing delivered after it. A new default on day 2 assigns one again, and contact resumes for it only | Revocation by system-of-record event (ADR-012) |
 | `dispute-stops-contact` | Two agents share each borrower: one dispute revokes both agents' mandates, and neither reaches that borrower again | Revocation by system-of-record event (ADR-012) |
+| `late-payment` | A payment that happened at 09:30 reaches Kavach at 12:00, after a new default at 10:30: it ends the mandate from before it and leaves the new default's mandate alone, so contact goes on | Revocation by system-of-record event (ADR-012) |
+| `default-after-payment-refused` | Out of order: a default that happened a minute before a payment reaches Kavach three minutes after it. The loan is closed to it: refused, nothing issued, contact stays stopped | Revocation by system-of-record event (ADR-012) |
+| `payment-after-default-processed` | Out of order: a default that happened just before a payment is processed after the payment happened but before it arrived. Contact goes on under it until the payment arrives, which ends it too | Revocation by system-of-record event (ADR-012) |
+| `default-after-dispute-refused` | A dispute at 12:00 on day 1; the system of record says the loan defaulted again on day 2. Refused: a dispute holds the loan, and the borrower stays uncontacted while the other borrower is contacted as usual | Revocation by system-of-record event (ADR-012) |
 | `retry-after-unknown` | A retry after an unknown outcome gets it back, replayed, and is never sent again | Gateway (forward-once) |
 | `rogue-agent-quarantined` | An operator quarantines the eager agent at 12:00 and restricts the compliant one at 15:00; at 09:00 and 12:00 on day 2 a second principal reinstates them. Nothing is allowed while an agent is stopped, the other agent is untouched, and the same mandates work again after | A stopped agent does nothing, from its next call, on every replica (ADR-013, K1-1): |
 | `mixed-week` | All of the above, with a payment on day 2, over three days | All of the above |

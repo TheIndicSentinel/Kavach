@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::ledger::{digest, AgentEntry, Entry, SorEntry};
+use crate::ledger::{digest, AgentEntry, Entry, IssueEntry, SorEntry};
 use crate::oracle::{Oracle, Retry, Rules};
 use crate::scenario::Scenario;
 
@@ -145,6 +145,31 @@ fn retry_issue(call: &Entry, retry: &Retry) -> (bool, Option<Issue>) {
     (answered, issue)
 }
 
+/// A new default Kavach took when the loan was closed to it, or refused
+/// when it was not, is a finding of its own (ADR-012).
+fn issue_findings(issues: &[IssueEntry]) -> Vec<Finding> {
+    issues
+        .iter()
+        .filter(|i| i.accepted() != i.expected_accepted)
+        .map(|issue| Finding {
+            seq: 0,
+            agent: issue.agent.clone(),
+            borrower: issue.borrower.clone(),
+            at: issue.at.to_rfc3339(),
+            detail: if issue.accepted() {
+                "Kavach took a new default the loan was closed to (a payment or dispute \
+                 had reached it first); the model says refuse"
+                    .to_string()
+            } else {
+                format!(
+                    "Kavach refused a new default the loan was open to ({}); the model says take it",
+                    issue.status
+                )
+            },
+        })
+        .collect()
+}
+
 impl Report {
     // The run's records are separate inputs on purpose (calls, events,
     // agent-state changes, evidence): a struct of them would only be
@@ -157,6 +182,7 @@ impl Report {
         ledger: &[Entry],
         events: &[SorEntry],
         agent_events: &[AgentEntry],
+        issues: &[IssueEntry],
         evidence: Bundle,
         reconciliation: Option<crate::reconcile::Reconciliation>,
         rules: Rules,
@@ -221,6 +247,7 @@ impl Report {
                 leaks.push(finding(format!("the reply held {what}")));
             }
         }
+        mismatches.extend(issue_findings(issues));
         let firsts = ledger.iter().filter(|c| c.retry_of.is_none());
         let calls = firsts.clone().count();
         let allowed = firsts.filter(|c| c.allowed()).count();
@@ -248,7 +275,7 @@ impl Report {
             leaks,
             evidence,
             reconciliation,
-            digest: digest(ledger, events, agent_events),
+            digest: digest(ledger, events, agent_events, issues),
             expectations_unmet: Vec::new(),
         };
         report.expectations_unmet = report.unmet(scenario);
@@ -362,6 +389,56 @@ mod tests {
         }
     }
 
+    /// A new default Kavach takes when the model says the loan is closed to
+    /// it (or refuses when the model says take it) is a mismatch of its own:
+    /// the check can fail, so a scenario that passes it says something.
+    #[test]
+    fn a_default_taken_or_refused_against_the_model_is_a_mismatch() {
+        use crate::ledger::IssueEntry;
+        let scenario = builtin("two-agents-one-borrower").unwrap();
+        let world = World::build(&scenario);
+        let issue = |status: u16, expected_accepted: bool| IssueEntry {
+            day: 1,
+            at: crate::calendar::slot(1, 720),
+            occurred: crate::calendar::slot(1, 719),
+            agent: "sim-compliant-1".into(),
+            borrower: "ref:borrower:S-0001".into(),
+            status,
+            expected_accepted,
+        };
+        let build = |issues: &[IssueEntry]| {
+            Report::build(
+                &scenario,
+                &world,
+                &shared_cap(),
+                &[],
+                &[],
+                issues,
+                verified(),
+                Some(crate::reconcile::Reconciliation::default()),
+                Rules::default(),
+            )
+        };
+        // Agreement either way: refused as the model says, taken as it says.
+        assert!(build(&[issue(409, false), issue(201, true)])
+            .mismatches
+            .is_empty());
+        // Taken against the model, and refused against it.
+        let taken = build(&[issue(201, false)]);
+        assert_eq!(taken.mismatches.len(), 1);
+        assert!(
+            taken.mismatches[0].detail.contains("closed to"),
+            "{:?}",
+            taken.mismatches
+        );
+        let refused = build(&[issue(409, true)]);
+        assert_eq!(refused.mismatches.len(), 1);
+        assert!(refused.mismatches[0]
+            .detail
+            .contains("refused a new default"));
+        assert_ne!(taken.exit_code(), 0);
+    }
+
     #[test]
     fn agreement_passes() {
         let scenario = builtin("two-agents-one-borrower").unwrap();
@@ -370,6 +447,7 @@ mod tests {
             &scenario,
             &world,
             &shared_cap(),
+            &[],
             &[],
             &[],
             verified(),
@@ -402,6 +480,7 @@ mod tests {
             &shared_cap(),
             &[],
             &[],
+            &[],
             verified(),
             Some(crate::reconcile::Reconciliation::default()),
             weak,
@@ -416,6 +495,7 @@ mod tests {
             &scenario,
             &world,
             &allowed,
+            &[],
             &[],
             &[],
             verified(),
@@ -439,6 +519,7 @@ mod tests {
             &shared_cap(),
             &[],
             &[],
+            &[],
             missing,
             Some(crate::reconcile::Reconciliation::default()),
             Rules::default(),
@@ -451,6 +532,7 @@ mod tests {
             &scenario,
             &world,
             &shared_cap(),
+            &[],
             &[],
             &[],
             failed,
@@ -520,6 +602,7 @@ mod tests {
                 scenario,
                 &world,
                 ledger,
+                &[],
                 &[],
                 &[],
                 verified(),

@@ -1,0 +1,27 @@
+# Out of order, case one (ADR-012, B2): a default that happened before a
+# payment reaches Kavach after it. The payment came first, so the loan is
+# closed to it: the default is refused and nothing is issued, and contact
+# for the loan stays stopped. The default is dated a minute before the
+# payment and arrives three minutes after it, inside the five minutes in
+# which an issuing event is still fresh.
+version: 1
+name: default-after-payment-refused
+description: A default that happened before a payment but arrives after it is refused; contact stays stopped.
+covers: ["Revocation by system-of-record event (ADR-012):"]   # SECURITY_PROPERTIES.md rows
+seed: 22
+days: 1
+borrowers: 2
+schedule: ["09:00", "13:00"]
+agents:
+  - type: compliant
+    behaviour: { contacts_per_day: 2 }
+assignment: split
+events:
+  - { day: 1, at: "12:00", type: loan.paid, borrowers: 1 }
+  - { day: 1, at: "12:03", type: loan.dpd30, borrowers: 1, lag_seconds: 240 }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 3
+  blocked_at_least: { mandate_invalid: 1 }

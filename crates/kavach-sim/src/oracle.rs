@@ -40,7 +40,7 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Duration, NaiveDate, Utc};
 
 use crate::calendar::ist;
 use crate::ledger::Entry;
@@ -192,6 +192,60 @@ fn registered(call: &Entry) -> bool {
 
 /// Walks a run's calls in order, keeping its own count of each borrower's
 /// contacts per IST day (those Kavach allowed: a contact made is made).
+/// How far apart (seconds) two events stamped by two clocks may be before
+/// their order is not trusted (ADR-012's skew margin). The simulator's own
+/// copy: it shares no code with Kavach, so a change to Kavach's number
+/// shows up as a mismatch here.
+pub const SKEW_MARGIN: Duration = Duration::seconds(30);
+/// A payment dated ahead of the clock holds a loan closed for at most this
+/// long after it arrives (ADR-012).
+pub const FUTURE_ALLOWANCE: Duration = Duration::seconds(300);
+
+/// A payment or dispute of a borrower's loan: when it happened, when it
+/// reached Kavach, and whether it was a dispute (which holds the loan).
+/// From the scenario alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Closure {
+    pub borrower: String,
+    pub occurred: DateTime<Utc>,
+    pub arrived: DateTime<Utc>,
+    pub disputed: bool,
+}
+
+impl Closure {
+    /// It ends a mandate whose default happened at `issued`: anything not
+    /// after the payment, give or take the margin (when in doubt, contact
+    /// stops). A default after it, by more than the margin, is a new loan
+    /// default and is not touched.
+    #[must_use]
+    pub fn reaches(&self, issued: DateTime<Utc>) -> bool {
+        issued <= self.occurred + SKEW_MARGIN
+    }
+
+    /// The loan is closed to a new default that happened at `occurred`: a
+    /// dispute holds it for good; a payment closes it to defaults at or
+    /// before it (plus the margin), with a payment dated ahead counted only
+    /// as far as [`FUTURE_ALLOWANCE`] past its arrival.
+    #[must_use]
+    pub fn closes(&self, occurred: DateTime<Utc>) -> bool {
+        self.disputed
+            || occurred <= self.occurred.min(self.arrived + FUTURE_ALLOWANCE) + SKEW_MARGIN
+    }
+}
+
+/// Whether Kavach should take a new default for `borrower` that happened
+/// at `occurred`, given the payments and disputes that reached it first.
+#[must_use]
+pub fn default_accepted(
+    arrived_before: &[Closure],
+    borrower: &str,
+    occurred: DateTime<Utc>,
+) -> bool {
+    !arrived_before
+        .iter()
+        .any(|c| c.borrower == borrower && c.closes(occurred))
+}
+
 #[derive(Debug, Default)]
 pub struct Oracle {
     rules: Rules,
@@ -199,8 +253,8 @@ pub struct Oracle {
     contacts: BTreeMap<(String, NaiveDate), u32>,
     /// How Kavach answered each first send, for its retries.
     firsts: BTreeMap<u32, Retry>,
-    /// Payments and disputes: the borrower and when.
-    revocations: Vec<(String, DateTime<Utc>)>,
+    /// Payments and disputes: whose, when they happened and when they arrived.
+    revocations: Vec<Closure>,
     /// Operators' changes of agents' states: the agent, what, and when.
     agent_events: Vec<(String, Verb, DateTime<Utc>)>,
 }
@@ -215,9 +269,9 @@ impl Oracle {
         }
     }
 
-    /// The run's payments and disputes (borrower, time), from the scenario.
+    /// The run's payments and disputes, from the scenario.
     #[must_use]
-    pub fn with_revocations(mut self, revocations: Vec<(String, DateTime<Utc>)>) -> Self {
+    pub fn with_revocations(mut self, revocations: Vec<Closure>) -> Self {
         self.revocations = revocations;
         self
     }
@@ -242,13 +296,13 @@ impl Oracle {
             })
     }
 
-    /// Whether a payment or dispute for `subject` ended a mandate issued at
-    /// `issued`, by `at`.
+    /// Whether a payment or dispute for `subject` that had reached Kavach
+    /// by `at` ended a mandate whose default happened at `issued`.
     fn revoked(&self, subject: &str, issued: Option<DateTime<Utc>>, at: DateTime<Utc>) -> bool {
         issued.is_some_and(|issued| {
             self.revocations
                 .iter()
-                .any(|(who, when)| who == subject && issued <= *when && *when <= at)
+                .any(|c| c.borrower == subject && c.arrived <= at && c.reaches(issued))
         })
     }
 
@@ -333,6 +387,16 @@ mod tests {
     use super::*;
     use crate::calendar::slot;
 
+    /// A payment that happened and arrived at `at`.
+    fn closure(borrower: &str, at: DateTime<Utc>) -> Closure {
+        Closure {
+            borrower: borrower.into(),
+            occurred: at,
+            arrived: at,
+            disputed: false,
+        }
+    }
+
     fn call(minute: u32, borrower: &str, channel: &str, allowed: bool) -> Entry {
         Entry {
             seq: 0,
@@ -379,7 +443,7 @@ mod tests {
     fn a_payment_ends_the_mandates_issued_before_it() {
         let paid = slot(1, 720);
         let judge = |issued: u32, at: u32| {
-            let mut oracle = Oracle::default().with_revocations(vec![("ref:p".to_string(), paid)]);
+            let mut oracle = Oracle::default().with_revocations(vec![closure("ref:p", paid)]);
             let mut c = call(at, "ref:p", "whatsapp", false);
             c.mandate_issued_at = Some(slot(1, issued));
             oracle.judge(&c)
@@ -395,10 +459,79 @@ mod tests {
             "issued at the same instant: revoked"
         );
         assert!(judge(750, 1080).allow, "a new default after the payment");
-        let mut other = Oracle::default().with_revocations(vec![("ref:p".to_string(), paid)]);
+        let mut other = Oracle::default().with_revocations(vec![closure("ref:p", paid)]);
         let mut c = call(1080, "ref:q", "whatsapp", false);
         c.mandate_issued_at = Some(slot(1, 540));
         assert!(other.judge(&c).allow, "another borrower's loan");
+    }
+
+    /// A payment that happened before it arrived (ADR-012, B2): from its
+    /// arrival it ends the mandates of defaults that happened before it, and
+    /// not those of a default that happened after it, however late it came.
+    #[test]
+    fn a_late_payment_ends_only_what_happened_before_it() {
+        let happened = slot(1, 570);
+        let arrived = slot(1, 720);
+        let late = Closure {
+            borrower: "ref:p".into(),
+            occurred: happened,
+            arrived,
+            disputed: false,
+        };
+        let judge = |issued: DateTime<Utc>, at: u32| {
+            let mut oracle = Oracle::default().with_revocations(vec![late.clone()]);
+            let mut c = call(at, "ref:p", "whatsapp", false);
+            c.mandate_issued_at = Some(issued);
+            oracle.judge(&c).allow
+        };
+        // Before it arrived nothing could be known: allowed, even though the
+        // loan was already paid.
+        assert!(judge(slot(1, 540), 660));
+        // From its arrival, the default before it is ended...
+        assert!(!judge(slot(1, 540), 720));
+        // ...but not a default after it (a new loan default at 10:30).
+        assert!(judge(slot(1, 630), 720));
+        // The margin: 20 s after it is still ended, 40 s after is not.
+        assert!(!judge(happened + Duration::seconds(20), 720));
+        assert!(judge(happened + Duration::seconds(40), 720));
+    }
+
+    /// A default is refused when a payment already reached Kavach that it
+    /// happened before (or within the margin of), and a dispute holds the
+    /// loan against every later default.
+    #[test]
+    fn a_default_is_refused_when_the_loan_was_closed_to_it_first() {
+        let paid = Closure {
+            borrower: "ref:p".into(),
+            occurred: slot(1, 600),
+            arrived: slot(1, 605),
+            disputed: false,
+        };
+        let accepted =
+            |at: DateTime<Utc>| default_accepted(std::slice::from_ref(&paid), "ref:p", at);
+        assert!(!accepted(slot(1, 600) - Duration::seconds(90)), "before it");
+        assert!(
+            !accepted(slot(1, 600) + Duration::seconds(20)),
+            "within the margin"
+        );
+        assert!(accepted(slot(1, 600) + Duration::seconds(40)), "after it");
+        assert!(
+            default_accepted(std::slice::from_ref(&paid), "ref:q", slot(1, 590)),
+            "another loan"
+        );
+        assert!(
+            default_accepted(&[], "ref:p", slot(1, 590)),
+            "nothing arrived first"
+        );
+
+        let disputed = Closure {
+            disputed: true,
+            ..paid
+        };
+        assert!(
+            !default_accepted(&[disputed], "ref:p", slot(2, 540)),
+            "a dispute holds the loan against any later default"
+        );
     }
 
     #[test]

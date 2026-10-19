@@ -45,7 +45,10 @@ pub struct Entry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SorEntry {
     pub day: u32,
+    /// When the event reached Kavach (the stack's clock).
     pub at: DateTime<Utc>,
+    /// When it happened: earlier than `at` for a late event.
+    pub occurred: DateTime<Utc>,
     pub event_id: String,
     pub event_type: String,
     pub borrower: String,
@@ -55,6 +58,30 @@ pub struct SorEntry {
     /// What the simulator's own record says should be: the borrower's
     /// mandates issued at or before the event and not revoked before it.
     pub expected: Vec<String>,
+}
+
+/// A new default (an issuing event) the run sent, and whether Kavach took
+/// it (ADR-012): a payment or dispute already recorded can close the loan
+/// to it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IssueEntry {
+    pub day: u32,
+    pub at: DateTime<Utc>,
+    pub occurred: DateTime<Utc>,
+    pub agent: String,
+    pub borrower: String,
+    pub status: u16,
+    /// What the simulator's own model says, from the scenario's events
+    /// alone: never read from Kavach's replies.
+    pub expected_accepted: bool,
+}
+
+impl IssueEntry {
+    /// Kavach accepted it.
+    #[must_use]
+    pub fn accepted(&self) -> bool {
+        (200..300).contains(&self.status)
+    }
 }
 
 /// An operator's change of an agent's state during a run (ADR-013).
@@ -87,8 +114,24 @@ impl Entry {
 /// What a seed must reproduce: who did what, when, and what was decided.
 /// Not the ids or signatures, which are random by design.
 #[must_use]
-pub fn digest(entries: &[Entry], events: &[SorEntry], agent_events: &[AgentEntry]) -> String {
+pub fn digest(
+    entries: &[Entry],
+    events: &[SorEntry],
+    agent_events: &[AgentEntry],
+    issues: &[IssueEntry],
+) -> String {
     let mut hash = Sha256::new();
+    for e in issues {
+        hash.update(format!(
+            "issue|{}|{}|{}|{}|{}|{}\n",
+            e.day,
+            e.at.to_rfc3339(),
+            e.occurred.to_rfc3339(),
+            e.borrower,
+            e.status,
+            e.expected_accepted
+        ));
+    }
     for e in agent_events {
         hash.update(format!(
             "agent|{}|{}|{}|{}|{}|{}\n",
@@ -102,9 +145,10 @@ pub fn digest(entries: &[Entry], events: &[SorEntry], agent_events: &[AgentEntry
     }
     for e in events {
         hash.update(format!(
-            "event|{}|{}|{}|{}|{}|{}\n",
+            "event|{}|{}|{}|{}|{}|{}|{}\n",
             e.day,
             e.at.to_rfc3339(),
+            e.occurred.to_rfc3339(),
             e.event_id,
             e.event_type,
             e.borrower,
