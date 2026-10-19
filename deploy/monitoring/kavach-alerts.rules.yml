@@ -168,15 +168,19 @@ groups:
             older one is waiting for a person. The three days is a default; set it to how
             long the lender can tolerate not knowing whether a borrower was contacted.
       - alert: KavachOutcomeReconcilerStopped
-        expr: time() - kavach_outcome_reconcile_last_pass_timestamp_seconds > 300
+        expr: >-
+          kavach_outcome_reconcile_last_pass_timestamp_seconds > 0
+          and time() - kavach_outcome_reconcile_last_pass_timestamp_seconds > 300
         for: 5m
         labels: { severity: warning }
         annotations:
           summary: The unknown-outcome reconciler has not completed a pass for 5 minutes
           description: >-
             It runs every 15 seconds and is restarted if it exits. A pass that cannot read
-            the outcomes or the evidence store does not count as complete. It does not
-            fire until the first pass.
+            the outcomes or the evidence store does not count as complete. It keys on the
+            time of the last pass, not on the counts (a dead reconciler would leave stale
+            counts that look healthy), and stays silent until the first pass, so it does
+            not fire on a fresh install or when the agent surfaces are off.
 
       - alert: KavachAgentStopped
         expr: sum(increase(kavach_agent_state_changes_total{result="applied",to=~"quarantined|revoked"}[5m])) > 0
