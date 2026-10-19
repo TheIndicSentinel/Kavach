@@ -145,6 +145,25 @@ pub enum BundleFailure {
     KeyNotValid { what: String, reason: String },
 }
 
+impl BundleFailure {
+    /// The coarse, normalised class of the failure (docs/specs/evidence-bundle.md
+    /// section 10.2): what an independent verifier must also report for the
+    /// same damage. The wording of the reason may differ; the class may not.
+    #[must_use]
+    pub fn class(&self) -> &'static str {
+        match self {
+            Self::Manifest(_) => "manifest",
+            Self::Read { .. } => "read",
+            Self::Segment(_) | Self::UnvouchedStart { .. } => "segment",
+            Self::Record(ChainError::Outcome { .. }) | Self::Outcome { .. } => "outcome",
+            Self::Record(_) => "chain",
+            Self::Resolution { .. } => "resolution",
+            Self::Checkpoint(_) => "checkpoint",
+            Self::KeyNotValid { .. } => "key_validity",
+        }
+    }
+}
+
 impl VerifyOptions<'_> {
     /// Fails when `kid`'s limits refuse what it signed for record `seq`.
     fn within_validity(

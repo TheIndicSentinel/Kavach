@@ -76,10 +76,12 @@ class Resolutions(unittest.TestCase):
         with open(self.path(name), encoding="utf-8") as h:
             return h.read().splitlines()
 
-    def refuse(self, fragment):
+    def refuse(self, fragment, cls):
         with self.assertRaises(kv.Refused) as ctx:
             kv.verify_bundle(self.bundle, self.keys, now=NOW)
         self.assertIn(fragment, str(ctx.exception))
+        # The coarse class the Rust verifier must report too (spec section 10.2).
+        self.assertEqual(ctx.exception.cls, cls)
 
     def test_a_resolved_and_a_conflicted_outcome(self):
         r = kv.verify_bundle(self.bundle, self.keys, now=NOW)
@@ -91,33 +93,41 @@ class Resolutions(unittest.TestCase):
 
     def test_a_missing_resolutions_file(self):
         os.remove(self.path("resolutions.jsonl"))
-        self.refuse("must hold exactly")
+        self.refuse("must hold exactly", "layout")
 
     def test_a_removed_resolution(self):
         rows = self.lines("resolutions.jsonl")[:-1]
         with open(self.path("resolutions.jsonl"), "w", encoding="utf-8") as h:
             h.write("".join(row + "\n" for row in rows))
-        self.refuse("digest does not match")
+        self.refuse("digest does not match", "digest")
 
     def test_a_tampered_resolution(self):
         rows = [json.loads(row) for row in self.lines("resolutions.jsonl")]
         rows[0]["state"] = "confirmed_not_delivered"
         with open(self.path("resolutions.jsonl"), "w", encoding="utf-8") as h:
             h.write("".join(kv.jcs(row).decode() + "\n" for row in rows))
-        self.refuse("digest does not match")
+        self.refuse("digest does not match", "digest")
 
     def test_a_resolution_in_a_version_3_bundle_is_refused(self):
         shutil.rmtree(self.bundle)
         shutil.copytree(f"{BUNDLES}/bundle-v3", self.bundle)
         shutil.copy(f"{BUNDLES}/bundle-v4/resolutions.jsonl", self.path("resolutions.jsonl"))
-        self.refuse("must hold exactly")
+        self.refuse("must hold exactly", "layout")
+
+    def test_an_edited_manifest_is_a_manifest_failure_not_a_digest_one(self):
+        with open(self.path("manifest.json"), encoding="utf-8") as h:
+            manifest = json.load(h)
+        manifest["files"]["resolutions"]["count"] = 9
+        with open(self.path("manifest.json"), "w", encoding="utf-8") as h:
+            h.write(kv.jcs(manifest).decode() + "\n")
+        self.refuse("hash does not match", "manifest")
 
     def test_an_unknown_member_is_refused(self):
         rows = [json.loads(row) for row in self.lines("resolutions.jsonl")]
         rows[0]["note"] = "x"
         with open(self.path("resolutions.jsonl"), "w", encoding="utf-8") as h:
             h.write("".join(kv.jcs(row).decode() + "\n" for row in rows))
-        self.refuse("digest does not match")
+        self.refuse("digest does not match", "digest")
 
 
 class DigestForms(unittest.TestCase):
@@ -154,10 +164,12 @@ class Mutations(unittest.TestCase):
             for row in rows:
                 h.write(kv.jcs(row).decode() + "\n")
 
-    def refuse(self, fragment):
+    def refuse(self, fragment, cls=None):
         with self.assertRaises(kv.Refused) as ctx:
             kv.verify_bundle(self.bundle, self.keys, now=NOW)
         self.assertIn(fragment, str(ctx.exception))
+        if cls is not None:
+            self.assertEqual(ctx.exception.cls, cls)
 
     def reseal(self, rows):
         """Recomputes the chain, the file digests and the manifest hash. Signatures are not
@@ -195,7 +207,7 @@ class Mutations(unittest.TestCase):
         rows = self.rows("records.jsonl")
         rows[1]["payload_note"] = "x"
         self.write("records.jsonl", rows)
-        self.refuse("digest does not match")
+        self.refuse("digest does not match", "digest")
 
     def test_manifest_edit(self):
         m = self.rows("manifest.json")[0]
@@ -206,11 +218,11 @@ class Mutations(unittest.TestCase):
     def test_removed_checkpoint_file_line(self):
         rows = self.rows("checkpoints.jsonl")[:-1]
         self.write("checkpoints.jsonl", rows)
-        self.refuse("digest does not match")
+        self.refuse("digest does not match", "digest")
 
     def test_extra_file(self):
         open(self.path("notes.txt"), "w").close()
-        self.refuse("must hold exactly")
+        self.refuse("must hold exactly", "layout")
 
     def test_wrong_keys(self):
         other = os.path.join(self.dir, "empty.keys.json")
