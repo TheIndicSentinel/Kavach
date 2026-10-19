@@ -459,6 +459,15 @@ pub fn sign_outcome(
     })
 }
 
+/// An `unknown` outcome the reconciler may still resolve (ADR-017 R2), with
+/// the action of the decision it belongs to (which says which provider to
+/// ask). Nothing here is a destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnresolvedOutcome {
+    pub outcome: OutcomeRecord,
+    pub action: String,
+}
+
 /// Agent evidence persistence (ADR-005 §6 phase 1).
 ///
 /// `commit` is one transaction: lock the partition head, then (allow only,
@@ -513,6 +522,16 @@ pub trait AgentEvidenceStore: Send + Sync {
         tenant_id: &str,
         credential_id: &str,
     ) -> impl Future<Output = Result<Vec<crate::outcome_resolution::ResolutionRecord>, PortError>> + Send;
+
+    /// The `unknown` outcomes of a tenant the reconciler may still resolve:
+    /// no confirmed resolution and no `ambiguous` from the reconciler
+    /// ([`crate::outcome_resolution::needs_reconciling`]), oldest outcome
+    /// first, at most `limit`.
+    fn unresolved_outcomes(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<UnresolvedOutcome>, PortError>> + Send;
 
     /// All records of a partition, of every kind, in `seq` order (export /
     /// verification).

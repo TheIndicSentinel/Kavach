@@ -112,6 +112,20 @@ pub struct IssuedCredential {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Mints the signed question a gateway puts to a provider about one earlier
+/// send (ADR-017 R2). A question names the send (`jti`), the tenant and the
+/// provider and carries nothing about the recipient; it is not a credential
+/// and cannot send anything.
+pub trait StatusQuestions: Send + Sync {
+    fn status_question(
+        &self,
+        tenant_id: &str,
+        audience: &str,
+        jti: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> impl Future<Output = Result<TokenSecret, PortError>> + Send;
+}
+
 /// Issues request-bound credentials (ADR-006: security-critical; every
 /// adapter must pass `kavach_ports_testkit::credential_broker::conformance`).
 ///

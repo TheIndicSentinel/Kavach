@@ -479,6 +479,7 @@ fn start_metrics(
     metrics.set_model_pack_mismatch(model_pack_mismatch);
     crate::checkpoints::start(dataplane, &metrics);
     crate::revocation_evidence::start(dataplane, &metrics);
+    crate::outcome_reconciler::start(dataplane);
     crate::agent_state_evidence::start(dataplane, &metrics);
     Ok(metrics)
 }

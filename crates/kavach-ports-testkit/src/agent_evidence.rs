@@ -167,6 +167,7 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     nothing_is_kept_when_signing_fails(&*store, &clock).await;
     every_outcome_kind_is_stored(&*store, &clock, &signer).await;
     outcome_resolutions(&*store, &clock, &signer).await;
+    unresolved_outcomes_are_what_the_reconciler_may_resolve(&*store, &clock, &signer).await;
     one_creator_per_request_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     duplicates_race_near_the_cap(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     revocations_in_the_chain(&*store, &clock, &signer).await;
@@ -617,7 +618,7 @@ async fn an_unknown_outcome<S: AgentEvidenceStore>(
 ) -> Unknown {
     let record = committed(
         store
-            .commit(request(tenant, request_id, 3), clock, signer)
+            .commit(request(tenant, request_id, 10), clock, signer)
             .await
             .unwrap(),
     );
@@ -760,6 +761,87 @@ async fn outcome_resolutions<S: AgentEvidenceStore>(
     ));
 
     resolutions_are_refused_when_wrong(store, clock, signer, &u, provider).await;
+}
+
+/// The reconciler's work list: only `unknown` outcomes, none a confirmed
+/// state or the reconciler's own `ambiguous` has settled, oldest first,
+/// within the tenant and the limit, each with its action. A person's
+/// attestation of `ambiguity` is not a thing, so only these two end the work.
+async fn unresolved_outcomes_are_what_the_reconciler_may_resolve<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+) {
+    use ResolutionSource::{OperatorAttested, ProviderStatus, Reconciler};
+    use ResolutionState::{Ambiguous, ConfirmedDelivered as Delivered};
+    let t = "ae-unresolved";
+    let open = an_unknown_outcome(store, clock, signer, t, "ur-open", Outcome::Unknown).await;
+    let confirmed = an_unknown_outcome(store, clock, signer, t, "ur-conf", Outcome::Unknown).await;
+    let given_up = an_unknown_outcome(store, clock, signer, t, "ur-gave", Outcome::Unknown).await;
+    let attested = an_unknown_outcome(store, clock, signer, t, "ur-att", Outcome::Unknown).await;
+    let _settled = an_unknown_outcome(store, clock, signer, t, "ur-set", Outcome::Delivered).await;
+    let _elsewhere = an_unknown_outcome(
+        store,
+        clock,
+        signer,
+        "ae-unresolved-other",
+        "ur-x",
+        Outcome::Unknown,
+    )
+    .await;
+
+    let work = |limit: u32| async move {
+        store
+            .unresolved_outcomes(t, limit)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|u| u.outcome.credential_id)
+            .collect::<Vec<_>>()
+    };
+    let all = [&open, &confirmed, &given_up, &attested].map(|u| u.credential.clone());
+    let mut listed = work(100).await;
+    listed.sort();
+    let mut expected = all.to_vec();
+    expected.sort();
+    assert_eq!(listed, expected, "unknown outcomes of this tenant only");
+    let one = store.unresolved_outcomes(t, 100).await.unwrap();
+    assert!(
+        one.iter().all(|u| u.action == "send_reminder"),
+        "each says which action it belongs to: {one:?}"
+    );
+    assert_eq!(work(2).await.len(), 2, "the limit holds");
+
+    // A provider's confirmed answer settles it; so does the reconciler giving up.
+    let answer = resolution(
+        &confirmed,
+        signer,
+        (Delivered, ProviderStatus),
+        Some("a"),
+        (None, None),
+    )
+    .unwrap();
+    assert!(store.record_resolution(answer).await.unwrap());
+    let gave_up = resolution(
+        &given_up,
+        signer,
+        (Ambiguous, Reconciler),
+        None,
+        (None, None),
+    )
+    .unwrap();
+    assert!(store.record_resolution(gave_up).await.unwrap());
+    // A person's delivered attestation confirms it as well (one person).
+    let by_hand = resolution(
+        &attested,
+        signer,
+        (Delivered, OperatorAttested),
+        Some("r"),
+        (Some("gina"), None),
+    )
+    .unwrap();
+    assert!(store.record_resolution(by_hand).await.unwrap());
+    assert_eq!(work(100).await, std::slice::from_ref(&open.credential));
 }
 
 /// The store enforces who may say what, and what a resolution may refer to.

@@ -577,6 +577,11 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         }
     }
 
+    /// The evidence signer, for the reconciler's own signed rows (ADR-017).
+    pub(crate) fn evidence_signer(&self) -> &dyn EvidenceSigner {
+        &*self.signer
+    }
+
     /// The core's clock now, synced or not: what the evidence it writes is
     /// stamped with (each record also states the clock's sync status).
     pub fn clock_now(&self) -> DateTime<Utc> {
