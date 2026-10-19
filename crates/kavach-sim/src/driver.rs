@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use crate::agents::{decide, retries, Memory};
 use crate::calendar::slot;
-use crate::ledger::{AgentEntry, Entry, IssueEntry, SorEntry};
+use crate::ledger::{AgentEntry, Entry, IssueEntry, SnapshotEntry, SnapshotFinding, SorEntry};
 use crate::oracle::{default_accepted, Closure, Standing, Verb};
 use crate::rng::Rng;
 use crate::scenario::{minute_of_day, EventSpec, Scenario};
@@ -53,6 +53,9 @@ pub trait Stack {
         agent: &str,
         verb: &str,
     ) -> impl Future<Output = Result<(u16, Value), String>>;
+    /// The lender's closed loans, for snapshot reconciliation (ADR-012
+    /// addendum): `{"system": "lms", "records": [...]}`; status and body.
+    fn snapshot(&self, body: Value) -> impl Future<Output = Result<(u16, Value), String>>;
     /// A revoking system-of-record event (`loan.paid`, `loan.disputed`)
     /// for `subject_ref`'s loan, dated `occurred` (the stack's clock is when
     /// it arrives): status and body.
@@ -74,6 +77,8 @@ pub struct Run {
     pub agent_events: Vec<AgentEntry>,
     /// New defaults the run sent, and whether Kavach took each.
     pub issues: Vec<IssueEntry>,
+    /// The lender's closed loans sent to Kavach, and what it found.
+    pub snapshots: Vec<SnapshotEntry>,
 }
 
 /// One mandate the run obtained, in the simulator's own record.
@@ -93,6 +98,9 @@ struct Mandates {
     /// The payments and disputes that have reached Kavach so far, in order:
     /// the simulator's own record of what has closed which loan.
     closures: Vec<Closure>,
+    /// Every payment and dispute the lender made, including the ones its
+    /// system never sent: what it lists in a snapshot.
+    lender: Vec<Closure>,
 }
 
 impl Mandates {
@@ -212,6 +220,10 @@ pub async fn run<S: Stack>(stack: &S, scenario: &Scenario, world: &World) -> Res
             for event in scenario.events.iter().filter(|e| e.day == day) {
                 if minute_of_day(&event.at)? == minute {
                     let n = out.events.len();
+                    if event.kind == crate::scenario::EventKind::Snapshot {
+                        snapshot_event(stack, world, &mandates, event, at, &mut out).await?;
+                        continue;
+                    }
                     if event.kind.is_agent_event() {
                         agent_event(
                             stack,
@@ -397,6 +409,17 @@ async fn send_event<S: Stack>(
             }
             continue;
         }
+        let closure = Closure {
+            borrower: subject.clone(),
+            occurred,
+            arrived: at,
+            disputed: event.kind == crate::scenario::EventKind::Disputed,
+        };
+        mandates.lender.push(closure.clone());
+        if event.dropped {
+            // Lost on the way: Kavach hears nothing, the model learns nothing.
+            continue;
+        }
         let event_id = format!("sim-{}-ev{n}-{k}", scenario.seed);
         let (status, reply) = stack
             .revoke(event.kind.as_str(), &event_id, subject, occurred)
@@ -410,12 +433,6 @@ async fn send_event<S: Stack>(
                     .collect()
             })
             .unwrap_or_default();
-        let closure = Closure {
-            borrower: subject.clone(),
-            occurred,
-            arrived: at,
-            disputed: event.kind == crate::scenario::EventKind::Disputed,
-        };
         out.events.push(SorEntry {
             day: event.day,
             at,
@@ -428,6 +445,79 @@ async fn send_event<S: Stack>(
             expected: mandates.revoke(borrower, &closure),
         });
     }
+    Ok(())
+}
+
+/// The lender sends every payment and dispute it has made (sent or lost) and
+/// Kavach reports the authority it still holds for them. What it should
+/// report comes from the run's own record of its mandates.
+async fn snapshot_event<S: Stack>(
+    stack: &S,
+    world: &World,
+    mandates: &Mandates,
+    event: &EventSpec,
+    at: DateTime<Utc>,
+    out: &mut Run,
+) -> Result<(), String> {
+    let records: Vec<Value> = mandates
+        .lender
+        .iter()
+        .map(|c| {
+            json!({
+                "record_ref": kavach_devkit::loan_ref(&c.borrower),
+                "state": if c.disputed { "disputed" } else { "paid" },
+                "closed_at": c.occurred,
+            })
+        })
+        .collect();
+    if records.is_empty() {
+        return Err("a lender.snapshot before any payment or dispute".into());
+    }
+    let listed = records.len();
+    let (status, reply) = stack
+        .snapshot(json!({ "system": "lms", "records": records }))
+        .await
+        .map_err(|e| format!("the snapshot: {e}"))?;
+    let mut expected = Vec::new();
+    for closed in &mandates.lender {
+        for held in mandates
+            .all
+            .iter()
+            .filter(|h| !h.revoked && world.borrowers[h.borrower].subject_ref == closed.borrower)
+        {
+            // A payment's event would have revoked what it reaches; a
+            // dispute holds the loan against every live mandate.
+            let would_revoke = closed.disputed || closed.reaches(held.issued_at);
+            expected.push(SnapshotFinding {
+                mandate_id: held.id.clone(),
+                kind: if would_revoke {
+                    "should_have_been_revoked"
+                } else {
+                    "issued_after_closure"
+                }
+                .into(),
+            });
+        }
+    }
+    let mut found: Vec<SnapshotFinding> = reply["findings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|f| SnapshotFinding {
+            mandate_id: f["mandate_id"].as_str().unwrap_or_default().into(),
+            kind: f["kind"].as_str().unwrap_or_default().into(),
+        })
+        .collect();
+    found.sort();
+    expected.sort();
+    out.snapshots.push(SnapshotEntry {
+        day: event.day,
+        at,
+        listed,
+        status,
+        found,
+        expected,
+    });
     Ok(())
 }
 

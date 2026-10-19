@@ -1,0 +1,32 @@
+# A payment event that never arrives (ADR-012 addendum, snapshot
+# reconciliation). The first borrower's loan is paid at 11:30, but the system
+# of record's event is lost: Kavach hears nothing, so contact goes on at
+# 13:00, which nothing could prevent. At 15:00 the lender sends the loans it
+# considers closed and Kavach reports the mandate that still holds
+# authority for the paid loan. At 16:00 the lender resends the event (the
+# remedy): it revokes through the normal path, a second snapshot finds
+# nothing, and contact stops at 17:00. What the snapshots must find comes
+# from the run's own record of its mandates, never from Kavach's replies.
+version: 1
+name: dropped-payment-found-by-snapshot
+description: A lost payment event is found when the lender sends its closed loans; resending it stops contact.
+covers: ["A lost payment or dispute event is found when the lender sends its closed loans (snapshot reconciliation, ADR-012 addendum):"]   # SECURITY_PROPERTIES.md rows
+seed: 25
+days: 1
+borrowers: 2
+schedule: ["09:00", "13:00", "17:00"]
+agents:
+  - type: compliant
+    behaviour: { contacts_per_day: 3 }
+assignment: split
+events:
+  - { day: 1, at: "12:00", type: loan.paid, borrowers: 1, lag_seconds: 1800, dropped: true }
+  - { day: 1, at: "15:00", type: lender.snapshot }
+  - { day: 1, at: "16:00", type: loan.paid, borrowers: 1, lag_seconds: 16200 }
+  - { day: 1, at: "16:30", type: lender.snapshot }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 5
+  blocked_at_least: { mandate_invalid: 1 }

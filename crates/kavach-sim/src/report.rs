@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::ledger::{digest, AgentEntry, Entry, IssueEntry, SorEntry};
+use crate::ledger::{digest, AgentEntry, Entry, IssueEntry, SnapshotEntry, SorEntry};
 use crate::oracle::{Oracle, Retry, Rules};
 use crate::scenario::Scenario;
 
@@ -60,6 +60,8 @@ pub struct Report {
     pub calls: usize,
     /// Payments and disputes sent to the stack.
     pub revocation_events: usize,
+    /// Snapshot reconciliations the run sent, with how many mandates each found.
+    pub snapshots: Vec<usize>,
     /// Operators' changes of agents' states the run made (ADR-013).
     pub agent_state_events: usize,
     pub allowed: usize,
@@ -170,6 +172,32 @@ fn issue_findings(issues: &[IssueEntry]) -> Vec<Finding> {
         .collect()
 }
 
+/// A snapshot that found something other than what the run's own record of
+/// its mandates says it should have (ADR-012 addendum).
+fn snapshot_findings(snapshots: &[SnapshotEntry]) -> Vec<Finding> {
+    snapshots
+        .iter()
+        .filter(|s| !(200..300).contains(&s.status) || s.found != s.expected)
+        .map(|s| Finding {
+            seq: 0,
+            agent: String::new(),
+            borrower: String::new(),
+            at: s.at.to_rfc3339(),
+            detail: if (200..300).contains(&s.status) {
+                format!(
+                    "the snapshot found {} mandate(s) with live authority for closed loans; \
+                     the run's own record says {} (listed {})",
+                    s.found.len(),
+                    s.expected.len(),
+                    s.listed
+                )
+            } else {
+                format!("the snapshot was refused ({})", s.status)
+            },
+        })
+        .collect()
+}
+
 impl Report {
     // The run's records are separate inputs on purpose (calls, events,
     // agent-state changes, evidence): a struct of them would only be
@@ -183,6 +211,7 @@ impl Report {
         events: &[SorEntry],
         agent_events: &[AgentEntry],
         issues: &[IssueEntry],
+        snapshots: &[SnapshotEntry],
         evidence: Bundle,
         reconciliation: Option<crate::reconcile::Reconciliation>,
         rules: Rules,
@@ -248,6 +277,7 @@ impl Report {
             }
         }
         mismatches.extend(issue_findings(issues));
+        mismatches.extend(snapshot_findings(snapshots));
         let firsts = ledger.iter().filter(|c| c.retry_of.is_none());
         let calls = firsts.clone().count();
         let allowed = firsts.filter(|c| c.allowed()).count();
@@ -260,6 +290,7 @@ impl Report {
             agents,
             calls,
             revocation_events: events.len(),
+            snapshots: snapshots.iter().map(|s| s.found.len()).collect(),
             agent_state_events: agent_events.len(),
             allowed,
             blocked: calls - allowed,
@@ -275,7 +306,7 @@ impl Report {
             leaks,
             evidence,
             reconciliation,
-            digest: digest(ledger, events, agent_events, issues),
+            digest: digest(ledger, events, agent_events, issues, snapshots),
             expectations_unmet: Vec::new(),
         };
         report.expectations_unmet = report.unmet(scenario);
@@ -414,6 +445,7 @@ mod tests {
                 &[],
                 &[],
                 issues,
+                &[],
                 verified(),
                 Some(crate::reconcile::Reconciliation::default()),
                 Rules::default(),
@@ -439,6 +471,52 @@ mod tests {
         assert_ne!(taken.exit_code(), 0);
     }
 
+    /// A snapshot that finds something other than the run's own record of
+    /// its mandates says (more, fewer, or a refusal) is a mismatch.
+    #[test]
+    fn a_snapshot_that_disagrees_with_the_runs_own_record_is_a_mismatch() {
+        use crate::ledger::{SnapshotEntry, SnapshotFinding};
+        let scenario = builtin("two-agents-one-borrower").unwrap();
+        let world = World::build(&scenario);
+        let finding = |id: &str| SnapshotFinding {
+            mandate_id: id.into(),
+            kind: "should_have_been_revoked".into(),
+        };
+        let snapshot = |status: u16, found: &[&str], expected: &[&str]| SnapshotEntry {
+            day: 1,
+            at: crate::calendar::slot(1, 900),
+            listed: 1,
+            status,
+            found: found.iter().map(|id| finding(id)).collect(),
+            expected: expected.iter().map(|id| finding(id)).collect(),
+        };
+        let build = |snapshots: &[SnapshotEntry]| {
+            Report::build(
+                &scenario,
+                &world,
+                &shared_cap(),
+                &[],
+                &[],
+                &[],
+                snapshots,
+                verified(),
+                Some(crate::reconcile::Reconciliation::default()),
+                Rules::default(),
+            )
+        };
+        assert!(build(&[snapshot(200, &["m-1"], &["m-1"])])
+            .mismatches
+            .is_empty());
+        assert!(build(&[snapshot(200, &[], &[])]).mismatches.is_empty());
+        for bad in [
+            snapshot(200, &[], &["m-1"]),
+            snapshot(200, &["m-1", "m-2"], &["m-1"]),
+            snapshot(403, &[], &[]),
+        ] {
+            assert_eq!(build(&[bad]).mismatches.len(), 1);
+        }
+    }
+
     #[test]
     fn agreement_passes() {
         let scenario = builtin("two-agents-one-borrower").unwrap();
@@ -447,6 +525,7 @@ mod tests {
             &scenario,
             &world,
             &shared_cap(),
+            &[],
             &[],
             &[],
             &[],
@@ -481,6 +560,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             verified(),
             Some(crate::reconcile::Reconciliation::default()),
             weak,
@@ -495,6 +575,7 @@ mod tests {
             &scenario,
             &world,
             &allowed,
+            &[],
             &[],
             &[],
             &[],
@@ -520,6 +601,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             missing,
             Some(crate::reconcile::Reconciliation::default()),
             Rules::default(),
@@ -532,6 +614,7 @@ mod tests {
             &scenario,
             &world,
             &shared_cap(),
+            &[],
             &[],
             &[],
             &[],
@@ -602,6 +685,7 @@ mod tests {
                 scenario,
                 &world,
                 ledger,
+                &[],
                 &[],
                 &[],
                 &[],

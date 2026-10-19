@@ -174,7 +174,12 @@ impl World {
     #[must_use]
     pub fn revocations(&self, scenario: &Scenario) -> Vec<crate::oracle::Closure> {
         let mut out = Vec::new();
-        for event in scenario.events.iter().filter(|e| e.kind.revokes()) {
+        // A lost event never reached Kavach: it stops nothing.
+        for event in scenario
+            .events
+            .iter()
+            .filter(|e| e.kind.revokes() && !e.dropped)
+        {
             let Ok(minute) = crate::scenario::minute_of_day(&event.at) else {
                 continue;
             };
