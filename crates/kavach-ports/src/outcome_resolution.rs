@@ -365,11 +365,21 @@ pub enum Governing {
 /// - an `ambiguous` row never overrides a confirmed one, whenever written.
 #[must_use]
 pub fn governing(rows: &[ResolutionRecord]) -> Governing {
+    let pairs: Vec<(ResolutionState, ResolutionSource)> =
+        rows.iter().map(|r| (r.state, r.source)).collect();
+    governing_of(&pairs)
+}
+
+/// [`governing`] over just the `(state, source)` of each row: all it reads.
+#[must_use]
+pub fn governing_of(rows: &[(ResolutionState, ResolutionSource)]) -> Governing {
     let confirmed = |state: ResolutionState| state.is_confirmed();
     let mut closing: Vec<ResolutionState> = rows
         .iter()
-        .filter(|r| r.source == ResolutionSource::ConflictResolution && confirmed(r.state))
-        .map(|r| r.state)
+        .filter(|(state, source)| {
+            *source == ResolutionSource::ConflictResolution && confirmed(*state)
+        })
+        .map(|(state, _)| *state)
         .collect();
     closing.sort_by_key(|s| s.as_str());
     closing.dedup();
@@ -385,18 +395,23 @@ pub fn governing(rows: &[ResolutionRecord]) -> Governing {
     }
     let mut states: Vec<ResolutionState> = rows
         .iter()
-        .filter(|r| confirmed(r.state))
-        .map(|r| r.state)
+        .filter(|(state, _)| confirmed(*state))
+        .map(|(state, _)| *state)
         .collect();
     states.sort_by_key(|s| s.as_str());
     states.dedup();
     match states.as_slice() {
-        [] if rows.iter().any(|r| r.state == ResolutionState::Ambiguous) => Governing::Ambiguous,
+        [] if rows
+            .iter()
+            .any(|(state, _)| *state == ResolutionState::Ambiguous) =>
+        {
+            Governing::Ambiguous
+        }
         [] => Governing::Unresolved,
         [state] => {
             let by_provider = rows
                 .iter()
-                .any(|r| r.state == *state && r.source == ResolutionSource::ProviderStatus);
+                .any(|(s, src)| s == state && *src == ResolutionSource::ProviderStatus);
             Governing::Confirmed {
                 state: *state,
                 source: if by_provider {
@@ -419,6 +434,56 @@ pub fn needs_reconciling(rows: &[ResolutionRecord]) -> bool {
         r.state.is_confirmed()
             || (r.source == ResolutionSource::Reconciler && r.state == ResolutionState::Ambiguous)
     })
+}
+
+/// What the unknown outcomes of a tenant look like, for signals (ADR-017
+/// R3a). Every unknown outcome is in exactly one of the first four counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResolutionSummary {
+    /// No resolution says anything yet.
+    pub unresolved: u64,
+    /// Only `ambiguous`: nobody could say; it waits for a person.
+    pub ambiguous: u64,
+    /// Two different confirmed states and no two-person closure: an incident.
+    pub conflicted: u64,
+    /// One confirmed state governs.
+    pub resolved: u64,
+    /// The oldest unknown outcome that is not resolved (unresolved,
+    /// ambiguous or conflicted): the longest a call has been unconfirmed.
+    pub oldest_unconfirmed: Option<DateTime<Utc>>,
+    /// Resolution rows kept for unknown outcomes, by source.
+    pub rows_by_source: std::collections::BTreeMap<&'static str, u64>,
+    /// The tenant has more unknown outcomes than were counted.
+    pub truncated: bool,
+}
+
+/// What a store reads to summarise: each unknown outcome's time and the
+/// `(state, source)` of its resolutions.
+pub type OutcomeRows = Vec<(DateTime<Utc>, Vec<(ResolutionState, ResolutionSource)>)>;
+
+/// Summarises unknown outcomes given each one's time and the
+/// `(state, source)` of its resolutions. Shared by every store.
+#[must_use]
+pub fn summarise<'a>(
+    outcomes: impl IntoIterator<Item = (DateTime<Utc>, &'a [(ResolutionState, ResolutionSource)])>,
+) -> ResolutionSummary {
+    let mut summary = ResolutionSummary::default();
+    for (ts, rows) in outcomes {
+        for (_, source) in rows {
+            *summary.rows_by_source.entry(source.as_str()).or_insert(0) += 1;
+        }
+        match governing_of(rows) {
+            Governing::Confirmed { .. } => {
+                summary.resolved += 1;
+                continue;
+            }
+            Governing::Unresolved => summary.unresolved += 1,
+            Governing::Ambiguous => summary.ambiguous += 1,
+            Governing::Conflicted => summary.conflicted += 1,
+        }
+        summary.oldest_unconfirmed = Some(summary.oldest_unconfirmed.map_or(ts, |o| o.min(ts)));
+    }
+    summary
 }
 
 #[cfg(test)]
@@ -467,6 +532,36 @@ mod tests {
         let mut r = row(Ambiguous, Reconciler);
         r.evidence_digest = None;
         r
+    }
+
+    #[test]
+    fn the_summary_puts_every_outcome_in_one_class_and_dates_the_oldest_unconfirmed() {
+        use ResolutionSource::{OperatorAttested, ProviderStatus, Reconciler};
+        use ResolutionState::{Ambiguous, ConfirmedDelivered as D, ConfirmedNotDelivered as N};
+        let at = |m: i64| DateTime::from_timestamp(1_800_000_000 + m * 60, 0).unwrap();
+        let open: [(ResolutionState, ResolutionSource); 0] = [];
+        let ambiguous = [(Ambiguous, Reconciler)];
+        let resolved = [(D, ProviderStatus)];
+        let conflicted = [(D, ProviderStatus), (N, OperatorAttested)];
+        let summary = summarise([
+            (at(5), &open[..]),
+            (at(3), &ambiguous[..]),
+            (at(1), &resolved[..]),
+            (at(2), &conflicted[..]),
+        ]);
+        assert_eq!(
+            (
+                summary.unresolved,
+                summary.ambiguous,
+                summary.conflicted,
+                summary.resolved
+            ),
+            (1, 1, 1, 1)
+        );
+        // The resolved one (the oldest of all) is not unconfirmed.
+        assert_eq!(summary.oldest_unconfirmed, Some(at(2)));
+        assert_eq!(summary.rows_by_source["provider_status"], 2);
+        assert_eq!(summarise([]), ResolutionSummary::default());
     }
 
     #[test]

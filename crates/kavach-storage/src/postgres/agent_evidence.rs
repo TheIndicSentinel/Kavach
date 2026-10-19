@@ -4,7 +4,9 @@
 //! then the contact counter row** — any future resource must come after
 //! these, or concurrent commits can deadlock.
 
-use chrono::NaiveDate;
+use std::collections::BTreeMap;
+
+use chrono::{DateTime, NaiveDate, Utc};
 use kavach_domain::Decision;
 use kavach_domain::ReasonCode;
 use kavach_ports::agent_evidence::{
@@ -25,7 +27,8 @@ use kavach_ports::checkpoint::{
     CHAIN_AGENT_DECISIONS,
 };
 use kavach_ports::outcome_resolution::{
-    check_against_outcome, check_form, ResolutionRecord, ResolutionSource, ResolutionState,
+    check_against_outcome, check_form, summarise, OutcomeRows, ResolutionRecord, ResolutionSource,
+    ResolutionState, ResolutionSummary,
 };
 use kavach_ports::{PortError, TimeSource};
 use sqlx::{PgPool, Postgres, Row, Transaction};
@@ -616,6 +619,63 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
             key_id: row.try_get("key_id").map_err(|e| unavailable(&e))?,
             sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
         }))
+    }
+
+    async fn resolution_summary(&self, tenant_id: &str) -> Result<ResolutionSummary, PortError> {
+        // More unknown outcomes than this is an incident of its own; the
+        // summary says it stopped counting.
+        const LIMIT: i64 = 100_000;
+        let outcomes = sqlx::query(
+            "SELECT credential_id, ts FROM agent_outcomes \
+            WHERE tenant_id = $1 AND outcome = 'unknown' ORDER BY ts, credential_id LIMIT $2",
+        )
+        .bind(tenant_id)
+        .bind(LIMIT + 1)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        let rows = sqlx::query(
+            "SELECT credential_id, state, source FROM agent_outcome_resolutions \
+            WHERE tenant_id = $1",
+        )
+        .bind(tenant_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        let mut by_credential: BTreeMap<String, Vec<(ResolutionState, ResolutionSource)>> =
+            BTreeMap::new();
+        for row in &rows {
+            let (credential, state, source): (String, String, String) = (
+                row.try_get("credential_id").map_err(|e| unavailable(&e))?,
+                row.try_get("state").map_err(|e| unavailable(&e))?,
+                row.try_get("source").map_err(|e| unavailable(&e))?,
+            );
+            let (Some(state), Some(source)) = (
+                ResolutionState::parse(&state),
+                ResolutionSource::parse(&source),
+            ) else {
+                return Err(PortError::invalid(
+                    "a stored resolution has an unknown value",
+                ));
+            };
+            by_credential
+                .entry(credential)
+                .or_default()
+                .push((state, source));
+        }
+        let truncated = i64::try_from(outcomes.len()).unwrap_or(i64::MAX) > LIMIT;
+        let mut counted: OutcomeRows = Vec::new();
+        for row in outcomes
+            .iter()
+            .take(usize::try_from(LIMIT).unwrap_or(usize::MAX))
+        {
+            let credential: String = row.try_get("credential_id").map_err(|e| unavailable(&e))?;
+            let ts: DateTime<Utc> = row.try_get("ts").map_err(|e| unavailable(&e))?;
+            counted.push((ts, by_credential.remove(&credential).unwrap_or_default()));
+        }
+        let mut summary = summarise(counted.iter().map(|(ts, rows)| (*ts, rows.as_slice())));
+        summary.truncated = truncated;
+        Ok(summary)
     }
 
     async fn unresolved_outcomes(

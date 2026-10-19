@@ -97,6 +97,8 @@ fn the_alert_rules_are_complete_and_name_real_metrics() {
         "KavachRevocationRecordMissing",
         "KavachOutcomeWriteFailures",
         "KavachCredentialIdConflict",
+        "KavachOutcomeConflicted",
+        "KavachOutcomeAmbiguous",
     ] {
         assert!(alerts.contains(must), "{must} is shipped");
     }

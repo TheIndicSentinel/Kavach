@@ -77,6 +77,16 @@ impl AgentEvidenceStore for WhatIfStore {
         ready(Ok(Vec::new()))
     }
 
+    fn resolution_summary(
+        &self,
+        _tenant_id: &str,
+    ) -> impl Future<Output = Result<kavach_ports::outcome_resolution::ResolutionSummary, PortError>>
+           + Send {
+        ready(Ok(
+            kavach_ports::outcome_resolution::ResolutionSummary::default(),
+        ))
+    }
+
     fn unresolved_outcomes(
         &self,
         _tenant_id: &str,

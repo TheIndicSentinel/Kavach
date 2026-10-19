@@ -14,6 +14,7 @@ use kavach_dataplane::{reconcile_outcomes, OutcomeReconcileReport, PollState};
 
 use crate::dataplane::{Broker, Dataplane, EvidenceBackend, Mandates};
 use crate::forward::HttpForwarder;
+use crate::metrics::Metrics;
 
 const TICK: Duration = Duration::from_secs(15);
 const RESTART_DELAY: Duration = Duration::from_secs(5);
@@ -27,8 +28,10 @@ pub async fn pass(
     broker: &Broker,
     forwarder: &HttpForwarder,
     polls: &mut PollState,
+    metrics: &Metrics,
 ) -> OutcomeReconcileReport {
     let report = reconcile_outcomes(core, forwarder, broker, polls).await;
+    metrics.observe_outcome_reconcile(&report);
     observe(&report);
     report
 }
@@ -43,6 +46,15 @@ fn observe(report: &OutcomeReconcileReport) {
             "unknown outcomes resolved by the reconciler"
         );
     }
+    if let Some(summary) = &report.summary {
+        if summary.conflicted > 0 {
+            tracing::error!(
+                conflicted = summary.conflicted,
+                "ALERT unknown outcomes with conflicting confirmed states: two different \
+                 answers, no two-person closure"
+            );
+        }
+    }
     for problem in &report.problems {
         tracing::error!(problem = %problem, "outcome reconcile problem");
     }
@@ -51,26 +63,33 @@ fn observe(report: &OutcomeReconcileReport) {
     }
 }
 
-async fn run(core: Arc<Core>, broker: Arc<Broker>, forwarder: Arc<HttpForwarder>) {
+async fn run(
+    core: Arc<Core>,
+    broker: Arc<Broker>,
+    forwarder: Arc<HttpForwarder>,
+    metrics: Metrics,
+) {
     let mut polls = PollState::default();
     let mut interval = tokio::time::interval(TICK);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
-        pass(&core, &broker, &forwarder, &mut polls).await;
+        pass(&core, &broker, &forwarder, &mut polls, &metrics).await;
     }
 }
 
 /// Starts the reconciler when the agent surfaces are on.
-pub fn start(dataplane: Option<&Dataplane>) {
+pub fn start(dataplane: Option<&Dataplane>, metrics: &Metrics) {
     if let Some(dataplane) = dataplane {
         let core = Arc::clone(dataplane.core());
         let (broker, forwarder) = dataplane.status_handles();
+        let metrics = metrics.clone();
         crate::checkpoints::supervise("outcome reconciler", RESTART_DELAY, move || {
             run(
                 Arc::clone(&core),
                 Arc::clone(&broker),
                 Arc::clone(&forwarder),
+                metrics.clone(),
             )
         });
     }

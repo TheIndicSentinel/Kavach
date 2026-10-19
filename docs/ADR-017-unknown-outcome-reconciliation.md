@@ -54,7 +54,7 @@ A silent flip would hide exactly what an auditor needs to see, so the governing 
 
 ## Phases (each its own change, against the mock only)
 
-R1 the data, signing, store (**R1a, built**) and the verifier and bundle (**R1b, built**, bundle format 4). R2 the mock status endpoint (**R2a, built**) and the reconciler (**R2b, built**: `kavach-dataplane::outcome_reconciler`, run every 15 seconds by `kavach-api::outcome_reconciler`; questions limited to 8 per outcome with 30 s to 10 min back-off and 20 per pass; the constants are `UNKNOWN_OUTCOME_POLL_WINDOW`, `UNKNOWN_OUTCOME_AMBIGUOUS_AFTER` and friends, not settings). R3 operator attestation, signals, attacks and the simulator.
+R1 the data, signing, store (**R1a, built**) and the verifier and bundle (**R1b, built**, bundle format 4). R2 the mock status endpoint (**R2a, built**) and the reconciler (**R2b, built**: `kavach-dataplane::outcome_reconciler`, run every 15 seconds by `kavach-api::outcome_reconciler`; questions limited to 8 per outcome with 30 s to 10 min back-off and 20 per pass; the constants are `UNKNOWN_OUTCOME_POLL_WINDOW`, `UNKNOWN_OUTCOME_AMBIGUOUS_AFTER` and friends, not settings). R3a signals and alerts (**built**); then the simulator scenarios and the demo; R3b operator attestation and the attacks, which become necessary before any real-provider work (real providers will often have no status lookup).
 
 ### Amendment, R2a: how the status question is authenticated
 
@@ -80,5 +80,5 @@ This is a hypothesis about real providers, as decision 2 says; it does not chang
 - An unknown outcome gains a way to become known, with its history, without any path that can send again.
 - Every claim about delivery has to say its source (`provider_status` or `operator_attested`); neither is "proof of delivery".
 - A bundle format version and both verifiers change, as for the kill switch.
-- Until this is built, **every unknown outcome stays reported and unresolved**, and the monitoring work does not measure its age. Once R1 and R2 exist, the age of the oldest unresolved outcome and the conflicted count become meaningful alerts (R3).
+- With R1 and R2 an unknown outcome can become known, and with **R3a** its state is visible: `kavach_outcomes_unresolved`, `_ambiguous`, `_conflicted`, `kavach_outcome_oldest_unconfirmed_age_seconds` and `kavach_outcome_resolution_rows{source}`, with alerts on a conflict (critical), on ambiguity and on a call unconfirmed for more than three days (warnings; the three days is a default for the owner to set), and on a reconciler that stops. A call left to a person is no longer silent. Operator attestation, the way a person closes one, is **R3b**.
 - Two different non-ambiguous answers for one outcome are an incident, not a tie to break.

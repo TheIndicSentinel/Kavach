@@ -25,7 +25,8 @@ use kavach_ports::checkpoint::{
     CHAIN_AGENT_DECISIONS,
 };
 use kavach_ports::outcome_resolution::{
-    check_against_outcome, check_form, needs_reconciling, ResolutionRecord,
+    check_against_outcome, check_form, needs_reconciling, summarise, OutcomeRows, ResolutionRecord,
+    ResolutionSummary,
 };
 use kavach_ports::{PortError, TimeSource};
 
@@ -245,6 +246,27 @@ impl MemoryAgentEvidenceStore {
         });
         found.truncate(limit as usize);
         Ok(found)
+    }
+
+    fn resolution_summary_sync(&self, tenant_id: &str) -> Result<ResolutionSummary, PortError> {
+        let state = self.state.lock().map_err(poisoned)?;
+        let per_outcome: OutcomeRows = state
+            .outcomes
+            .values()
+            .filter(|o| o.tenant_id == tenant_id && o.outcome == Outcome::Unknown)
+            .map(|o| {
+                let rows = state
+                    .resolutions
+                    .iter()
+                    .filter(|r| r.tenant_id == tenant_id && r.credential_id == o.credential_id)
+                    .map(|r| (r.state, r.source))
+                    .collect();
+                (o.ts, rows)
+            })
+            .collect();
+        Ok(summarise(
+            per_outcome.iter().map(|(ts, rows)| (*ts, rows.as_slice())),
+        ))
     }
 
     fn outcome_sync(
@@ -504,6 +526,13 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         credential_id: &str,
     ) -> impl Future<Output = Result<Vec<ResolutionRecord>, PortError>> + Send {
         ready(self.resolutions_sync(tenant_id, credential_id))
+    }
+
+    fn resolution_summary(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<ResolutionSummary, PortError>> + Send {
+        ready(self.resolution_summary_sync(tenant_id))
     }
 
     fn unresolved_outcomes(

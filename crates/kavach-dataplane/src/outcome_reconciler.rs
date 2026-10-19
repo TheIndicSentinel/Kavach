@@ -32,6 +32,7 @@ use kavach_ports::agent_evidence::{AgentEvidenceStore, UnresolvedOutcome};
 use kavach_ports::agent_state::AgentStateStore;
 use kavach_ports::outcome_resolution::{
     outcome_ref, sign_resolution, ResolutionDraft, ResolutionSource, ResolutionState,
+    ResolutionSummary,
 };
 use kavach_ports::StatusQuestions;
 
@@ -91,6 +92,11 @@ pub struct OutcomeReconcileReport {
     /// Why a row could not be written or an outcome could not be asked about.
     pub problems: Vec<String>,
     pub error: Option<String>,
+    /// What the tenant's unknown outcomes look like after this pass (the
+    /// signals of ADR-017 R3a); `None` when it could not be read.
+    pub summary: Option<ResolutionSummary>,
+    /// The core's clock at the start of the pass: what ages are measured to.
+    pub at: Option<DateTime<Utc>>,
 }
 
 /// When the next question about an outcome that has been asked about
@@ -119,6 +125,7 @@ where
     let mut report = OutcomeReconcileReport::default();
     let tenant = core.tenant_id();
     let now = core.clock_now();
+    report.at = Some(now);
     let open = match core.store().unresolved_outcomes(tenant, WORK_PAGE).await {
         Ok(open) => open,
         Err(err) => {
@@ -141,6 +148,12 @@ where
             ask(core, asker, questions, polls, unresolved, now, &mut report).await;
         }
         // Between the window and 24 hours: left alone, a person may attest.
+    }
+    match core.store().resolution_summary(tenant).await {
+        Ok(summary) => report.summary = Some(summary),
+        Err(err) => report
+            .problems
+            .push(format!("resolution summary: {}", err.message)),
     }
     report
 }
