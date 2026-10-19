@@ -41,6 +41,12 @@ pub use jwe::{DecryptionKey, RecipientKey};
 
 pub const TYP_CREDENTIAL: &str = "kavach-credential+jws";
 pub const TYP_CREDENTIAL_JWE: &str = "kavach-credential+jwe";
+/// The status question a gateway puts to a provider about one earlier send
+/// (ADR-017 R2): a JWS only, with no destination, no channel and no
+/// template, so nothing about the recipient is ever on the wire or at rest.
+pub const TYP_STATUS: &str = "kavach-status+jws";
+/// A status question is valid for this long at most.
+pub const MAX_STATUS_TTL_SECONDS: i64 = 60;
 /// How long issued `jti`s are remembered (a working day covers `send_by`).
 const JTI_RETENTION_HOURS: i64 = 24;
 /// Fail closed rather than grow without bound.
@@ -146,6 +152,54 @@ pub fn check_time(
         return Err(PortError::rejected("credential past send_by"));
     }
     Ok(())
+}
+
+/// A signed question: "what became of the message sent under `jti`?"
+/// Signed with the credential key, so only the issuer of the send can ask;
+/// it carries no destination (the gateway does not keep one).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StatusRequestClaims {
+    pub iss: String,
+    pub tenant: String,
+    /// The provider it is addressed to.
+    pub aud: String,
+    /// The credential id of the send it asks about.
+    pub jti: String,
+    pub iat: i64,
+    pub exp: i64,
+}
+
+/// Verifies a status question presented to the provider `audience` at
+/// `now`: a JWS of type [`TYP_STATUS`] from a trusted credential key (a send
+/// credential is a different type and is refused here), the audience, and a
+/// lifetime of at most [`MAX_STATUS_TTL_SECONDS`]. The provider still checks
+/// that the `jti` in the path is the one in the claims.
+pub fn verify_status_request(
+    token: &str,
+    signing_keys: &KeySet,
+    audience: &str,
+    now: DateTime<Utc>,
+    leeway_seconds: i64,
+) -> Result<StatusRequestClaims, PortError> {
+    let (_, claims): (String, StatusRequestClaims) =
+        kavach_jws::verify(token, TYP_STATUS, signing_keys)?;
+    if claims.aud != audience {
+        return Err(PortError::rejected(
+            "status request is for another audience",
+        ));
+    }
+    let (now, leeway) = (now.timestamp(), leeway_seconds.max(0));
+    if claims.exp <= claims.iat || claims.exp - claims.iat > MAX_STATUS_TTL_SECONDS {
+        return Err(PortError::rejected("status request lifetime out of bounds"));
+    }
+    if claims.iat > now + IAT_SKEW_SECONDS + leeway {
+        return Err(PortError::rejected("status request issued in the future"));
+    }
+    if now >= claims.exp + leeway {
+        return Err(PortError::rejected("status request expired"));
+    }
+    Ok(claims)
 }
 
 /// Decrypts and verifies a credential presented to the provider `audience`
@@ -254,6 +308,38 @@ impl<K: KeyProvider> JoseCredentialBroker<K> {
     /// The signing key store (to check key separation at startup).
     pub fn keys(&self) -> &K {
         &self.keys
+    }
+
+    /// A signed status question about the send made under `jti` to
+    /// `audience`, valid for [`MAX_STATUS_TTL_SECONDS`] from `now`. Asking
+    /// about a provider with no registered key is refused: the gateway only
+    /// ever talks to providers it issues for.
+    pub async fn status_request(
+        &self,
+        tenant: &str,
+        audience: &str,
+        jti: &str,
+        now: DateTime<Utc>,
+    ) -> Result<TokenSecret, PortError> {
+        check_id("tenant", tenant, 128)?;
+        check_id("jti", jti, 128)?;
+        if !self.recipients.contains_key(audience) {
+            return Err(PortError::rejected(
+                "no credential is issued for this audience",
+            ));
+        }
+        let claims = StatusRequestClaims {
+            iss: self.issuer.clone(),
+            tenant: tenant.into(),
+            aud: audience.into(),
+            jti: jti.into(),
+            iat: now.timestamp(),
+            exp: now.timestamp() + MAX_STATUS_TTL_SECONDS,
+        };
+        kavach_jws::sign(&self.keys, &self.kid, TYP_STATUS, &claims)
+            .await
+            .map(TokenSecret::new)
+            .map_err(|e| PortError::unavailable(format!("status signing: {}", e.message)))
     }
 
     /// Audiences this broker can issue for.

@@ -455,3 +455,149 @@ async fn a_full_idempotency_store_fails_closed() {
         .await;
     assert_eq!(status, 202);
 }
+
+/// A status question for `jti`, signed by the credential key of `seed`.
+async fn ask(jti: &str, audience: &str, tenant: &str, seed: u8, now: DateTime<Utc>) -> String {
+    broker(seed)
+        .status_request(tenant, audience, jti, now)
+        .await
+        .unwrap()
+        .expose()
+        .to_string()
+}
+
+impl World {
+    fn now(&self) -> DateTime<Utc> {
+        *self.clock.lock().unwrap()
+    }
+
+    async fn status(&self, path_jti: &str, token: &str) -> (u16, Value) {
+        self.send(
+            self.client
+                .get(format!("{}/v1/messages/{path_jti}", self.api))
+                .header("authorization", format!("Kavach-Status {token}")),
+        )
+        .await
+    }
+
+    /// The tenant the test credentials are minted for.
+    async fn asked(&self, jti: &str) -> (u16, Value) {
+        let now = self.now();
+        let token = ask(jti, AUDIENCE, &tenant(), 30, now).await;
+        self.status(jti, &token).await
+    }
+}
+
+/// The tenant a minted test credential carries.
+fn tenant() -> String {
+    let destination = Destination::new(NUMBER);
+    credential_broker::request(&destination, "x")
+        .tenant_id
+        .to_string()
+}
+
+/// The status contract (ADR-017 R2): a delivered send, a refused one, one
+/// never stored and one whose response was lost each get their true word,
+/// the reply holds nothing else, and asking delivers nothing.
+#[tokio::test]
+async fn the_status_of_a_send_is_one_of_three_words_and_never_the_destination() {
+    let w = World::new(|c| c.hang = StdDuration::from_millis(50)).await;
+    for (jti, number) in [
+        ("s-delivered", NUMBER),
+        ("s-refused", REFUSE_NUMBER),
+        ("s-error", ERROR_NUMBER),
+        ("s-lost", HANG_NUMBER),
+    ] {
+        w.post(
+            &mint(Mint {
+                jti,
+                destination: number,
+                ..Mint::default()
+            })
+            .await,
+        )
+        .await;
+    }
+    let before = w.inbox().await.len();
+    for (jti, expected) in [
+        ("s-delivered", "delivered"),
+        ("s-refused", "not_delivered"),
+        ("s-error", "not_delivered"),
+        // The response was lost, the message was not: the whole point.
+        ("s-lost", "delivered"),
+        ("s-never-sent", "unknown"),
+    ] {
+        let (status, body) = w.asked(jti).await;
+        assert_eq!(status, 200, "{jti}: {body}");
+        assert_eq!(
+            body,
+            serde_json::json!({ "status": expected }),
+            "{jti}: exactly the status, nothing else"
+        );
+    }
+    // Asking is read-only, and long after the credential expired it still answers.
+    w.advance(Duration::minutes(30));
+    assert_eq!(w.asked("s-delivered").await.1["status"], "delivered");
+    assert_eq!(w.inbox().await.len(), before, "a question delivers nothing");
+    w.assert_no_destination();
+}
+
+#[tokio::test]
+async fn a_status_question_must_be_signed_by_the_issuer_for_this_provider_about_this_message() {
+    let w = World::new(|_| {}).await;
+    w.post(&mint(Mint::default()).await).await;
+    let now = w.now();
+    let t = tenant();
+
+    // Signed by a key the provider does not trust.
+    let forged = ask("cred-1", AUDIENCE, &t, 77, now).await;
+    assert_eq!(w.status("cred-1", &forged).await.0, 401);
+    // For another audience.
+    let other = ask("cred-1", "mock-voice", &t, 30, now).await;
+    assert_eq!(w.status("cred-1", &other).await.0, 401);
+    // About another message than the path names.
+    let token = ask("cred-1", AUDIENCE, &t, 30, now).await;
+    let (status, body) = w.status("cred-2", &token).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (403, Some("jti_mismatch"))
+    );
+    // For another tenant than the send was made for.
+    let stranger = ask("cred-1", AUDIENCE, "other-tenant", 30, now).await;
+    let (status, body) = w.status("cred-1", &stranger).await;
+    assert_eq!(
+        (status, body["reason"].as_str()),
+        (403, Some("tenant_mismatch"))
+    );
+    // Expired (valid for a minute).
+    w.advance(Duration::minutes(5));
+    assert_eq!(w.status("cred-1", &token).await.0, 401);
+    // A send credential is not a status question, and a status question is
+    // not a send credential.
+    let later = w.now();
+    let send = mint(Mint {
+        jti: "cred-9",
+        now: later,
+        ..Mint::default()
+    })
+    .await;
+    assert_eq!(w.status("cred-9", &send).await.0, 400);
+    let status_token = ask("cred-1", AUDIENCE, &t, 30, later).await;
+    assert_eq!(w.post(&status_token).await.0, 400);
+    // No Authorization header at all.
+    let (status, _) = w
+        .send(w.client.get(format!("{}/v1/messages/cred-1", w.api)))
+        .await;
+    assert_eq!(status, 401);
+    // A body is refused, as for a send.
+    let (status, _) = w
+        .send(
+            w.client
+                .get(format!("{}/v1/messages/cred-1", w.api))
+                .header("authorization", format!("Kavach-Status {status_token}"))
+                .body("x"),
+        )
+        .await;
+    assert_eq!(status, 400);
+    w.assert_no_destination();
+}
