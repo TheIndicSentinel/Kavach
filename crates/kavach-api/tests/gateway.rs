@@ -998,6 +998,7 @@ async fn an_unknown_outcome_is_resolved_by_asking_the_provider_never_by_sending(
             dp.broker(),
             dp.forwarder(),
             &mut polls,
+            gw.state.metrics(),
         )
         .await;
         assert_eq!((early.open, early.asked), (1, 0), "{early:?}");
@@ -1008,6 +1009,7 @@ async fn an_unknown_outcome_is_resolved_by_asking_the_provider_never_by_sending(
             dp.broker(),
             dp.forwarder(),
             &mut polls,
+            gw.state.metrics(),
         )
         .await;
         assert_eq!(report.asked, 1, "{report:?}");
@@ -1039,5 +1041,91 @@ async fn an_unknown_outcome_is_resolved_by_asking_the_provider_never_by_sending(
         assert_eq!(again["replayed"], true, "{again}");
         assert_eq!(gw.provider.inbox().len(), deliveries);
         assert_eq!(gw.stored_outcome(request).await, before);
+    }
+}
+
+/// The value of one unlabelled or labelled series in the metrics text.
+fn series(metrics: &str, name: &str) -> Option<i64> {
+    metrics
+        .lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' '))
+        .and_then(|n| n.parse().ok())
+}
+
+async fn run_pass(
+    gw: &Gw,
+    polls: &mut kavach_dataplane::PollState,
+) -> kavach_dataplane::OutcomeReconcileReport {
+    let dp = gw.state.dataplane().unwrap();
+    kavach_api::outcome_reconciler::pass(
+        dp.core(),
+        dp.broker(),
+        dp.forwarder(),
+        polls,
+        gw.state.metrics(),
+    )
+    .await
+}
+
+/// ADR-017 R3a: an unresolved or ambiguous call is visible. Counts and ages
+/// only, by state and by source, and a reconciler that stops shows as an old
+/// pass. Nothing in the series names a loan, a borrower or a destination.
+#[tokio::test]
+async fn unknown_outcomes_show_in_the_metrics_by_state_age_and_source() {
+    use kavach_dataplane::PollState;
+    let gw = gateway(Some(HANG_NUMBER), true).await;
+    let (_, reply) = gw.remind("sig-1").await;
+    assert_eq!(reply["outcome"], "unknown", "{reply}");
+    let mut polls = PollState::default();
+    let read = |name: &str| series(&gw.state.metrics().gather_text().unwrap(), name);
+    let age = "kavach_outcome_oldest_unconfirmed_age_seconds";
+
+    // Before any pass the series are 0; after one, the call is unresolved.
+    run_pass(&gw, &mut polls).await;
+    assert_eq!(read("kavach_outcomes_unresolved"), Some(1));
+    assert_eq!(read("kavach_outcomes_ambiguous"), Some(0));
+    assert_eq!(read("kavach_outcomes_conflicted"), Some(0));
+    assert_eq!(read(age), Some(0));
+
+    // Past the hour in which the provider is asked and before the 24 hours
+    // after which the reconciler gives up, nothing happens to the call: it
+    // is silent, and the age is what shows it.
+    gw.clock.advance(chrono::Duration::hours(2));
+    run_pass(&gw, &mut polls).await;
+    assert_eq!(read(age), Some(2 * 3600), "age on the clock of the outcome");
+    assert_eq!(read("kavach_outcomes_unresolved"), Some(1));
+
+    // Past 24 hours the reconciler gives up: ambiguous, still unconfirmed,
+    // and the oldest age keeps counting.
+    gw.clock.advance(chrono::Duration::hours(23));
+    run_pass(&gw, &mut polls).await;
+    let metrics = gw.state.metrics().gather_text().unwrap();
+    assert_eq!(series(&metrics, "kavach_outcomes_unresolved"), Some(0));
+    assert_eq!(series(&metrics, "kavach_outcomes_ambiguous"), Some(1));
+    assert_eq!(series(&metrics, age), Some(25 * 3600));
+    let by_source = |source: &str| {
+        series(
+            &metrics,
+            &format!("kavach_outcome_resolution_rows{{source=\"{source}\"}}"),
+        )
+    };
+    assert_eq!(by_source("reconciler"), Some(1));
+    for source in [
+        "provider_status",
+        "operator_attested",
+        "conflict_resolution",
+    ] {
+        assert_eq!(by_source(source), Some(0), "{source}");
+    }
+    assert!(
+        series(
+            &metrics,
+            "kavach_outcome_reconcile_last_pass_timestamp_seconds"
+        )
+        .unwrap()
+            > 0
+    );
+    for forbidden in ["+91", "sig-1", "B-9382", "cred-"] {
+        assert!(!metrics.contains(forbidden), "{forbidden} in the metrics");
     }
 }

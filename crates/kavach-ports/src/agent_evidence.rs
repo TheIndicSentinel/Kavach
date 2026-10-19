@@ -533,6 +533,13 @@ pub trait AgentEvidenceStore: Send + Sync {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<UnresolvedOutcome>, PortError>> + Send;
 
+    /// What the tenant's unknown outcomes look like by governing state, for
+    /// signals (ADR-017 R3a). Read-only.
+    fn resolution_summary(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<crate::outcome_resolution::ResolutionSummary, PortError>> + Send;
+
     /// All records of a partition, of every kind, in `seq` order (export /
     /// verification).
     fn records(

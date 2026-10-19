@@ -15,7 +15,7 @@ use kavach_ports::agent_evidence::{
 use kavach_ports::chain_record::{ChainRecord, RevocationDraft};
 use kavach_ports::outcome_resolution::{
     governing, outcome_ref, sign_resolution, Governing, ResolutionDraft, ResolutionRecord,
-    ResolutionSource, ResolutionState,
+    ResolutionSource, ResolutionState, ResolutionSummary,
 };
 use kavach_ports::{ErrorClass, KeyAlgorithm, PortError, PublicKey, SyncStatus};
 
@@ -168,6 +168,7 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     every_outcome_kind_is_stored(&*store, &clock, &signer).await;
     outcome_resolutions(&*store, &clock, &signer).await;
     unresolved_outcomes_are_what_the_reconciler_may_resolve(&*store, &clock, &signer).await;
+    the_summary_counts_each_unknown_outcome_once(&*store, &clock, &signer).await;
     one_creator_per_request_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     duplicates_race_near_the_cap(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     revocations_in_the_chain(&*store, &clock, &signer).await;
@@ -842,6 +843,77 @@ async fn unresolved_outcomes_are_what_the_reconciler_may_resolve<S: AgentEvidenc
     .unwrap();
     assert!(store.record_resolution(by_hand).await.unwrap());
     assert_eq!(work(100).await, std::slice::from_ref(&open.credential));
+}
+
+/// The summary (ADR-017 R3a) puts every unknown outcome of the tenant in
+/// exactly one of unresolved, ambiguous, conflicted or resolved; counts the
+/// rows by source; dates the oldest one still unconfirmed; and leaves out
+/// settled outcomes and other tenants.
+async fn the_summary_counts_each_unknown_outcome_once<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+) {
+    use ResolutionSource::{OperatorAttested, ProviderStatus, Reconciler};
+    use ResolutionState::{
+        Ambiguous, ConfirmedDelivered as Delivered, ConfirmedNotDelivered as Not,
+    };
+    let t = "ae-summary";
+    assert_eq!(
+        store.resolution_summary(t).await.unwrap(),
+        ResolutionSummary::default(),
+        "nothing at all"
+    );
+    let _open = an_unknown_outcome(store, clock, signer, t, "sm-open", Outcome::Unknown).await;
+    let amb = an_unknown_outcome(store, clock, signer, t, "sm-amb", Outcome::Unknown).await;
+    let done = an_unknown_outcome(store, clock, signer, t, "sm-done", Outcome::Unknown).await;
+    let split = an_unknown_outcome(store, clock, signer, t, "sm-split", Outcome::Unknown).await;
+    let _settled = an_unknown_outcome(store, clock, signer, t, "sm-set", Outcome::Delivered).await;
+    let _other = an_unknown_outcome(
+        store,
+        clock,
+        signer,
+        "ae-summary-other",
+        "sm-x",
+        Outcome::Unknown,
+    )
+    .await;
+    for (u, state, source, evidence, people) in [
+        (&amb, Ambiguous, Reconciler, None, (None, None)),
+        (&done, Delivered, ProviderStatus, Some("a"), (None, None)),
+        (&split, Delivered, ProviderStatus, Some("b"), (None, None)),
+        (
+            &split,
+            Not,
+            OperatorAttested,
+            Some("c"),
+            (Some("alice"), Some("bob")),
+        ),
+    ] {
+        let row = resolution(u, signer, (state, source), evidence, people).unwrap();
+        assert!(store.record_resolution(row).await.unwrap());
+    }
+    let summary = store.resolution_summary(t).await.unwrap();
+    assert_eq!(
+        (
+            summary.unresolved,
+            summary.ambiguous,
+            summary.conflicted,
+            summary.resolved
+        ),
+        (1, 1, 1, 1),
+        "{summary:?}"
+    );
+    assert_eq!(summary.oldest_unconfirmed, Some(t0()));
+    assert_eq!(
+        summary.rows_by_source,
+        std::collections::BTreeMap::from([
+            ("operator_attested", 1),
+            ("provider_status", 2),
+            ("reconciler", 1),
+        ])
+    );
+    assert!(!summary.truncated);
 }
 
 /// The store enforces who may say what, and what a resolution may refer to.

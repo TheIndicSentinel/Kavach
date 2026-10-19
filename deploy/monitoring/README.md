@@ -44,10 +44,11 @@ Several things fail *closed*, which is correct but looks like an outage without 
 | New mandates refused (an unsynchronised clock or an unreachable store) | `KavachSorEventsUnavailable` (`kavach_sor_events_unavailable_total`) |
 | A revocation has no evidence record | `KavachRevocationRecordMissing` |
 | A revocation has no audit entry | `KavachRevocationAuditEntryMissing` |
-| A reconciler has stopped | `KavachRevocationReconcilerStopped`, `KavachRevocationAuditReconcilerStopped`, `KavachAgentStateReconcilerStopped` |
+| A reconciler has stopped | `KavachRevocationReconcilerStopped`, `KavachRevocationAuditReconcilerStopped`, `KavachAgentStateReconcilerStopped`, `KavachOutcomeReconcilerStopped` |
+| A send's result is unknown or in dispute (ADR-017) | `KavachOutcomeConflicted` (critical), `KavachOutcomeAmbiguous`, `KavachOutcomeUnconfirmedOld` (warning; the three days is a default to set) |
 | Checkpoints are late or skipped | `KavachCheckpointLagging`, `KavachCheckpointStalled`, `KavachCheckpointsSkipped` |
 | A closed loan still has authority (a lost payment event) | `KavachClosedLoanWithLiveAuthority`; `KavachSnapshotNotRunRecently` (warning, silent until a first run) says how old that answer is |
-| Many unknown provider outcomes | `KavachUnknownOutcomesHigh`. How long one has been unknown is **not** measured: there is no way yet to resolve an unknown (reconciliation of unknown outcomes), so an age would only grow |
+| Many unknown provider outcomes | `KavachUnknownOutcomesHigh` (how many unknown outcomes happened). How many are still unconfirmed and for how long is `kavach_outcomes_unresolved` / `_ambiguous` / `_conflicted` and `kavach_outcome_oldest_unconfirmed_age_seconds`, refreshed every pass of the reconciler; `kavach_outcome_resolution_rows{source}` says how outcomes were learned |
 
 ## Not here yet
 Tracing (OpenTelemetry), a SIEM export, per-tenant labels and SLO burn-rate alerts. A rule for a shutdown that was not clean is the `ALERT shutdown was not clean` log line, not a metric.

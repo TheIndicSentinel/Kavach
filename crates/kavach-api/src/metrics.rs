@@ -26,6 +26,7 @@ pub struct Metrics {
     checkpoints: CheckpointMetrics,
     revocation_evidence: RevocationEvidenceMetrics,
     agent_state_evidence: AgentStateEvidenceMetrics,
+    outcomes: OutcomeMetrics,
 }
 
 /// How long each stage of a gateway call takes (`stage` is the fixed list
@@ -227,6 +228,72 @@ impl AgentStateEvidenceMetrics {
     }
 }
 
+/// Unknown outcomes and their resolutions (ADR-017 R3a): what is still
+/// unconfirmed, how long, and how it is known. Counts and ages only; nothing
+/// that names a loan, a borrower or a destination.
+#[derive(Clone)]
+struct OutcomeMetrics {
+    unresolved: prometheus::IntGauge,
+    ambiguous: prometheus::IntGauge,
+    conflicted: prometheus::IntGauge,
+    resolved: prometheus::IntGauge,
+    oldest_unconfirmed_age: prometheus::IntGauge,
+    rows_by_source: prometheus::IntGaugeVec,
+    last_pass: prometheus::IntGauge,
+}
+
+impl OutcomeMetrics {
+    fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
+        let gauge = |name: &str, help: &str| prometheus::IntGauge::new(name, help);
+        let metrics = Self {
+            unresolved: gauge(
+                "kavach_outcomes_unresolved",
+                "Unknown outcomes (a send whose result is not known) that no resolution \
+                 has said anything about yet",
+            )?,
+            ambiguous: gauge(
+                "kavach_outcomes_ambiguous",
+                "Unknown outcomes nobody could resolve (only ambiguous): they wait for a \
+                 person; alert when above 0",
+            )?,
+            conflicted: gauge(
+                "kavach_outcomes_conflicted",
+                "Unknown outcomes with two different confirmed states and no two-person \
+                 closure: an incident; alert when above 0",
+            )?,
+            resolved: gauge(
+                "kavach_outcomes_resolved",
+                "Unknown outcomes that one confirmed state governs",
+            )?,
+            oldest_unconfirmed_age: gauge(
+                "kavach_outcome_oldest_unconfirmed_age_seconds",
+                "Age of the oldest unknown outcome that is not resolved (unresolved, \
+                 ambiguous or conflicted); 0 when there is none",
+            )?,
+            rows_by_source: prometheus::IntGaugeVec::new(
+                Opts::new(
+                    "kavach_outcome_resolution_rows",
+                    "Resolution rows kept for unknown outcomes, by source",
+                ),
+                &["source"],
+            )?,
+            last_pass: gauge(
+                "kavach_outcome_reconcile_last_pass_timestamp_seconds",
+                "Unix time of the last outcome reconcile pass that read the summary; \
+                 alert when it is old",
+            )?,
+        };
+        registry.register(Box::new(metrics.unresolved.clone()))?;
+        registry.register(Box::new(metrics.ambiguous.clone()))?;
+        registry.register(Box::new(metrics.conflicted.clone()))?;
+        registry.register(Box::new(metrics.resolved.clone()))?;
+        registry.register(Box::new(metrics.oldest_unconfirmed_age.clone()))?;
+        registry.register(Box::new(metrics.rows_by_source.clone()))?;
+        registry.register(Box::new(metrics.last_pass.clone()))?;
+        Ok(metrics)
+    }
+}
+
 impl Metrics {
     pub fn new() -> Result<Self, prometheus::Error> {
         let registry = Registry::new();
@@ -310,10 +377,8 @@ impl Metrics {
         registry.register(Box::new(gateway_outcome_write_failures.clone()))?;
         let checkpoints = CheckpointMetrics::register(&registry)?;
         let revocation_evidence = RevocationEvidenceMetrics::register(&registry)?;
-        let agent_state_evidence = AgentStateEvidenceMetrics::register(&registry)?;
         let gateway_stage_seconds = gateway_stage_histogram(&registry)?;
         Ok(Self {
-            registry: Arc::new(registry),
             evaluate_total,
             evaluate_latency_ms,
             incident_write_failures,
@@ -329,7 +394,9 @@ impl Metrics {
             gateway_stage_seconds,
             checkpoints,
             revocation_evidence,
-            agent_state_evidence,
+            outcomes: OutcomeMetrics::register(&registry)?,
+            agent_state_evidence: AgentStateEvidenceMetrics::register(&registry)?,
+            registry: Arc::new(registry),
         })
     }
 
@@ -424,6 +491,43 @@ impl Metrics {
         if report.error.is_none() {
             metrics.last_pass.set(chrono::Utc::now().timestamp());
         }
+    }
+
+    /// One outcome reconcile pass (ADR-017 R3a): the summary it read. A pass
+    /// that could not read it leaves the gauges as they were and does not
+    /// move `last_pass`, so a stuck reconciler shows as an old pass.
+    pub fn observe_outcome_reconcile(&self, report: &kavach_dataplane::OutcomeReconcileReport) {
+        let Some(summary) = &report.summary else {
+            return;
+        };
+        let metrics = &self.outcomes;
+        let count = |n: u64| i64::try_from(n).unwrap_or(i64::MAX);
+        metrics.unresolved.set(count(summary.unresolved));
+        metrics.ambiguous.set(count(summary.ambiguous));
+        metrics.conflicted.set(count(summary.conflicted));
+        metrics.resolved.set(count(summary.resolved));
+        // Ages are measured on the clock the outcomes were stamped with.
+        let now = report.at.unwrap_or_else(chrono::Utc::now);
+        metrics.oldest_unconfirmed_age.set(
+            summary
+                .oldest_unconfirmed
+                .map_or(0, |oldest| (now - oldest).num_seconds().max(0)),
+        );
+        // Every source, so a source with no rows reads 0 rather than absent.
+        for source in [
+            "provider_status",
+            "operator_attested",
+            "conflict_resolution",
+            "reconciler",
+        ] {
+            metrics
+                .rows_by_source
+                .with_label_values(&[source])
+                .set(count(
+                    summary.rows_by_source.get(source).copied().unwrap_or(0),
+                ));
+        }
+        metrics.last_pass.set(chrono::Utc::now().timestamp());
     }
 
     /// One reconcile pass of the agent-state evidence.

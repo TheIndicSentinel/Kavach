@@ -97,6 +97,8 @@ fn the_alert_rules_are_complete_and_name_real_metrics() {
         "KavachRevocationRecordMissing",
         "KavachOutcomeWriteFailures",
         "KavachCredentialIdConflict",
+        "KavachOutcomeConflicted",
+        "KavachOutcomeAmbiguous",
     ] {
         assert!(alerts.contains(must), "{must} is shipped");
     }
@@ -143,5 +145,37 @@ fn the_name_scanner_finds_what_it_should() {
     assert!(
         used("up{job=\"kavach-api\"} == 0").is_empty(),
         "labels are not metrics"
+    );
+}
+
+/// A stalled-reconciler alert must key on the time of the last pass, not on
+/// the counts, and must stay silent while that time has never been set (a
+/// fresh install, or the agent surfaces off): the gauge reads 0 then.
+#[test]
+fn the_outcome_reconciler_alert_keys_on_the_last_pass_and_is_silent_before_the_first() {
+    let text =
+        std::fs::read_to_string(root().join("deploy/monitoring/kavach-alerts.rules.yml")).unwrap();
+    let doc: Value = serde_yaml::from_str(&text).unwrap();
+    let rule = doc["groups"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["rules"].as_array().unwrap())
+        .find(|r| r["alert"] == "KavachOutcomeReconcilerStopped")
+        .expect("the alert is shipped");
+    let expr = rule["expr"]
+        .as_str()
+        .unwrap()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let gauge = "kavach_outcome_reconcile_last_pass_timestamp_seconds";
+    assert!(
+        expr.contains(&format!("{gauge} > 0 and time() - {gauge} > 300")),
+        "{expr}"
+    );
+    assert!(
+        !expr.contains("kavach_outcomes_"),
+        "not on the counts: {expr}"
     );
 }
