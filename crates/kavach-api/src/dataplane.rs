@@ -525,6 +525,16 @@ impl AgentEvidenceStore for EvidenceBackend {
             Self::Postgres(s) => s.resolutions(tenant_id, credential_id).await,
         }
     }
+    async fn unresolved_outcomes(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> Result<Vec<kavach_ports::agent_evidence::UnresolvedOutcome>, PortError> {
+        match self {
+            Self::Memory(s) => s.unresolved_outcomes(tenant_id, limit).await,
+            Self::Postgres(s) => s.unresolved_outcomes(tenant_id, limit).await,
+        }
+    }
     async fn records(
         &self,
         tenant_id: &str,
@@ -777,9 +787,9 @@ pub struct Dataplane {
     stop_limiter: Mutex<TokenBucket>,
     /// Snapshot reconciliations: a read per loan listed, so a limit of its own.
     reconcile_limiter: Mutex<TokenBucket>,
-    broker: Broker,
+    broker: Arc<Broker>,
     resolver: FixtureResolver,
-    forwarder: crate::forward::HttpForwarder,
+    forwarder: Arc<crate::forward::HttpForwarder>,
     keys: KeySources,
     /// Gateway calls that have started and not finished (an orderly stop
     /// waits for them).
@@ -883,9 +893,9 @@ impl Dataplane {
             sor_limiter,
             stop_limiter,
             reconcile_limiter,
-            broker,
+            broker: Arc::new(broker),
             resolver,
-            forwarder,
+            forwarder: Arc::new(forwarder),
             keys: sources,
             in_flight: crate::shutdown::InFlight::new(),
             agent_only: config.agent_only,
@@ -936,6 +946,13 @@ impl Dataplane {
     /// The credential broker (the gateway's only source of credentials).
     pub fn broker(&self) -> &Broker {
         &self.broker
+    }
+
+    /// Shared handles for the outcome reconciler's background task, which
+    /// asks a provider a status question and never sends: the broker only
+    /// as the minter of status questions, the forwarder only as the asker.
+    pub(crate) fn status_handles(&self) -> (Arc<Broker>, Arc<crate::forward::HttpForwarder>) {
+        (Arc::clone(&self.broker), Arc::clone(&self.forwarder))
     }
 
     pub fn core(&self) -> &Arc<AuthorizeCore<Arc<Mandates>, EvidenceBackend>> {
@@ -1905,8 +1922,8 @@ pub async fn tool_call(
         let deps = GatewayDeps {
             core: &dp.core,
             resolver: &dp.resolver,
-            broker: &dp.broker,
-            forwarder: &dp.forwarder,
+            broker: &*dp.broker,
+            forwarder: &*dp.forwarder,
             observer: task_state.metrics(),
         };
         execute(&deps, &task_agent, &task_tool, request).await

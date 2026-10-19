@@ -54,7 +54,7 @@ A silent flip would hide exactly what an auditor needs to see, so the governing 
 
 ## Phases (each its own change, against the mock only)
 
-R1 the data, signing, store (**R1a, built**) and the verifier and bundle (**R1b, built**, bundle format 4). R2 the mock status endpoint (**R2a**) and the reconciler (**R2b**). R3 operator attestation, signals, attacks and the simulator.
+R1 the data, signing, store (**R1a, built**) and the verifier and bundle (**R1b, built**, bundle format 4). R2 the mock status endpoint (**R2a, built**) and the reconciler (**R2b, built**: `kavach-dataplane::outcome_reconciler`, run every 15 seconds by `kavach-api::outcome_reconciler`; questions limited to 8 per outcome with 30 s to 10 min back-off and 20 per pass; the constants are `UNKNOWN_OUTCOME_POLL_WINDOW`, `UNKNOWN_OUTCOME_AMBIGUOUS_AFTER` and friends, not settings). R3 operator attestation, signals, attacks and the simulator.
 
 ### Amendment, R2a: how the status question is authenticated
 

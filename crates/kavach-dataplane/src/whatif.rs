@@ -77,6 +77,15 @@ impl AgentEvidenceStore for WhatIfStore {
         ready(Ok(Vec::new()))
     }
 
+    fn unresolved_outcomes(
+        &self,
+        _tenant_id: &str,
+        _limit: u32,
+    ) -> impl Future<Output = Result<Vec<kavach_ports::agent_evidence::UnresolvedOutcome>, PortError>>
+           + Send {
+        ready(Ok(Vec::new()))
+    }
+
     fn records(
         &self,
         _tenant_id: &str,

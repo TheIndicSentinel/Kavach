@@ -410,6 +410,17 @@ pub fn governing(rows: &[ResolutionRecord]) -> Governing {
     }
 }
 
+/// Whether the reconciler still has something to do for an outcome with
+/// these resolutions: nothing confirms it yet, and the reconciler has not yet
+/// given up on it. Shared by every store so they agree.
+#[must_use]
+pub fn needs_reconciling(rows: &[ResolutionRecord]) -> bool {
+    !rows.iter().any(|r| {
+        r.state.is_confirmed()
+            || (r.source == ResolutionSource::Reconciler && r.state == ResolutionState::Ambiguous)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

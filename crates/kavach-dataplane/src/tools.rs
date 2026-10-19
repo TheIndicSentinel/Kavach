@@ -303,6 +303,20 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// The provider an action is forwarded to, when every tool that performs
+    /// the action names the same one. `None` for an action with no
+    /// external-effect tool or with tools for different providers: the
+    /// reconciler never guesses where to ask.
+    pub fn provider_for_action(&self, action: &str) -> Option<&str> {
+        let mut providers = self
+            .tools
+            .values()
+            .filter(|t| t.action == action)
+            .filter_map(|t| t.provider.as_deref());
+        let first = providers.next()?;
+        providers.all(|p| p == first).then_some(first)
+    }
+
     /// Turns a request for `tool` into a [`ToolCall`]. `Err` (`Invalid`) for
     /// a malformed request; policy violations are carried in the call.
     pub fn extract(&self, tool: &str, request: ToolRequest) -> Result<ToolCall, PortError> {

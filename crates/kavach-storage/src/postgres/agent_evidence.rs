@@ -9,7 +9,8 @@ use kavach_domain::Decision;
 use kavach_domain::ReasonCode;
 use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
-    CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding, GENESIS,
+    CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding,
+    UnresolvedOutcome, GENESIS,
 };
 use kavach_ports::agent_state::{
     AgentChangeCursor, AgentState, AgentStateChange, AgentStateStore, Recording, StoredAgentChange,
@@ -615,6 +616,52 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
             key_id: row.try_get("key_id").map_err(|e| unavailable(&e))?,
             sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
         }))
+    }
+
+    async fn unresolved_outcomes(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> Result<Vec<UnresolvedOutcome>, PortError> {
+        // The same rule as `needs_reconciling`: no confirmed state, and no
+        // `ambiguous` the reconciler wrote.
+        let rows = sqlx::query(
+            "SELECT o.credential_id, o.record_hash, o.reason, o.ts, o.key_id, o.sig, \
+                d.payload->>'action' AS action \
+            FROM agent_outcomes o \
+            JOIN agent_decisions d \
+                ON d.tenant_id = o.tenant_id AND d.credential_id = o.credential_id \
+            WHERE o.tenant_id = $1 AND o.outcome = 'unknown' AND NOT EXISTS ( \
+                SELECT 1 FROM agent_outcome_resolutions r \
+                WHERE r.tenant_id = o.tenant_id AND r.credential_id = o.credential_id \
+                AND (r.state IN ('confirmed_delivered', 'confirmed_not_delivered') \
+                    OR (r.source = 'reconciler' AND r.state = 'ambiguous'))) \
+            ORDER BY o.ts, o.credential_id LIMIT $2",
+        )
+        .bind(tenant_id)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter()
+            .map(|row| {
+                let credential_id: String =
+                    row.try_get("credential_id").map_err(|e| unavailable(&e))?;
+                Ok(UnresolvedOutcome {
+                    outcome: OutcomeRecord {
+                        tenant_id: tenant_id.into(),
+                        credential_id,
+                        record_hash: row.try_get("record_hash").map_err(|e| unavailable(&e))?,
+                        outcome: Outcome::Unknown,
+                        reason: row.try_get("reason").map_err(|e| unavailable(&e))?,
+                        ts: row.try_get("ts").map_err(|e| unavailable(&e))?,
+                        key_id: row.try_get("key_id").map_err(|e| unavailable(&e))?,
+                        sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
+                    },
+                    action: row.try_get("action").map_err(|e| unavailable(&e))?,
+                })
+            })
+            .collect()
     }
 
     async fn records(

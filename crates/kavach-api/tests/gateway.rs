@@ -962,3 +962,82 @@ async fn an_orderly_stop_finishes_calls_in_flight_then_checkpoints() {
         "the final checkpoint covers the last record"
     );
 }
+
+/// ADR-017 R2 end to end: a send whose response was lost (`unknown`) is
+/// resolved by asking the real mock provider, not by sending again. The
+/// provider says what it stored: delivered for the lost response, not
+/// delivered for a provider error. The message is delivered exactly once,
+/// the gateway's forward-once still holds, and the outcome row is untouched.
+#[tokio::test]
+async fn an_unknown_outcome_is_resolved_by_asking_the_provider_never_by_sending() {
+    use kavach_dataplane::PollState;
+    use kavach_ports::outcome_resolution::{
+        governing, Governing, ResolutionSource, ResolutionState,
+    };
+
+    for (number, request, expected, deliveries) in [
+        (HANG_NUMBER, "h-1", ResolutionState::ConfirmedDelivered, 1),
+        (
+            ERROR_NUMBER,
+            "e-1",
+            ResolutionState::ConfirmedNotDelivered,
+            0,
+        ),
+    ] {
+        let gw = gateway(Some(number), true).await;
+        let (_, reply) = gw.remind(request).await;
+        assert_eq!(reply["outcome"], "unknown", "{reply}");
+        let before = gw.stored_outcome(request).await;
+        assert_eq!(gw.provider.inbox().len(), deliveries);
+
+        let dp = gw.state.dataplane().unwrap();
+        let mut polls = PollState::default();
+        // Not due yet: the first question waits 30 seconds.
+        let early = kavach_api::outcome_reconciler::pass(
+            dp.core(),
+            dp.broker(),
+            dp.forwarder(),
+            &mut polls,
+        )
+        .await;
+        assert_eq!((early.open, early.asked), (1, 0), "{early:?}");
+
+        gw.clock.advance(chrono::Duration::seconds(31));
+        let report = kavach_api::outcome_reconciler::pass(
+            dp.core(),
+            dp.broker(),
+            dp.forwarder(),
+            &mut polls,
+        )
+        .await;
+        assert_eq!(report.asked, 1, "{report:?}");
+        assert!(report.problems.is_empty(), "{report:?}");
+
+        let record = dp.core().store();
+        // The credential, from the stored record rather than from the reply.
+        let records = record.records("default", 0).await.unwrap();
+        let credential = records
+            .iter()
+            .filter_map(kavach_ports::agent_evidence::ChainEntry::as_decision)
+            .find_map(|r| r.payload.credential_id.clone())
+            .expect("a credential");
+        let rows = record.resolutions("default", &credential).await.unwrap();
+        let [row] = rows.as_slice() else {
+            panic!("one resolution, got {rows:?}");
+        };
+        assert_eq!(
+            (row.state, row.source),
+            (expected, ResolutionSource::ProviderStatus)
+        );
+        assert!(row.evidence_digest.is_some());
+        assert!(matches!(governing(&rows), Governing::Confirmed { .. }));
+
+        // Nothing was sent: the inbox is as it was, a retry is replayed, and
+        // the outcome row is as it was.
+        assert_eq!(gw.provider.inbox().len(), deliveries);
+        let (_, again) = gw.remind(request).await;
+        assert_eq!(again["replayed"], true, "{again}");
+        assert_eq!(gw.provider.inbox().len(), deliveries);
+        assert_eq!(gw.stored_outcome(request).await, before);
+    }
+}

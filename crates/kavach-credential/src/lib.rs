@@ -33,7 +33,7 @@ use chrono::{DateTime, Duration, Utc};
 use kavach_jws::KeySet;
 use kavach_ports::{
     CredentialBroker, CredentialRequest, Destination, IssuedCredential, KeyProvider, PortError,
-    TokenSecret, MAX_CREDENTIAL_TTL_SECONDS,
+    StatusQuestions, TokenSecret, MAX_CREDENTIAL_TTL_SECONDS,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -460,6 +460,18 @@ impl<K: KeyProvider> JoseCredentialBroker<K> {
             TYP_CREDENTIAL,
         )?;
         Ok(TokenSecret::new(sealed))
+    }
+}
+
+impl<K: KeyProvider> StatusQuestions for JoseCredentialBroker<K> {
+    fn status_question(
+        &self,
+        tenant_id: &str,
+        audience: &str,
+        jti: &str,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<TokenSecret, PortError>> + Send {
+        self.status_request(tenant_id, audience, jti, now)
     }
 }
 

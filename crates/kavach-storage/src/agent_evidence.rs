@@ -9,7 +9,8 @@ use chrono::NaiveDate;
 use kavach_domain::Decision;
 use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
-    CommitRequest, CommitResult, EvidenceSigner, OutcomeRecord, RequestBinding, GENESIS,
+    CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding,
+    UnresolvedOutcome, GENESIS,
 };
 use kavach_ports::agent_state::{
     AgentChangeCursor, AgentState, AgentStateChange, AgentStateStore, Recording, StoredAgentChange,
@@ -23,7 +24,9 @@ use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
     CHAIN_AGENT_DECISIONS,
 };
-use kavach_ports::outcome_resolution::{check_against_outcome, check_form, ResolutionRecord};
+use kavach_ports::outcome_resolution::{
+    check_against_outcome, check_form, needs_reconciling, ResolutionRecord,
+};
 use kavach_ports::{PortError, TimeSource};
 
 type RequestKey = (String, String, String);
@@ -203,6 +206,45 @@ impl MemoryAgentEvidenceStore {
             .collect();
         rows.sort_by_key(|r| (r.ts, r.source.as_str(), r.state.as_str()));
         Ok(rows)
+    }
+
+    fn unresolved_outcomes_sync(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> Result<Vec<UnresolvedOutcome>, PortError> {
+        let state = self.state.lock().map_err(poisoned)?;
+        let mut found: Vec<UnresolvedOutcome> = Vec::new();
+        for outcome in state.outcomes.values() {
+            if outcome.tenant_id != tenant_id || outcome.outcome != Outcome::Unknown {
+                continue;
+            }
+            let rows: Vec<ResolutionRecord> = state
+                .resolutions
+                .iter()
+                .filter(|r| r.tenant_id == tenant_id && r.credential_id == outcome.credential_id)
+                .cloned()
+                .collect();
+            let action = state
+                .records
+                .iter()
+                .find(|r| {
+                    r.payload.tenant_id == tenant_id
+                        && r.payload.credential_id.as_deref() == Some(&outcome.credential_id)
+                })
+                .map(|r| r.payload.action.clone());
+            if let (true, Some(action)) = (needs_reconciling(&rows), action) {
+                found.push(UnresolvedOutcome {
+                    outcome: outcome.clone(),
+                    action,
+                });
+            }
+        }
+        found.sort_by(|a, b| {
+            (a.outcome.ts, &a.outcome.credential_id).cmp(&(b.outcome.ts, &b.outcome.credential_id))
+        });
+        found.truncate(limit as usize);
+        Ok(found)
     }
 
     fn outcome_sync(
@@ -462,6 +504,14 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         credential_id: &str,
     ) -> impl Future<Output = Result<Vec<ResolutionRecord>, PortError>> + Send {
         ready(self.resolutions_sync(tenant_id, credential_id))
+    }
+
+    fn unresolved_outcomes(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<UnresolvedOutcome>, PortError>> + Send {
+        ready(self.unresolved_outcomes_sync(tenant_id, limit))
     }
 
     fn records(
