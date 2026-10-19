@@ -42,9 +42,11 @@ class Refused(Exception):
     """The input does not verify, or is malformed. `rule` names the rule that
     refused it, for the vectors that say which rule a token breaks."""
 
-    def __init__(self, message, rule=None):
+    def __init__(self, message, rule=None, cls=None):
         super().__init__(message)
         self.rule = rule
+        # The coarse failure class (docs/specs/evidence-bundle.md section 10.2).
+        self.cls = cls
 
 
 # --------------------------------------------------------------------------
@@ -510,13 +512,13 @@ RESOLUTIONS_SINCE = 4
 
 def _members(obj, required, optional=(), what="object"):
     if not isinstance(obj, dict):
-        raise Refused(f"{what} is not an object")
+        raise Refused(f"{what} is not an object", cls="read")
     missing = [m for m in required if m not in obj]
     if missing:
-        raise Refused(f"{what} lacks {missing}", "member")
+        raise Refused(f"{what} lacks {missing}", "member", cls="read")
     extra = [m for m in obj if m not in required and m not in optional]
     if extra:
-        raise Refused(f"{what} has members it must not have: {extra}", "member")
+        raise Refused(f"{what} has members it must not have: {extra}", "member", cls="read")
 
 
 def _int(value, what, low=None):
@@ -537,11 +539,11 @@ def _lines(data, name):
     if not data:
         return []
     if not data.endswith(b"\n"):
-        raise Refused(f"{name}: the last line has no line feed")
+        raise Refused(f"{name}: the last line has no line feed", cls="read")
     out = data.split(b"\n")[:-1]
     for number, line in enumerate(out, 1):
         if len(line) > MAX_LINE:
-            raise Refused(f"{name} line {number}: longer than {MAX_LINE} bytes")
+            raise Refused(f"{name} line {number}: longer than {MAX_LINE} bytes", cls="read")
     return out
 
 
@@ -549,11 +551,11 @@ def _parse_line(raw, name, number):
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError:
-        raise Refused(f"{name} line {number}: not UTF-8") from None
+        raise Refused(f"{name} line {number}: not UTF-8", cls="read") from None
     try:
         return loads(text)
     except Refused as error:
-        raise Refused(f"{name} line {number}: {error}") from None
+        raise Refused(f"{name} line {number}: {error}", error.rule, cls="read") from None
 
 
 def _signed(prefix, value):
@@ -588,12 +590,13 @@ class Verifier:
             if self.kept_seq is None or seq > self.kept_seq:
                 raise Refused(
                     f"{what}: key {kid} signed for record {seq}, after its limit "
-                    f"{key.valid_until_seq}, and no kept checkpoint covers it"
+                    f"{key.valid_until_seq}, and no kept checkpoint covers it",
+                    cls="key_validity",
                 )
         if key.not_before is not None and when < key.not_before:
-            raise Refused(f"{what}: key {kid} signed before its validity period")
+            raise Refused(f"{what}: key {kid} signed before its validity period", cls="key_validity")
         if key.not_after is not None and when >= key.not_after:
-            raise Refused(f"{what}: key {kid} signed after its validity period")
+            raise Refused(f"{what}: key {kid} signed after its validity period", cls="key_validity")
 
     # -- the manifest --------------------------------------------------------
     def manifest(self, doc):
@@ -668,7 +671,7 @@ class Verifier:
                     raise Refused(f"{where}: lacks {member}")
             kind = _str(rec["kind"], f"{where}: kind")
             if kind not in KINDS[version]:
-                raise Refused(f"{where}: kind {kind!r} is not in the registry for version {version}")
+                raise Refused(f"{where}: kind {kind!r} is not in the registry for version {version}", cls="read")
             if rec["tenant_id"] != manifest["tenant_id"]:
                 raise Refused(f"{where}: another tenant")
             if _int(rec.get("partition_id"), "partition_id") != manifest["partition_id"]:
@@ -995,10 +998,25 @@ class Verifier:
 
 
 def verify_bundle(directory, keys_path, kept_path=None, dev=False, now=None):
-    """Returns a report dict; raises Refused if the bundle does not verify."""
+    """Returns a report dict; raises Refused if the bundle does not verify. The
+    Refused carries `cls`, the coarse failure class (spec section 10.2)."""
+    stage = ["layout"]
+    try:
+        return _verify_bundle(directory, keys_path, kept_path, dev, now, stage)
+    except Refused as error:
+        if error.cls == "read" and stage[0] in ("manifest", "layout"):
+            error.cls = stage[0]
+        if error.cls is None:
+            error.cls = stage[0]
+        raise
+
+
+def _verify_bundle(directory, keys_path, kept_path, dev, now, stage):
     real = os.path.realpath(directory)
+    stage[0] = "input"
     if os.path.commonpath([real, os.path.realpath(keys_path)]) == real:
         raise Refused("the keys file must not be inside the bundle")
+    stage[0] = "layout"
     names = sorted(os.listdir(directory))
     # The manifest says which files belong: a resolutions file from version 4.
     manifest_path = os.path.join(directory, "manifest.json")
@@ -1019,31 +1037,36 @@ def verify_bundle(directory, keys_path, kept_path=None, dev=False, now=None):
             raise Refused(f"{name} is not a regular file")
         with open(path, "rb") as handle:
             data[name] = handle.read()
+    stage[0] = "input"
     keys = load_keys(keys_path)
     v = Verifier(keys, dev=dev, now=now)
 
+    stage[0] = "manifest"
     text = data["manifest.json"]
     if text.endswith(b"\n"):
         text = text[:-1]
     manifest = _parse_line(text, "manifest.json", 1)
     v.manifest(manifest)
 
+    stage[0] = "digest"
+    for name in ("records", "outcomes", "checkpoints") + (("resolutions",) if RESOLUTIONS in data else ()):
+        raw = data[f"{name}.jsonl"]
+        if hashlib.sha256(raw).hexdigest() != manifest["files"][name]["sha256"]:
+            raise Refused(f"{name}.jsonl: its digest does not match the manifest")
     rec_lines = _lines(data["records.jsonl"], "records.jsonl")
     out_lines = _lines(data["outcomes.jsonl"], "outcomes.jsonl")
     cp_lines = _lines(data["checkpoints.jsonl"], "checkpoints.jsonl")
-    res_lines = []
+    res_lines = _lines(data[RESOLUTIONS], RESOLUTIONS) if RESOLUTIONS in data else []
     streams = [("records", rec_lines), ("outcomes", out_lines), ("checkpoints", cp_lines)]
     if RESOLUTIONS in data:
-        res_lines = _lines(data[RESOLUTIONS], RESOLUTIONS)
         streams.append(("resolutions", res_lines))
     for name, lines in streams:
-        entry = manifest["files"][name]
-        if hashlib.sha256(data[f"{name}.jsonl"]).hexdigest() != entry["sha256"]:
-            raise Refused(f"{name}.jsonl: its digest does not match the manifest")
-        if len(lines) != entry["count"]:
-            raise Refused(f"{name}.jsonl: {len(lines)} lines, the manifest says {entry['count']}")
+        count = manifest["files"][name]["count"]
+        if len(lines) != count:
+            raise Refused(f"{name}.jsonl: {len(lines)} lines, the manifest says {count}", cls="digest")
 
     kept = None
+    stage[0] = "input"
     if kept_path is not None:
         with open(kept_path, "r", encoding="utf-8") as handle:
             rows = [row for row in handle.read().split("\n") if row.strip()]
@@ -1057,10 +1080,16 @@ def verify_bundle(directory, keys_path, kept_path=None, dev=False, now=None):
     exported = parse_time(manifest["exported_at"], "exported_at")
     if "key_id" in manifest:
         v._limits(manifest["key_id"], manifest["segment"]["last_seq"], exported, "manifest")
+    stage[0] = "chain"
     records = v.records(rec_lines, manifest)
+    stage[0] = "outcome"
     unknown = v.outcomes(out_lines, records, manifest)
-    v.settle(unknown, v.resolutions(res_lines, unknown, manifest))
+    stage[0] = "resolution"
+    found = v.resolutions(res_lines, unknown, manifest)
+    v.settle(unknown, found)
+    stage[0] = "checkpoint"
     have, covered = v.checkpoints(cp_lines, records, manifest, kept)
+    stage[0] = "segment"
 
     seg = manifest["segment"]
     if seg["after_seq"] != 0:
@@ -1564,7 +1593,7 @@ def main(argv=None):
         else:
             report = run_checkpoints(args.vector)
     except (Refused, OSError, KeyError, ValueError) as error:
-        print(json.dumps({"result": "fail", "reason": str(error)}))
+        print(json.dumps({"result": "fail", "class": getattr(error, "cls", None), "reason": str(error)}))
         return 1
     print(json.dumps(report, indent=2))
     if report["result"] == "verified_with_warnings" and not getattr(args, "allow_warnings", False):

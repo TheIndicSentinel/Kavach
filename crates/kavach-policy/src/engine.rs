@@ -117,7 +117,14 @@ mod tests {
     }
 
     fn load_finance_pack() -> LoadedPolicyPack {
-        PackLoader::load_from_path(&finance_pack_path()).expect("load finance pack")
+        let mut loaded =
+            PackLoader::load_from_path(&finance_pack_path()).expect("load finance pack");
+        // The pack's 10 ms budget is the production limit and stays so; these
+        // tests check decisions, not speed, and must not fail on a loaded machine.
+        if let Some(limits) = loaded.pack.cel_runtime_limits.as_mut() {
+            limits.timeout_ms = crate::loader::MAX_TIMEOUT_MS;
+        }
+        loaded
     }
 
     #[test]

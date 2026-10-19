@@ -1846,7 +1846,7 @@ fn rust_verify(
     bundle: &Path,
     keys: &Path,
     now: chrono::DateTime<chrono::Utc>,
-) -> Result<kavach_ports::bundle_verify::BundleReport, String> {
+) -> Result<kavach_ports::bundle_verify::BundleReport, kavach_evidence_cli::verify::VerifyError> {
     kavach_evidence_cli::verify::verify_dir(&kavach_evidence_cli::verify::VerifyRequest {
         bundle,
         keys,
@@ -1854,7 +1854,33 @@ fn rust_verify(
         dev: true,
         now,
     })
-    .map_err(|e| e.to_string())
+}
+
+/// The class both verifiers must report for each kind of damage (the
+/// coarse, normalised classes of docs/specs/evidence-bundle.md section
+/// 10.2). Agreeing that a bundle is bad is not enough: they must agree on
+/// what is wrong with it.
+fn expected_class(damage: &str) -> &'static str {
+    match damage {
+        "an edited manifest" => "manifest",
+        "a missing resolutions file" | "a resolutions file in a version 3 bundle" => "layout",
+        // Every other edit changes a file the signed manifest holds a digest of.
+        _ => "digest",
+    }
+}
+
+/// Both verifiers refuse `copy`, and for the same class of reason.
+fn assert_refused_alike(name: &str, copy: &Path, keys: &Path, now: chrono::DateTime<chrono::Utc>) {
+    let rust = rust_verify(copy, keys, now);
+    let (code, python) = python_verify(copy, keys, now).unwrap();
+    let Err(rust) = rust else {
+        panic!("{name}: the Rust verifier accepted it");
+    };
+    assert_ne!(code, 0, "{name}: the Python verifier accepted it: {python}");
+    assert_eq!(python["result"], "fail", "{name}: {python}");
+    let expected = expected_class(name);
+    assert_eq!(rust.class(), expected, "{name}: Rust said: {rust}");
+    assert_eq!(python["class"], expected, "{name}: Python said: {python}");
 }
 
 /// A development stack taken through a decision, a refusal, a payment (a
@@ -2010,11 +2036,7 @@ fn the_rust_and_python_verifiers_agree_on_a_real_exported_bundle() {
         let copy = dir.join(format!("damaged-{}", name.replace(' ', "-")));
         copy_bundle(&bundle, &copy);
         damage(&copy);
-        let rust = rust_verify(&copy, &keys, now);
-        let (code, python) = python_verify(&copy, &keys, now).unwrap();
-        assert!(rust.is_err(), "{name}: the Rust verifier accepted it");
-        assert_ne!(code, 0, "{name}: the Python verifier accepted it: {python}");
-        assert_eq!(python["result"], "fail", "{name}: {python}");
+        assert_refused_alike(name, &copy, &keys, now);
     }
 }
 
@@ -2106,10 +2128,6 @@ fn the_rust_and_python_verifiers_agree_on_a_bundle_with_resolutions() {
         let copy = scratch_dir.join(name.replace(' ', "-"));
         copy_bundle(&bundle, &copy);
         damage(&copy);
-        let rust = rust_verify(&copy, &keys, now);
-        let (code, python) = python_verify(&copy, &keys, now).unwrap();
-        assert!(rust.is_err(), "{name}: the Rust verifier accepted it");
-        assert_ne!(code, 0, "{name}: the Python verifier accepted it: {python}");
-        assert_eq!(python["result"], "fail", "{name}: {python}");
+        assert_refused_alike(name, &copy, &keys, now);
     }
 }
