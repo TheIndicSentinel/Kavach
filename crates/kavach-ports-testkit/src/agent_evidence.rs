@@ -171,6 +171,7 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     the_summary_counts_each_unknown_outcome_once(&*store, &clock, &signer).await;
     stuck_allows_are_the_allows_without_an_outcome_in_the_window(&*store, &clock, &signer).await;
     one_creator_per_request_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
+    one_outcome_per_credential_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     duplicates_race_near_the_cap(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     revocations_in_the_chain(&*store, &clock, &signer).await;
     one_record_per_revocation_event(Arc::clone(&store)).await;
@@ -571,6 +572,60 @@ async fn one_creator_per_request_under_concurrency<S: AgentEvidenceStore + 'stat
     assert_eq!((created, replayed), (1, 19), "exactly one creator");
     assert_eq!(store.contacts_on(t, SUBJECT, day()).await.unwrap(), 1);
     assert_eq!(store.records(t, 0).await.unwrap().len(), 1);
+}
+
+/// Many writers of the outcome of one credential at once (two reconciler
+/// replicas recovering the same stuck allow, or a replica racing the call
+/// itself): exactly one write wins, every other loses cleanly with
+/// `Rejected` (never `Unavailable`, never a second row), and the stored
+/// outcome is the winner's.
+async fn one_outcome_per_credential_under_concurrency<S: AgentEvidenceStore + 'static>(
+    store: Arc<S>,
+    signer: TestSigner,
+) {
+    let t = "ae-outcome-race";
+    let signer = Arc::new(signer);
+    let clock = FakeClock::synced_at(t0());
+    let record = committed(
+        store
+            .commit(request(t, "race", 3), &clock, &*signer)
+            .await
+            .unwrap(),
+    );
+    let credential = record.payload.credential_id.clone().unwrap();
+    let kinds = [
+        Outcome::Unknown,
+        Outcome::Delivered,
+        Outcome::Failed,
+        Outcome::Refused,
+    ];
+    let tasks: Vec<_> = (0..16)
+        .map(|n| {
+            let (store, signer) = (Arc::clone(&store), Arc::clone(&signer));
+            let row = sign_outcome(
+                t,
+                &credential,
+                &record.hash,
+                kinds[n % kinds.len()],
+                "outcome_not_recorded",
+                t0() + Duration::seconds(i64::try_from(n).unwrap()),
+                &*signer,
+            )
+            .unwrap();
+            tokio::spawn(async move { (row.clone(), store.record_outcome(row).await) })
+        })
+        .collect();
+    let mut won = Vec::new();
+    for task in tasks {
+        let (row, result) = task.await.expect("join");
+        match result {
+            Ok(()) => won.push(row),
+            Err(e) => assert_eq!(e.class, ErrorClass::Rejected, "a loser is Rejected: {e:?}"),
+        }
+    }
+    assert_eq!(won.len(), 1, "exactly one writer wins");
+    let stored = store.outcome(t, &credential).await.unwrap().unwrap();
+    assert_eq!(stored, won[0], "the stored outcome is the winner's");
 }
 
 /// Every outcome kind can be stored and read back with its reason.

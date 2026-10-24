@@ -70,6 +70,9 @@ pub const STUCK_OUTCOME_WINDOW: Duration = Duration::minutes(5);
 pub const STUCK_OUTCOME_LOOKBACK: Duration = Duration::days(7);
 /// Allows recovered in one pass.
 const RECOVER_BATCH: u32 = 100;
+/// Most allows beyond the lookback that a pass counts (the count is "this
+/// many or more" at the cap).
+const BEYOND_LOOKBACK_CAP: u32 = 1000;
 
 /// The reason codes of the rows this pass writes.
 const REASON_PROVIDER: &str = "provider_status";
@@ -95,6 +98,10 @@ struct Polling {
 pub struct OutcomeReconcileReport {
     /// Allows with no outcome that this pass recorded as `unknown` (F7).
     pub recovered: usize,
+    /// Allows with no outcome that are older than the lookback, so the pass
+    /// does not record them: they stay as they are, reported here (up to a
+    /// cap) and by the bundle verifier as missing.
+    pub beyond_lookback: usize,
     /// Unknown outcomes still open at the start of the pass.
     pub open: usize,
     /// How long ago the oldest of them happened.
@@ -170,6 +177,22 @@ async fn recover_stuck_allows<V, S>(
                 .problems
                 .push(format!("recovering an outcome: {}", err.message)),
         }
+    }
+    // Older than the lookback, they are not touched: they must not vanish.
+    match core
+        .store()
+        .stuck_allows(
+            core.tenant_id(),
+            DateTime::UNIX_EPOCH,
+            now - STUCK_OUTCOME_LOOKBACK,
+            BEYOND_LOOKBACK_CAP,
+        )
+        .await
+    {
+        Ok(older) => report.beyond_lookback = older.len(),
+        Err(err) => report
+            .problems
+            .push(format!("allows beyond the lookback: {}", err.message)),
     }
 }
 

@@ -45,6 +45,7 @@ Several things fail *closed*, which is correct but looks like an outage without 
 | A revocation has no evidence record | `KavachRevocationRecordMissing` |
 | A revocation has no audit entry | `KavachRevocationAuditEntryMissing` |
 | A reconciler has stopped | `KavachRevocationReconcilerStopped`, `KavachRevocationAuditReconcilerStopped`, `KavachAgentStateReconcilerStopped`, `KavachOutcomeReconcilerStopped` |
+| An allowed call has no outcome and is too old for the reconciler to record (F7) | `KavachAllowWithoutOutcome` (warning; `kavach_allows_without_outcome_beyond_lookback`) |
 | A send's result is unknown or in dispute (ADR-017) | `KavachOutcomeConflicted` (critical), `KavachOutcomeAmbiguous`, `KavachOutcomeUnconfirmedOld` (warning; the three days is a default to set) |
 | Checkpoints are late or skipped | `KavachCheckpointLagging`, `KavachCheckpointStalled`, `KavachCheckpointsSkipped` |
 | A closed loan still has authority (a lost payment event) | `KavachClosedLoanWithLiveAuthority`; `KavachSnapshotNotRunRecently` (warning, silent until a first run) says how old that answer is |

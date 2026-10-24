@@ -23,6 +23,11 @@ fn vectors() -> PathBuf {
 /// A bundle in which record 1 was delivered and record 3's outcome was lost
 /// and recovered as `unknown` ten minutes later.
 fn bundle(name: &str) -> PathBuf {
+    bundle_with(name, true)
+}
+
+/// As [`bundle`]; with `with_outcome` false record 3 has no outcome at all.
+fn bundle_with(name: &str, with_outcome: bool) -> PathBuf {
     let out = scratch(name);
     let chain = chain_v3();
     let decisions = records();
@@ -46,7 +51,9 @@ fn bundle(name: &str) -> PathBuf {
     }
     let delivered = outcomes(&decisions).remove(0);
     writer.outcome(&delivered).unwrap();
-    writer.outcome(&recovered(2)).unwrap();
+    if with_outcome {
+        writer.outcome(&recovered(2)).unwrap();
+    }
     for checkpoint in checkpoints_v2(&chain) {
         writer.checkpoint(&checkpoint).unwrap();
     }
@@ -57,13 +64,17 @@ fn bundle(name: &str) -> PathBuf {
 }
 
 fn rust_kinds(dir: &Path) -> Result<Vec<String>, String> {
+    rust_kinds_at(dir, exported_at() + Duration::days(1))
+}
+
+fn rust_kinds_at(dir: &Path, at: chrono::DateTime<chrono::Utc>) -> Result<Vec<String>, String> {
     let keys = vectors().join("bundle-v2.keys.json");
     verify_dir(&VerifyRequest {
         bundle: dir,
         keys: &keys,
         expect_checkpoint: None,
         dev: false,
-        now: exported_at() + Duration::days(1),
+        now: at,
     })
     .map(|report| {
         let mut kinds: Vec<String> = report
@@ -79,10 +90,12 @@ fn rust_kinds(dir: &Path) -> Result<Vec<String>, String> {
 
 /// The Python verifier's JSON; `None` without `python3` (CI must have it).
 fn python(dir: &Path) -> Option<serde_json::Value> {
+    python_at(dir, exported_at() + Duration::days(1))
+}
+
+fn python_at(dir: &Path, at: chrono::DateTime<chrono::Utc>) -> Option<serde_json::Value> {
     let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance/kavach_verify.py");
-    let now = (exported_at() + Duration::days(1))
-        .format("%Y-%m-%dT%H:%M:%SZ")
-        .to_string();
+    let now = at.format("%Y-%m-%dT%H:%M:%SZ").to_string();
     let output = Command::new("python3")
         .args(["-I"])
         .arg(script)
@@ -144,4 +157,31 @@ fn both_verifiers_refuse_a_recovered_outcome_that_was_changed() {
     let Some(py) = python(&dir) else { return };
     assert_eq!(py["result"], "fail", "{py}");
     assert_eq!(py["class"], "digest", "{py}");
+}
+
+/// An allow that never got an outcome is reported as missing by both
+/// verifiers however old it is: the reconciler stops looking after seven days
+/// (`kavach_allows_without_outcome_beyond_lookback` counts what it leaves),
+/// but the verifier has no such bound, so nothing disappears from an audit.
+#[test]
+fn an_allow_without_an_outcome_is_missing_however_old() {
+    let dir = bundle_with("f7-old-missing", false);
+    for days in [1, 8, 400] {
+        let at = exported_at() + Duration::days(days);
+        let rust = rust_kinds_at(&dir, at).expect("accepted, with a warning");
+        assert!(
+            rust.contains(&"outcome_missing".to_string()),
+            "{days} days: {rust:?}"
+        );
+        let Some(py) = python_at(&dir, at) else {
+            return;
+        };
+        let kinds: Vec<&str> = py["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["kind"].as_str().unwrap())
+            .collect();
+        assert!(kinds.contains(&"outcome_missing"), "{days} days: {py}");
+    }
 }

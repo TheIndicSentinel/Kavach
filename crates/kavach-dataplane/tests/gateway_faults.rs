@@ -770,3 +770,88 @@ fn the_stuck_window_is_far_above_the_longest_call() {
         "{STUCK_OUTCOME_WINDOW:?} vs {longest:?}"
     );
 }
+
+/// Two reconciler replicas recovering the same stuck allow: the second one
+/// read its work list before the first wrote, so it tries to write an outcome
+/// that now exists. It loses cleanly: no second outcome, no error, nothing
+/// reported as a problem, and the first replica's `unknown` stands.
+#[tokio::test]
+async fn a_second_replica_recovering_the_same_allow_loses_cleanly() {
+    let w = world();
+    let mandate = w.mandate().await;
+    Faults::fail(&w.store().faults.record_outcome, Faults::FOREVER);
+    w.call(&mandate, "r-1").await.unwrap();
+    Faults::fail(&w.store().faults.record_outcome, 0);
+    w.advance(Duration::minutes(10));
+
+    // Replica B read its list, then replica A recovered the allow.
+    let now = w.clock.now().utc;
+    let seen_by_b = w
+        .store()
+        .stuck_allows(
+            TENANT,
+            now - Duration::days(7),
+            now - Duration::minutes(5),
+            100,
+        )
+        .await
+        .unwrap();
+    assert_eq!(seen_by_b.len(), 1);
+    let a = w.reconcile(None).await;
+    assert_eq!((a.recovered, a.problems.len()), (1, 0), "{a:?}");
+    let first = w.stored_outcome("r-1").await.unwrap();
+
+    *w.store().faults.stale_stuck_allows.lock().unwrap() = Some(seen_by_b);
+    let b = w.reconcile(None).await;
+    *w.store().faults.stale_stuck_allows.lock().unwrap() = None;
+    assert_eq!(b.recovered, 0, "{b:?}");
+    assert!(b.problems.is_empty() && b.error.is_none(), "{b:?}");
+    assert_eq!(
+        w.stored_outcome("r-1").await.unwrap(),
+        first,
+        "A's row stands"
+    );
+    assert_eq!(w.sends(), 1);
+}
+
+/// An allow older than the recovery's lookback with no outcome is not hidden:
+/// the pass does not record it (it is outside what the query looks at), and
+/// says how many there are, so a metric can show it. The bundle verifier
+/// reports it as `outcome_missing` however old it is
+/// (`recovered_outcome.rs`).
+#[tokio::test]
+async fn an_allow_beyond_the_lookback_stays_visible() {
+    use kavach_dataplane::outcome_reconciler::STUCK_OUTCOME_LOOKBACK;
+    let w = world();
+    let mandate = w.mandate().await;
+    Faults::fail(&w.store().faults.record_outcome, Faults::FOREVER);
+    w.call(&mandate, "old").await.unwrap();
+    Faults::fail(&w.store().faults.record_outcome, 0);
+
+    // Inside the lookback it is recovered and nothing is beyond it.
+    w.advance(Duration::minutes(10));
+    let inside = w.reconcile(None).await;
+    assert_eq!(
+        (inside.recovered, inside.beyond_lookback),
+        (1, 0),
+        "{inside:?}"
+    );
+
+    // A second one that nobody recovered in time: now older than the lookback.
+    Faults::fail(&w.store().faults.record_outcome, Faults::FOREVER);
+    w.call(&mandate, "older").await.unwrap();
+    Faults::fail(&w.store().faults.record_outcome, 0);
+    w.advance(STUCK_OUTCOME_LOOKBACK + Duration::hours(1));
+    let beyond = w.reconcile(None).await;
+    assert_eq!(
+        beyond.recovered, 0,
+        "outside the lookback it is not written: {beyond:?}"
+    );
+    assert_eq!(beyond.beyond_lookback, 1, "{beyond:?}");
+    assert!(
+        w.stored_outcome("older").await.is_none(),
+        "still without an outcome"
+    );
+    // And it stays visible on every later pass.
+    assert_eq!(w.reconcile(None).await.beyond_lookback, 1);
+}

@@ -37,6 +37,9 @@ pub struct Faults {
     /// calls have been let through (the decision reads it first).
     pub agent_state: AtomicU32,
     pub agent_state_skip: AtomicU32,
+    /// When set, `stuck_allows` answers with this list whatever the store
+    /// holds: a replica that read its work list before another replica wrote.
+    pub stale_stuck_allows: std::sync::Mutex<Option<Vec<AgentDecisionRecord>>>,
 }
 
 impl Faults {
@@ -150,6 +153,15 @@ impl<S: AgentEvidenceStore> AgentEvidenceStore for FaultyStore<S> {
         decided_before: chrono::DateTime<chrono::Utc>,
         limit: u32,
     ) -> Result<Vec<AgentDecisionRecord>, PortError> {
+        if let Some(stale) = self
+            .faults
+            .stale_stuck_allows
+            .lock()
+            .map_err(|_| PortError::unavailable("injected lock"))?
+            .clone()
+        {
+            return Ok(stale);
+        }
         self.inner
             .stuck_allows(tenant_id, decided_after, decided_before, limit)
             .await
