@@ -553,3 +553,68 @@ async fn replicas_that_hear_different_answers_leave_a_visible_conflict() {
         assert_eq!(governing(&rows), Governing::Conflicted);
     }
 }
+
+/// Whatever the age of an unknown outcome and whatever the provider says,
+/// the reconciler writes only two kinds of row: a confirmed state, from the
+/// provider's own answer, inside the hour in which it asks; and `ambiguous`,
+/// from itself, and only once 24 hours have passed with nothing confirmed.
+/// Nothing is asked or written in between, or before the first 30 seconds.
+mod timing_properties {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn answer() -> impl Strategy<Value = Option<ProviderStatus>> {
+        prop_oneof![
+            Just(None),
+            Just(Some(ProviderStatus::Unknown)),
+            Just(Some(ProviderStatus::Delivered)),
+            Just(Some(ProviderStatus::NotDelivered)),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { failure_persistence: None, ..ProptestConfig::with_cases(150) })]
+
+        #[test]
+        fn the_reconciler_writes_the_right_row_for_the_age_and_never_another(
+            age in 0i64..(3 * 86_400),
+            says in answer()
+        ) {
+            let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            runtime.block_on(async {
+                let w = world();
+                let provider = Provider::default();
+                provider.says(says);
+                let mandate = w.mandate_for("B-9382").await;
+                let credential = w.unknown_send(&mandate, "r-1").await;
+                w.advance(Duration::seconds(age));
+                let mut polls = PollState::default();
+                w.pass(&provider, &mut polls).await;
+                let rows = w.resolutions(&credential).await;
+
+                let asks = (30..3600).contains(&age);
+                let gives_up = age >= 86_400;
+                prop_assert_eq!(provider.questions(), usize::from(asks), "age {} s", age);
+                let confirmed = asks.then_some(says).flatten().and_then(|s| match s {
+                    ProviderStatus::Delivered => Some(ResolutionState::ConfirmedDelivered),
+                    ProviderStatus::NotDelivered => Some(ResolutionState::ConfirmedNotDelivered),
+                    ProviderStatus::Unknown => None,
+                });
+                let mut expected = Vec::new();
+                if let Some(state) = confirmed {
+                    expected.push((state, ResolutionSource::ProviderStatus));
+                }
+                if gives_up {
+                    expected.push((ResolutionState::Ambiguous, ResolutionSource::Reconciler));
+                }
+                let found: Vec<_> = rows.iter().map(|r| (r.state, r.source)).collect();
+                prop_assert_eq!(found, expected, "age {} s, provider {:?}", age, says);
+                // Whatever is there is a row the form allows.
+                for row in &rows {
+                    prop_assert!(kavach_ports::outcome_resolution::check_form(row).is_ok());
+                }
+                Ok(())
+            })?;
+        }
+    }
+}

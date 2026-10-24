@@ -754,15 +754,80 @@ fn untrustworthy_resolutions() -> Vec<(&'static str, ResolutionRecord, &'static 
     ]
 }
 
+/// "Nobody could say" is the reconciler's statement and nobody else's.
+fn ambiguity_from_the_wrong_source() -> Vec<(&'static str, ResolutionRecord, &'static str)> {
+    use ResolutionSource::{OperatorAttested, ProviderStatus};
+    use ResolutionState::{Ambiguous, ConfirmedDelivered as Delivered};
+    let outcomes = outcomes_v4(&records());
+    let unknown = &outcomes[1];
+    let key = evidence_key();
+    // Built as a valid confirmed line, then changed to say ambiguous and
+    // signed again: only the rule is wrong, never the signature.
+    let said_ambiguous = |source, people: (Option<&str>, Option<&str>)| {
+        let mut row = resolution_of(unknown, (Delivered, source), Some("answer"), people, 5);
+        row.state = Ambiguous;
+        resigned(row, &key)
+    };
+    vec![
+        (
+            "provider-says-ambiguous",
+            said_ambiguous(ProviderStatus, (None, None)),
+            "only the reconciler says ambiguous",
+        ),
+        (
+            "person-says-ambiguous",
+            said_ambiguous(OperatorAttested, (Some("alice"), None)),
+            "only the reconciler says ambiguous",
+        ),
+    ]
+}
+
+/// Every resolution a verifier must refuse, with the reason.
+fn every_refused_resolution() -> Vec<(&'static str, ResolutionRecord, &'static str)> {
+    let mut all = rule_breaking_resolutions();
+    all.extend(untrustworthy_resolutions());
+    all.extend(ambiguity_from_the_wrong_source());
+    all
+}
+
+/// The independent Python verifier agrees on every one of them: it refuses the
+/// same bundle, and says the same class of reason (the resolution), so the two
+/// cannot both refuse and disagree about why.
+#[test]
+fn the_python_verifier_refuses_every_refused_resolution_in_the_same_class() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../conformance/kavach_verify.py");
+    for (name, resolution, _) in every_refused_resolution() {
+        let out = v4_with(&format!("v4-py-{name}"), &[resolution]);
+        let output = std::process::Command::new("python3")
+            .arg("-I")
+            .arg(&script)
+            .args(["bundle", "--keys"])
+            .arg(vectors().join("bundle-v2.keys.json"))
+            .args(["--allow-warnings", "--now", "2026-10-02T07:00:00Z"])
+            .arg(&out)
+            .output();
+        let Ok(output) = output else {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "python3 is required in CI for the verifier-agreement tests"
+            );
+            eprintln!("skipping: no python3");
+            return;
+        };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let python: Value =
+            serde_json::from_str(&text).unwrap_or_else(|e| panic!("{name}: {e}: {text}"));
+        assert_eq!(python["result"], "fail", "{name}: {python}");
+        assert_eq!(python["class"], "resolution", "{name}: {python}");
+    }
+}
+
 /// Every way a resolution can be wrong is refused by the verifier, for its
 /// own reason (docs/specs/evidence-bundle.md section 10.1).
 #[test]
 fn a_version_4_bundle_refuses_a_resolution_that_breaks_the_rules() {
     let valid = resolutions_v4(&outcomes_v4(&records())).remove(0);
-    for (name, resolution, expected) in rule_breaking_resolutions()
-        .into_iter()
-        .chain(untrustworthy_resolutions())
-    {
+    for (name, resolution, expected) in every_refused_resolution() {
         let out = v4_with(&format!("v4-{name}"), &[resolution]);
         let err = verify_dir(&out).expect_err(name);
         assert!(
