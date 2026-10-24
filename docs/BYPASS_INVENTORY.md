@@ -13,10 +13,10 @@ The bypasses fall into four groups:
 
 | Switch | What it switches off | Who can use it | How it shows | Guard |
 |---|---|---|---|---|
-| `kavach-api --insecure-dev` | See the next table: one flag, several relaxations | Whoever starts the API | Startup warnings in the log, one per relaxation. **Not** visible in `/v1/runtime` or in any metric after startup (gap, see below) | Off by default. The production image and the pilot compose stack never pass it. Only the development isolation stack (`deploy/agent-stack`) does. Development keys (`dev-…`) are refused without it, and dev-signed evidence fails the offline verifier |
-| `kavach-batch --insecure-dev` | A weaker Postgres `sslmode`, when the URL also asks for it | Whoever runs the batch | Startup warning | Off by default; the flag alone downgrades nothing |
-| `kavach-evidence export --allow-plaintext-database` | Postgres TLS for the export connection, when the URL also asks for it | Whoever runs the export | **Nothing** (gap) | The flag alone downgrades nothing |
-| `kavach-evidence export --allow-write-role` | The refusal to export as a role that can write evidence | Whoever runs the export | **Nothing** (gap) | Default refuses. `kavach_auditor` is the intended role |
+| `kavach-api --insecure-dev` | See the next table: one flag, several relaxations | Whoever starts the API | Startup warnings in the log, one per relaxation, and the list of them in one `relaxations=` warning. Afterwards: `/v1/runtime` (`insecure_dev`, `relaxations`), the metrics `kavach_insecure_dev` and `kavach_relaxation_active{relaxation}` (every name below, 0 or 1), and the alerts `KavachInsecureDevActive` and `KavachRelaxationActive` (both critical) | Off by default. The production image and the pilot compose stack never pass it. Only the development isolation stack (`deploy/agent-stack`) does. Development keys (`dev-…`) are refused without it, and dev-signed evidence fails the offline verifier |
+| `kavach-batch --insecure-dev` | A weaker Postgres `sslmode`, when the URL also asks for it | Whoever runs the batch | Startup warning, and a warning when the run ends naming what it used (`insecure_dev`, `weaker_database_tls`) | Off by default; the flag alone downgrades nothing |
+| `kavach-evidence export --allow-plaintext-database` | Postgres TLS for the export connection, when the URL also asks for it | Whoever runs the export | When the URL asks for a weaker mode and the flag allows it: `relaxations used: weaker_database_tls` on standard output and a `WARNING` on standard error, and `relaxations` in `kavach evidence export`'s JSON. **Not** recorded in the bundle (that would change the format) | The flag alone downgrades nothing |
+| `kavach-evidence export --allow-write-role` | The refusal to export as a role that can write evidence | Whoever runs the export | When the role can write: `relaxations used: allow_write_role` and a `WARNING`, as above. **Not** recorded in the bundle | Default refuses. `kavach_auditor` is the intended role |
 | `kavach-evidence verify-bundle --allow-warnings` | Exit 2 for an unsigned bundle, uncovered records, no kept checkpoint compared, or allows without a final outcome | Whoever verifies | The report still lists every warning first, under what is *not* protected | Default fails closed (exit 2). Hard failures (exit 1) cannot be allowed |
 | `verify_dev_chain` (library) | The refusal of development-signed evidence | Code that calls it by name | The function name | `verify_chain`, which every command uses, refuses dev keys |
 | `--bootstrap-pack` (API) | The runtime pointer check for the pack path and bytes at startup | Whoever starts the API | Audited (`startup_baseline_*` / bootstrap events) | Re-pins path and digest only. Status and mode never change without a change request |
@@ -38,9 +38,9 @@ The bypasses fall into four groups:
 | A test-double credential broker | Refused at startup |
 | A weaker Postgres `sslmode`, when the URL also asks for it | `verify-full` only |
 
-**Gaps** (to be closed by a later engineering item):
-- Once the API is running, nothing but the startup log shows that it runs with `--insecure-dev`. It should be reported in `/v1/runtime` and as a metric, so that monitoring can alert on it.
-- `kavach-evidence export` prints nothing when `--allow-plaintext-database` or `--allow-write-role` is used. Both should print a warning, and the bundle manifest should record that the export ran under them.
+**Names.** The relaxations above are reported by these names, a fixed set (`kavach_api::relaxations::Relaxation`): `insecure_dev`, `access_control_none`, `principal_header`, `weaker_database_tls`, `memory_agent_stores`, `test_clock`, `dev_clock`, `system_clock_declared_synced`, `unsigned_tool_registry`, `dev_keys`, `test_double_broker`. A test fails if one is missing from this file, from `docs/openapi.yaml` or from the metrics.
+
+**Gap** (remaining): the export flags are visible in the command's output only, not in the bundle, whose format does not record how it was exported.
 
 ## 2. Absent options
 
@@ -86,4 +86,4 @@ These sit below Kavach. Kavach can make their actions detectable, but cannot pre
 
 - A new flag or option that weakens a check needs a row here in the same pull request.
 - A switch must show up somewhere: a startup warning at least, and an audit event when it changes governed state.
-- A switch that cannot be seen once the process is running, or not at all, is listed as a gap, as `--insecure-dev` and the two export flags are today.
+- A switch that cannot be seen once the process is running, or not at all, is listed as a gap. The API's relaxations are a fixed list in code (`Relaxation::ALL`); a new one is added there, to the OpenAPI enum and to this file in the same pull request, and a test checks that the three agree.

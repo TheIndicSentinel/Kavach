@@ -702,6 +702,18 @@ fn print_banner(
              every request is allowed. Never use this outside local development."
         );
     }
+    let relaxations = kavach_api::relaxations::of_config(config)
+        .iter()
+        .map(|r| r.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    if !relaxations.is_empty() {
+        tracing::warn!(
+            relaxations = %relaxations,
+            "this process runs with guarantees relaxed (see /v1/runtime and the \
+             kavach_relaxation_active metric)"
+        );
+    }
     tracing::info!(
         "listening http={} grpc={} transport={} evidence={:?} access_control={:?} \
          principal_sources={principal_sources} insecure_dev={} pack_sha256={}",

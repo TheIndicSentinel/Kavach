@@ -83,6 +83,7 @@ pub async fn export(
         "last_checkpoint": summary.last_checkpoint,
         "uncovered_records": summary.uncovered_records,
         "development": true,
+        "relaxations": summary.relaxations,
     });
     let mut human = format!(
         "{} {} records (after {} through {}), {} outcomes, {} checkpoints → {}\n",

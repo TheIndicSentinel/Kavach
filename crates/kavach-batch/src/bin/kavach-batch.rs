@@ -148,6 +148,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             insecure_dev,
         } => {
             let database_tls = kavach_storage::DatabaseTls::new(insecure_dev, database_ca);
+            let mut database_url_used: Option<String> = None;
             verify_signature_if_configured(&pack, &model, pack_signers.as_deref())?;
             let input_file = File::open(&input)?;
             let mut writer = BufWriter::new(File::create(&output)?);
@@ -180,6 +181,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let database_url = database_url.ok_or(
                         "postgres evidence store requires --database-url or KAVACH_DATABASE_URL",
                     )?;
+                    database_url_used = Some(database_url.clone());
                     // (Batch refuses an ungoverned database.)
                     let owner = migration_database_url.as_deref();
                     let pool = connect(&database_url, owner, &database_tls).await?;
@@ -202,9 +204,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
 
             writer.flush()?;
-            eprintln!(
-                "kavach-batch job={} total={} succeeded={} failed={} skipped={}",
-                report.job_id, report.total_rows, report.succeeded, report.failed, report.skipped
+            summarise(
+                &report,
+                &relaxations_used(insecure_dev, database_url_used.as_deref(), &database_tls),
             );
             if report.failed > 0 {
                 std::process::exit(1);
@@ -230,6 +232,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     Ok(())
+}
+
+/// The run's one-line summary, and a warning naming any development setting
+/// it used (the flag has no other trace once the process exits).
+fn summarise(report: &kavach_batch::BatchJobReport, used: &[&'static str]) {
+    eprintln!(
+        "kavach-batch job={} total={} succeeded={} failed={} skipped={}",
+        report.job_id, report.total_rows, report.succeeded, report.failed, report.skipped
+    );
+    if !used.is_empty() {
+        eprintln!(
+            "WARNING: this run used a development setting ({}); production runs without it",
+            used.join(", ")
+        );
+    }
+}
+
+/// The development settings a batch run used: the flag, and a weaker
+/// `sslmode` the URL asked for and the flag allowed.
+fn relaxations_used(
+    insecure_dev: bool,
+    database_url: Option<&str>,
+    tls: &kavach_storage::DatabaseTls,
+) -> Vec<&'static str> {
+    let mut used = Vec::new();
+    if insecure_dev {
+        used.push("insecure_dev");
+    }
+    if database_url.is_some_and(|url| kavach_storage::is_weakened(url, tls)) {
+        used.push("weaker_database_tls");
+    }
+    used
 }
 
 fn write_fairness_report(
@@ -331,5 +365,28 @@ fn time_check(
         }
         (Some(_), Some(_)) => Err("--decision-from must not be after --decision-to".into()),
         _ => Ok(kavach_evaluate::DecisionTimeCheck::Skew),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::relaxations_used;
+
+    #[test]
+    fn a_batch_run_reports_the_development_settings_it_used() {
+        let development = kavach_storage::DatabaseTls::development();
+        let production = kavach_storage::DatabaseTls::default();
+        let weaker = "postgres://u:p@db/k?sslmode=require";
+        assert!(relaxations_used(false, None, &production).is_empty());
+        assert_eq!(relaxations_used(true, None, &development), ["insecure_dev"]);
+        assert_eq!(
+            relaxations_used(true, Some(weaker), &development),
+            ["insecure_dev", "weaker_database_tls"]
+        );
+        // The flag alone, with a verified URL, downgrades nothing.
+        assert_eq!(
+            relaxations_used(true, Some("postgres://u:p@db/k"), &development),
+            ["insecure_dev"]
+        );
     }
 }

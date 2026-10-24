@@ -207,6 +207,12 @@ pub struct ExportSummary {
     /// Records newer than that checkpoint (all of them when there is none):
     /// not covered by any checkpoint yet.
     pub uncovered_records: i64,
+    /// The relaxations this export ran with (BYPASS_INVENTORY.md section 1:
+    /// `allow_write_role`, `weaker_database_tls`), by name. Empty for an
+    /// export from a file or one run as it should be. Set by the command that
+    /// opened the database; never part of the bundle (the format does not
+    /// change), only of what the command reports.
+    pub relaxations: Vec<&'static str>,
 }
 
 /// Reads the segment from `source` and writes it to `request.out`: a whole
@@ -313,5 +319,6 @@ pub async fn export<S: ExportSource>(
         last_checkpoint,
         uncovered_records: head_seq - last_checkpoint.unwrap_or(start.seq),
         manifest,
+        relaxations: Vec::new(),
     })
 }

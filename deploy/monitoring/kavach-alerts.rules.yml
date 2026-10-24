@@ -182,6 +182,27 @@ groups:
             counts that look healthy), and stays silent until the first pass, so it does
             not fire on a fresh install or when the agent surfaces are off.
 
+      - alert: KavachInsecureDevActive
+        expr: kavach_insecure_dev > 0
+        labels: { severity: critical }
+        annotations:
+          summary: The API is running with --insecure-dev
+          description: >-
+            --insecure-dev turns several guarantees off at once (a self-asserted principal
+            header, development keys, a declared-synced clock, memory stores, an unsigned
+            tool registry, a weaker database mode). It is for local development only. If
+            this is a deployment, restart it without the flag. `/v1/runtime` and the
+            `kavach_relaxation_active` metric say which relaxations are on.
+      - alert: KavachRelaxationActive
+        expr: kavach_relaxation_active > 0
+        labels: { severity: critical }
+        annotations:
+          summary: "A guarantee is relaxed in this process: {{ $labels.relaxation }}"
+          description: >-
+            The named relaxation (docs/BYPASS_INVENTORY.md section 1) is on. Each is for
+            development or tests only: a deployment with one on does not have the guarantee
+            the relaxation turns off. Fires together with KavachInsecureDevActive when
+            --insecure-dev is the cause.
       - alert: KavachAgentStopped
         expr: sum(increase(kavach_agent_state_changes_total{result="applied",to=~"quarantined|revoked"}[5m])) > 0
         labels: { severity: warning }

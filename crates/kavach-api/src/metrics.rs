@@ -27,6 +27,7 @@ pub struct Metrics {
     revocation_evidence: RevocationEvidenceMetrics,
     agent_state_evidence: AgentStateEvidenceMetrics,
     outcomes: OutcomeMetrics,
+    relaxations: RelaxationMetrics,
 }
 
 /// How long each stage of a gateway call takes (`stage` is the fixed list
@@ -228,6 +229,40 @@ impl AgentStateEvidenceMetrics {
     }
 }
 
+/// Which relaxations the process runs with (BYPASS_INVENTORY.md section 1).
+#[derive(Clone)]
+struct RelaxationMetrics {
+    insecure_dev: prometheus::IntGauge,
+    active: prometheus::IntGaugeVec,
+}
+
+impl RelaxationMetrics {
+    fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
+        let metrics = Self {
+            insecure_dev: prometheus::IntGauge::new(
+                "kavach_insecure_dev",
+                "1 when the process runs with --insecure-dev, which turns several \
+                 guarantees off (never in production); alert when above 0",
+            )?,
+            active: prometheus::IntGaugeVec::new(
+                Opts::new(
+                    "kavach_relaxation_active",
+                    "1 for each way this process runs with a guarantee relaxed (a fixed set of \
+                     names, all always present, see BYPASS_INVENTORY.md); alert when above 0",
+                ),
+                &["relaxation"],
+            )?,
+        };
+        registry.register(Box::new(metrics.insecure_dev.clone()))?;
+        registry.register(Box::new(metrics.active.clone()))?;
+        // Every name is present from the start, at 0.
+        for name in crate::relaxations::Relaxation::ALL {
+            metrics.active.with_label_values(&[name.as_str()]).set(0);
+        }
+        Ok(metrics)
+    }
+}
+
 /// Unknown outcomes and their resolutions (ADR-017 R3a): what is still
 /// unconfirmed, how long, and how it is known. Counts and ages only; nothing
 /// that names a loan, a borrower or a destination.
@@ -294,6 +329,32 @@ impl OutcomeMetrics {
     }
 }
 
+/// The counters of the operator and system-of-record surfaces: agent state
+/// changes, and events answered 503.
+fn operator_counters() -> Result<(IntCounterVec, IntCounterVec), prometheus::Error> {
+    let agent_state_changes = IntCounterVec::new(
+        Opts::new(
+            "kavach_agent_state_changes_total",
+            "Attempts to change an agent's state through the operator API, by the state \
+                 asked for and the result (applied, unchanged, refused, rate_limited, \
+                 unavailable, forbidden, unknown_agent). A stop is an incident; a burst of \
+                 them is a stolen credential until shown otherwise",
+        ),
+        &["to", "result"],
+    )?;
+    let sor_unavailable = IntCounterVec::new(
+        Opts::new(
+            "kavach_sor_events_unavailable_total",
+            "System-of-record events answered 503 because Kavach could not act on them \
+                 now (clock not synchronised, store unreachable), by kind (issuing, \
+                 revoking). The sender retries; alert when it keeps rising: no new mandates \
+                 are being made",
+        ),
+        &["kind"],
+    )?;
+    Ok((agent_state_changes, sor_unavailable))
+}
+
 impl Metrics {
     pub fn new() -> Result<Self, prometheus::Error> {
         let registry = Registry::new();
@@ -347,28 +408,9 @@ impl Metrics {
             "kavach_gateway_outcome_write_failures_total",
             "ALERT: an outcome happened but could not be recorded",
         )?;
-        let agent_state_changes = IntCounterVec::new(
-            Opts::new(
-                "kavach_agent_state_changes_total",
-                "Attempts to change an agent's state through the operator API, by the state \
-                 asked for and the result (applied, unchanged, refused, rate_limited, \
-                 unavailable, forbidden, unknown_agent). A stop is an incident; a burst of \
-                 them is a stolen credential until shown otherwise",
-            ),
-            &["to", "result"],
-        )?;
+        let (agent_state_changes, sor_unavailable) = operator_counters()?;
         let snapshot = SnapshotMetrics::register(&registry)?;
         let revocation_audit = RevocationAuditMetrics::register(&registry)?;
-        let sor_unavailable = IntCounterVec::new(
-            Opts::new(
-                "kavach_sor_events_unavailable_total",
-                "System-of-record events answered 503 because Kavach could not act on them \
-                 now (clock not synchronised, store unreachable), by kind (issuing, \
-                 revoking). The sender retries; alert when it keeps rising: no new mandates \
-                 are being made",
-            ),
-            &["kind"],
-        )?;
         registry.register(Box::new(sor_unavailable.clone()))?;
         registry.register(Box::new(agent_state_changes.clone()))?;
         registry.register(Box::new(gateway_calls.clone()))?;
@@ -378,6 +420,10 @@ impl Metrics {
         let checkpoints = CheckpointMetrics::register(&registry)?;
         let revocation_evidence = RevocationEvidenceMetrics::register(&registry)?;
         let gateway_stage_seconds = gateway_stage_histogram(&registry)?;
+        let (outcomes, relaxations) = (
+            OutcomeMetrics::register(&registry)?,
+            RelaxationMetrics::register(&registry)?,
+        );
         Ok(Self {
             evaluate_total,
             evaluate_latency_ms,
@@ -394,7 +440,8 @@ impl Metrics {
             gateway_stage_seconds,
             checkpoints,
             revocation_evidence,
-            outcomes: OutcomeMetrics::register(&registry)?,
+            outcomes,
+            relaxations,
             agent_state_evidence: AgentStateEvidenceMetrics::register(&registry)?,
             registry: Arc::new(registry),
         })
@@ -490,6 +537,21 @@ impl Metrics {
             .inc_by(u64::try_from(report.reconciled.len()).unwrap_or(u64::MAX));
         if report.error.is_none() {
             metrics.last_pass.set(chrono::Utc::now().timestamp());
+        }
+    }
+
+    /// The relaxations the process runs with, set once at startup.
+    pub fn set_relaxations(&self, on: &std::collections::BTreeSet<crate::relaxations::Relaxation>) {
+        use crate::relaxations::Relaxation;
+        let metrics = &self.relaxations;
+        metrics
+            .insecure_dev
+            .set(i64::from(on.contains(&Relaxation::InsecureDev)));
+        for name in Relaxation::ALL {
+            metrics
+                .active
+                .with_label_values(&[name.as_str()])
+                .set(i64::from(on.contains(&name)));
         }
     }
 
