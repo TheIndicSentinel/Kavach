@@ -645,7 +645,8 @@ fn damage_with_the_export_key_is_refused_in_the_same_class() {
 /// unsigned data riding through the audit chain. The format's rule (spec 5.3
 /// for resolutions, and the principle for the rest) is that nothing unsigned
 /// rides along, so both verifiers must refuse it, and in the same class.
-/// This test records what each does today, per kind of line.
+/// (This is the shrunk case the generator first found; the verifiers
+/// disagreed until the explicit member lists, see `undefined_members.rs`.)
 #[test]
 fn an_unsigned_member_added_to_any_line_is_refused_by_both() {
     let history = History {
