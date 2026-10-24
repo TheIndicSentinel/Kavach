@@ -197,13 +197,12 @@ A resolution is a second signed row that refers to an `unknown` outcome. It neve
 | `source` | `state` allowed | `evidence_digest` | `resolved_by` | `approved_by` |
 |---|---|---|---|---|
 | `reconciler` | `ambiguous` only | absent | absent | absent |
-| `provider_status` | any | present | absent | absent |
+| `provider_status` | `confirmed_delivered` or `confirmed_not_delivered` | present | absent | absent |
 | `operator_attested` | `confirmed_delivered` | present | present | **absent** (one person) |
 | `operator_attested` | `confirmed_not_delivered` | present | present | **present and different** from `resolved_by` (two people) |
-| `operator_attested` | `ambiguous` | present | present | absent |
 | `conflict_resolution` | `confirmed_delivered` or `confirmed_not_delivered` | present | present | **present and different** |
 
-"Different" is a comparison of the whole strings. Where `approved_by` and `resolved_by` are both required, a line without both, or with equal ones, is invalid.
+`ambiguous` is the reconciler's statement and nobody else's: a line with that state from any other source is invalid. "Different" is a comparison of the whole strings. Where `approved_by` and `resolved_by` are both required, a line without both, or with equal ones, is invalid.
 
 **§5.3.3 The governing state.** What a bundle says about an `unknown` outcome is computed from **all** its resolutions, never from the latest:
 

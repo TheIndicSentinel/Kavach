@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 191a9d4bc499eceeb95386ed7c4e03ef3f29651d44c02c1a654819d6d41ca2f3 # shrinks to row = ResolutionRecord { tenant_id: "t", credential_id: "c", outcome_ref: "0000000000000000000000000000000000000000000000000000000000000000", state: Ambiguous, source: ProviderStatus, reason: "provider_status", evidence_digest: Some("abababababababababababababababababababababababababababababababab"), resolved_by: None, approved_by: None, ts: 2027-01-15T08:00:00Z, key_id: "k", sig: "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" }

@@ -267,6 +267,12 @@ pub fn check_form(record: &ResolutionRecord) -> Result<(), PortError> {
             }
         }
     }
+    // "Nobody could say" is the reconciler's statement and nobody else's: a
+    // provider that cannot say writes nothing, and a person attests a
+    // confirmed state or nothing.
+    if record.state == ResolutionState::Ambiguous && record.source != ResolutionSource::Reconciler {
+        return invalid("only the reconciler says ambiguous");
+    }
     Ok(())
 }
 
@@ -656,6 +662,16 @@ mod tests {
         let mut confirming = reconciler();
         confirming.state = Delivered;
         assert!(check_form(&confirming).is_err());
+        // "Nobody could say" is the reconciler's alone: not a provider's, not
+        // a person's, not a closure's.
+        for mut row in [
+            provider(Delivered),
+            operator(Delivered, false),
+            closing(Delivered),
+        ] {
+            row.state = Ambiguous;
+            assert!(check_form(&row).is_err(), "{:?}", row.source);
+        }
         // A conflict is closed by two people and a confirmed state.
         assert!(check_form(&closing(Delivered)).is_ok());
         let mut one = closing(Delivered);

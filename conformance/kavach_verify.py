@@ -859,6 +859,8 @@ class Verifier:
                 bad("a conflict is closed by a confirmed state")
             if resolved is None or approved is None or approved == resolved or digest is None:
                 bad("a conflict resolution needs two different people and a digest")
+        if state == "ambiguous" and source != "reconciler":
+            bad("only the reconciler says ambiguous")
 
     def resolutions(self, lines, unknown, manifest):
         """Checks resolutions.jsonl; returns {credential: [rows]}."""
