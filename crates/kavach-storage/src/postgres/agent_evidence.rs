@@ -621,6 +621,36 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         }))
     }
 
+    async fn stuck_allows(
+        &self,
+        tenant_id: &str,
+        decided_after: DateTime<Utc>,
+        decided_before: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<AgentDecisionRecord>, PortError> {
+        // The record's own time is in its payload; an allow is PASS or ALERT
+        // with a credential. Anti-join on the outcomes' primary key.
+        let rows = sqlx::query(
+            "SELECT d.payload, d.hash, d.sig FROM agent_decisions d \
+            WHERE d.tenant_id = $1 AND d.credential_id IS NOT NULL \
+              AND d.returned_decision IN ('PASS', 'ALERT') \
+              AND (d.payload->>'ts')::timestamptz > $2 \
+              AND (d.payload->>'ts')::timestamptz < $3 \
+              AND NOT EXISTS ( \
+                SELECT 1 FROM agent_outcomes o \
+                WHERE o.tenant_id = d.tenant_id AND o.credential_id = d.credential_id) \
+            ORDER BY d.seq LIMIT $4",
+        )
+        .bind(tenant_id)
+        .bind(decided_after)
+        .bind(decided_before)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        rows.iter().map(row_to_record).collect()
+    }
+
     async fn resolution_summary(&self, tenant_id: &str) -> Result<ResolutionSummary, PortError> {
         // More unknown outcomes than this is an incident of its own; the
         // summary says it stopped counting.

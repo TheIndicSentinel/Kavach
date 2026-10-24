@@ -240,7 +240,8 @@ groups:
           summary: A call's outcome could not be recorded
           description: >-
             The provider was contacted but the outcome did not reach the evidence store;
-            the allow will be reported as missing an outcome. Check the evidence store.
+            the allow is reported as missing an outcome until the reconciler records it as
+            unknown (after five minutes). The write was retried first. Check the evidence store.
       - alert: KavachCredentialIdConflict
         expr: increase(kavach_gateway_jti_conflicts_total[10m]) > 0
         labels: { severity: critical }

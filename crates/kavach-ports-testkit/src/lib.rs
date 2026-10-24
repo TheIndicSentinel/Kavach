@@ -7,6 +7,7 @@
 pub mod agent_evidence;
 pub mod checkpoint_store;
 pub mod credential_broker;
+pub mod faulty_store;
 pub mod reference_resolver;
 
 use std::collections::HashMap;

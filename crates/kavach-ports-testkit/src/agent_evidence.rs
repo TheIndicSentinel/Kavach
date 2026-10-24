@@ -17,7 +17,7 @@ use kavach_ports::outcome_resolution::{
     governing, outcome_ref, sign_resolution, Governing, ResolutionDraft, ResolutionRecord,
     ResolutionSource, ResolutionState, ResolutionSummary,
 };
-use kavach_ports::{ErrorClass, KeyAlgorithm, PortError, PublicKey, SyncStatus};
+use kavach_ports::{ErrorClass, KeyAlgorithm, PortError, PublicKey, SyncStatus, TimeSource};
 
 use crate::FakeClock;
 
@@ -169,6 +169,7 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     outcome_resolutions(&*store, &clock, &signer).await;
     unresolved_outcomes_are_what_the_reconciler_may_resolve(&*store, &clock, &signer).await;
     the_summary_counts_each_unknown_outcome_once(&*store, &clock, &signer).await;
+    stuck_allows_are_the_allows_without_an_outcome_in_the_window(&*store, &clock, &signer).await;
     one_creator_per_request_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     duplicates_race_near_the_cap(Arc::clone(&store), TestSigner::new(KID, 9)).await;
     revocations_in_the_chain(&*store, &clock, &signer).await;
@@ -914,6 +915,95 @@ async fn the_summary_counts_each_unknown_outcome_once<S: AgentEvidenceStore>(
         ])
     );
     assert!(!summary.truncated);
+}
+
+/// Allows with no outcome row, in a time window (ADR-017, F7): exactly those,
+/// oldest first, inside the window, for the tenant, within the limit. An allow
+/// with an outcome of any kind, a denial (it has no credential) and another
+/// tenant's allow are never listed.
+async fn stuck_allows_are_the_allows_without_an_outcome_in_the_window<S: AgentEvidenceStore>(
+    store: &S,
+    _shared_clock: &FakeClock,
+    signer: &TestSigner,
+) {
+    // Its own clock: this moves time, and the other checks of the suite rely
+    // on the shared one staying where it is.
+    let clock = &FakeClock::synced_at(t0());
+    let t = "ae-stuck";
+    let minute = Duration::minutes(1);
+    // Four allows a minute apart: with an outcome, without, without, with one.
+    let with_unknown = an_unknown_outcome(store, clock, signer, t, "st-1", Outcome::Unknown).await;
+    clock.advance(minute);
+    let first = committed(
+        store
+            .commit(request(t, "st-2", 10), clock, signer)
+            .await
+            .unwrap(),
+    );
+    clock.advance(minute);
+    let second = committed(
+        store
+            .commit(request(t, "st-3", 10), clock, signer)
+            .await
+            .unwrap(),
+    );
+    clock.advance(minute);
+    let _with_delivered =
+        an_unknown_outcome(store, clock, signer, t, "st-4", Outcome::Delivered).await;
+    // Another tenant's allow without an outcome, and a denial in this one.
+    let _other = committed(
+        store
+            .commit(request("ae-stuck-other", "st-x", 10), clock, signer)
+            .await
+            .unwrap(),
+    );
+    let denied = store
+        .commit(request(t, "st-denied", 0), clock, signer)
+        .await
+        .unwrap();
+    assert!(
+        !matches!(&denied, CommitResult::Committed(r) if r.is_allow()),
+        "a cap of zero denies"
+    );
+
+    let long_ago = first.payload.ts - Duration::days(1);
+    let later = clock.now().utc + minute;
+    let ids = |found: Vec<kavach_ports::agent_evidence::AgentDecisionRecord>| {
+        found
+            .into_iter()
+            .map(|r| r.payload.request_id)
+            .collect::<Vec<_>>()
+    };
+    let list = |after, before, limit| async move {
+        ids(store.stuck_allows(t, after, before, limit).await.unwrap())
+    };
+    assert_eq!(list(long_ago, later, 100).await, ["st-2", "st-3"]);
+    // The window is open at both ends: by the record's own time.
+    assert_eq!(list(first.payload.ts, later, 100).await, ["st-3"]);
+    assert_eq!(list(long_ago, second.payload.ts, 100).await, ["st-2"]);
+    assert_eq!(
+        list(first.payload.ts, second.payload.ts, 100).await,
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        list(long_ago, later, 1).await,
+        ["st-2"],
+        "oldest first, limited"
+    );
+    // Once an outcome is written, it is no longer stuck.
+    let outcome = sign_outcome(
+        t,
+        first.payload.credential_id.as_deref().unwrap(),
+        &first.hash,
+        Outcome::Unknown,
+        "outcome_not_recorded",
+        clock.now().utc,
+        signer,
+    )
+    .unwrap();
+    store.record_outcome(outcome).await.unwrap();
+    assert_eq!(list(long_ago, later, 100).await, ["st-3"]);
+    let _ = with_unknown;
 }
 
 /// The store enforces who may say what, and what a resolution may refer to.
