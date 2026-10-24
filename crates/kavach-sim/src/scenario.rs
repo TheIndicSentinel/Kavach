@@ -57,7 +57,20 @@ pub struct EventSpec {
     /// such as `sim-eager-1`). Required for them, refused for the others.
     #[serde(default)]
     pub agent: Option<String>,
+    /// The event happened this many seconds before it reached Kavach (a
+    /// late payment, a default processed late). The stack's clock is the
+    /// arrival; the event is signed with the earlier time. Loan events only;
+    /// a new default may be at most [`MAX_ISSUING_LAG_SECONDS`] late (an
+    /// issuing event older than that is stale), a payment or dispute a day.
+    #[serde(default)]
+    pub lag_seconds: u32,
 }
+
+/// An issuing event (a new default) is accepted only within 300 s of its
+/// time; the scenario stays inside that with room to spare.
+pub const MAX_ISSUING_LAG_SECONDS: u32 = 240;
+/// A payment or dispute may arrive any time later; a day is enough here.
+pub const MAX_REVOKING_LAG_SECONDS: u32 = 86_400;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
@@ -362,6 +375,12 @@ impl Scenario {
                     ));
                 }
                 (true, Some(agent)) => {
+                    if event.lag_seconds != 0 {
+                        return Err(format!(
+                            "{} cannot be late: an operator's change happens when it is made",
+                            event.kind.as_str()
+                        ));
+                    }
                     let known = agent_ids(self);
                     if !known.contains(agent) {
                         return Err(format!(
@@ -379,6 +398,18 @@ impl Scenario {
                     ));
                 }
                 (false, None) => {}
+            }
+            let max_lag = if event.kind.revokes() {
+                MAX_REVOKING_LAG_SECONDS
+            } else {
+                MAX_ISSUING_LAG_SECONDS
+            };
+            if event.lag_seconds > max_lag {
+                return Err(format!(
+                    "{} was {} s late: at most {max_lag} s",
+                    event.kind.as_str(),
+                    event.lag_seconds
+                ));
             }
             if !(1..=delivering).contains(&event.borrowers) {
                 return Err(format!(
@@ -441,6 +472,22 @@ pub const BUILTINS: &[(&str, &str)] = &[
     (
         "dispute-stops-contact",
         include_str!("../scenarios/dispute-stops-contact.yaml"),
+    ),
+    (
+        "late-payment",
+        include_str!("../scenarios/late-payment.yaml"),
+    ),
+    (
+        "default-after-payment-refused",
+        include_str!("../scenarios/default-after-payment-refused.yaml"),
+    ),
+    (
+        "payment-after-default-processed",
+        include_str!("../scenarios/payment-after-default-processed.yaml"),
+    ),
+    (
+        "default-after-dispute-refused",
+        include_str!("../scenarios/default-after-dispute-refused.yaml"),
     ),
     (
         "provider-failures",

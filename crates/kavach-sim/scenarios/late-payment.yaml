@@ -1,0 +1,28 @@
+# A payment that happened before a new default but reached Kavach after it
+# (ADR-012, B2). The first borrower's loan is paid at 09:30 and the system
+# of record only says so at 12:00. In between, at 10:30, the loan defaults
+# again and the borrower is assigned again. When the old payment arrives it
+# ends the mandate from before it and leaves the new default's mandate
+# alone: the default happened after the payment, so contact for it goes on.
+# What the model expects comes from the scenario's own times, never from
+# Kavach's replies.
+version: 1
+name: late-payment
+description: A payment that arrives late ends the mandate from before it, not a default that happened after it.
+covers: ["Revocation by system-of-record event (ADR-012):"]   # SECURITY_PROPERTIES.md rows
+seed: 21
+days: 1
+borrowers: 2
+schedule: ["09:00", "11:00", "13:00"]
+agents:
+  - type: compliant
+    behaviour: { contacts_per_day: 3 }
+assignment: split
+events:
+  - { day: 1, at: "10:30", type: loan.dpd30, borrowers: 1 }
+  - { day: 1, at: "12:00", type: loan.paid, borrowers: 1, lag_seconds: 9000 }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 6

@@ -585,6 +585,7 @@ mod tests {
         let event = SorEntry {
             day: 1,
             at: slot(1, 720),
+            occurred: slot(1, 720),
             event_id: "sim-1-ev0-0".into(),
             event_type: "loan.paid".into(),
             borrower: "ref:a".into(),

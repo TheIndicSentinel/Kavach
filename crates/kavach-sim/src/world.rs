@@ -169,18 +169,23 @@ impl World {
             .collect()
     }
 
-    /// The scenario's payments and disputes, as the oracle reads them: the
-    /// borrower and when, from the scenario alone.
+    /// The scenario's payments and disputes, as the oracle reads them: whose,
+    /// when they happened and when they arrived, from the scenario alone.
     #[must_use]
-    pub fn revocations(&self, scenario: &Scenario) -> Vec<(String, chrono::DateTime<chrono::Utc>)> {
+    pub fn revocations(&self, scenario: &Scenario) -> Vec<crate::oracle::Closure> {
         let mut out = Vec::new();
         for event in scenario.events.iter().filter(|e| e.kind.revokes()) {
             let Ok(minute) = crate::scenario::minute_of_day(&event.at) else {
                 continue;
             };
-            let at = crate::calendar::slot(event.day, minute);
+            let arrived = crate::calendar::slot(event.day, minute);
             for b in self.event_borrowers(event.borrowers) {
-                out.push((self.borrowers[b].subject_ref.clone(), at));
+                out.push(crate::oracle::Closure {
+                    borrower: self.borrowers[b].subject_ref.clone(),
+                    occurred: arrived - chrono::Duration::seconds(i64::from(event.lag_seconds)),
+                    arrived,
+                    disputed: event.kind == crate::scenario::EventKind::Disputed,
+                });
             }
         }
         out

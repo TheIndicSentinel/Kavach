@@ -11,17 +11,30 @@ use serde_json::{json, Value};
 
 use crate::agents::{decide, retries, Memory};
 use crate::calendar::slot;
-use crate::ledger::{AgentEntry, Entry, SorEntry};
-use crate::oracle::{Standing, Verb};
+use crate::ledger::{AgentEntry, Entry, IssueEntry, SorEntry};
+use crate::oracle::{default_accepted, Closure, Standing, Verb};
 use crate::rng::Rng;
 use crate::scenario::{minute_of_day, EventSpec, Scenario};
 use crate::world::World;
 
+/// What the stack answered to an event that assigns a borrower to an agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Issued {
+    pub status: u16,
+    /// The mandate, when the event was taken.
+    pub mandate: Option<String>,
+}
+
 pub trait Stack {
-    /// A system-of-record event assigning `subject_ref` to `agent`, at the
-    /// stack's time: the mandate it issued.
-    fn issue(&self, agent: &str, subject_ref: &str)
-        -> impl Future<Output = Result<String, String>>;
+    /// A system-of-record event assigning `subject_ref` to `agent`, dated
+    /// `occurred` (the stack's clock is when it arrives): what came back.
+    /// A refusal is an answer, not an error.
+    fn issue(
+        &self,
+        agent: &str,
+        subject_ref: &str,
+        occurred: DateTime<Utc>,
+    ) -> impl Future<Output = Result<Issued, String>>;
     /// `POST /v1/tools/{tool}` as `agent`: status and body.
     fn call(
         &self,
@@ -41,12 +54,14 @@ pub trait Stack {
         verb: &str,
     ) -> impl Future<Output = Result<(u16, Value), String>>;
     /// A revoking system-of-record event (`loan.paid`, `loan.disputed`)
-    /// for `subject_ref`'s loan, at the stack's time: status and body.
+    /// for `subject_ref`'s loan, dated `occurred` (the stack's clock is when
+    /// it arrives): status and body.
     fn revoke(
         &self,
         event_type: &str,
         event_id: &str,
         subject_ref: &str,
+        occurred: DateTime<Utc>,
     ) -> impl Future<Output = Result<(u16, Value), String>>;
 }
 
@@ -57,6 +72,8 @@ pub struct Run {
     pub events: Vec<SorEntry>,
     /// Operators' changes of agents' states (ADR-013).
     pub agent_events: Vec<AgentEntry>,
+    /// New defaults the run sent, and whether Kavach took each.
+    pub issues: Vec<IssueEntry>,
 }
 
 /// One mandate the run obtained, in the simulator's own record.
@@ -73,32 +90,56 @@ struct Held {
 struct Mandates {
     all: Vec<Held>,
     current: BTreeMap<(usize, usize), usize>,
+    /// The payments and disputes that have reached Kavach so far, in order:
+    /// the simulator's own record of what has closed which loan.
+    closures: Vec<Closure>,
 }
 
 impl Mandates {
+    /// A mandate the run needs (the first assignments): refused is an error.
     async fn issue<S: Stack>(
         &mut self,
         stack: &S,
         world: &World,
-        (agent, borrower): (usize, usize),
+        pair: (usize, usize),
         at: DateTime<Utc>,
     ) -> Result<(), String> {
-        let id = stack
+        let issued = self.try_issue(stack, world, pair, at).await?;
+        if issued.mandate.is_none() {
+            return Err(format!("issuing a mandate: refused ({})", issued.status));
+        }
+        Ok(())
+    }
+
+    /// An assignment dated `occurred`, which Kavach may refuse. The run
+    /// holds the mandate if it got one.
+    async fn try_issue<S: Stack>(
+        &mut self,
+        stack: &S,
+        world: &World,
+        (agent, borrower): (usize, usize),
+        occurred: DateTime<Utc>,
+    ) -> Result<Issued, String> {
+        let issued = stack
             .issue(
                 &world.agents[agent].id,
                 &world.borrowers[borrower].subject_ref,
+                occurred,
             )
             .await
             .map_err(|e| format!("issuing a mandate: {e}"))?;
-        self.all.push(Held {
-            agent,
-            borrower,
-            id,
-            issued_at: at,
-            revoked: false,
-        });
-        self.current.insert((agent, borrower), self.all.len() - 1);
-        Ok(())
+        if let Some(id) = &issued.mandate {
+            self.all.push(Held {
+                agent,
+                borrower,
+                id: id.clone(),
+                // The default's own time: what a payment is compared with.
+                issued_at: occurred,
+                revoked: false,
+            });
+            self.current.insert((agent, borrower), self.all.len() - 1);
+        }
+        Ok(issued)
     }
 
     fn current(&self, pair: (usize, usize)) -> &Held {
@@ -120,14 +161,16 @@ impl Mandates {
         ids
     }
 
-    /// What an event for `borrower` at `at` must revoke: its mandates
-    /// issued at or before it, not revoked before. Marks them revoked.
-    fn revoke(&mut self, borrower: usize, at: DateTime<Utc>) -> Vec<String> {
+    /// What a payment or dispute must revoke: the borrower's mandates whose
+    /// default it reaches (by when each happened, give or take the margin),
+    /// not revoked before. Marks them revoked and records the closure.
+    fn revoke(&mut self, borrower: usize, closure: &Closure) -> Vec<String> {
         let mut ids = Vec::new();
+        self.closures.push(closure.clone());
         for held in self
             .all
             .iter_mut()
-            .filter(|h| h.borrower == borrower && !h.revoked && h.issued_at <= at)
+            .filter(|h| h.borrower == borrower && !h.revoked && closure.reaches(h.issued_at))
         {
             held.revoked = true;
             ids.push(held.id.clone());
@@ -329,6 +372,8 @@ async fn send_event<S: Stack>(
         .into_iter()
         .enumerate()
     {
+        let subject = &world.borrowers[borrower].subject_ref;
+        let occurred = at - chrono::Duration::seconds(i64::from(event.lag_seconds));
         if !event.kind.revokes() {
             let pairs: Vec<(usize, usize)> = world
                 .assignments
@@ -336,15 +381,25 @@ async fn send_event<S: Stack>(
                 .copied()
                 .filter(|&(_, b)| b == borrower)
                 .collect();
+            // The model's answer comes first, from the events so far.
+            let expected_accepted = default_accepted(&mandates.closures, subject, occurred);
             for pair in pairs {
-                mandates.issue(stack, world, pair, at).await?;
+                let issued = mandates.try_issue(stack, world, pair, occurred).await?;
+                out.issues.push(IssueEntry {
+                    day: event.day,
+                    at,
+                    occurred,
+                    agent: world.agents[pair.0].id.clone(),
+                    borrower: subject.clone(),
+                    status: issued.status,
+                    expected_accepted,
+                });
             }
             continue;
         }
-        let subject = &world.borrowers[borrower].subject_ref;
         let event_id = format!("sim-{}-ev{n}-{k}", scenario.seed);
         let (status, reply) = stack
-            .revoke(event.kind.as_str(), &event_id, subject)
+            .revoke(event.kind.as_str(), &event_id, subject, occurred)
             .await
             .map_err(|e| format!("sending {}: {e}", event.kind.as_str()))?;
         let revoked = reply["revoked"]
@@ -355,15 +410,22 @@ async fn send_event<S: Stack>(
                     .collect()
             })
             .unwrap_or_default();
+        let closure = Closure {
+            borrower: subject.clone(),
+            occurred,
+            arrived: at,
+            disputed: event.kind == crate::scenario::EventKind::Disputed,
+        };
         out.events.push(SorEntry {
             day: event.day,
             at,
+            occurred,
             event_id,
             event_type: event.kind.as_str().into(),
             borrower: subject.clone(),
             status,
             revoked,
-            expected: mandates.revoke(borrower, at),
+            expected: mandates.revoke(borrower, &closure),
         });
     }
     Ok(())

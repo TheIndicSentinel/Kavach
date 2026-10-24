@@ -1,0 +1,28 @@
+# Out of order, case two (ADR-012, B2): a default that happened just before
+# a payment is processed after the payment happened, but before the payment
+# reaches Kavach. Kavach takes it (nothing has told it otherwise) and the
+# borrower is contacted under it at 12:05. When the payment arrives at 12:10
+# it ends that mandate too, because the default happened before the payment:
+# by the time Kavach processed it is not what counts. Contact stops from the
+# payment's arrival.
+version: 1
+name: payment-after-default-processed
+description: A payment that happened just after a default ends its mandate even though Kavach processed the default later.
+covers: ["Revocation by system-of-record event (ADR-012):"]   # SECURITY_PROPERTIES.md rows
+seed: 23
+days: 1
+borrowers: 2
+schedule: ["09:00", "12:05", "13:00"]
+agents:
+  - type: compliant
+    behaviour: { contacts_per_day: 3 }
+assignment: split
+events:
+  - { day: 1, at: "12:03", type: loan.dpd30, borrowers: 1, lag_seconds: 210 }
+  - { day: 1, at: "12:10", type: loan.paid, borrowers: 1, lag_seconds: 600 }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 5
+  blocked_at_least: { mandate_invalid: 1 }

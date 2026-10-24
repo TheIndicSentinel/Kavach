@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use kavach_sim::driver::{self, Stack};
+use kavach_sim::driver::{self, Issued, Stack};
 use kavach_sim::oracle::Rules;
 use kavach_sim::reconcile::{
     reconcile, Arrived, Recorded, RecordedAgentChange, RecordedRevocation,
@@ -146,6 +146,7 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
         &run.calls,
         &run.events,
         &run.agent_events,
+        &run.issues,
         bundle,
         reconciliation,
         Rules::default(),
@@ -157,7 +158,7 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     if let Some(path) = ask.report {
         let text = serde_json::to_string_pretty(
             &json!({ "report": data, "ledger": run.calls, "events": run.events,
-                "agent_events": run.agent_events }),
+                "agent_events": run.agent_events, "issues": run.issues }),
         )
         .unwrap_or_default();
         std::fs::write(path, text + "\n")
@@ -496,13 +497,6 @@ impl Live {
             })
             .collect())
     }
-
-    fn time(&self) -> DateTime<Utc> {
-        *self
-            .now
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
 }
 
 impl Live {
@@ -530,23 +524,38 @@ impl Live {
 }
 
 impl Stack for Live {
-    async fn issue(&self, agent: &str, subject_ref: &str) -> Result<String, String> {
+    async fn issue(
+        &self,
+        agent: &str,
+        subject_ref: &str,
+        occurred: DateTime<Utc>,
+    ) -> Result<Issued, String> {
         let event_id = format!("sim-evt-{}", uuid::Uuid::new_v4());
         let event =
-            kavach_devkit::sor_event(&self.bundle, &event_id, subject_ref, agent, self.time())
-                .await?;
+            kavach_devkit::sor_event(&self.bundle, &event_id, subject_ref, agent, occurred).await?;
         let (status, body) = self.post_event(&event).await?;
         if matches!(status, 200 | 201) {
-            body["mandate_id"]
+            let mandate = body["mandate_id"]
                 .as_str()
                 .map(str::to_string)
-                .ok_or_else(|| "no mandate_id in the reply".into())
-        } else {
-            Err(format!(
-                "{status} {}",
-                crate::problem::detail(status, &body)
-            ))
+                .ok_or("no mandate_id in the reply")?;
+            return Ok(Issued {
+                status,
+                mandate: Some(mandate),
+            });
         }
+        // A refusal by the rules (a closed loan, a stale event) is an
+        // answer the run records; anything else is a failure of the run.
+        if (400..500).contains(&status) && status != 429 {
+            return Ok(Issued {
+                status,
+                mandate: None,
+            });
+        }
+        Err(format!(
+            "{status} {}",
+            crate::problem::detail(status, &body)
+        ))
     }
 
     async fn set_agent_state(&self, agent: &str, verb: &str) -> Result<(u16, Value), String> {
@@ -609,13 +618,14 @@ impl Stack for Live {
         event_type: &str,
         event_id: &str,
         subject_ref: &str,
+        occurred: DateTime<Utc>,
     ) -> Result<(u16, Value), String> {
         let event = kavach_devkit::revoking_event(
             &self.bundle,
             event_id,
             subject_ref,
             event_type,
-            self.time(),
+            occurred,
         )
         .await?;
         self.post_event(&event).await

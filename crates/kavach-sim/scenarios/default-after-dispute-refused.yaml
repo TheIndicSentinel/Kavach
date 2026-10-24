@@ -1,0 +1,28 @@
+# A dispute holds the loan (ADR-012, B2): a default re-emitted after a
+# dispute is refused, however much later it is dated, and there is no way
+# to release the hold yet. Contrast `payment-stops-contact`, where a new
+# default after a payment assigns the borrower again. The first borrower's
+# loan is disputed at 12:00 on day 1; on day 2 at 09:00 the system of record
+# says it defaulted again. Kavach refuses it, and the borrower stays
+# uncontacted, while the second borrower is contacted as usual.
+version: 1
+name: default-after-dispute-refused
+description: A default re-emitted after a dispute is refused; the dispute holds the loan.
+covers: ["Revocation by system-of-record event (ADR-012):"]   # SECURITY_PROPERTIES.md rows
+seed: 24
+days: 2
+borrowers: 2
+schedule: ["09:00", "13:00"]
+agents:
+  - type: compliant
+    behaviour: { contacts_per_day: 2 }
+assignment: split
+events:
+  - { day: 1, at: "12:00", type: loan.disputed, borrowers: 1 }
+  - { day: 2, at: "08:30", type: loan.dpd30, borrowers: 1 }
+expect:
+  violations: 0
+  mismatches: 0
+  leaks: 0
+  allowed_at_least: 5
+  blocked_at_least: { mandate_invalid: 3 }
