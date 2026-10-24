@@ -521,6 +521,36 @@ def _members(obj, required, optional=(), what="object"):
         raise Refused(f"{what} has members it must not have: {extra}", "member", cls="read")
 
 
+RECORD_COMMON = {"kind", "record_id", "tenant_id", "partition_id", "seq", "prev_hash", "hash_alg",
+                 "key_id", "time_sync", "hash", "sig"}
+RECORD_MEMBERS = {
+    "agent_decision": {"actor", "chain", "mandate_id", "purpose", "consent_refs", "action",
+                       "request_id", "subject_pseudonym", "params_mac", "policy_versions",
+                       "signals", "pre_commit_decision", "policy_decision", "returned_decision",
+                       "obligations", "credential_id", "credential_expires_at", "send_by", "ts"},
+    "mandate_revocation": {"source_system", "event_id", "event_type", "event_digest",
+                           "event_sha256", "record_pseudonym", "occurred_at", "revoked",
+                           "revoked_at", "recorded_at"},
+    "agent_state": {"agent_id", "change_no", "from_state", "to_state", "reason_code",
+                    "reason_digest", "changed_by", "change_request_id", "approved_by",
+                    "changed_at", "recorded_at"},
+}
+NESTED_RECORD_MEMBERS = {"actor": {"agent_id", "identity_key"},
+                         "policy_versions": {"cedar", "cel", "packs", "tools", "build"}}
+
+
+def _record_members(rec, kind, where):
+    """A member the record's kind does not define is refused as unreadable
+    (spec section 10.2, `read`), before the hash that would otherwise cover it."""
+    extra = [m for m in rec if m not in RECORD_COMMON and m not in RECORD_MEMBERS[kind]]
+    if extra:
+        raise Refused(f"{where}: members its kind does not define: {extra}", "member", cls="read")
+    for name, allowed in NESTED_RECORD_MEMBERS.items():
+        nested = rec.get(name)
+        if isinstance(nested, dict) and [m for m in nested if m not in allowed]:
+            raise Refused(f"{where}: {name} has members it must not have", "member", cls="read")
+
+
 def _int(value, what, low=None):
     if isinstance(value, bool) or not isinstance(value, int):
         raise Refused(f"{what} is not an integer")
@@ -676,6 +706,7 @@ class Verifier:
                 raise Refused(f"{where}: another tenant")
             if _int(rec.get("partition_id"), "partition_id") != manifest["partition_id"]:
                 raise Refused(f"{where}: another partition")
+            _record_members(rec, kind, where)
             _members(rec["time_sync"], ["status", "max_error_ms"], what=f"{where}: time_sync")
             kid = _str(rec["key_id"], f"{where}: key_id")
             if not self.dev and (kid.startswith("dev-") or rec["time_sync"]["status"] == "dev_fixed"):

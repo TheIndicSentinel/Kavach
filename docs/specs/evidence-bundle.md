@@ -13,6 +13,7 @@ A verifier that returns *verified* shows only this: the records, outcomes and ch
 ### 2.1 JSON
 - Every file line is one JSON value (RFC 8259) in UTF-8, ended by a line feed (`0x0A`). The last line is ended too. A line is at most 1,048,576 bytes.
 - A JSON object MUST NOT repeat a member name. A verifier MUST refuse a line that does.
+- A line MUST NOT hold a member this specification does not define for it: a record the members of §4.1 and its kind's section (and, inside `time_sync`, `actor` and `policy_versions`, only theirs), an outcome those of §5, a checkpoint those of §6, a resolution those of §5.3. A verifier MUST refuse a line that does, as unreadable (`read`, §10.2), before any hash or signature is checked. A record's extra member would be inside its hash, but an outcome's or a checkpoint's is outside every hash and signature: unsigned data that rides through an audit trail. The rule is one explicit list per file and record kind, not a comparison of the line with what a reader makes of it.
 - A file with no lines is empty (zero bytes).
 
 ### 2.2 Canonical form
