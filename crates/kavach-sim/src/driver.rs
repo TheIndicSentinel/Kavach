@@ -56,6 +56,10 @@ pub trait Stack {
     /// The lender's closed loans, for snapshot reconciliation (ADR-012
     /// addendum): `{"system": "lms", "records": [...]}`; status and body.
     fn snapshot(&self, body: Value) -> impl Future<Output = Result<(u16, Value), String>>;
+    /// Waits (bounded) until Kavach's reconciler has resolved `resolved`
+    /// unknown outcomes and none is left unresolved: it asks the provider
+    /// what became of each (ADR-017). An error if it does not in time.
+    fn settle(&self, resolved: usize) -> impl Future<Output = Result<(), String>>;
     /// A revoking system-of-record event (`loan.paid`, `loan.disputed`)
     /// for `subject_ref`'s loan, dated `occurred` (the stack's clock is when
     /// it arrives): status and body.
@@ -193,6 +197,42 @@ pub fn start_time(scenario: &Scenario) -> Result<DateTime<Utc>, String> {
     Ok(slot(1, first))
 }
 
+/// One scenario event at its time: an operator's change of an agent, the
+/// lender's snapshot, the wait for the reconciler, or a loan event.
+async fn one_event<S: Stack>(
+    stack: &S,
+    scenario: &Scenario,
+    world: &World,
+    (mandates, standing): (&mut Mandates, &mut BTreeMap<String, Standing>),
+    event: &EventSpec,
+    at: DateTime<Utc>,
+    out: &mut Run,
+) -> Result<(), String> {
+    use crate::scenario::EventKind;
+    let n = out.events.len();
+    match event.kind {
+        EventKind::Settle => {
+            let unknown = out
+                .calls
+                .iter()
+                .filter(|c| c.retry_of.is_none() && c.outcome.as_deref() == Some("unknown"))
+                .count();
+            if unknown == 0 {
+                return Err("outcomes.settle before any unknown outcome".into());
+            }
+            stack
+                .settle(unknown)
+                .await
+                .map_err(|e| format!("waiting for the reconciler: {e}"))
+        }
+        EventKind::Snapshot => snapshot_event(stack, world, mandates, event, at, out).await,
+        kind if kind.is_agent_event() => {
+            agent_event(stack, world, mandates, standing, event, at, out).await
+        }
+        _ => send_event(stack, scenario, world, mandates, event, at, n, out).await,
+    }
+}
+
 /// Runs `scenario` on `stack`, whose clock is at [`start_time`].
 pub async fn run<S: Stack>(stack: &S, scenario: &Scenario, world: &World) -> Result<Run, String> {
     let start = start_time(scenario)?;
@@ -219,32 +259,13 @@ pub async fn run<S: Stack>(stack: &S, scenario: &Scenario, world: &World) -> Res
             // The system of record first, then the agents.
             for event in scenario.events.iter().filter(|e| e.day == day) {
                 if minute_of_day(&event.at)? == minute {
-                    let n = out.events.len();
-                    if event.kind == crate::scenario::EventKind::Snapshot {
-                        snapshot_event(stack, world, &mandates, event, at, &mut out).await?;
-                        continue;
-                    }
-                    if event.kind.is_agent_event() {
-                        agent_event(
-                            stack,
-                            world,
-                            &mut mandates,
-                            &mut standing,
-                            event,
-                            at,
-                            &mut out,
-                        )
-                        .await?;
-                        continue;
-                    }
-                    send_event(
+                    one_event(
                         stack,
                         scenario,
                         world,
-                        &mut mandates,
+                        (&mut mandates, &mut standing),
                         event,
                         at,
-                        n,
                         &mut out,
                     )
                     .await?;

@@ -93,6 +93,11 @@ pub enum EventKind {
     /// lost. Kavach reports what still holds authority and changes nothing.
     #[serde(rename = "lender.snapshot")]
     Snapshot,
+    /// The run waits for Kavach's reconciler to ask the provider what became
+    /// of every send whose result was unknown so far (ADR-017). Put it a few
+    /// minutes after the sends, well inside the hour in which it asks.
+    #[serde(rename = "outcomes.settle")]
+    Settle,
     /// An operator restricts the agent (ADR-013): reads only.
     #[serde(rename = "agent.restrict")]
     AgentRestrict,
@@ -115,6 +120,7 @@ impl EventKind {
             Self::Disputed => "loan.disputed",
             Self::Assigned => "loan.dpd30",
             Self::Snapshot => "lender.snapshot",
+            Self::Settle => "outcomes.settle",
             Self::AgentRestrict => "agent.restrict",
             Self::AgentQuarantine => "agent.quarantine",
             Self::AgentRevoke => "agent.revoke",
@@ -421,8 +427,13 @@ impl Scenario {
                     event.kind.as_str()
                 ));
             }
-            if event.kind == EventKind::Snapshot && event.lag_seconds != 0 {
-                return Err("a snapshot is taken when it is sent, not late".into());
+            if matches!(event.kind, EventKind::Snapshot | EventKind::Settle)
+                && event.lag_seconds != 0
+            {
+                return Err(format!(
+                    "{} is not an event that can be late",
+                    event.kind.as_str()
+                ));
             }
             if event.lag_seconds > max_lag {
                 return Err(format!(
@@ -512,6 +523,10 @@ pub const BUILTINS: &[(&str, &str)] = &[
     (
         "dropped-payment-found-by-snapshot",
         include_str!("../scenarios/dropped-payment-found-by-snapshot.yaml"),
+    ),
+    (
+        "unknown-outcome-resolved",
+        include_str!("../scenarios/unknown-outcome-resolved.yaml"),
     ),
     (
         "provider-failures",
