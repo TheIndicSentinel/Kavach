@@ -81,6 +81,7 @@ S4 (#180), S3 (#182) and B2/T1 (#183) merged on 2026-10-15 with **local** eviden
 | Verifier failure classes (#194) and policy test timing (#193) | Both verifiers report the same class; the finance-pack unit tests no longer depend on load | The agreement tests (need `python3`, which fails rather than skips in CI) and `kavach-policy` unit tests executed in the Actions log |
 | Outcome signals R3a (ADR-017) | `resolution_summary` on Postgres, the outcome gauges, four alert rules | The `agent_evidence` store tests on Postgres (summary contract), `unknown_outcomes_show_in_the_metrics_by_state_age_and_source` and the monitoring test executed in the Actions log |
 | Simulator revocation scenarios (late payment, two out-of-order cases, default after dispute) | `kavach simulate` against the real dev stack, in-memory stores | `simulate_runs_every_builtin_as_expected` executed in the Actions log (it runs every built-in) |
+| Differential test: memory store against Postgres | `kavach-storage/tests/differential.rs` | Executed on Postgres in the Actions log (it needs `KAVACH_TEST_DATABASE_URL`, which CI sets); once #203 merges, add `stuck_allows` to what it compares |
 | Rollout rehearsal with two real binaries | Old and new against one Postgres, then rollback (the schema-compatibility half is in `postgres_migration_compat`) |
 
 Any further merge to `main` while CI is unavailable carries the same kind of attached log (the pull request template asks for it).
