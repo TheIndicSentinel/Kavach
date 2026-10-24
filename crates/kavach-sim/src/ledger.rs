@@ -84,6 +84,31 @@ impl IssueEntry {
     }
 }
 
+/// One finding of a snapshot reconciliation: a mandate Kavach still holds
+/// for a loan the lender says is closed.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct SnapshotFinding {
+    pub mandate_id: String,
+    /// `should_have_been_revoked` (the closing event would have revoked it)
+    /// or `issued_after_closure` (information: usually a new default).
+    pub kind: String,
+}
+
+/// The lender's closed loans, sent at a point in the run (ADR-012
+/// addendum), with what Kavach found and what the simulator's own record of
+/// its mandates says it should have found.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SnapshotEntry {
+    pub day: u32,
+    pub at: DateTime<Utc>,
+    /// Loans listed.
+    pub listed: usize,
+    pub status: u16,
+    pub found: Vec<SnapshotFinding>,
+    /// From the run's own record of its mandates, never from the reply.
+    pub expected: Vec<SnapshotFinding>,
+}
+
 /// An operator's change of an agent's state during a run (ADR-013).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AgentEntry {
@@ -119,8 +144,19 @@ pub fn digest(
     events: &[SorEntry],
     agent_events: &[AgentEntry],
     issues: &[IssueEntry],
+    snapshots: &[SnapshotEntry],
 ) -> String {
     let mut hash = Sha256::new();
+    for e in snapshots {
+        hash.update(format!(
+            "snapshot|{}|{}|{}|{}|{:?}\n",
+            e.day,
+            e.at.to_rfc3339(),
+            e.listed,
+            e.status,
+            e.found.iter().map(|f| f.kind.as_str()).collect::<Vec<_>>()
+        ));
+    }
     for e in issues {
         hash.update(format!(
             "issue|{}|{}|{}|{}|{}|{}\n",

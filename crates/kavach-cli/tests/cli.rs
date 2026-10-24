@@ -1577,6 +1577,7 @@ fn simulate_runs_every_builtin_as_expected() {
             "default-after-payment-refused",
             "payment-after-default-processed",
             "default-after-dispute-refused",
+            "dropped-payment-found-by-snapshot",
             "provider-failures",
             "retry-after-unknown",
             "mixed-week",

@@ -64,6 +64,11 @@ pub struct EventSpec {
     /// issuing event older than that is stale), a payment or dispute a day.
     #[serde(default)]
     pub lag_seconds: u32,
+    /// The system of record never sends this payment or dispute (a lost
+    /// event): Kavach does not learn of it, contact goes on, and a
+    /// `lender.snapshot` is what finds it.
+    #[serde(default)]
+    pub dropped: bool,
 }
 
 /// An issuing event (a new default) is accepted only within 300 s of its
@@ -83,6 +88,11 @@ pub enum EventKind {
     /// A new default: the borrower is assigned again (new mandates).
     #[serde(rename = "loan.dpd30")]
     Assigned,
+    /// The lender sends the loans it considers closed (snapshot
+    /// reconciliation, ADR-012): every payment and dispute so far, sent or
+    /// lost. Kavach reports what still holds authority and changes nothing.
+    #[serde(rename = "lender.snapshot")]
+    Snapshot,
     /// An operator restricts the agent (ADR-013): reads only.
     #[serde(rename = "agent.restrict")]
     AgentRestrict,
@@ -104,6 +114,7 @@ impl EventKind {
             Self::Paid => "loan.paid",
             Self::Disputed => "loan.disputed",
             Self::Assigned => "loan.dpd30",
+            Self::Snapshot => "lender.snapshot",
             Self::AgentRestrict => "agent.restrict",
             Self::AgentQuarantine => "agent.quarantine",
             Self::AgentRevoke => "agent.revoke",
@@ -404,6 +415,15 @@ impl Scenario {
             } else {
                 MAX_ISSUING_LAG_SECONDS
             };
+            if event.dropped && !event.kind.revokes() {
+                return Err(format!(
+                    "{} cannot be dropped: only a payment or a dispute can be lost",
+                    event.kind.as_str()
+                ));
+            }
+            if event.kind == EventKind::Snapshot && event.lag_seconds != 0 {
+                return Err("a snapshot is taken when it is sent, not late".into());
+            }
             if event.lag_seconds > max_lag {
                 return Err(format!(
                     "{} was {} s late: at most {max_lag} s",
@@ -488,6 +508,10 @@ pub const BUILTINS: &[(&str, &str)] = &[
     (
         "default-after-dispute-refused",
         include_str!("../scenarios/default-after-dispute-refused.yaml"),
+    ),
+    (
+        "dropped-payment-found-by-snapshot",
+        include_str!("../scenarios/dropped-payment-found-by-snapshot.yaml"),
     ),
     (
         "provider-failures",

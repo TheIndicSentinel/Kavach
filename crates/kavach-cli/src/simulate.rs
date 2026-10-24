@@ -147,6 +147,7 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
         &run.events,
         &run.agent_events,
         &run.issues,
+        &run.snapshots,
         bundle,
         reconciliation,
         Rules::default(),
@@ -158,7 +159,7 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     if let Some(path) = ask.report {
         let text = serde_json::to_string_pretty(
             &json!({ "report": data, "ledger": run.calls, "events": run.events,
-                "agent_events": run.agent_events, "issues": run.issues }),
+                "agent_events": run.agent_events, "issues": run.issues, "snapshots": run.snapshots }),
         )
         .unwrap_or_default();
         std::fs::write(path, text + "\n")
@@ -338,6 +339,19 @@ fn stops_line(out: &mut String, r: &Report) {
     }
 }
 
+/// What the lender's snapshots found, when the run sent any.
+fn snapshots_line(out: &mut String, r: &Report) {
+    if r.snapshots.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "Snapshots of the lender's closed loans {} (mandates with live authority found in each: {:?}; each must match the run's own record)",
+        r.snapshots.len(),
+        r.snapshots
+    );
+}
+
 fn text(ui: Ui, r: &Report, kept: Option<&Path>) -> String {
     let mut out = format!(
         "SIMULATION (synthetic data, mock provider, dev keys) scenario={} seed={} days={} borrowers={}\n\nNOT COVERED:\n",
@@ -371,6 +385,7 @@ fn text(ui: Ui, r: &Report, kept: Option<&Path>) -> String {
             r.revocation_events
         );
     }
+    snapshots_line(&mut out, r);
     stops_line(&mut out, r);
     if !r.attacks.is_empty() {
         let tried: u32 = r.attacks.values().map(|(t, _)| t).sum();
@@ -611,6 +626,22 @@ impl Stack for Live {
                 .bearer_auth(&self.operator_token),
         )
         .await
+    }
+
+    async fn snapshot(&self, body: Value) -> Result<(u16, Value), String> {
+        let response = self
+            .client
+            .post(format!(
+                "http://{}/v1/reconciliation/closed-records",
+                self.run.operator
+            ))
+            .bearer_auth(&self.operator_token)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let status = response.status().as_u16();
+        Ok((status, response.json().await.unwrap_or(Value::Null)))
     }
 
     async fn revoke(
