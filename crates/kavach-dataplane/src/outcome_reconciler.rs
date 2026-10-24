@@ -28,13 +28,13 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Utc};
-use kavach_ports::agent_evidence::{AgentEvidenceStore, UnresolvedOutcome};
+use kavach_ports::agent_evidence::{AgentEvidenceStore, Outcome, UnresolvedOutcome};
 use kavach_ports::agent_state::AgentStateStore;
 use kavach_ports::outcome_resolution::{
     outcome_ref, sign_resolution, ResolutionDraft, ResolutionSource, ResolutionState,
     ResolutionSummary,
 };
-use kavach_ports::StatusQuestions;
+use kavach_ports::{ErrorClass, StatusQuestions};
 
 use crate::authorize::{AuthorizeCore, MandateVerifier};
 use crate::gateway::{ProviderStatus, StatusAnswer, StatusAsker};
@@ -57,9 +57,29 @@ pub const MAX_QUESTIONS_PER_PASS: usize = 20;
 /// Outcomes read per pass.
 pub const WORK_PAGE: u32 = 500;
 
+/// An allow with no outcome row, decided longer ago than this, is taken to
+/// have lost its outcome write and is recorded as `unknown` (F7). It is far
+/// above the longest a live call can take: the credential lives 15 seconds
+/// and the provider timeout is below that, so five minutes is twenty times
+/// the life of the call. A live call that is somehow slower finds its row
+/// already written (outcomes are written once) and its answer is then taken
+/// from the stored `unknown`, which the status question resolves: wrong
+/// only in being cautious.
+pub const STUCK_OUTCOME_WINDOW: Duration = Duration::minutes(5);
+/// How far back the recovery looks (a mandate's life).
+pub const STUCK_OUTCOME_LOOKBACK: Duration = Duration::days(7);
+/// Allows recovered in one pass.
+const RECOVER_BATCH: u32 = 100;
+/// Most allows beyond the lookback that a pass counts (the count is "this
+/// many or more" at the cap).
+const BEYOND_LOOKBACK_CAP: u32 = 1000;
+
 /// The reason codes of the rows this pass writes.
 const REASON_PROVIDER: &str = "provider_status";
 const REASON_AMBIGUOUS: &str = "no_answer_in_24h";
+/// The reason on the `unknown` outcome written for an allow whose own
+/// outcome could not be recorded.
+const REASON_NOT_RECORDED: &str = "outcome_not_recorded";
 
 /// When each outcome may next be asked about: memory of one process.
 #[derive(Debug, Default)]
@@ -76,6 +96,12 @@ struct Polling {
 /// What one pass found and did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OutcomeReconcileReport {
+    /// Allows with no outcome that this pass recorded as `unknown` (F7).
+    pub recovered: usize,
+    /// Allows with no outcome that are older than the lookback, so the pass
+    /// does not record them: they stay as they are, reported here (up to a
+    /// cap) and by the bundle verifier as missing.
+    pub beyond_lookback: usize,
     /// Unknown outcomes still open at the start of the pass.
     pub open: usize,
     /// How long ago the oldest of them happened.
@@ -109,6 +135,67 @@ fn delay_after(asked: u32) -> Duration {
     Duration::seconds(doubled.min(POLL_MAX_DELAY.num_seconds()))
 }
 
+/// An allow that has a credential and no outcome, past the stuck window, gets
+/// an `unknown` outcome: never delivered or not delivered, because nobody
+/// knows. The status question then does what it does for any unknown, and a
+/// retry of the call stops being "in flight".
+async fn recover_stuck_allows<V, S>(
+    core: &AuthorizeCore<V, S>,
+    now: DateTime<Utc>,
+    report: &mut OutcomeReconcileReport,
+) where
+    V: MandateVerifier,
+    S: AgentEvidenceStore + AgentStateStore,
+{
+    let stuck = match core
+        .store()
+        .stuck_allows(
+            core.tenant_id(),
+            now - STUCK_OUTCOME_LOOKBACK,
+            now - STUCK_OUTCOME_WINDOW,
+            RECOVER_BATCH,
+        )
+        .await
+    {
+        Ok(stuck) => stuck,
+        Err(err) => {
+            report
+                .problems
+                .push(format!("allows without an outcome: {}", err.message));
+            return;
+        }
+    };
+    for record in &stuck {
+        match core
+            .record_outcome(record, Outcome::Unknown, REASON_NOT_RECORDED)
+            .await
+        {
+            Ok(_) => report.recovered += 1,
+            // Written by the call itself in the meantime: nothing to do.
+            Err(err) if err.class == ErrorClass::Rejected => {}
+            Err(err) => report
+                .problems
+                .push(format!("recovering an outcome: {}", err.message)),
+        }
+    }
+    // Older than the lookback, they are not touched: they must not vanish.
+    match core
+        .store()
+        .stuck_allows(
+            core.tenant_id(),
+            DateTime::UNIX_EPOCH,
+            now - STUCK_OUTCOME_LOOKBACK,
+            BEYOND_LOOKBACK_CAP,
+        )
+        .await
+    {
+        Ok(older) => report.beyond_lookback = older.len(),
+        Err(err) => report
+            .problems
+            .push(format!("allows beyond the lookback: {}", err.message)),
+    }
+}
+
 /// One pass over the open unknown outcomes of the core's tenant.
 pub async fn reconcile_outcomes<V, S, A, Q>(
     core: &AuthorizeCore<V, S>,
@@ -126,6 +213,7 @@ where
     let tenant = core.tenant_id();
     let now = core.clock_now();
     report.at = Some(now);
+    recover_stuck_allows(core, now, &mut report).await;
     let open = match core.store().unresolved_outcomes(tenant, WORK_PAGE).await {
         Ok(open) => open,
         Err(err) => {

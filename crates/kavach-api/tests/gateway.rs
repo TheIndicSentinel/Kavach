@@ -1211,3 +1211,25 @@ fn relaxations_follow_the_configuration() {
         );
     }
 }
+
+/// What the outcome reconciler leaves beyond its lookback is a metric: a
+/// gauge another pass sets, so it can be alerted on while it is above zero.
+#[tokio::test]
+async fn allows_without_an_outcome_beyond_the_lookback_show_in_a_metric() {
+    let gw = gateway(Some(NUMBER), true).await;
+    let name = "kavach_allows_without_outcome_beyond_lookback";
+    assert_eq!(
+        series(&gw.state.metrics().gather_text().unwrap(), name),
+        Some(0)
+    );
+    let report = kavach_dataplane::OutcomeReconcileReport {
+        beyond_lookback: 3,
+        at: Some(chrono::Utc::now()),
+        ..kavach_dataplane::OutcomeReconcileReport::default()
+    };
+    gw.state.metrics().observe_outcome_reconcile(&report);
+    assert_eq!(
+        series(&gw.state.metrics().gather_text().unwrap(), name),
+        Some(3)
+    );
+}

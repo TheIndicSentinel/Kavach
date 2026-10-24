@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::future::{ready, Future};
 use std::sync::Mutex;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use kavach_domain::Decision;
 use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
@@ -244,6 +244,35 @@ impl MemoryAgentEvidenceStore {
         found.sort_by(|a, b| {
             (a.outcome.ts, &a.outcome.credential_id).cmp(&(b.outcome.ts, &b.outcome.credential_id))
         });
+        found.truncate(limit as usize);
+        Ok(found)
+    }
+
+    fn stuck_allows_sync(
+        &self,
+        tenant_id: &str,
+        decided_after: DateTime<Utc>,
+        decided_before: DateTime<Utc>,
+        limit: u32,
+    ) -> Result<Vec<AgentDecisionRecord>, PortError> {
+        let state = self.state.lock().map_err(poisoned)?;
+        let mut found: Vec<AgentDecisionRecord> = state
+            .records
+            .iter()
+            .filter(|r| {
+                r.payload.tenant_id == tenant_id
+                    && r.is_allow()
+                    && r.payload.ts > decided_after
+                    && r.payload.ts < decided_before
+                    && r.payload.credential_id.as_ref().is_some_and(|c| {
+                        !state
+                            .outcomes
+                            .contains_key(&(tenant_id.to_string(), c.clone()))
+                    })
+            })
+            .cloned()
+            .collect();
+        found.sort_by_key(|r| r.payload.seq);
         found.truncate(limit as usize);
         Ok(found)
     }
@@ -526,6 +555,16 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         credential_id: &str,
     ) -> impl Future<Output = Result<Vec<ResolutionRecord>, PortError>> + Send {
         ready(self.resolutions_sync(tenant_id, credential_id))
+    }
+
+    fn stuck_allows(
+        &self,
+        tenant_id: &str,
+        decided_after: DateTime<Utc>,
+        decided_before: DateTime<Utc>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<AgentDecisionRecord>, PortError>> + Send {
+        ready(self.stuck_allows_sync(tenant_id, decided_after, decided_before, limit))
     }
 
     fn resolution_summary(

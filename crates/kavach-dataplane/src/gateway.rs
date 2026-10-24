@@ -323,7 +323,7 @@ where
         deps.observer.jti_conflict();
     }
     let started = Instant::now();
-    let written = core.record_outcome(record, outcome, &reason).await;
+    let written = record_outcome_retrying(core, record, outcome, &reason).await;
     deps.observer.stage(Stage::Outcome, started.elapsed());
     if written.is_err() {
         reply.outcome_recorded = false;
@@ -335,6 +335,58 @@ where
     reply.outcome_reason = Some(reason);
     reply.provider_message_id = message_id;
     Ok(reply)
+}
+
+/// Waits between the attempts to write an outcome: short, because the
+/// agent is waiting for its reply, and few, because an outcome that still
+/// cannot be written is recovered later (the reconciler records `unknown`).
+const OUTCOME_WRITE_BACKOFF: [Duration; 2] =
+    [Duration::from_millis(50), Duration::from_millis(200)];
+
+/// Writes the outcome, trying again a couple of times when the store is
+/// unavailable. No lock is held across the waits: each attempt is a whole
+/// call of its own. If an attempt failed in a way that may have written the
+/// row (the answer was lost), a later "already recorded" is not an error
+/// when the stored outcome is the one being written.
+async fn record_outcome_retrying<V, S>(
+    core: &AuthorizeCore<V, S>,
+    record: &AgentDecisionRecord,
+    outcome: Outcome,
+    reason: &str,
+) -> Result<(), kavach_ports::PortError>
+where
+    V: MandateVerifier,
+    S: kavach_ports::agent_evidence::AgentEvidenceStore
+        + kavach_ports::agent_state::AgentStateStore,
+{
+    let mut waits = OUTCOME_WRITE_BACKOFF.iter();
+    let mut tried = false;
+    loop {
+        match core.record_outcome(record, outcome, reason).await {
+            Ok(_) => return Ok(()),
+            Err(err) if err.class == ErrorClass::Unavailable => {
+                tried = true;
+                let Some(wait) = waits.next() else {
+                    return Err(err);
+                };
+                tokio::time::sleep(*wait).await;
+            }
+            Err(err) => {
+                // Rejected after an unavailable answer: it may have been
+                // written after all.
+                if tried && err.class == ErrorClass::Rejected {
+                    let stored = match record.payload.credential_id.as_deref() {
+                        Some(credential) => core.outcome(credential).await.ok().flatten(),
+                        None => None,
+                    };
+                    if stored.is_some_and(|s| s.outcome == outcome) {
+                        return Ok(());
+                    }
+                }
+                return Err(err);
+            }
+        }
+    }
 }
 
 /// Resolve → credential → deadline re-check → forward → classify. Never

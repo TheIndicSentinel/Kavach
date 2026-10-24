@@ -77,6 +77,18 @@ impl AgentEvidenceStore for WhatIfStore {
         ready(Ok(Vec::new()))
     }
 
+    fn stuck_allows(
+        &self,
+        _tenant_id: &str,
+        _decided_after: chrono::DateTime<chrono::Utc>,
+        _decided_before: chrono::DateTime<chrono::Utc>,
+        _limit: u32,
+    ) -> impl Future<
+        Output = Result<Vec<kavach_ports::agent_evidence::AgentDecisionRecord>, PortError>,
+    > + Send {
+        ready(Ok(Vec::new()))
+    }
+
     fn resolution_summary(
         &self,
         _tenant_id: &str,

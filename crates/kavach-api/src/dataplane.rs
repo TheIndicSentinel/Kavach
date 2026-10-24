@@ -525,6 +525,24 @@ impl AgentEvidenceStore for EvidenceBackend {
             Self::Postgres(s) => s.resolutions(tenant_id, credential_id).await,
         }
     }
+    async fn stuck_allows(
+        &self,
+        tenant_id: &str,
+        decided_after: chrono::DateTime<chrono::Utc>,
+        decided_before: chrono::DateTime<chrono::Utc>,
+        limit: u32,
+    ) -> Result<Vec<AgentDecisionRecord>, PortError> {
+        match self {
+            Self::Memory(s) => {
+                s.stuck_allows(tenant_id, decided_after, decided_before, limit)
+                    .await
+            }
+            Self::Postgres(s) => {
+                s.stuck_allows(tenant_id, decided_after, decided_before, limit)
+                    .await
+            }
+        }
+    }
     async fn resolution_summary(
         &self,
         tenant_id: &str,

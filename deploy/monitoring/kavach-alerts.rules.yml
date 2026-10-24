@@ -167,6 +167,19 @@ groups:
             reconciler stops asking after an hour and says ambiguous after 24 hours, so an
             older one is waiting for a person. The three days is a default; set it to how
             long the lender can tolerate not knowing whether a borrower was contacted.
+      - alert: KavachAllowWithoutOutcome
+        expr: kavach_allows_without_outcome_beyond_lookback > 0
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: An allowed call has no outcome and is too old for the reconciler to record
+          description: >-
+            An allowed call (a credential was issued) has no recorded outcome and is older
+            than the 7 days the reconciler looks back over, so it leaves it as it is: the
+            outcome write failed and nothing recovered it in time. The bundle verifier
+            reports each as `outcome_missing`. It may have been sent; ask the provider
+            about it (the status question works for any send) and have a person record
+            what happened. The gauge counts up to 1000.
       - alert: KavachOutcomeReconcilerStopped
         expr: >-
           kavach_outcome_reconcile_last_pass_timestamp_seconds > 0
@@ -240,7 +253,8 @@ groups:
           summary: A call's outcome could not be recorded
           description: >-
             The provider was contacted but the outcome did not reach the evidence store;
-            the allow will be reported as missing an outcome. Check the evidence store.
+            the allow is reported as missing an outcome until the reconciler records it as
+            unknown (after five minutes). The write was retried first. Check the evidence store.
       - alert: KavachCredentialIdConflict
         expr: increase(kavach_gateway_jti_conflicts_total[10m]) > 0
         labels: { severity: critical }

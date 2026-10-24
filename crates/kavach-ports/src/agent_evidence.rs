@@ -533,6 +533,20 @@ pub trait AgentEvidenceStore: Send + Sync {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<UnresolvedOutcome>, PortError>> + Send;
 
+    /// Allowed decisions of the tenant that have a credential and **no
+    /// outcome row**, decided after `decided_after` and before
+    /// `decided_before` (by the record's own time), oldest first, at most
+    /// `limit`. An allow whose outcome could not be written is found here
+    /// once it is old enough that no live call can still be about to write it
+    /// (ADR-017, F7).
+    fn stuck_allows(
+        &self,
+        tenant_id: &str,
+        decided_after: DateTime<Utc>,
+        decided_before: DateTime<Utc>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<AgentDecisionRecord>, PortError>> + Send;
+
     /// What the tenant's unknown outcomes look like by governing state, for
     /// signals (ADR-017 R3a). Read-only.
     fn resolution_summary(

@@ -275,6 +275,7 @@ struct OutcomeMetrics {
     oldest_unconfirmed_age: prometheus::IntGauge,
     rows_by_source: prometheus::IntGaugeVec,
     last_pass: prometheus::IntGauge,
+    beyond_lookback: prometheus::IntGauge,
 }
 
 impl OutcomeMetrics {
@@ -312,6 +313,13 @@ impl OutcomeMetrics {
                 ),
                 &["source"],
             )?,
+            beyond_lookback: gauge(
+                "kavach_allows_without_outcome_beyond_lookback",
+                "Allowed calls with no outcome that are older than the 7 days the \
+                 reconciler looks back over, so it leaves them as they are (the verifier \
+                 reports each as outcome_missing); at most 1000 are counted. Alert when \
+                 above 0",
+            )?,
             last_pass: gauge(
                 "kavach_outcome_reconcile_last_pass_timestamp_seconds",
                 "Unix time of the last outcome reconcile pass that read the summary; \
@@ -325,6 +333,7 @@ impl OutcomeMetrics {
         registry.register(Box::new(metrics.oldest_unconfirmed_age.clone()))?;
         registry.register(Box::new(metrics.rows_by_source.clone()))?;
         registry.register(Box::new(metrics.last_pass.clone()))?;
+        registry.register(Box::new(metrics.beyond_lookback.clone()))?;
         Ok(metrics)
     }
 }
@@ -559,6 +568,13 @@ impl Metrics {
     /// that could not read it leaves the gauges as they were and does not
     /// move `last_pass`, so a stuck reconciler shows as an old pass.
     pub fn observe_outcome_reconcile(&self, report: &kavach_dataplane::OutcomeReconcileReport) {
+        // Whether any allow is older than the lookback does not depend on the
+        // summary, so it is published whenever the pass ran.
+        if report.at.is_some() {
+            self.outcomes
+                .beyond_lookback
+                .set(i64::try_from(report.beyond_lookback).unwrap_or(i64::MAX));
+        }
         let Some(summary) = &report.summary else {
             return;
         };
