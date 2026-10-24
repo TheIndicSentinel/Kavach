@@ -40,6 +40,7 @@ default = ["export"]
 export = ["dep:kavach-keys", "dep:kavach-keys-pkcs11", "dep:kavach-storage", "dep:tokio"]
 
 [dev-dependencies]
+proptest = { workspace = true }
 cryptoki.workspace = true
 kavach-domain = { workspace = true }
 kavach-ports-testkit = { workspace = true }
