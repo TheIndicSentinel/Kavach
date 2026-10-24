@@ -41,6 +41,25 @@ pub struct ApiConfig {
     pub dataplane: Option<crate::dataplane::DataplaneConfig>,
 }
 
+/// The shortest `--hmac-secret` accepted, in bytes: the output size of
+/// HMAC-SHA256, below which the key is the weakest part of the signature.
+pub const MIN_HMAC_SECRET_BYTES: usize = 32;
+
+/// Refuses an HMAC secret (`--hmac-secret`) shorter than
+/// [`MIN_HMAC_SECRET_BYTES`], when one is set. Checked when the configuration is loaded, so a short secret stops the
+/// start instead of weakening request signing quietly. The message never
+/// contains the secret.
+pub fn validate_hmac_secret(secret: Option<&str>) -> Result<(), String> {
+    match secret {
+        Some(secret) if secret.len() < MIN_HMAC_SECRET_BYTES => Err(format!(
+            "--hmac-secret is {} bytes; it must be at least {MIN_HMAC_SECRET_BYTES} (generate one \
+             with `openssl rand -hex 32`)",
+            secret.len()
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Cedar access control needs an authenticated principal source (OIDC or
 /// mTLS SAN) unless `--insecure-dev` explicitly allows the header. mTLS
 /// principals need client-certificate verification.
@@ -164,6 +183,26 @@ impl ApiConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_short_hmac_secret_is_refused_at_load() {
+        assert!(
+            validate_hmac_secret(None).is_ok(),
+            "no secret: no HMAC layer"
+        );
+        for short in ["", "s", "test-secret", &"x".repeat(31)] {
+            let err = validate_hmac_secret(Some(short)).expect_err(short);
+            assert!(err.contains("at least 32"), "{err}");
+            // The message names the length, never the secret.
+            assert!(short.len() < 4 || !err.contains(short), "{err}");
+        }
+        for long in [&"x".repeat(32), &"y".repeat(4096)] {
+            assert!(validate_hmac_secret(Some(long)).is_ok());
+        }
+        // Bytes, not characters: 16 two-byte characters are 32 bytes.
+        assert!(validate_hmac_secret(Some(&"é".repeat(16))).is_ok());
+        assert!(validate_hmac_secret(Some(&"é".repeat(15))).is_err());
+    }
 
     #[test]
     fn none_requires_insecure_dev() {

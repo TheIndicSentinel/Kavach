@@ -6,9 +6,9 @@ use std::sync::Arc;
 use clap::{Parser, ValueEnum};
 use kavach_api::{
     grpc_server_tls_config, resolve_access_control, router, serve_http_until, shutdown,
-    validate_principal_sources, AccessControlKind, AccessControlMode, ApiConfig, AppState,
-    EvaluateServiceServer, EvidenceStoreKind, GrpcEvaluateService, JwksSource, MtlsSanKind,
-    OidcConfig, TlsConfig, DEFAULT_CHANGE_TTL_HOURS,
+    validate_hmac_secret, validate_principal_sources, AccessControlKind, AccessControlMode,
+    ApiConfig, AppState, EvaluateServiceServer, EvidenceStoreKind, GrpcEvaluateService, JwksSource,
+    MtlsSanKind, OidcConfig, TlsConfig, DEFAULT_CHANGE_TTL_HOURS,
 };
 use kavach_ports::ReferenceResolver;
 use tonic::transport::Server;
@@ -519,6 +519,7 @@ impl Cli {
             dataplane,
         };
         validate_principal_sources(&config)?;
+        validate_hmac_secret(config.hmac_secret.as_deref())?;
         Ok(config)
     }
 }
