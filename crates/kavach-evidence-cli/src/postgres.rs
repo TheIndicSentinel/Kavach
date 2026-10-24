@@ -170,6 +170,7 @@ pub async fn run_export(
     // The key first: a wrong key should not cost a database round trip.
     let signer = export_key(signing)?;
     let mut snapshot = open(target).await?;
+    let relaxations = relaxations_used(target, snapshot.can_write());
     let request = ExportRequest {
         scope: Scope {
             tenant_id: &target.tenant_id,
@@ -186,7 +187,26 @@ pub async fn run_export(
         },
         page: DEFAULT_PAGE,
     };
-    Ok(export(&mut snapshot, request).await?)
+    let mut summary = export(&mut snapshot, request).await?;
+    summary.relaxations = relaxations;
+    Ok(summary)
+}
+
+/// The relaxations an export is actually running with (not merely allowed):
+/// reading as a role that can write evidence (`--allow-write-role`), and
+/// connecting with a weaker `sslmode` than `verify-full` that the URL asked
+/// for and a flag allowed (`--allow-plaintext-database`). They are reported
+/// with the result, because the command has no other trace once it exits.
+#[must_use]
+pub fn relaxations_used(target: &Target, can_write: bool) -> Vec<&'static str> {
+    let mut used = Vec::new();
+    if can_write && target.allow_write_role {
+        used.push("allow_write_role");
+    }
+    if kavach_storage::is_weakened(&target.database_url, &target.tls) {
+        used.push("weaker_database_tls");
+    }
+    used
 }
 
 /// Which checkpoints `kavach-evidence checkpoints` prints.
@@ -225,5 +245,47 @@ pub async fn run_checkpoints(
                 all.extend(page);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod relaxation_tests {
+    use super::*;
+
+    fn target(url: &str, allow_write_role: bool, plaintext: bool) -> Target {
+        Target {
+            database_url: url.into(),
+            tenant_id: "default".into(),
+            partition_id: 0,
+            allow_write_role,
+            tls: kavach_storage::DatabaseTls::new(plaintext, None),
+        }
+    }
+
+    /// An export reports a relaxation only when it actually used it: the flag
+    /// alone changes nothing, and a flag that was not needed is not a trace.
+    #[test]
+    fn an_export_reports_only_the_relaxations_it_used() {
+        let plain = "postgres://u:p@db/k";
+        let weaker = "postgres://u:p@db/k?sslmode=require";
+        assert!(relaxations_used(&target(plain, false, false), false).is_empty());
+        // Allowed, not used.
+        assert!(relaxations_used(&target(plain, true, true), false).is_empty());
+        // Read as a role that can write, with the flag.
+        assert_eq!(
+            relaxations_used(&target(plain, true, false), true),
+            ["allow_write_role"]
+        );
+        // A weaker mode the URL asked for and the flag allowed.
+        assert_eq!(
+            relaxations_used(&target(weaker, false, true), false),
+            ["weaker_database_tls"]
+        );
+        assert_eq!(
+            relaxations_used(&target(weaker, true, true), true),
+            ["allow_write_role", "weaker_database_tls"]
+        );
+        // A weaker mode without the flag never connects: not a trace.
+        assert!(relaxations_used(&target(weaker, false, false), false).is_empty());
     }
 }

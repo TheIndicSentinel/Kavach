@@ -177,6 +177,15 @@ mod database {
             out.display()
         );
         println!("manifest hash: {}", summary.manifest.hash);
+        if !summary.relaxations.is_empty() {
+            let used = summary.relaxations.join(", ");
+            println!("relaxations used: {used}");
+            eprintln!(
+                "WARNING: this export ran with a safeguard turned off ({used}); \
+                 a production export reads as the read-only kavach_auditor role over \
+                 verified TLS"
+            );
+        }
         match &p.key_id {
             Some(key_id) => println!("signed with: {key_id}"),
             None => eprintln!(

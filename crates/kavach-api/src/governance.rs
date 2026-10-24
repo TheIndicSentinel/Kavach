@@ -55,6 +55,11 @@ pub struct RuntimeView {
     /// when an HSM is configured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hsm: Option<crate::signing::HsmStatus>,
+    /// True when the process runs with `--insecure-dev`.
+    pub insecure_dev: bool,
+    /// Every way this process runs with a guarantee relaxed, by name (a
+    /// fixed set, see BYPASS_INVENTORY.md section 1). Empty in production.
+    pub relaxations: Vec<&'static str>,
 }
 
 pub async fn runtime(
@@ -84,6 +89,8 @@ pub async fn runtime(
             Some(dp) => dp.hsm_status().await,
             None => None,
         },
+        insecure_dev: state.insecure_dev(),
+        relaxations: state.relaxations().iter().map(|r| r.as_str()).collect(),
     }))
 }
 

@@ -36,6 +36,7 @@ pub struct AppState {
     pack_signers: Option<TrustedSigners>,
     oidc: Option<std::sync::Arc<crate::oidc::OidcVerifier>>,
     insecure_dev: bool,
+    relaxations: std::collections::BTreeSet<crate::relaxations::Relaxation>,
     mtls_principal_san: Option<crate::mtls::MtlsSanKind>,
     nonces: crate::hmac_auth::NonceCache,
     changes: ChangeRequestBackend,
@@ -110,16 +111,7 @@ impl AppState {
         )
         .map_err(|e| ApiError::Internal(format!("evaluate service: {e}")))?;
 
-        let oidc = match &config.oidc {
-            Some(oidc) => {
-                let verifier = crate::oidc::OidcVerifier::load(oidc.clone())
-                    .await
-                    .map_err(|e| ApiError::Internal(format!("oidc: {e}")))?;
-                verifier.spawn_refresher();
-                Some(verifier)
-            }
-            None => None,
-        };
+        let oidc = load_oidc(config).await?;
 
         let access_control = match &config.access_control {
             AccessControlKind::None => None,
@@ -132,7 +124,9 @@ impl AppState {
             ),
         };
 
+        let relaxations = report_relaxations(config, dataplane.as_ref(), &metrics);
         Ok(Self {
+            relaxations,
             service: Mutex::new(service),
             hmac_secret: config.hmac_secret.clone(),
             access_control,
@@ -200,6 +194,11 @@ impl AppState {
 
     pub fn insecure_dev(&self) -> bool {
         self.insecure_dev
+    }
+
+    /// The relaxations this process runs with (empty in production).
+    pub fn relaxations(&self) -> &std::collections::BTreeSet<crate::relaxations::Relaxation> {
+        &self.relaxations
     }
 
     pub fn mtls_principal_san(&self) -> Option<crate::mtls::MtlsSanKind> {
@@ -482,6 +481,35 @@ fn start_metrics(
     crate::outcome_reconciler::start(dataplane, &metrics);
     crate::agent_state_evidence::start(dataplane, &metrics);
     Ok(metrics)
+}
+
+/// The OIDC verifier of the operator API, with its key refresher running.
+async fn load_oidc(
+    config: &ApiConfig,
+) -> Result<Option<std::sync::Arc<crate::oidc::OidcVerifier>>, ApiError> {
+    let Some(oidc) = &config.oidc else {
+        return Ok(None);
+    };
+    let verifier = crate::oidc::OidcVerifier::load(oidc.clone())
+        .await
+        .map_err(|e| ApiError::Internal(format!("oidc: {e}")))?;
+    verifier.spawn_refresher();
+    Ok(Some(verifier))
+}
+
+/// What this process runs relaxed (the configuration's, and the agent
+/// surfaces' own), published as metrics.
+fn report_relaxations(
+    config: &ApiConfig,
+    dataplane: Option<&crate::dataplane::Dataplane>,
+    metrics: &Metrics,
+) -> std::collections::BTreeSet<crate::relaxations::Relaxation> {
+    let mut relaxations = crate::relaxations::of_config(config);
+    if let Some(dp) = dataplane {
+        relaxations.extend(dp.relaxations().iter().copied());
+    }
+    metrics.set_relaxations(&relaxations);
+    relaxations
 }
 
 /// The agent surfaces, when configured (ADR-007).

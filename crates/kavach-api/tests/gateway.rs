@@ -1129,3 +1129,85 @@ async fn unknown_outcomes_show_in_the_metrics_by_state_age_and_source() {
         assert!(!metrics.contains(forbidden), "{forbidden} in the metrics");
     }
 }
+
+/// The agent surfaces add their own relaxations to the list, and each is a
+/// series: this fixture runs on memory stores with a test clock under
+/// `--insecure-dev`, and says exactly that.
+#[tokio::test]
+async fn the_agent_surfaces_report_the_relaxations_they_run_with() {
+    use kavach_api::relaxations::Relaxation::{
+        InsecureDev, MemoryAgentStores, PrincipalHeader, TestClock,
+    };
+    let gw = gateway(Some(NUMBER), true).await;
+    let on = gw.state.relaxations();
+    for expected in [InsecureDev, PrincipalHeader, MemoryAgentStores, TestClock] {
+        assert!(on.contains(&expected), "{expected:?} missing from {on:?}");
+    }
+    let metrics = gw.state.metrics().gather_text().unwrap();
+    assert_eq!(
+        series(
+            &metrics,
+            "kavach_relaxation_active{relaxation=\"memory_agent_stores\"}"
+        ),
+        Some(1)
+    );
+    assert_eq!(series(&metrics, "kavach_insecure_dev"), Some(1));
+    // Every name the process reports is one of the fixed set, and the others read 0.
+    for name in kavach_api::relaxations::Relaxation::ALL {
+        let value = series(
+            &metrics,
+            &format!(
+                "kavach_relaxation_active{{relaxation=\"{}\"}}",
+                name.as_str()
+            ),
+        );
+        assert_eq!(
+            value,
+            Some(i64::from(on.contains(&name))),
+            "{}",
+            name.as_str()
+        );
+    }
+}
+
+/// The registry is "unsigned" only when `--insecure-dev` lets it be and no
+/// signers are configured; and a weaker database mode counts only when the URL
+/// asks for one and a development mode allows it.
+#[test]
+fn relaxations_follow_the_configuration() {
+    use kavach_api::relaxations::{of_config, Relaxation};
+    let mut config = agent_fixture::config_for_gateway();
+    let signed = of_config(&config);
+    let dp = config.dataplane.as_mut().unwrap();
+    let signers = dp.tool_signers.take();
+    config.pack_signers = None;
+    assert!(of_config(&config).contains(&Relaxation::UnsignedToolRegistry));
+    // With signers it is not.
+    config.dataplane.as_mut().unwrap().tool_signers = signers;
+    assert_eq!(of_config(&config), signed);
+    // Not under production settings, whatever else is set.
+    config.insecure_dev = false;
+    let production = of_config(&config);
+    assert!(
+        !production.contains(&Relaxation::InsecureDev),
+        "{production:?}"
+    );
+    assert!(!production.contains(&Relaxation::UnsignedToolRegistry));
+
+    // A weaker database mode: the URL asks and a development mode allows.
+    let url = "postgres://u:p@db:5432/k";
+    let weaker = format!("{url}?sslmode=require");
+    for (database_url, development, expected) in [
+        (url.to_string(), true, false),
+        (weaker.clone(), false, false),
+        (weaker, true, true),
+        (format!("{url}?sslmode=verify-full"), true, false),
+    ] {
+        config.evidence_store = kavach_api::EvidenceStoreKind::Postgres { database_url };
+        config.database_tls = kavach_api::DatabaseTls::new(development, None);
+        assert_eq!(
+            of_config(&config).contains(&Relaxation::WeakerDatabaseTls),
+            expected
+        );
+    }
+}

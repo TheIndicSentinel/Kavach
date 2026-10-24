@@ -797,6 +797,8 @@ pub struct Dataplane {
     /// Snapshot reconciliations: a read per loan listed, so a limit of its own.
     reconcile_limiter: Mutex<TokenBucket>,
     broker: Arc<Broker>,
+    /// What only the build knows is relaxed (see `crate::relaxations`).
+    relaxed: Vec<crate::relaxations::Relaxation>,
     resolver: FixtureResolver,
     forwarder: Arc<crate::forward::HttpForwarder>,
     keys: KeySources,
@@ -839,6 +841,11 @@ impl Dataplane {
         for issuer in &mandate_config.sor_issuers {
             refuse_dev_key("system-of-record issuer", &issuer.key.kid, insecure_dev)?;
         }
+        let issuer_kids: Vec<String> = mandate_config
+            .sor_issuers
+            .iter()
+            .map(|issuer| issuer.key.kid.clone())
+            .collect();
         let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
         let evidence = Arc::new(evidence);
         let mandates = mandate_service(
@@ -891,7 +898,9 @@ impl Dataplane {
             .map_err(|e| format!("agent token verifier: {e}"))?;
         agents.spawn_refresher();
         let (sor_limiter, stop_limiter, reconcile_limiter) = limiters(config.sor_rate_per_second);
+        let relaxed = build_relaxations(&mandate_kid, &issuer_kids, broker.is_test_double());
         Ok(Self {
+            relaxed,
             dev_clock: config.dev_clock.clone(),
             mandates,
             core: Arc::new(core),
@@ -941,6 +950,12 @@ impl Dataplane {
     /// when every key is a key file.
     pub async fn hsm_status(&self) -> Option<HsmStatus> {
         self.keys.status().await
+    }
+
+    /// The relaxations only the build knows (a development key among the
+    /// mandate or issuer keys, a test-double broker).
+    pub fn relaxations(&self) -> &[crate::relaxations::Relaxation] {
+        &self.relaxed
     }
 
     pub fn forwarder(&self) -> &crate::forward::HttpForwarder {
@@ -1107,6 +1122,28 @@ impl WhatIf {
 /// The data plane's trusted clock: the kernel's, or (`--insecure-dev`
 /// only) a test clock or a development clock. A development clock also
 /// needs development signing keys and no HSM.
+/// What only the build knows is relaxed: a development key among the
+/// mandate or issuer keys, a test-double broker (see `crate::relaxations`).
+fn build_relaxations(
+    mandate_kid: &str,
+    issuer_kids: &[String],
+    broker_is_test_double: bool,
+) -> Vec<crate::relaxations::Relaxation> {
+    use crate::relaxations::Relaxation;
+    let mut relaxed = Vec::new();
+    if kavach_ports::agent_evidence::is_dev_key(mandate_kid)
+        || issuer_kids
+            .iter()
+            .any(|kid| kavach_ports::agent_evidence::is_dev_key(kid))
+    {
+        relaxed.push(Relaxation::DevKeys);
+    }
+    if broker_is_test_double {
+        relaxed.push(Relaxation::TestDoubleBroker);
+    }
+    relaxed
+}
+
 fn dataplane_clock(config: &DataplaneConfig, insecure_dev: bool) -> Result<ClockBackend, String> {
     Ok(match (&config.dev_clock, &config.test_clock) {
         (Some(_), Some(_)) => {

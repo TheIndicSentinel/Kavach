@@ -27,7 +27,7 @@ pub use migrate::{
     connect_pool, connect_runtime, connect_runtime_sized, migrate, DEFAULT_POOL_SIZE,
 };
 pub use retention::PostgresRetentionStore;
-pub use tls::{connect_options, DatabaseTls, DatabaseTlsError};
+pub use tls::{connect_options, is_weakened, DatabaseTls, DatabaseTlsError};
 
 use sqlx::PgPool;
 

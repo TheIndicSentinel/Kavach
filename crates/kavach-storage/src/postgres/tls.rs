@@ -80,6 +80,18 @@ fn url_sslmode(database_url: &str) -> Option<&str> {
         .next_back()
 }
 
+/// Whether connecting with `database_url` under `tls` runs with a mode weaker
+/// than `verify-full`: the URL asks for one **and** a development mode allows
+/// it. A URL that names no mode, or `verify-full`, is not weakened, and a
+/// weaker one that `tls` refuses never connects at all, so it is not either.
+#[must_use]
+pub fn is_weakened(database_url: &str, tls: &DatabaseTls) -> bool {
+    tls.allow_weaker
+        && url_sslmode(database_url).is_some_and(|mode| {
+            PgSslMode::from_str(mode).is_ok_and(|mode| !matches!(mode, PgSslMode::VerifyFull))
+        })
+}
+
 /// Connection options for `database_url` under `tls`. See the module docs.
 pub fn connect_options(
     database_url: &str,

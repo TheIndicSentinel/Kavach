@@ -29,6 +29,7 @@ pub mod outcome_reconciler;
 pub mod problem;
 pub mod proto;
 pub mod registry;
+pub mod relaxations;
 pub mod retention;
 pub mod revocation_audit;
 pub mod revocation_evidence;
