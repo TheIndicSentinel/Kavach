@@ -26,6 +26,7 @@ uuid.workspace = true
 test-support = []
 
 [dev-dependencies]
+proptest = { workspace = true }
 # The wire-level TLS test reads and writes a raw socket with a timeout.
 tokio = { workspace = true, features = ["io-util", "time"] }
 kavach-storage = { path = ".", features = ["test-support"] }

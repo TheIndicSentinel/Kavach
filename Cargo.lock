@@ -2577,6 +2577,7 @@ dependencies = [
  "kavach-ports",
  "kavach-ports-testkit",
  "kavach-storage",
+ "proptest",
  "serde",
  "serde_json",
  "serde_yaml",
