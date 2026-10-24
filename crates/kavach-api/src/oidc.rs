@@ -78,6 +78,30 @@ pub enum OidcError {
     Claim(String, String),
 }
 
+/// Whether a JWK that states `alg` may verify a token signed with `token`.
+/// An exhaustive match on both enums (no wildcard, no string comparison): a
+/// new variant in the library stops this compiling until it is decided. The
+/// key-management algorithms of JWE (`RSA1_5`, `RSA-OAEP`…) sign nothing, so a
+/// key that names one verifies no token.
+fn key_allows(key: KeyAlgorithm, token: Algorithm) -> bool {
+    let signs_with = match key {
+        KeyAlgorithm::HS256 => Algorithm::HS256,
+        KeyAlgorithm::HS384 => Algorithm::HS384,
+        KeyAlgorithm::HS512 => Algorithm::HS512,
+        KeyAlgorithm::ES256 => Algorithm::ES256,
+        KeyAlgorithm::ES384 => Algorithm::ES384,
+        KeyAlgorithm::RS256 => Algorithm::RS256,
+        KeyAlgorithm::RS384 => Algorithm::RS384,
+        KeyAlgorithm::RS512 => Algorithm::RS512,
+        KeyAlgorithm::PS256 => Algorithm::PS256,
+        KeyAlgorithm::PS384 => Algorithm::PS384,
+        KeyAlgorithm::PS512 => Algorithm::PS512,
+        KeyAlgorithm::EdDSA => Algorithm::EdDSA,
+        KeyAlgorithm::RSA1_5 | KeyAlgorithm::RSA_OAEP | KeyAlgorithm::RSA_OAEP_256 => return false,
+    };
+    signs_with == token
+}
+
 /// A JWK decoded for verification. A JWK that does not decode keeps its
 /// error, so a token naming it is rejected exactly as before the cache.
 struct VerifyingKey {
@@ -268,7 +292,7 @@ impl OidcVerifier {
                 .get(&kid)
                 .ok_or_else(|| OidcError::UnknownKid(kid.clone()))?;
             if let Some(alg) = entry.algorithm {
-                if format!("{alg:?}") != format!("{:?}", header.alg) {
+                if !key_allows(alg, header.alg) {
                     return Err(OidcError::KeyAlgorithmMismatch);
                 }
             }
@@ -372,6 +396,155 @@ mod tests {
         let claims = json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice",
                              "groups": ["ops"], "exp": now + 300 });
         encode(&header, &claims, &EncodingKey::from_ed_der(&der)).unwrap()
+    }
+
+    /// Every signing algorithm the library knows.
+    const EVERY_ALGORITHM: [Algorithm; 12] = [
+        Algorithm::HS256,
+        Algorithm::HS384,
+        Algorithm::HS512,
+        Algorithm::ES256,
+        Algorithm::ES384,
+        Algorithm::RS256,
+        Algorithm::RS384,
+        Algorithm::RS512,
+        Algorithm::PS256,
+        Algorithm::PS384,
+        Algorithm::PS512,
+        Algorithm::EdDSA,
+    ];
+
+    /// A token whose header names `alg` (as the text a token carries) and a
+    /// key that exists, with no valid signature: only the algorithm check can
+    /// decide the outcome before the signature is looked at.
+    fn token_naming(alg: &str) -> String {
+        let header =
+            URL_SAFE_NO_PAD.encode(json!({ "alg": alg, "kid": "good", "typ": "JWT" }).to_string());
+        let payload = URL_SAFE_NO_PAD.encode(r#"{"sub":"x"}"#);
+        format!("{header}.{payload}.AAAA")
+    }
+
+    fn verifier() -> Arc<OidcVerifier> {
+        OidcVerifier::from_jwks(
+            config(JwksSource::File(PathBuf::new())),
+            &jwks(&[jwk(1, "good")]),
+        )
+    }
+
+    /// Only RS256, PS256, ES256 and EdDSA are accepted; every other algorithm
+    /// the library knows is refused by name before any key is looked up, and
+    /// so are the spellings of "none" and anything that is not an algorithm.
+    #[test]
+    fn only_four_algorithms_get_as_far_as_the_key() {
+        let verifier = verifier();
+        for alg in EVERY_ALGORITHM {
+            let name = format!("{alg:?}");
+            let result = verifier.verify(&token_naming(&name));
+            if ALLOWED_ALGORITHMS.contains(&alg) {
+                // Past the algorithm check: refused for the key or the
+                // signature, never for the algorithm.
+                assert!(
+                    !matches!(result, Err(OidcError::Algorithm(_))),
+                    "{name}: {result:?}"
+                );
+            } else {
+                assert_eq!(result, Err(OidcError::Algorithm(alg)), "{name}");
+            }
+        }
+        // The allowed set is exactly these four.
+        assert_eq!(
+            ALLOWED_ALGORITHMS,
+            [
+                Algorithm::RS256,
+                Algorithm::PS256,
+                Algorithm::ES256,
+                Algorithm::EdDSA
+            ]
+        );
+        for spelling in [
+            "none", "None", "NONE", "nOnE", "", "HS257", "EdDSA ", "eddsa", "ES256K",
+        ] {
+            assert!(
+                matches!(
+                    verifier.verify(&token_naming(spelling)),
+                    Err(OidcError::Header(_))
+                ),
+                "alg {spelling:?}"
+            );
+        }
+        // No alg at all.
+        let bare = format!(
+            "{}.{}.AAAA",
+            URL_SAFE_NO_PAD.encode(r#"{"kid":"good"}"#),
+            URL_SAFE_NO_PAD.encode("{}")
+        );
+        assert!(matches!(verifier.verify(&bare), Err(OidcError::Header(_))));
+    }
+
+    /// A key that states an algorithm verifies only tokens of that algorithm,
+    /// for every pair, and a key that states a key-management algorithm
+    /// verifies none.
+    #[test]
+    fn a_key_algorithm_allows_only_its_own() {
+        let key_algorithms = [
+            (KeyAlgorithm::HS256, Some(Algorithm::HS256)),
+            (KeyAlgorithm::HS384, Some(Algorithm::HS384)),
+            (KeyAlgorithm::HS512, Some(Algorithm::HS512)),
+            (KeyAlgorithm::ES256, Some(Algorithm::ES256)),
+            (KeyAlgorithm::ES384, Some(Algorithm::ES384)),
+            (KeyAlgorithm::RS256, Some(Algorithm::RS256)),
+            (KeyAlgorithm::RS384, Some(Algorithm::RS384)),
+            (KeyAlgorithm::RS512, Some(Algorithm::RS512)),
+            (KeyAlgorithm::PS256, Some(Algorithm::PS256)),
+            (KeyAlgorithm::PS384, Some(Algorithm::PS384)),
+            (KeyAlgorithm::PS512, Some(Algorithm::PS512)),
+            (KeyAlgorithm::EdDSA, Some(Algorithm::EdDSA)),
+            (KeyAlgorithm::RSA1_5, None),
+            (KeyAlgorithm::RSA_OAEP, None),
+            (KeyAlgorithm::RSA_OAEP_256, None),
+        ];
+        for (key, own) in key_algorithms {
+            for token in EVERY_ALGORITHM {
+                assert_eq!(
+                    key_allows(key, token),
+                    Some(token) == own,
+                    "{key:?} vs {token:?}"
+                );
+            }
+        }
+    }
+
+    /// An HS256 token that names a real key, however it is signed (even with
+    /// the public key as the secret), never verifies: the algorithm is refused
+    /// first.
+    #[test]
+    fn an_hs256_token_signed_with_the_public_key_is_refused() {
+        use jsonwebtoken::EncodingKey;
+        let public = SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes();
+        let mut header = Header::new(Algorithm::HS256);
+        header.kid = Some("good".into());
+        let now = chrono::Utc::now().timestamp();
+        let claims = json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "mallory", "exp": now + 300 });
+        let forged = encode(&header, &claims, &EncodingKey::from_secret(&public)).unwrap();
+        assert_eq!(
+            verifier().verify(&forged),
+            Err(OidcError::Algorithm(Algorithm::HS256))
+        );
+    }
+
+    /// A JWK that states `RS256` refuses an `EdDSA` token signed by a key of
+    /// that kid, so a key cannot be used under another algorithm than the one
+    /// it declares.
+    #[test]
+    fn a_jwk_that_states_another_algorithm_refuses_the_token() {
+        let mut stated = jwk(1, "good");
+        stated["alg"] = json!("RS256");
+        let verifier =
+            OidcVerifier::from_jwks(config(JwksSource::File(PathBuf::new())), &jwks(&[stated]));
+        assert_eq!(
+            verifier.verify(&token(1, "good")),
+            Err(OidcError::KeyAlgorithmMismatch)
+        );
     }
 
     #[test]

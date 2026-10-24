@@ -13,12 +13,8 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use axum::http::HeaderMap;
-use hmac::{Hmac, Mac};
-use sha2::Sha256;
 
 use crate::error::ApiError;
-
-type HmacSha256 = Hmac<Sha256>;
 
 pub const MAX_SKEW_SECONDS: i64 = 300;
 const NONCE_TTL: Duration = Duration::from_secs(600);
@@ -80,10 +76,13 @@ pub fn string_to_sign(
 }
 
 pub fn sign(secret: &str, message: &[u8]) -> String {
-    let mut mac =
-        HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
-    mac.update(message);
-    format!("sha256={}", hex::encode(mac.finalize().into_bytes()))
+    // `ring` takes a key of any length and cannot fail, so there is no
+    // error to handle and nothing here that could panic on a request.
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, secret.as_bytes());
+    format!(
+        "sha256={}",
+        hex::encode(ring::hmac::sign(&key, message).as_ref())
+    )
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -138,6 +137,25 @@ mod tests {
         );
         h.insert("x-kavach-nonce", HeaderValue::from_str(nonce).unwrap());
         h
+    }
+
+    /// The signature takes a key of any length and cannot fail: there is no
+    /// panic to reach with any secret. Known answers: HMAC-SHA256 of the empty
+    /// message under the empty key, and RFC 4231 test case 2.
+    #[test]
+    fn signing_accepts_any_key_length() {
+        assert_eq!(
+            sign("", b""),
+            "sha256=b613679a0814d9ec772f95d778c35fc5ff1697c493715653c6c712144292c5ad"
+        );
+        assert_eq!(
+            sign("Jefe", b"what do ya want for nothing?"),
+            "sha256=5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        for length in [0, 1, 31, 32, 64, 65, 4096, 1 << 20] {
+            let secret = "k".repeat(length);
+            assert!(sign(&secret, b"m").starts_with("sha256="), "{length}");
+        }
     }
 
     /// Cross-language vector: `scripts/pilot-phase3.sh` (Python) must

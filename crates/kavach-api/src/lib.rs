@@ -39,8 +39,8 @@ pub mod strict_json;
 pub mod tls;
 
 pub use config::{
-    resolve_access_control, validate_principal_sources, AccessControlKind, AccessControlMode,
-    ApiConfig, EvidenceStoreKind, TlsConfig,
+    resolve_access_control, validate_hmac_secret, validate_principal_sources, AccessControlKind,
+    AccessControlMode, ApiConfig, EvidenceStoreKind, TlsConfig, MIN_HMAC_SECRET_BYTES,
 };
 pub use error::ApiError;
 pub use grpc::{status_from_api, GrpcEvaluateService};

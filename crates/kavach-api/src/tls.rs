@@ -19,18 +19,18 @@ where
 }
 
 fn parse_server_key(key_pem: &[u8]) -> Result<PrivateKeyDer<'static>, std::io::Error> {
-    let mut keys: Vec<PrivateKeyDer<'static>> = rustls_pemfile::read_all(&mut &*key_pem)
-        .filter_map(|item| match item.ok()? {
-            Item::Sec1Key(key) => Some(key.into()),
-            Item::Pkcs1Key(key) => Some(key.into()),
-            Item::Pkcs8Key(key) => Some(key.into()),
-            _ => None,
-        })
-        .collect();
-    if keys.len() != 1 {
-        return Err(io_other("private key format not supported".to_string()));
+    let mut reader = key_pem;
+    let mut keys = rustls_pemfile::read_all(&mut reader).filter_map(|item| match item.ok()? {
+        Item::Sec1Key(key) => Some(PrivateKeyDer::from(key)),
+        Item::Pkcs1Key(key) => Some(PrivateKeyDer::from(key)),
+        Item::Pkcs8Key(key) => Some(PrivateKeyDer::from(key)),
+        _ => None,
+    });
+    // Exactly one key: none, or a second one, is refused.
+    match (keys.next(), keys.next()) {
+        (Some(key), None) => Ok(key),
+        _ => Err(io_other("private key format not supported".to_string())),
     }
-    Ok(keys.pop().expect("one key"))
 }
 
 fn parse_certs(cert_pem: &[u8]) -> Result<Vec<CertificateDer<'static>>, std::io::Error> {
@@ -172,4 +172,36 @@ pub async fn grpc_server_tls_config(
         server_tls = server_tls.client_ca_root(tonic::transport::Certificate::from_pem(client_ca));
     }
     Ok(Some(server_tls))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key_pem() -> String {
+        rcgen::KeyPair::generate().unwrap().serialize_pem()
+    }
+
+    /// Exactly one private key is accepted; none, two, or a certificate in
+    /// its place are refused, and never by a panic.
+    #[test]
+    fn exactly_one_private_key_is_accepted() {
+        let one = key_pem();
+        assert!(parse_server_key(one.as_bytes()).is_ok());
+        let two = format!("{one}\n{}", key_pem());
+        assert!(parse_server_key(two.as_bytes()).is_err());
+        for not_a_key in [
+            "",
+            "not pem at all",
+            "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----\n",
+        ] {
+            assert!(
+                parse_server_key(not_a_key.as_bytes()).is_err(),
+                "{not_a_key:?}"
+            );
+        }
+        // A garbled key block is one that does not parse: no key, so refused.
+        let garbled = one.replace(&one[40..60], "????????????????????");
+        assert!(parse_server_key(garbled.as_bytes()).is_err());
+    }
 }

@@ -95,7 +95,7 @@ Paths default via env vars; CLI flags override.
 | `KAVACH_MIGRATION_DATABASE_URL` / `--migration-database-url` | prod | Owner role that runs migrations; when set, the runtime URL never migrates |
 | `KAVACH_DATABASE_POOL_SIZE` / `--database-pool-size` | optional | Connections in the API's runtime Postgres pool (default 5; 1–256) |
 | `KAVACH_DATABASE_CA` / `--database-ca` | optional | CA certificates (PEM) trusted for the Postgres server certificate, besides the system roots. Connections always use `sslmode=verify-full`; a weaker `sslmode` in a URL refuses startup outside `--insecure-dev` |
-| `KAVACH_HMAC_SECRET` | optional | When set, HTTP evaluate requires `X-Kavach-Signature: sha256=<hex>` over raw body |
+| `KAVACH_HMAC_SECRET` | optional | When set, HTTP evaluate requires `X-Kavach-Signature: sha256=<hex>` over raw body. At least 32 bytes (`openssl rand -hex 32`); a shorter secret stops the start |
 | `KAVACH_TLS_CERT`, `KAVACH_TLS_KEY` | prod | Server TLS for HTTP and gRPC |
 | `KAVACH_TLS_CLIENT_CA` | optional | When set with cert/key, enables mTLS (client cert required) |
 | `KAVACH_MTLS_PRINCIPAL_SAN` | optional | `uri` or `dns`: the client certificate SAN becomes the principal (needs `KAVACH_TLS_CLIENT_CA`) |
