@@ -316,6 +316,155 @@ pub fn verify_manifest(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Members a line may hold (docs/specs/evidence-bundle.md sections 4 to 6)
+// ---------------------------------------------------------------------------
+
+const RECORD_COMMON: &[&str] = &[
+    "kind",
+    "record_id",
+    "tenant_id",
+    "partition_id",
+    "seq",
+    "prev_hash",
+    "hash_alg",
+    "key_id",
+    "time_sync",
+    "hash",
+    "sig",
+];
+const AGENT_DECISION_MEMBERS: &[&str] = &[
+    "actor",
+    "chain",
+    "mandate_id",
+    "purpose",
+    "consent_refs",
+    "action",
+    "request_id",
+    "subject_pseudonym",
+    "params_mac",
+    "policy_versions",
+    "signals",
+    "pre_commit_decision",
+    "policy_decision",
+    "returned_decision",
+    "obligations",
+    "credential_id",
+    "credential_expires_at",
+    "send_by",
+    "ts",
+];
+const MANDATE_REVOCATION_MEMBERS: &[&str] = &[
+    "source_system",
+    "event_id",
+    "event_type",
+    "event_digest",
+    "event_sha256",
+    "record_pseudonym",
+    "occurred_at",
+    "revoked",
+    "revoked_at",
+    "recorded_at",
+];
+const AGENT_STATE_MEMBERS: &[&str] = &[
+    "agent_id",
+    "change_no",
+    "from_state",
+    "to_state",
+    "reason_code",
+    "reason_digest",
+    "changed_by",
+    "change_request_id",
+    "approved_by",
+    "changed_at",
+    "recorded_at",
+];
+const ACTOR_MEMBERS: &[&str] = &["agent_id", "identity_key"];
+const POLICY_VERSIONS_MEMBERS: &[&str] = &["cedar", "cel", "packs", "tools", "build"];
+const TIME_SYNC_MEMBERS: &[&str] = &["status", "max_error_ms"];
+const OUTCOME_MEMBERS: &[&str] = &[
+    "tenant_id",
+    "credential_id",
+    "record_hash",
+    "outcome",
+    "reason",
+    "ts",
+    "key_id",
+    "sig",
+];
+const CHECKPOINT_MEMBERS: &[&str] = &[
+    "kind",
+    "version",
+    "tenant_id",
+    "partition_id",
+    "chain",
+    "seq",
+    "head_hash",
+    "prev_checkpoint_hash",
+    "key_id",
+    "time_sync",
+    "ts",
+    "hash",
+    "sig",
+];
+
+/// The first member of `value` that is not in `allowed`, as a message.
+fn stray(value: &serde_json::Value, allowed: &[&[&str]], what: &str) -> Option<String> {
+    let object = value.as_object()?;
+    object
+        .keys()
+        .find(|name| !allowed.iter().any(|list| list.contains(&name.as_str())))
+        .map(|name| format!("{what} has a member the specification does not define: {name:?}"))
+}
+
+fn stray_in(
+    value: &serde_json::Value,
+    member: &str,
+    allowed: &[&str],
+    what: &str,
+) -> Option<String> {
+    stray(value.get(member)?, &[allowed], &format!("{what}: {member}"))
+}
+
+/// A member a record holds that its kind does not define, at the top level
+/// or in `actor`, `policy_versions` or `time_sync`. The hash covers every
+/// member, so an unknown one that is signed passes the chain steps; a
+/// verifier that only reads the members it knows would then accept bytes it
+/// did not check (section 9).
+#[must_use]
+pub fn undefined_record_member(record: &serde_json::Value) -> Option<String> {
+    let kind_members = match record.get("kind").and_then(serde_json::Value::as_str)? {
+        "agent_decision" => AGENT_DECISION_MEMBERS,
+        "mandate_revocation" => MANDATE_REVOCATION_MEMBERS,
+        "agent_state" => AGENT_STATE_MEMBERS,
+        _ => return None,
+    };
+    stray(record, &[RECORD_COMMON, kind_members], "the record")
+        .or_else(|| stray_in(record, "time_sync", TIME_SYNC_MEMBERS, "the record"))
+        .or_else(|| stray_in(record, "actor", ACTOR_MEMBERS, "the record"))
+        .or_else(|| {
+            stray_in(
+                record,
+                "policy_versions",
+                POLICY_VERSIONS_MEMBERS,
+                "the record",
+            )
+        })
+}
+
+/// As [`undefined_record_member`], for an outcome row (section 5).
+#[must_use]
+pub fn undefined_outcome_member(outcome: &serde_json::Value) -> Option<String> {
+    stray(outcome, &[OUTCOME_MEMBERS], "the outcome")
+}
+
+/// As [`undefined_record_member`], for a checkpoint (section 6).
+#[must_use]
+pub fn undefined_checkpoint_member(checkpoint: &serde_json::Value) -> Option<String> {
+    stray(checkpoint, &[CHECKPOINT_MEMBERS], "the checkpoint")
+        .or_else(|| stray_in(checkpoint, "time_sync", TIME_SYNC_MEMBERS, "the checkpoint"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,5 +682,95 @@ mod tests {
         let mut bad = draft();
         bad.files.records.count = 9;
         assert!(seal_manifest(bad, Some(&key)).is_err());
+    }
+
+    /// The `pub` field names of `struct_name` in `source`.
+    fn fields(source: &str, struct_name: &str) -> Vec<String> {
+        let start = source
+            .find(&format!("pub struct {struct_name} {{"))
+            .unwrap_or_else(|| panic!("no struct {struct_name}"));
+        source[start..]
+            .lines()
+            .skip(1)
+            .take_while(|l| l.trim() != "}")
+            .filter_map(|l| l.trim().strip_prefix("pub "))
+            .filter_map(|l| l.split(':').next())
+            .map(str::to_string)
+            .collect()
+    }
+
+    /// The lists are the structs' serialization plus `hash` and `sig`, so the
+    /// exporter (which writes the structs) can never write a member the
+    /// verifier refuses, and a field added to a struct without the
+    /// specification and the lists fails here.
+    #[test]
+    fn the_member_lists_are_the_structs_fields() {
+        let evidence = include_str!("agent_evidence.rs");
+        let chain = include_str!("chain_record.rs");
+        let checkpoint = include_str!("checkpoint.rs");
+        let sorted = |mut v: Vec<String>| {
+            v.sort();
+            v.dedup();
+            v
+        };
+        let list = |lists: &[&[&str]]| {
+            sorted(
+                lists
+                    .iter()
+                    .flat_map(|l| l.iter())
+                    .map(|s| (*s).to_string())
+                    .collect(),
+            )
+        };
+        let with_hash_sig = |mut v: Vec<String>| {
+            v.extend(["hash".to_string(), "sig".to_string()]);
+            v
+        };
+        assert_eq!(
+            list(&[RECORD_COMMON, AGENT_DECISION_MEMBERS]),
+            sorted(with_hash_sig(fields(evidence, "AgentDecisionPayload")))
+        );
+        assert_eq!(
+            list(&[RECORD_COMMON, MANDATE_REVOCATION_MEMBERS]),
+            sorted(with_hash_sig(fields(chain, "RevocationPayload")))
+        );
+        assert_eq!(
+            list(&[RECORD_COMMON, AGENT_STATE_MEMBERS]),
+            sorted(with_hash_sig(fields(chain, "AgentStatePayload")))
+        );
+        assert_eq!(list(&[ACTOR_MEMBERS]), sorted(fields(evidence, "Actor")));
+        assert_eq!(
+            list(&[POLICY_VERSIONS_MEMBERS]),
+            sorted(fields(evidence, "PolicyVersions"))
+        );
+        assert_eq!(
+            list(&[TIME_SYNC_MEMBERS]),
+            sorted(fields(evidence, "TimeSync"))
+        );
+        assert_eq!(
+            list(&[OUTCOME_MEMBERS]),
+            sorted(fields(evidence, "OutcomeRecord"))
+        );
+        assert_eq!(
+            list(&[CHECKPOINT_MEMBERS]),
+            sorted(with_hash_sig(fields(checkpoint, "CheckpointPayload")))
+        );
+    }
+
+    #[test]
+    fn a_stray_member_is_named_and_a_defined_one_is_not() {
+        let ok =
+            serde_json::json!({"kind": "evidence_checkpoint", "time_sync": {"status": "synced"}});
+        assert_eq!(undefined_checkpoint_member(&ok), None);
+        let bad = serde_json::json!({"kind": "evidence_checkpoint", "note": 1});
+        assert!(undefined_checkpoint_member(&bad).unwrap().contains("note"));
+        let nested = serde_json::json!({"time_sync": {"status": "synced", "x": 1}});
+        assert!(undefined_checkpoint_member(&nested)
+            .unwrap()
+            .contains("time_sync"));
+        let record = serde_json::json!({"kind": "agent_state", "change_no": 1, "purpose": "x"});
+        assert!(undefined_record_member(&record)
+            .unwrap()
+            .contains("purpose"));
     }
 }

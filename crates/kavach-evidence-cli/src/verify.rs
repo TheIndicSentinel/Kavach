@@ -18,8 +18,9 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use kavach_ports::agent_evidence::DevKeys;
 use kavach_ports::bundle::{
-    FileEntry, Manifest, ManifestSignature, CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE,
-    RECORDS_FILE, RESOLUTIONS_FILE, RESOLUTIONS_SINCE,
+    undefined_checkpoint_member, undefined_outcome_member, undefined_record_member, FileEntry,
+    Manifest, ManifestSignature, CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE, RECORDS_FILE,
+    RESOLUTIONS_FILE, RESOLUTIONS_SINCE,
 };
 use kavach_ports::bundle_verify::{
     verify_bundle, BundleFailure, BundleReport, KeyValidity, VerifyOptions,
@@ -230,12 +231,18 @@ struct JsonLines<T> {
     reader: BufReader<File>,
     buffer: Vec<u8>,
     failed: bool,
+    /// Names a member the file's lines must not hold, if the line has one.
+    undefined: fn(&serde_json::Value) -> Option<String>,
     _item: std::marker::PhantomData<T>,
 }
 
 impl<T> JsonLines<T> {
-    fn open(path: &Path) -> Result<Self, VerifyError> {
+    fn open(
+        path: &Path,
+        undefined: fn(&serde_json::Value) -> Option<String>,
+    ) -> Result<Self, VerifyError> {
         Ok(Self {
+            undefined,
             reader: BufReader::new(File::open(path).map_err(io(path.display().to_string()))?),
             buffer: Vec::new(),
             failed: false,
@@ -321,7 +328,11 @@ impl<T: DeserializeOwned> Iterator for JsonLines<T> {
         }
         let item = match read_line(&mut self.reader, &mut self.buffer) {
             Ok(false) => return None,
-            Ok(true) => parse_strict(&self.buffer),
+            Ok(true) => parse_strict(&self.buffer).and_then(|item| {
+                let value: serde_json::Value =
+                    serde_json::from_slice(&self.buffer).map_err(|e| e.to_string())?;
+                (self.undefined)(&value).map_or(Ok(item), Err)
+            }),
             Err(reason) => Err(reason),
         };
         self.failed = item.is_err();
@@ -466,12 +477,13 @@ pub fn verify_dir(request: &VerifyRequest<'_>) -> Result<BundleReport, VerifyErr
         now: request.now,
         kept: kept.as_ref(),
     };
-    let records = JsonLines::open(&dir.join(RECORDS_FILE))?;
-    let outcomes = JsonLines::open(&dir.join(OUTCOMES_FILE))?;
-    let checkpoints = JsonLines::open(&dir.join(CHECKPOINTS_FILE))?;
+    let records = JsonLines::open(&dir.join(RECORDS_FILE), undefined_record_member)?;
+    let outcomes = JsonLines::open(&dir.join(OUTCOMES_FILE), undefined_outcome_member)?;
+    let checkpoints = JsonLines::open(&dir.join(CHECKPOINTS_FILE), undefined_checkpoint_member)?;
     // A bundle before version 4 has no resolutions to read.
     Ok(if manifest.payload.version >= RESOLUTIONS_SINCE {
-        let resolutions = JsonLines::<ResolutionRecord>::open(&dir.join(RESOLUTIONS_FILE))?;
+        let resolutions =
+            JsonLines::<ResolutionRecord>::open(&dir.join(RESOLUTIONS_FILE), |_| None)?;
         verify_bundle(
             &manifest,
             records,
