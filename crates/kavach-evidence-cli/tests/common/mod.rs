@@ -464,3 +464,40 @@ pub fn chain_v3() -> Vec<ChainRecord> {
     }
     chain
 }
+
+/// A linked, signed chain of decisions, one record per entry, from record 1.
+pub fn decisions_of(decisions: &[Decision]) -> Vec<AgentDecisionRecord> {
+    let key = evidence_key();
+    let mut prev = GENESIS.to_string();
+    decisions
+        .iter()
+        .zip(1..)
+        .map(|(decision, seq)| {
+            let record = seal(payload(seq, &prev, *decision), &key).unwrap();
+            prev.clone_from(&record.hash);
+            record
+        })
+        .collect()
+}
+
+/// A checkpoint of the chain's record `seq` (1-based), following `previous`.
+pub fn checkpoint_of_chain(
+    chain: &[ChainRecord],
+    seq: usize,
+    previous: Option<&Checkpoint>,
+) -> Checkpoint {
+    use kavach_ports::agent_evidence::ChainEntry as _;
+    let record = &chain[seq - 1];
+    sign_checkpoint(
+        Head {
+            scope: SCOPE,
+            seq: record.seq(),
+            hash: record.hash(),
+        },
+        previous,
+        record.ts() + Duration::seconds(5),
+        synced(),
+        &checkpoint_key(),
+    )
+    .unwrap()
+}

@@ -336,6 +336,8 @@ A verifier is given the bundle directory, the trusted keys, optionally a kept ch
 
 ### 9.1 Results
 
+The findings `outcome_missing`, `outcome_unknown` and `outcome_conflicted` are about individual credentials, so there can be a great many. A verifier MAY report each of the three **once**, with the exact number of credentials and some of their `credential_id`s (the Rust verifier does, to bound its output), or once per credential (the Python verifier does). What must agree is the count: the number of credentials reported for each kind. The generated-history test (`tests/agreement_generator.rs`) compares those counts.
+
 | Result | Meaning |
 |---|---|
 | **fail** | Any refusal above. The bundle does not verify |
