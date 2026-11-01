@@ -6,6 +6,6 @@
   "license": "Apache-2.0",
   "dependencies": {
     "canonicalize": "5.1.0",
-    "jose": "6.2.12"
+    "jose": "6.2.14"
   }
 }
