@@ -1,3 +1,8 @@
+import type { components } from "./openapi";
+
+/** Every type the API sends or accepts, generated from docs/openapi.yaml. */
+type Schemas = components["schemas"];
+
 const PRINCIPAL_KEY = "kavach.principal";
 const TOKEN_KEY = "kavach.accessToken";
 
@@ -76,7 +81,7 @@ function problemOf(payload: unknown): { text?: string; requestId?: string } {
  * body is read, so an error page from a proxy (a 502 or 504 in HTML) is
  * reported by its status, never as a JSON parse error.
  */
-async function request<T>(
+export async function request<T>(
   path: string,
   init: { method?: "GET" | "POST"; body?: unknown } = {},
 ): Promise<T> {
@@ -118,113 +123,25 @@ export function fetchHealth(): Promise<{ status: string }> {
   return request("/health");
 }
 
-export type EvaluateResponse = {
-  returned_decision: string;
-  policy_decision: string;
-  evidence_id?: string;
-  reason_codes: string[];
-  policy_hits: string[];
-};
+export type EvaluateResponse = Schemas["EvaluateResponse"];
 
 export function evaluateRequest(body: unknown): Promise<EvaluateResponse> {
   return request("/v1/evaluate", { method: "POST", body });
 }
 
 /** A guarantee this process runs with relaxed (docs/BYPASS_INVENTORY.md section 1). */
-export type Relaxation = string;
+export type Relaxation = Schemas["RuntimeView"]["relaxations"][number];
 
-export type HsmRole = "mandate" | "evidence" | "checkpoint" | "credential";
+/** `GET /v1/runtime`. */
+export type RuntimeInfo = Schemas["RuntimeView"];
 
-/** `GET /v1/runtime` (RuntimeView in docs/openapi.yaml). */
-export type RuntimeInfo = {
-  pack_id: string;
-  pack_version: string;
-  model_id: string;
-  model_version: string;
-  sector: string;
-  governance_mode: string;
-  pack_path: string;
-  model_path: string;
-  pack_sha256: string | null;
-  model_sha256: string | null;
-  pointer_version: number;
-  stored_pointer_version: number;
-  /** Another replica applied a governance change this one has not loaded. */
-  pointer_drift: boolean;
-  /** The active model names a different pack than the one running (ADR-010). */
-  model_pack_mismatch: boolean;
-  /** The process runs with `--insecure-dev` (local development only). */
-  insecure_dev: boolean;
-  /** Every guarantee relaxed, by name. Empty in production. */
-  relaxations: Relaxation[];
-  checkpoint_lag_seconds?: number;
-  checkpoint_stalled?: boolean;
-  checkpoint_last_seq?: number | null;
-  checkpoint_uncovered_records?: number;
-  dev_clock?: { kind: "fixed" | "started_at"; at: string; development_only: true };
-  hsm?: { roles: HsmRole[]; healthy: boolean; error?: string };
-};
+export type PackSummary = Schemas["PackSummary"];
 
-export type PackSummary = {
-  id: string;
-  version: string;
-  sector: string;
-  jurisdiction: string;
-  effective_from: string;
-  rule_count: number;
-  source_path: string;
-  active: boolean;
-};
+export type PolicyPack = Schemas["PolicyPack"];
 
-export type PolicyPack = {
-  id: string;
-  version: string;
-  sector: string;
-  jurisdiction: string;
-  effective_from: string;
-  description?: string;
-  rules: Array<{
-    id: string;
-    expression: string;
-    decision: string;
-    reason_code: string;
-    severity?: string;
-    control_mappings?: string[];
-  }>;
-  control_mappings?: Record<string, string>;
-};
+export type ModelSummary = Schemas["ModelSummary"];
 
-export type ModelSummary = {
-  model_id: string;
-  version: string;
-  sector: string;
-  status: string;
-  risk_tier: string;
-  governance_mode: string;
-  origin: string;
-  pack_id: string;
-  owner: string;
-  source_path: string;
-  active: boolean;
-  /** False: no governed state yet; activate it with an activate_model change. */
-  governed: boolean;
-};
-
-export type ModelRecord = {
-  model_id: string;
-  version: string;
-  sector: string;
-  owner: string;
-  risk_tier: string;
-  origin: string;
-  governance_mode: string;
-  input_schema: Record<string, unknown>;
-  human_review_hold_policy?: string;
-  status: string;
-  pack_id: string;
-  purpose: string;
-  governed?: boolean;
-};
+export type ModelRecord = Schemas["ModelDetail"];
 
 function governanceFetch<T>(path: string): Promise<T> {
   return request(path);
@@ -250,50 +167,19 @@ export function fetchModel(modelId: string): Promise<ModelRecord> {
   return governanceFetch(`/v1/models/${encodeURIComponent(modelId)}`);
 }
 
-export type AuditEntry = {
-  id: number;
-  action: string;
-  resource_type: string;
-  resource_id: string;
-  actor_principal: string;
-  approver_principal: string;
-  payload: Record<string, unknown>;
-  created_at: string;
-};
+export type AuditEntry = Schemas["AuditEntry"];
 
 export function fetchAuditLog(limit = 50): Promise<AuditEntry[]> {
   return governanceFetch(`/v1/admin/audit?limit=${limit}`);
 }
 
-export type IncidentRecord = {
-  id: number;
-  correlation_id: string;
-  model_id: string;
-  reason: string;
-  recorded_at: string;
-};
+export type IncidentRecord = Schemas["IncidentRecord"];
 
 export function fetchIncidents(limit = 50): Promise<IncidentRecord[]> {
   return governanceFetch(`/v1/admin/incidents?limit=${limit}`);
 }
 
-export type BatchJob = {
-  job_id: string;
-  status: string;
-  input_path: string;
-  output_path?: string | null;
-  model_id: string;
-  governance_mode: string;
-  total_rows: number;
-  processed_rows: number;
-  succeeded_rows: number;
-  failed_rows: number;
-  skipped_rows: number;
-  error_summary?: string | null;
-  created_at: string;
-  started_at?: string | null;
-  completed_at?: string | null;
-};
+export type BatchJob = Schemas["BatchJobRecord"];
 
 export function fetchBatchJobs(limit = 50): Promise<BatchJob[]> {
   return governanceFetch(`/v1/admin/batch-jobs?limit=${limit}`);
@@ -303,20 +189,9 @@ export function fetchBatchJob(jobId: string): Promise<BatchJob> {
   return governanceFetch(`/v1/admin/batch-jobs/${encodeURIComponent(jobId)}`);
 }
 
-export interface RetentionSettings {
-  evidence_retention_days: number;
-  updated_at: string;
-  updated_by?: string | null;
-  approved_by?: string | null;
-}
+export type RetentionSettings = Schemas["RetentionSettings"];
 
-export interface TombstoneRecord {
-  evidence_id: string;
-  reason: string;
-  actor_principal: string;
-  approver_principal: string;
-  tombstoned_at: string;
-}
+export type TombstoneRecord = Schemas["TombstoneRecord"];
 
 export interface RetentionApplyReport {
   tombstoned_count: number;
@@ -331,43 +206,12 @@ export function fetchTombstones(limit = 50): Promise<TombstoneRecord[]> {
   return governanceFetch(`/v1/admin/tombstones?limit=${limit}`);
 }
 
-export type ChangeKind =
-  | "activate_pack"
-  | "rollback_pack"
-  | "update_model"
-  | "update_retention"
-  | "erase_evidence"
-  | "apply_retention"
-  | "activate_model"
-  | "reinstate_agent";
+export type ChangeKind = Schemas["ChangeKind"];
 
-export type ChangeStatus =
-  | "pending"
-  | "applied"
-  | "failed"
-  | "rejected"
-  | "cancelled"
-  | "expired";
+export type ChangeStatus = Schemas["ChangeStatus"];
 
 /** A maker-checker change request (ADR-009). */
-export interface ChangeRequest {
-  id: string;
-  tenant_id: string;
-  kind: ChangeKind;
-  params: Record<string, unknown>;
-  binding: Record<string, unknown>;
-  change_digest: string;
-  reason?: string | null;
-  proposer: string;
-  proposer_key: string;
-  status: ChangeStatus;
-  decided_by?: string | null;
-  decided_by_key?: string | null;
-  outcome?: Record<string, unknown> | null;
-  created_at: string;
-  expires_at: string;
-  decided_at?: string | null;
-}
+export type ChangeRequest = Schemas["ChangeRequest"];
 
 function changeFetch<T>(path: string, body?: unknown): Promise<T> {
   return request(path, { method: "POST", body });

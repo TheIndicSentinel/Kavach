@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
@@ -40,8 +40,14 @@ function statusVariant(status: ChangeStatus): "active" | "warning" | "muted" | "
   }
 }
 
-function Details({ label, value }: { label: string; value: Record<string, unknown> }) {
-  const entries = Object.entries(value);
+/** A JSON value the spec leaves open (`params`, `binding`, `outcome`). */
+function Details({ label, value }: { label: string; value: unknown }) {
+  const entries =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? Object.entries(value)
+      : value === null || value === undefined
+        ? []
+        : [["value", value] as const];
   if (entries.length === 0) return null;
   return (
     <div>
@@ -67,19 +73,27 @@ export default function ChangeRequestsPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
-  const reload = () => {
-    setError(null);
+  // State is set only when the request settles, never synchronously here.
+  const reload = useCallback(() => {
     fetchChangeRequests(filter)
-      .then(setRequests)
+      .then((next) => {
+        setError(null);
+        setRequests(next);
+      })
       .catch((err: unknown) => {
         setError(err instanceof Error ? err.message : "Failed to load change requests");
       });
-  };
+  }, [filter]);
 
   useEffect(() => {
-    setRequests(null);
     reload();
-  }, [filter]);
+  }, [reload]);
+
+  const showFilter = (next: ChangeStatus | undefined) => {
+    setRequests(null);
+    setError(null);
+    setFilter(next);
+  };
 
   async function act(
     request: ChangeRequest,
@@ -112,14 +126,14 @@ export default function ChangeRequestsPage() {
             <Button
               size="sm"
               variant={filter === "pending" ? "secondary" : "ghost"}
-              onClick={() => setFilter("pending")}
+              onClick={() => showFilter("pending")}
             >
               Pending
             </Button>
             <Button
               size="sm"
               variant={filter === undefined ? "secondary" : "ghost"}
-              onClick={() => setFilter(undefined)}
+              onClick={() => showFilter(undefined)}
             >
               All
             </Button>
@@ -163,7 +177,7 @@ export default function ChangeRequestsPage() {
                 <Details label="Change" value={request.params} />
                 <Details label="Bound to (must still hold at approval)" value={request.binding} />
               </div>
-              {request.outcome && request.status !== "applied" && (
+              {request.outcome != null && request.status !== "applied" && (
                 <Details label="Outcome" value={request.outcome} />
               )}
               <p className="break-all font-mono text-xs text-muted">

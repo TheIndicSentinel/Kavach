@@ -24,13 +24,13 @@ export function CardHeader({
 
 export function CardTitle({
   className,
+  children,
   ...props
 }: HTMLAttributes<HTMLHeadingElement>) {
   return (
-    <h2
-      className={cn("text-base font-semibold text-ink", className)}
-      {...props}
-    />
+    <h2 className={cn("text-base font-semibold text-ink", className)} {...props}>
+      {children}
+    </h2>
   );
 }
 

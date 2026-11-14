@@ -21,10 +21,11 @@ export default function RetentionPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // State is set only when the requests settle, never synchronously here.
   const reload = () => {
-    setError(null);
     Promise.all([fetchRetentionSettings(), fetchTombstones()])
       .then(([nextSettings, nextTombstones]) => {
+        setError(null);
         setSettings(nextSettings);
         setRetentionDays(String(nextSettings.evidence_retention_days));
         setTombstones(nextTombstones);
