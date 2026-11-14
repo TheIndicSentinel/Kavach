@@ -5,18 +5,18 @@
 **Deciders:** Kavach product/engineering (owner decision pending)  
 **Related:** ADR-008 (API authentication; it deferred console login to this ADR), ADR-009 (change requests), ADR-013 (kill switch), ADR-014 (tenancy), [CONSOLE_PLAN.md](CONSOLE_PLAN.md) UI-4, [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md), [THREAT_MODEL.md](THREAT_MODEL.md)
 
-**Scope.** This ADR is the console's login design, and it is also **roadmap item 1.4, "the token ADR"**: it settles where operator tokens live, how long they live, how they are refreshed and how a session ends. The other half of 1.4, the console's Content-Security-Policy and security headers, is the change in pull request #224 (`feat/console-serving`, not merged when this was written); this ADR states only the constraints the login puts on that policy. Agent tokens, system-of-record keys and the CLI's bearer tokens are out of scope and do not change.
+**Scope.** This ADR is the console's login design, and it is also **roadmap item 1.4, "the token ADR"**: it settles where operator tokens live, how long they live, how they are refreshed and how a session ends. The other half of 1.4, the console's Content-Security-Policy and security headers, landed in pull request #224 (merged as `d2627a2`; see Context, "Headers"); this ADR states only the constraints the login puts on that policy. Agent tokens, system-of-record keys and the CLI's bearer tokens are out of scope and do not change.
 
 ## Context
 
-What the code does today (read at `68f757a`):
+What the code does today (read at `d2627a2`):
 
 - **The API reads one credential header.** `crates/kavach-api/src/auth.rs` resolves the principal from `Authorization: Bearer`, then the mTLS SAN, then `X-Kavach-Principal` with `--insecure-dev` only (`resolve_principal`, `resolve_credentials`). It reads no cookie. Every operator route is then authorised by Cedar on that principal (`authorize_principal`). Because no ambient credential is accepted, the API has no cross-site request forgery (CSRF) surface today.
 - **Token verification is local.** `crates/kavach-api/src/oidc.rs` checks the signature against the configured JWKS (`kid` required, RS256, PS256, ES256 or EdDSA only), `iss`, `aud`, `exp` and `nbf` with a leeway, and reads the principal and groups claims. It does not check the JWT `typ` header and does not call an introspection or revocation endpoint. A token stays valid until `exp` plus the leeway (SECURITY_PROPERTIES.md, "Token revocation before expiry").
 - **Approvals need a token identity.** An approval is accepted only from a principal authenticated by an OIDC token, compared by the source-qualified key `oidc:<issuer>#<subject>` (`AuthenticatedPrincipal::identity_key` in `auth.rs`; `crates/kavach-api/src/state_changes.rs`; ADR-009). Whatever the console does must keep producing that identity.
 - **The console stores a pasted token.** `console/src/lib/api.ts` keeps the token in `sessionStorage` under `kavach.accessToken` (and a development principal under `kavach.principal`) and sends it as `Authorization: Bearer` on every call. `console/src/pages/SettingsPage.tsx` is the paste field. There is no login, refresh or logout. The owner's decision of 2026-11-14 keeps this, under a strict CSP, until this work.
-- **Headers.** On `main`, `kavach-api` sets no Content-Security-Policy and no other security header for the console (`crates/kavach-api/src/console.rs`; CONSOLE_PLAN.md section 1). Pull request #224 proposes `default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`, with `nosniff`, `Referrer-Policy: no-referrer` and `no-store` on `index.html`. The API sets no CORS headers, so the browser refuses cross-origin calls to it.
-- **Same origin.** The console is served by `kavach-api` on the operator listener as the router's fallback (`crates/kavach-api/src/http.rs`), so the console and the API share one origin. In agent-only mode the console is not served on `main`; #224 changes that.
+- **Headers.** Since #224, the console page and its files carry four headers from `security_headers` in `crates/kavach-api/src/console.rs`: `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'` (`CONTENT_SECURITY_POLICY`), `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, and a `Cache-Control` chosen per file by `cache_control_for`: `no-store` for `index.html`, every single-page route and the "not built" page; `public, max-age=31536000, immutable` for hashed files under `assets/`; `no-cache` for other files such as `favicon.svg`. They are set only there (`console_response`), not on API routes or on the problem responses the fallback returns for `/v1/...` paths and missing files. The API sets no CORS headers, so the browser refuses cross-origin calls to it.
+- **Same origin.** The console is served by `kavach-api` on the operator listener as the router's fallback (`crates/kavach-api/src/http.rs`, `console::fallback`), in both the full and the agent-only mode, so the console and the API share one origin. The fallback answers only `GET` and `HEAD`; `/v1/...` paths and missing files stay problem responses, never the console page.
 - **Deployment.** Kavach runs as a single instance for now; high availability is an open decision.
 
 Why change: a pasted token is readable by any script on the origin (`sessionStorage` is open to JavaScript), it pushes operators to copy bearer tokens through the clipboard and chat, and the documented way to get one (`docs/INSTALL.md`, Keycloak `client_credentials`) yields a service account, not a person. Approvals need a person.
@@ -34,7 +34,7 @@ Why change: a pasted token is readable by any script on the origin (`sessionStor
 | New server state | none | none | a bounded in-memory session table; sessions end on restart and are not shared between replicas |
 | New secrets on the server | none | none | the client credential (a secret file now, see open question 4) |
 | API change | none | a public configuration endpoint, a CSP built from configuration, startup checks | login, callback, logout and session routes; a cookie-to-token step before the existing verification; CSRF checks; startup checks |
-| Agent-only mode | works once #224 serves the console | same | same; the routes are on the operator listener only |
+| Agent-only mode | works (the console is served in both modes since #224) | same | same; the routes are on the operator listener only |
 | Logout | clear the field | drop memory; optionally end the IdP session | delete the session server-side, revoke the refresh token if the IdP supports it, clear the cookie |
 
 The cookie variant that puts the encrypted tokens *in* the cookie (no server table) was set aside: tokens with a groups claim can exceed cookie size limits, it needs a new encryption key, and a server cannot end such a session before it expires without keeping a deny list, which is server state again.
@@ -94,7 +94,7 @@ Cedar policies, `oidc.rs` verification, the identity key, the CLI and gRPC do no
 - `connect-src 'self'` stays: the browser never calls the IdP with `fetch`.
 - `form-action 'self'` applies to redirects after a form submission in some browsers, so **login is a link** (`<a href="/auth/login">`), not a form, and logout is a `fetch` POST followed by a script navigation to the end-session URL the server returns.
 - `frame-ancestors 'none'` stays; nothing is framed and there is no silent iframe renewal.
-- `Referrer-Policy: no-referrer` (in #224) keeps the code and `state` out of the IdP and third parties' referrers; the `303` after the callback removes them from history.
+- `Referrer-Policy: no-referrer` keeps the code and `state` out of the IdP and third parties' referrers; the `303` after the callback removes them from history. `console.rs` sets that header only on the console page and its files, so the `/auth/*` routes must set it (and `Cache-Control: no-store`) on their own responses.
 - The redirect URI is registered at the IdP as one exact `https://<console host>/auth/callback`. No wildcards and no second path. `http://localhost` is for development only, under `--insecure-dev`; whether each target browser keeps `Secure` and `__Host-` cookies on `http://localhost` is checked in the Playwright run, not assumed.
 
 ## Consequences
@@ -136,7 +136,7 @@ Playwright and axe at UI-4 (approved dev dependencies `@playwright/test` and `@a
 6. **Development without an IdP:** keep the pasted-token field only when console login is not configured (development, `--insecure-dev`), or require an IdP for the console everywhere? And for end-to-end tests: a Keycloak container (a new image in CI, which needs your go) or a small OIDC test double in the repository?
 7. **A full session table:** refuse new logins (proposed) or end the oldest session?
 8. **Multiple replicas:** accept "affinity or sign in again" while HA is undecided, or design a shared session store now?
-9. **Order:** this assumes #224 (CSP and security headers) and roadmap 1.3 land first. Confirm.
+9. **Order:** #224 (CSP and security headers) has landed. This assumes roadmap 1.3 lands before this work too. Confirm.
 
 ## References
 
