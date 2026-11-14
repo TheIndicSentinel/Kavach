@@ -7,6 +7,7 @@ import AuditPage from "./pages/AuditPage";
 import BatchJobDetailPage from "./pages/BatchJobDetailPage";
 import BatchJobsPage from "./pages/BatchJobsPage";
 import ChangeRequestsPage from "./pages/ChangeRequestsPage";
+import DecisionEventsPage from "./pages/DecisionEventsPage";
 import EvaluatePage from "./pages/EvaluatePage";
 import IncidentsPage from "./pages/IncidentsPage";
 import ModelDetailPage from "./pages/ModelDetailPage";
@@ -14,6 +15,7 @@ import ModelsPage from "./pages/ModelsPage";
 import OverviewPage from "./pages/OverviewPage";
 import PoliciesPage from "./pages/PoliciesPage";
 import PolicyDetailPage from "./pages/PolicyDetailPage";
+import ReconciliationPage from "./pages/ReconciliationPage";
 import RetentionPage from "./pages/RetentionPage";
 import SettingsPage from "./pages/SettingsPage";
 
@@ -27,6 +29,8 @@ export default function App() {
         <Route path="agents" element={<AgentsPage />} />
         <Route path="agents/:agentId" element={<AgentDetailPage />} />
         <Route path="agent-evidence" element={<AgentEvidencePage />} />
+        <Route path="reconciliation" element={<ReconciliationPage />} />
+        <Route path="decision-events" element={<DecisionEventsPage />} />
         <Route path="policies" element={<PoliciesPage />} />
         <Route path="policies/:packId" element={<PolicyDetailPage />} />
         <Route path="models" element={<ModelsPage />} />

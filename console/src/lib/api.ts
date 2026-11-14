@@ -372,3 +372,28 @@ export type ReinstateProposal = Omit<Schemas["ChangeProposal"], "kind" | "params
 export function proposeReinstatement(proposal: ReinstateProposal): Promise<ChangeRequest> {
   return changeFetch("/v1/change-requests", proposal);
 }
+
+/** The lender's closed loans, as `POST /v1/reconciliation/closed-records` takes them. */
+export type ClosedRecordsRequest = Schemas["ClosedRecordsRequest"];
+
+/** What a closed-records reconciliation found. */
+export type ClosedRecordsResult = Schemas["ClosedRecordsResult"];
+
+/** One live mandate the reconciliation found for a closed loan. */
+export type ClosedRecordFinding = ClosedRecordsResult["findings"][number];
+
+/** How an allowed agent call ended (ADR-005 §12). */
+export type Outcome = Schemas["Outcome"];
+
+/** `GET /v1/decision-events/{evidence_id}`: one evaluate decision event. */
+export type DecisionEventLookup = Ok<"getDecisionEvent">;
+
+/** Rate limited and audited by the API (counts, never references). Reports only; revokes nothing. */
+export function reconcileClosedRecords(body: ClosedRecordsRequest): Promise<ClosedRecordsResult> {
+  return request("/v1/reconciliation/closed-records", { method: "POST", body });
+}
+
+/** Audited and rate limited by the API: call it once per lookup the operator asks for. */
+export function fetchDecisionEvent(evidenceId: string): Promise<DecisionEventLookup> {
+  return request(`/v1/decision-events/${encodeURIComponent(evidenceId)}`);
+}
