@@ -307,6 +307,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The tenant's agents and their states (admins).
+         * @description ADR-013. Every agent a passport names in this tenant, in ascending agent-id order, a page at a time: pass `next_cursor` back as `cursor` for the next page. `next_cursor` is null when no more agents follow; a page may be short, or the last page empty, when it is not. With `state`, only agents in that state. 404 when agent surfaces are not configured.
+         */
+        get: operations["listAgents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agents/{agent_id}": {
         parameters: {
             query?: never;
@@ -804,6 +824,11 @@ export interface components {
             change_request_id?: string | null;
             /** Format: date-time */
             changed_at?: string;
+        };
+        AgentStatePage: {
+            items: components["schemas"]["AgentStateView"][];
+            /** @description Pass as `cursor` for the next page; null when no more agents follow. */
+            next_cursor: string | null;
         };
         AgentStopResult: {
             agent_id: string;
@@ -1710,6 +1735,38 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listAgents: {
+        parameters: {
+            query?: {
+                state?: components["schemas"]["AgentStateName"];
+                /** @description At most this many items (default 50; clamped to 1-200). */
+                limit?: components["parameters"]["Limit"];
+                /** @description The `next_cursor` of the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of agents. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentStatePage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["Internal"];
             503: components["responses"]["Unavailable"];
         };
