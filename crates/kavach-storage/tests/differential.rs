@@ -283,6 +283,35 @@ impl<S: AgentEvidenceStore> Run<S> {
                 "{tenant} summary {:?}",
                 class(self.store.resolution_summary(&tenant).await)
             );
+            // The work list of the F7 recovery: allows with no outcome. The
+            // windows are narrow because one `Advance` is at most 15 minutes
+            // and a run is short: a window of an hour would
+            // never exclude anything and would not test the lower bound. The
+            // edges are whole minutes from `now`, so they land on decision
+            // times (both bounds are strict). A limit cuts the last list short.
+            let now = self.clock.now().utc;
+            for (name, after, before, limit) in [
+                (
+                    "all",
+                    chrono::DateTime::UNIX_EPOCH,
+                    now - Duration::minutes(5),
+                    1000,
+                ),
+                ("recent", now - Duration::minutes(3), now, 1000),
+                (
+                    "band",
+                    now - Duration::minutes(8),
+                    now - Duration::minutes(3),
+                    1000,
+                ),
+                ("cut", chrono::DateTime::UNIX_EPOCH, now, 2),
+            ] {
+                let _ = writeln!(
+                    seen,
+                    "{tenant} stuck {name} {:?}",
+                    class(self.store.stuck_allows(&tenant, after, before, limit).await)
+                );
+            }
         }
         for (tenant, record) in &self.allows {
             let credential = record.payload.credential_id.as_deref().unwrap();
