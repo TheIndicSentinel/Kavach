@@ -37,8 +37,12 @@ The bypasses fall into four groups:
 | Development keys (`dev-…`) for mandates, evidence, checkpoints, credentials and SoR issuers | Refused at startup |
 | A test-double credential broker | Refused at startup |
 | A weaker Postgres `sslmode`, when the URL also asks for it | `verify-full` only |
+| The in-memory evidence store (`--evidence-store memory`): evidence is lost on restart and is not shared between instances | Postgres |
+| `kavach-api` started **without** `--require-hardening` (the default) | With the flag the process refuses to start while any relaxation above is active, the API listener is plain (no TLS), the TLS key, the subject-pseudonym key or the HSM PIN file is readable by group or others (or the platform cannot verify file modes), a provider endpoint is plain HTTP (no loopback exception) or carries userinfo, a query or a fragment, and it does not mount `POST /v1/dev/clock`. It prints every failed condition at once and exits 78 |
 
-**Names.** The relaxations above are reported by these names, a fixed set (`kavach_api::relaxations::Relaxation`): `insecure_dev`, `access_control_none`, `principal_header`, `weaker_database_tls`, `memory_agent_stores`, `test_clock`, `dev_clock`, `system_clock_declared_synced`, `unsigned_tool_registry`, `dev_keys`, `test_double_broker`. A test fails if one is missing from this file, from `docs/openapi.yaml` or from the metrics.
+**Names.** The relaxations above are reported by these names, a fixed set (`kavach_api::relaxations::Relaxation`): `insecure_dev`, `access_control_none`, `principal_header`, `weaker_database_tls`, `memory_agent_stores`, `test_clock`, `dev_clock`, `system_clock_declared_synced`, `unsigned_tool_registry`, `dev_keys`, `test_double_broker`, `memory_evidence_store`. A test fails if one is missing from this file, from `docs/openapi.yaml` or from the metrics.
+
+**`--require-hardening`** (`KAVACH_REQUIRE_HARDENING`) is the one switch that turns the list above from reporting into refusal. It applies to `kavach-api` only; `kavach-batch` follows in its own change. It also closes the risk accepted in the privacy review of 2026-10-15 (a plain-HTTP provider endpoint was only a startup warning): under the flag every plain-HTTP provider is refused, with no loopback exception. The refusal names scheme, host and port only, never userinfo, path or query. `/v1/runtime` reports `require_hardening`. The HMAC secret is an inline value, not a file, so it has no file-mode check; it is only length-checked. Without the flag nothing changes.
 
 **Gap** (remaining): the export flags are visible in the command's output only, not in the bundle, whose format does not record how it was exported.
 

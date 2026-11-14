@@ -279,6 +279,7 @@ async fn cedar_test_state() -> Arc<AppState> {
     let (pack, model) = fixture_paths();
     let (policy_path, entities_path) = cedar_fixture_paths();
     let config = ApiConfig {
+        require_hardening: false,
         pack_path: pack,
         model_path: model,
         hmac_secret: None,
@@ -632,6 +633,7 @@ async fn approval_fails_when_the_runtime_moved_since_proposal() {
 async fn change_requests_can_be_cancelled_rejected_and_expire() {
     let (pack, model) = fixture_paths();
     let mut config = ApiConfig {
+        require_hardening: false,
         pack_path: pack,
         model_path: model,
         hmac_secret: None,
@@ -1200,6 +1202,7 @@ async fn signed_packs_required_when_signers_configured() {
     write_signers(&signers_path, &public, &["pack", "model"]);
 
     let config = ApiConfig {
+        require_hardening: false,
         pack_path: v0_path.clone(),
         model_path: model_path.clone(),
         hmac_secret: None,

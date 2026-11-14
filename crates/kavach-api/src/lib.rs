@@ -18,6 +18,7 @@ pub mod evidence_read;
 pub mod forward;
 pub mod governance;
 pub mod grpc;
+pub mod hardening;
 pub mod hmac_auth;
 pub mod http;
 pub mod incidents;

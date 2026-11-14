@@ -128,6 +128,7 @@ fn write_entities(dir: &Path) -> PathBuf {
 
 fn config(pki: &Pki) -> ApiConfig {
     ApiConfig {
+        require_hardening: false,
         pack_path: repo("packs/finance/v0.yaml"),
         model_path: repo("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,

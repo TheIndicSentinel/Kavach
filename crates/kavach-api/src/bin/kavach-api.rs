@@ -337,6 +337,7 @@ impl OidcArgs {
 }
 
 #[derive(Parser)]
+#[allow(clippy::struct_excessive_bools)] // independent command-line switches
 #[command(name = "kavach-api", about = "Kavach sync evaluate HTTP + gRPC API")]
 struct Cli {
     /// Log format: `text` or `json` (one object per line). Every line is
@@ -428,6 +429,12 @@ struct Cli {
     #[arg(long, env = "KAVACH_INSECURE_DEV")]
     insecure_dev: bool,
 
+    /// Refuse to start unless every guarantee is on: no relaxation, TLS,
+    /// HTTPS providers, owner-only secret files, no development routes
+    /// (docs/BYPASS_INVENTORY.md). Every failing condition is reported.
+    #[arg(long, env = "KAVACH_REQUIRE_HARDENING")]
+    require_hardening: bool,
+
     /// Cedar policy file (required when --access-control cedar).
     #[arg(long, env = "KAVACH_CEDAR_POLICY")]
     cedar_policy: Option<PathBuf>,
@@ -517,6 +524,7 @@ impl Cli {
             database_tls: kavach_api::DatabaseTls::new(self.insecure_dev, self.database_ca),
             database_pool_size: self.database_pool_size,
             dataplane,
+            require_hardening: self.require_hardening,
         };
         validate_principal_sources(&config)?;
         validate_hmac_secret(config.hmac_secret.as_deref())?;
@@ -525,6 +533,7 @@ impl Cli {
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)] // one startup sequence, read top to bottom
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
     kavach_telemetry::init(cli.log_format)?;
@@ -537,7 +546,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let config = cli
         .into_config()
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
+    if config.require_hardening {
+        // Before anything is built, migrated or written.
+        refuse_unless_hardened(&kavach_api::hardening::violations(&config, &[]));
+    }
     let state = Arc::new(AppState::from_config(&config).await?);
+    if config.require_hardening {
+        // What only the build knows (a relaxation of the agent surfaces).
+        let built = state
+            .dataplane()
+            .map(|dp| dp.relaxations().to_vec())
+            .unwrap_or_default();
+        refuse_unless_hardened(&kavach_api::hardening::violations(&config, &built));
+    }
     kavach_api::revocation_audit::start(&state);
     let pack_sha256 = state.runtime().pack_sha256.unwrap_or_else(|| "none".into());
     let http_app = router(state.clone());
@@ -633,6 +654,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     shutdown::stop_and_checkpoint(servers.as_mut(), &stop_tx, grace, stopping.dataplane())
         .await
         .map_err(Into::into)
+}
+
+/// Prints every violation and exits with `EX_CONFIG`; returns when there is
+/// none.
+fn refuse_unless_hardened(violations: &[kavach_api::hardening::Violation]) {
+    if violations.is_empty() {
+        return;
+    }
+    eprintln!(
+        "{}",
+        kavach_api::hardening::refusal("kavach-api", violations)
+    );
+    std::process::exit(kavach_api::hardening::EXIT_REFUSED);
 }
 
 /// What the agent surfaces serve, once, at startup.

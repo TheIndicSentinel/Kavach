@@ -178,6 +178,20 @@ struct MandateConfigFile {
     replay_window_seconds: i64,
 }
 
+/// The `(audience, endpoint)` pairs of a providers file, as written. For the
+/// startup hardening check, which reads them before anything is built and
+/// must not echo the file: `None` carries no detail.
+pub fn provider_endpoints(path: &Path) -> Option<Vec<(String, String)>> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let file: ProvidersFile = serde_json::from_str(&text).ok()?;
+    Some(
+        file.providers
+            .into_iter()
+            .map(|p| (p.audience, p.endpoint))
+            .collect(),
+    )
+}
+
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path, what: &str) -> Result<T, String> {
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("{what} {}: {e}", path.display()))?;

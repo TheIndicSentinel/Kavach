@@ -25,6 +25,9 @@ pub enum Relaxation {
     /// A weaker Postgres `sslmode` than `verify-full`, asked for by the URL
     /// and allowed by a development mode.
     WeakerDatabaseTls,
+    /// The decision-governance evidence (the credit track's evidence, incident
+    /// and audit records) lives in memory and is lost on restart.
+    MemoryEvidenceStore,
     /// Agent evidence, mandates and replay protection live in memory.
     MemoryAgentStores,
     /// A test clock for the agent decisions.
@@ -44,11 +47,12 @@ pub enum Relaxation {
 
 impl Relaxation {
     /// Every relaxation, in the order they are listed.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::InsecureDev,
         Self::AccessControlNone,
         Self::PrincipalHeader,
         Self::WeakerDatabaseTls,
+        Self::MemoryEvidenceStore,
         Self::MemoryAgentStores,
         Self::TestClock,
         Self::DevClock,
@@ -66,6 +70,7 @@ impl Relaxation {
             Self::AccessControlNone => "access_control_none",
             Self::PrincipalHeader => "principal_header",
             Self::WeakerDatabaseTls => "weaker_database_tls",
+            Self::MemoryEvidenceStore => "memory_evidence_store",
             Self::MemoryAgentStores => "memory_agent_stores",
             Self::TestClock => "test_clock",
             Self::DevClock => "dev_clock",
@@ -89,6 +94,9 @@ pub fn of_config(config: &ApiConfig) -> BTreeSet<Relaxation> {
     }
     if matches!(config.access_control, AccessControlKind::None) {
         on.insert(Relaxation::AccessControlNone);
+    }
+    if matches!(config.evidence_store, EvidenceStoreKind::Memory) {
+        on.insert(Relaxation::MemoryEvidenceStore);
     }
     let urls = [
         match &config.evidence_store {

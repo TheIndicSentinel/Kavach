@@ -1126,6 +1126,7 @@ components:
         - stored_pointer_version
         - pointer_drift
         - insecure_dev
+        - require_hardening
         - relaxations
       dependentRequired:
         checkpoint_lag_seconds: [checkpoint_stalled, checkpoint_last_seq, checkpoint_uncovered_records]
@@ -1147,6 +1148,11 @@ components:
         insecure_dev:
           type: boolean
           description: The process runs with `--insecure-dev` (local development only).
+        require_hardening:
+          type: boolean
+          description: >-
+            The process was started with `--require-hardening`: it refused to start unless every
+            guarantee was on, and `POST /v1/dev/clock` is not mounted.
         relaxations:
           type: array
           description: >-
@@ -1159,6 +1165,7 @@ components:
               - access_control_none
               - principal_header
               - weaker_database_tls
+              - memory_evidence_store
               - memory_agent_stores
               - test_clock
               - dev_clock
