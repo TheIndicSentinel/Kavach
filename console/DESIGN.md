@@ -2,6 +2,8 @@
 
 Production UI foundation for the governance console. Milestone B.4 (policy lifecycle) should extend these patterns — not introduce a parallel design.
 
+What the console covers, what it still lacks against the backend, and the order of work: [docs/CONSOLE_PLAN.md](../docs/CONSOLE_PLAN.md).
+
 ## Principles
 
 1. **Enterprise trust first** — navy palette, clear hierarchy, accessible contrast (WCAG AA target).
