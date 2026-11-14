@@ -150,6 +150,6 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 - **v1 evidence signatures.** Existing `decision_event` records are hash-chained but not signed; checkpoint signing arrives with ADR-005.
 - **Client time inside CEL rules.** Rules can still read `request.decision_time`; pack authors must use the trusted `now` variable for time decisions (available since M1.5a).
 - **CEL memory limits.** The CEL interpreter has no allocation limit, and the timeout is checked between rules, so one expensive expression is not interrupted; packs are bounded by load-time limits instead, and `max_alloc_bytes` is advisory.
-- **High availability, cloud KMS key protection, air-gapped deployment** — Stage 2. (PKCS#11 HSMs are supported per signing role.)
+- **High availability:** single-instance for now, HA decision open (no HA reference; see *Replica convergence* above). **Cloud KMS key protection, air-gapped deployment** — Stage 2. (PKCS#11 HSMs are supported per signing role.)
 - **Correctness of data in the customer's systems of record.**
 - **Production hardening of the reference implementation.** The MVP demo is a reference implementation, not a security certification.

@@ -10,7 +10,7 @@ Everything needed to run Kavach for one organisation and to **verify** that it w
 - Evidence: signed decision records, the verifier, export, and the evidence formats.
 - Key protection: the `KeyProvider` port and at least one open hardware-backed or KMS-backed adapter (planned: PKCS#11, tested against SoftHSM, or OpenBao Transit), with key rotation and compromise runbooks. Protecting signing keys is a security property, so it is never enterprise-only.
 - Revocation, contact caps, time controls and every other security guarantee in [docs/SECURITY_PROPERTIES.md](docs/SECURITY_PROPERTIES.md).
-- **Replicas that behave correctly:** converging on pack and policy changes and sharing replay and nonce state. A replica serving stale rules is a correctness problem, so the high-availability *reference* is core.
+- **Replicas that behave correctly, if replicas are ever supported:** converging on pack and policy changes and sharing replay and nonce state. A replica serving stale rules is a correctness problem, so the high-availability *reference* is core. **Today Kavach is single-instance for now, HA decision open:** there is no HA reference, so run one instance; replicas do not converge on a pack change.
 - **The per-stack agent kill switch:** restrict, quarantine and revoke an agent, and reinstate it with two people (ADR-013).
 - The developer CLI, including the attack harness and the decision trace.
 - Policy packs and the formal policy analysis.

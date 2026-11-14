@@ -38,7 +38,7 @@ Kavach decides when an agent asks to **do** something: a tool call such as sendi
 ### Honest limits
 
 - **Real providers.** Only backends that adopt the Kavach credential format verify it themselves (the bundled mock provider does). For real WhatsApp or SMS providers, the boundary is the gateway holding the provider's own token plus network isolation.
-- **Not production-ready.** This is pre-release software: no HA reference (replicas do not converge on a pack change), no published performance figures, and no external security review yet. HSM support (PKCS#11) is tested against SoftHSM only.
+- **Not production-ready.** This is pre-release software: single-instance for now, HA decision open (run one instance; replicas do not converge on a pack change), no published performance figures, and no external security review yet. HSM support (PKCS#11) is tested against SoftHSM only.
 - **Fixtures.** The reference resolver holds synthetic numbers only; a reference vault with crypto-shredding is planned.
 
 ## Quick start
