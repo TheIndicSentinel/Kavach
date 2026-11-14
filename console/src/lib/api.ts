@@ -41,19 +41,22 @@ function authHeaders(): Record<string, string> {
 
 export class ApiError extends Error {
   readonly status: number;
+  /** The server's `request_id`, to quote when reporting a refusal. */
+  readonly requestId?: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, requestId?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.requestId = requestId;
   }
 }
 
 /**
- * A refusal's text: the RFC 9457 `detail` (or the `error` member older
+ * The text of a refusal: the RFC 9457 `detail` (or the `error` member older
  * servers sent), with the `request_id` to quote when reporting it.
  */
-function problemDetail(payload: unknown): string | undefined {
+function problemOf(payload: unknown): { text?: string; requestId?: string } {
   const body = payload as
     | { detail?: unknown; error?: unknown; request_id?: unknown }
     | null;
@@ -63,18 +66,56 @@ function problemDetail(payload: unknown): string | undefined {
       : typeof body?.error === "string"
         ? body.error
         : undefined;
-  if (text === undefined) return undefined;
-  return typeof body?.request_id === "string"
-    ? `${text} (request ${body.request_id})`
-    : text;
+  const requestId =
+    typeof body?.request_id === "string" ? body.request_id : undefined;
+  return { text, requestId };
 }
 
-export async function fetchHealth(): Promise<{ status: string }> {
-  const response = await fetch("/health", { headers: authHeaders() });
-  if (!response.ok) {
-    throw new ApiError(`Health check failed (${response.status})`, response.status);
+/**
+ * The one way the console calls the API. The status is checked before the
+ * body is read, so an error page from a proxy (a 502 or 504 in HTML) is
+ * reported by its status, never as a JSON parse error.
+ */
+async function request<T>(
+  path: string,
+  init: { method?: "GET" | "POST"; body?: unknown } = {},
+): Promise<T> {
+  const method = init.method ?? "GET";
+  const headers: Record<string, string> = { Accept: "application/json", ...authHeaders() };
+  if (init.body !== undefined) headers["Content-Type"] = "application/json";
+
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers,
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError("The API could not be reached", 0);
   }
-  return response.json() as Promise<{ status: string }>;
+
+  const isJson = (response.headers.get("Content-Type") ?? "").includes("json");
+  const payload: unknown = isJson ? await response.json().catch(() => undefined) : undefined;
+
+  if (!response.ok) {
+    const { text, requestId } = problemOf(payload);
+    const message = text ?? `${method} ${path} failed (${response.status} ${response.statusText})`.trim();
+    throw new ApiError(
+      requestId ? `${message} (request ${requestId})` : message,
+      response.status,
+      requestId,
+    );
+  }
+  if (payload === undefined) {
+    throw new ApiError(`${method} ${path} returned no JSON body`, response.status);
+  }
+  return payload as T;
+}
+
+export function fetchHealth(): Promise<{ status: string }> {
+  return request("/health");
 }
 
 export type EvaluateResponse = {
@@ -85,26 +126,16 @@ export type EvaluateResponse = {
   policy_hits: string[];
 };
 
-export async function evaluateRequest(
-  body: unknown,
-): Promise<EvaluateResponse> {
-  const response = await fetch("/v1/evaluate", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-    },
-    body: JSON.stringify(body),
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    const message =
-      problemDetail(payload) ?? `Evaluate failed (${response.status})`;
-    throw new ApiError(message, response.status);
-  }
-  return payload as EvaluateResponse;
+export function evaluateRequest(body: unknown): Promise<EvaluateResponse> {
+  return request("/v1/evaluate", { method: "POST", body });
 }
 
+/** A guarantee this process runs with relaxed (docs/BYPASS_INVENTORY.md section 1). */
+export type Relaxation = string;
+
+export type HsmRole = "mandate" | "evidence" | "checkpoint" | "credential";
+
+/** `GET /v1/runtime` (RuntimeView in docs/openapi.yaml). */
 export type RuntimeInfo = {
   pack_id: string;
   pack_version: string;
@@ -114,13 +145,24 @@ export type RuntimeInfo = {
   governance_mode: string;
   pack_path: string;
   model_path: string;
-  pack_sha256?: string | null;
-  model_sha256?: string | null;
-  pointer_version?: number;
-  stored_pointer_version?: number;
-  pointer_drift?: boolean;
+  pack_sha256: string | null;
+  model_sha256: string | null;
+  pointer_version: number;
+  stored_pointer_version: number;
+  /** Another replica applied a governance change this one has not loaded. */
+  pointer_drift: boolean;
   /** The active model names a different pack than the one running (ADR-010). */
-  model_pack_mismatch?: boolean;
+  model_pack_mismatch: boolean;
+  /** The process runs with `--insecure-dev` (local development only). */
+  insecure_dev: boolean;
+  /** Every guarantee relaxed, by name. Empty in production. */
+  relaxations: Relaxation[];
+  checkpoint_lag_seconds?: number;
+  checkpoint_stalled?: boolean;
+  checkpoint_last_seq?: number | null;
+  checkpoint_uncovered_records?: number;
+  dev_clock?: { kind: "fixed" | "started_at"; at: string; development_only: true };
+  hsm?: { roles: HsmRole[]; healthy: boolean; error?: string };
 };
 
 export type PackSummary = {
@@ -184,15 +226,8 @@ export type ModelRecord = {
   governed?: boolean;
 };
 
-async function governanceFetch<T>(path: string): Promise<T> {
-  const response = await fetch(path, { headers: authHeaders() });
-  const payload = await response.json();
-  if (!response.ok) {
-    const message =
-      problemDetail(payload) ?? `Request failed (${response.status})`;
-    throw new ApiError(message, response.status);
-  }
-  return payload as T;
+function governanceFetch<T>(path: string): Promise<T> {
+  return request(path);
 }
 
 export function fetchRuntime(): Promise<RuntimeInfo> {
@@ -303,7 +338,8 @@ export type ChangeKind =
   | "update_retention"
   | "erase_evidence"
   | "apply_retention"
-  | "activate_model";
+  | "activate_model"
+  | "reinstate_agent";
 
 export type ChangeStatus =
   | "pending"
@@ -316,33 +352,25 @@ export type ChangeStatus =
 /** A maker-checker change request (ADR-009). */
 export interface ChangeRequest {
   id: string;
+  tenant_id: string;
   kind: ChangeKind;
   params: Record<string, unknown>;
   binding: Record<string, unknown>;
   change_digest: string;
   reason?: string | null;
   proposer: string;
+  proposer_key: string;
   status: ChangeStatus;
   decided_by?: string | null;
+  decided_by_key?: string | null;
   outcome?: Record<string, unknown> | null;
   created_at: string;
   expires_at: string;
   decided_at?: string | null;
 }
 
-async function changeFetch<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    const message =
-      problemDetail(payload) ?? `Request failed (${response.status})`;
-    throw new ApiError(message, response.status);
-  }
-  return payload as T;
+function changeFetch<T>(path: string, body?: unknown): Promise<T> {
+  return request(path, { method: "POST", body });
 }
 
 /** Proposes a governance change; a different principal must approve it. */

@@ -11,6 +11,7 @@ import { Skeleton } from "../components/ui/Skeleton";
 import { StatusIndicator } from "../components/ui/StatusIndicator";
 import { useHealth } from "../hooks/useHealth";
 import { useRuntime } from "../hooks/useRuntime";
+import type { RuntimeInfo } from "../lib/api";
 
 const capabilities = [
   {
@@ -25,8 +26,8 @@ const capabilities = [
   },
   {
     icon: ShieldCheck,
-    title: "Cedar RBAC",
-    description: "Optional access control via X-Kavach-Principal header.",
+    title: "Operator access control",
+    description: "Cedar policies decide each operator action; the caller is named by a bearer token.",
   },
   {
     icon: Activity,
@@ -84,7 +85,7 @@ export default function OverviewPage() {
               <p className="text-sm text-muted">{health.message}</p>
               {health.status === 401 || health.status === 403 ? (
                 <p className="text-sm text-muted">
-                  Configure your principal in Settings when Cedar RBAC is enabled.
+                  Set an access token in Settings.
                 </p>
               ) : null}
             </div>
@@ -146,11 +147,13 @@ export default function OverviewPage() {
             <code className="rounded bg-stone-100 px-1.5 py-0.5 text-xs text-ink">
               {runtime.kind === "ok" ? runtime.data.pack_id : "finance-v0"}
             </code>{" "}
-            enforces consent presence, DTI thresholds, and human-review gates aligned
-            to RBI digital lending and DPDP consent posture.
+            sets the rules for credit evaluations (consent presence, DTI thresholds,
+            human-review gates). Each evidence record names the pack that decided it.
           </p>
         </Card>
       </div>
+
+      {runtime.kind === "ok" && <PosturePanel runtime={runtime.data} />}
 
       <div className="mt-8">
         <h2 className="mb-4 text-sm font-semibold uppercase tracking-widest text-muted">
@@ -179,5 +182,95 @@ export default function OverviewPage() {
         </div>
       </div>
     </section>
+  );
+}
+
+/** What this process runs with: every relaxed guarantee by name, keys, checkpoints, clock. */
+function PosturePanel({ runtime }: { runtime: RuntimeInfo }) {
+  const relaxed = runtime.relaxations.length > 0;
+  const checkpointsKnown = runtime.checkpoint_stalled !== undefined;
+
+  return (
+    <Card className="mt-4">
+      <CardHeader>
+        <CardTitle>Runtime posture</CardTitle>
+        <CardDescription>
+          Guarantees this process runs with, as reported by <code>/v1/runtime</code>
+        </CardDescription>
+      </CardHeader>
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm">
+        <dt className="text-muted">Relaxations</dt>
+        <dd>
+          {relaxed ? (
+            <div className="space-y-1">
+              <StatusIndicator
+                status="error"
+                label={`${runtime.relaxations.length} relaxed${runtime.insecure_dev ? " · --insecure-dev" : ""}`}
+              />
+              <ul className="flex flex-wrap gap-1.5">
+                {runtime.relaxations.map((name) => (
+                  <li
+                    key={name}
+                    className="rounded bg-stone-100 px-1.5 py-0.5 font-mono text-xs text-ink"
+                  >
+                    {name}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : (
+            <StatusIndicator status="ok" label="None" />
+          )}
+        </dd>
+
+        <dt className="text-muted">Signing keys</dt>
+        <dd>
+          {runtime.hsm ? (
+            <div className="space-y-1">
+              <StatusIndicator
+                status={runtime.hsm.healthy ? "ok" : "error"}
+                label={`HSM ${runtime.hsm.healthy ? "healthy" : "unhealthy"} · ${runtime.hsm.roles.join(", ")}`}
+              />
+              {runtime.hsm.error && <p className="text-xs text-muted">{runtime.hsm.error}</p>}
+            </div>
+          ) : (
+            <span className="text-ink">Key files (no HSM configured)</span>
+          )}
+        </dd>
+
+        <dt className="text-muted">Checkpoints</dt>
+        <dd>
+          {checkpointsKnown ? (
+            <div className="space-y-1">
+              <StatusIndicator
+                status={runtime.checkpoint_stalled ? "error" : "ok"}
+                label={runtime.checkpoint_stalled ? "Stalled" : "Running"}
+              />
+              <p className="text-xs text-muted">
+                Last sequence {runtime.checkpoint_last_seq ?? "none"}
+                {runtime.checkpoint_lag_seconds !== undefined &&
+                  ` · lag ${runtime.checkpoint_lag_seconds}s`}
+                {runtime.checkpoint_uncovered_records !== undefined &&
+                  ` · ${runtime.checkpoint_uncovered_records} records not yet covered`}
+              </p>
+            </div>
+          ) : (
+            <span className="text-muted">Not reported</span>
+          )}
+        </dd>
+
+        {runtime.dev_clock && (
+          <>
+            <dt className="text-muted">Clock</dt>
+            <dd>
+              <StatusIndicator
+                status="error"
+                label={`Development clock (${runtime.dev_clock.kind === "fixed" ? "fixed" : "started"} at ${runtime.dev_clock.at})`}
+              />
+            </dd>
+          </>
+        )}
+      </dl>
+    </Card>
   );
 }
