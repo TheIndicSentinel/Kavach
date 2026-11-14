@@ -13,7 +13,8 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Security
 
-- **`rustls-webpki` 0.103.15 to 0.103.17 (RUSTSEC-2026-0382, certificate verification may accept distrusted intermediates).** A lockfile-only patch update: no source, configuration or format change, and no other package moved. The library verifies the chain of a TLS client certificate (the operator API's mTLS principal path) and of the servers Kavach connects to over TLS. Local result, CI could not run: `cargo deny check advisories` no longer lists it. Still reported: `tokio` 1.53.1 (RUSTSEC-2026-0386, fixed in 1.53.3, a separate update) and four crates (`libsqlite3-sys`, `zstd`, `zstd-safe`, `zstd-sys`) that are in `Cargo.lock` only: none is in any build graph (normal, build or dev, all targets, all features).
+- **`rustls-webpki` 0.103.15 to 0.103.17 (RUSTSEC-2026-0382, certificate verification may accept distrusted intermediates).** A lockfile-only patch update: no source, configuration or format change, and no other package moved. The library verifies the chain of a TLS client certificate (the operator API's mTLS principal path) and of the servers Kavach connects to over TLS. Local result, CI could not run: `cargo deny check advisories` no longer lists it.
+- **`tokio` 1.53.1 to 1.53.3 (RUSTSEC-2026-0386, `AsyncFd::new` and related constructors violate I/O safety).** A lockfile-only patch update (the package's version and checksum; no other package or dependency edge moved). Every listener and the provider client run on tokio. Still reported: four crates (`libsqlite3-sys`, `zstd`, `zstd-safe`, `zstd-sys`) that are in `Cargo.lock` only: none is in any build graph (normal, build or dev, all targets, all features).
 
 ### Fixed
 
