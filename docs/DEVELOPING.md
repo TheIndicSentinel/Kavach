@@ -24,7 +24,7 @@ cargo build --workspace     # everything, including kavach-batch and the mock pr
 ./scripts/verify.sh         # fmt, clippy, tests, audit/deny if installed (as CI)
 ```
 
-The console is embedded into `kavach-api` only when `console/dist/` exists, so Node is not needed for the Rust build. To embed it: `./scripts/build-console.sh`.
+The console is embedded into `kavach-api` only when `console/dist/` holds a real build: `index.html` must load a script from `/assets/` and every asset it names must exist (a stub `index.html` is refused with a build warning). Node is not needed for the Rust build. Without a build, `/` answers a plain "console not built" page. To embed it: `./scripts/build-console.sh`, then rebuild `kavach-api`.
 
 ## 3. Postgres tests (optional, recommended)
 

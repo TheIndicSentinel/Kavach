@@ -1034,26 +1034,106 @@ async fn erase_evidence_tombstones_memory_chain_row() {
         .is_some_and(|rows| rows.iter().any(|row| row["evidence_id"] == evidence_id)));
 }
 
-#[cfg(console_embedded)]
-#[tokio::test]
-async fn console_serves_index_html() {
+async fn console_get(path: &str) -> (StatusCode, axum::http::HeaderMap, String) {
     let (pack, model) = fixture_paths();
     let state = Arc::new(
         AppState::from_paths_for_tests(&pack, &model, None)
             .await
             .expect("state"),
     );
-    let app = router(state);
-
-    let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+    let response = router(state)
+        .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
         .await
         .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
+    let headers = response.headers().clone();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let html = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(html.contains("Kavach"));
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+fn assert_console_headers(path: &str, headers: &axum::http::HeaderMap, cache: &str) {
+    assert_eq!(
+        headers["content-security-policy"],
+        kavach_api::console::CONTENT_SECURITY_POLICY,
+        "{path}"
+    );
+    assert_eq!(headers["x-content-type-options"], "nosniff", "{path}");
+    assert_eq!(headers["referrer-policy"], "no-referrer", "{path}");
+    assert_eq!(headers["cache-control"], cache, "{path}");
+}
+
+/// The console page, at `/` and at a single-page route: the built console
+/// when this binary has one, else the plain "not built" page. Never blank,
+/// and always with the security headers and no-store.
+#[tokio::test]
+async fn console_page_is_never_blank_and_carries_the_security_headers() {
+    for path in ["/", "/index.html", "/agents/a-1"] {
+        let (status, headers, body) = console_get(path).await;
+        assert_console_headers(path, &headers, "no-store");
+        #[cfg(console_embedded)]
+        {
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(body.contains("Kavach"), "{path}: {body}");
+            // A real build: the page loads its hashed script.
+            assert!(body.contains("src=\"/assets/"), "{path}: {body}");
+        }
+        #[cfg(not(console_embedded))]
+        {
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+            assert!(headers["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain"));
+            assert_eq!(body, kavach_api::console::NOT_BUILT, "{path}");
+        }
+    }
+}
+
+/// Unknown API paths and missing files are problems, never the console page.
+#[tokio::test]
+async fn api_paths_and_missing_assets_are_not_the_console_page() {
+    for path in [
+        "/v1/no-such-route",
+        "/v1",
+        "/assets/no-such-file.js",
+        "/nope.css",
+    ] {
+        let (status, headers, body) = console_get(path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(
+            headers["content-type"],
+            kavach_api::problem::CONTENT_TYPE,
+            "{path}"
+        );
+        assert!(!body.contains("<html"), "{path}: {body}");
+    }
+}
+
+/// Hashed assets are cached for good; everything else is not.
+#[cfg(console_embedded)]
+#[tokio::test]
+async fn console_assets_are_cached_and_carry_the_security_headers() {
+    let (_, _, index) = console_get("/").await;
+    let script = kavach_api::console_build::referenced_assets(&index)
+        .into_iter()
+        .find(|asset| std::path::Path::new(asset).extension() == Some("js".as_ref()))
+        .expect("the page loads a script");
+    let path = format!("/{script}");
+    let (status, headers, _) = console_get(&path).await;
+    assert_eq!(status, StatusCode::OK, "{path}");
+    assert_console_headers(&path, &headers, "public, max-age=31536000, immutable");
+    assert!(headers["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("application/javascript"));
+
+    let (status, headers, _) = console_get("/favicon.svg").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_console_headers("/favicon.svg", &headers, "no-cache");
 }
 
 /// Copies the finance pack/model into a temp registry with a second pack
