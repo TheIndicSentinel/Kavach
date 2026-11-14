@@ -154,7 +154,12 @@ fn build(history: &History, name: &str) -> Built {
             2 => (Outcome::Failed, "connect_failed"),
             3 => (Outcome::Refused, "provider_422"),
             4 => (Outcome::NotExecuted, "no_destination"),
-            _ => (Outcome::Unknown, "timeout_after_send"),
+            // The three reasons an unknown outcome is written with: the call
+            // timed out after the send, the provider answered 503, and the
+            // F7 recovery found an allow whose outcome was never recorded.
+            5 => (Outcome::Unknown, "timeout_after_send"),
+            6 => (Outcome::Unknown, "provider_503"),
+            _ => (Outcome::Unknown, "outcome_not_recorded"),
         };
         let row = sign_outcome(
             TENANT,
