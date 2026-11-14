@@ -76,8 +76,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/agents/{agent_id}/quarantine",
             post(crate::agents::quarantine),
         )
-        .route("/v1/agents/{agent_id}/revoke", post(crate::agents::revoke))
-        .route("/v1/dev/clock", post(crate::dev_clock::set_dev_clock));
+        .route("/v1/agents/{agent_id}/revoke", post(crate::agents::revoke));
+    // The development clock endpoint is not mounted at all under
+    // `--require-hardening` (it answers 404), not merely refused.
+    let router = if state.require_hardening() {
+        router
+    } else {
+        router.route("/v1/dev/clock", post(crate::dev_clock::set_dev_clock))
+    };
 
     // The credit track: Decision Governance (evaluate, packs, models,
     // retention, incidents, batch) and its console.

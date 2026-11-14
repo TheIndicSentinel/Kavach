@@ -36,6 +36,7 @@ pub struct AppState {
     pack_signers: Option<TrustedSigners>,
     oidc: Option<std::sync::Arc<crate::oidc::OidcVerifier>>,
     insecure_dev: bool,
+    require_hardening: bool,
     relaxations: std::collections::BTreeSet<crate::relaxations::Relaxation>,
     mtls_principal_san: Option<crate::mtls::MtlsSanKind>,
     nonces: crate::hmac_auth::NonceCache,
@@ -141,6 +142,7 @@ impl AppState {
             pack_signers,
             oidc,
             insecure_dev: config.insecure_dev,
+            require_hardening: config.require_hardening,
             mtls_principal_san: config.mtls_principal_san,
             nonces: crate::hmac_auth::NonceCache::default(),
             changes,
@@ -176,6 +178,7 @@ impl AppState {
             database_tls: kavach_storage::DatabaseTls::default(),
             database_pool_size: kavach_storage::DEFAULT_POOL_SIZE,
             dataplane: None,
+            require_hardening: false,
         };
         Self::from_config(&config).await
     }
@@ -194,6 +197,11 @@ impl AppState {
 
     pub fn insecure_dev(&self) -> bool {
         self.insecure_dev
+    }
+
+    /// The process was started with `--require-hardening`.
+    pub fn require_hardening(&self) -> bool {
+        self.require_hardening
     }
 
     /// The relaxations this process runs with (empty in production).

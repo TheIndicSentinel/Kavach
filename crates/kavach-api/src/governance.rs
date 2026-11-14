@@ -57,6 +57,9 @@ pub struct RuntimeView {
     pub hsm: Option<crate::signing::HsmStatus>,
     /// True when the process runs with `--insecure-dev`.
     pub insecure_dev: bool,
+    /// True when the process was started with `--require-hardening`, which
+    /// refused to start unless every guarantee was on.
+    pub require_hardening: bool,
     /// Every way this process runs with a guarantee relaxed, by name (a
     /// fixed set, see BYPASS_INVENTORY.md section 1). Empty in production.
     pub relaxations: Vec<&'static str>,
@@ -90,6 +93,7 @@ pub async fn runtime(
             None => None,
         },
         insecure_dev: state.insecure_dev(),
+        require_hardening: state.require_hardening(),
         relaxations: state.relaxations().iter().map(|r| r.as_str()).collect(),
     }))
 }

@@ -127,6 +127,7 @@ async fn spawn_cedar_grpc_server() -> (SocketAddr, tokio::task::JoinHandle<()>) 
     let (pack, model) = fixture_paths();
     let (policy_path, entities_path) = cedar_fixture_paths();
     let config = ApiConfig {
+        require_hardening: false,
         pack_path: pack,
         model_path: model,
         hmac_secret: None,

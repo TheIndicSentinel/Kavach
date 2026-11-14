@@ -48,6 +48,7 @@ fn registry() -> PathBuf {
 
 fn config(root: &Path, database_url: &str, pack: &str, bootstrap_pack: bool) -> ApiConfig {
     ApiConfig {
+        require_hardening: false,
         pack_path: root.join("packs/finance").join(pack),
         model_path: root.join("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,
