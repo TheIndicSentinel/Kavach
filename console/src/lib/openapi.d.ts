@@ -667,8 +667,10 @@ export interface components {
             pointer_drift: boolean;
             /** @description The process runs with `--insecure-dev` (local development only). */
             insecure_dev: boolean;
+            /** @description The process was started with `--require-hardening`: it refused to start unless every guarantee was on, and `POST /v1/dev/clock` is not mounted. */
+            require_hardening: boolean;
             /** @description Every way this process runs with a guarantee relaxed, by name (a fixed set, docs/BYPASS_INVENTORY.md section 1). Empty in production. */
-            relaxations: ("insecure_dev" | "access_control_none" | "principal_header" | "weaker_database_tls" | "memory_agent_stores" | "test_clock" | "dev_clock" | "system_clock_declared_synced" | "unsigned_tool_registry" | "dev_keys" | "test_double_broker")[];
+            relaxations: ("insecure_dev" | "access_control_none" | "principal_header" | "weaker_database_tls" | "memory_evidence_store" | "memory_agent_stores" | "test_clock" | "dev_clock" | "system_clock_declared_synced" | "unsigned_tool_registry" | "dev_keys" | "test_double_broker")[];
             checkpoint_lag_seconds?: number;
             checkpoint_stalled?: boolean;
             checkpoint_last_seq?: number | null;
