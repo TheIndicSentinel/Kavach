@@ -482,6 +482,39 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /v1/agents:
+    get:
+      operationId: listAgents
+      tags: [agents]
+      summary: The tenant's agents and their states (admins).
+      description: >-
+        ADR-013. Every agent a passport names in this tenant, in ascending agent-id order, a
+        page at a time: pass `next_cursor` back as `cursor` for the next page. `next_cursor` is
+        null when no more agents follow; a page may be short, or the last page empty, when it
+        is not. With `state`, only agents in that state. 404 when agent surfaces are not
+        configured.
+      parameters:
+        - name: state
+          in: query
+          schema: { $ref: "#/components/schemas/AgentStateName" }
+        - { $ref: "#/components/parameters/Limit" }
+        - name: cursor
+          in: query
+          description: The `next_cursor` of the previous page.
+          schema: { type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" }
+      responses:
+        "200":
+          description: A page of agents.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AgentStatePage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /v1/agents/{agent_id}:
     get:
       operationId: getAgentState
@@ -1392,6 +1425,18 @@ components:
         approved_by: { type: [string, "null"] }
         change_request_id: { type: [string, "null"] }
         changed_at: { type: string, format: date-time }
+    AgentStatePage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/AgentStateView" }
+        next_cursor:
+          type: [string, "null"]
+          description: Pass as `cursor` for the next page; null when no more agents follow.
     AgentStopResult:
       type: object
       additionalProperties: false
