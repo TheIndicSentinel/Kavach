@@ -1,9 +1,11 @@
 import { NavLink } from "react-router-dom";
 import {
+  Bot,
   Boxes,
   ClipboardList,
   FileSearch,
   ClipboardCheck,
+  FileKey,
   Layers,
   LayoutDashboard,
   ScrollText,
@@ -18,6 +20,11 @@ const primaryNav = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard },
   { to: "/evaluate", label: "Evaluate", icon: FileSearch },
   { to: "/settings", label: "Settings", icon: Settings },
+] as const;
+
+const agentNav = [
+  { to: "/agents", label: "Agents", icon: Bot },
+  { to: "/agent-evidence", label: "Agent evidence", icon: FileKey },
 ] as const;
 
 const governanceNav = [
@@ -70,6 +77,30 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
             {item.label}
           </NavLink>
         ))}
+
+        <div className="pt-6">
+          <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-500">
+            Agents
+          </p>
+          {agentNav.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              onClick={onNavigate}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-white/10 text-white"
+                    : "text-stone-300 hover:bg-white/5 hover:text-white",
+                )
+              }
+            >
+              <item.icon className="h-4 w-4 shrink-0 opacity-80" aria-hidden />
+              {item.label}
+            </NavLink>
+          ))}
+        </div>
 
         <div className="pt-6">
           <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-500">

@@ -1,6 +1,13 @@
 // request(): every way a call can end, checked against a stubbed fetch.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, request } from "./api";
+import {
+  ApiError,
+  fetchAgent,
+  fetchAgentDecision,
+  fetchAgents,
+  fetchRevocationRecord,
+  request,
+} from "./api";
 
 function stubStorage() {
   const store = new Map<string, string>();
@@ -88,5 +95,54 @@ describe("request", () => {
     const headers = seen.mock.calls[0][1]?.headers as Record<string, string>;
     expect(headers.Authorization).toBe("Bearer tok");
     expect(headers["X-Kavach-Principal"]).toBeUndefined();
+  });
+});
+
+describe("agent calls", () => {
+  function capture(body: unknown) {
+    const seen = vi.fn(async (_path: string, _init?: RequestInit) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", seen);
+    return seen;
+  }
+
+  it("lists agents with the state, limit and cursor it is given", async () => {
+    const seen = capture({ items: [], next_cursor: null });
+    await fetchAgents({ state: "restricted", limit: 50, cursor: "agent-7" });
+    expect(seen.mock.calls[0][0]).toBe("/v1/agents?state=restricted&limit=50&cursor=agent-7");
+    expect(seen.mock.calls[0][1]?.method).toBe("GET");
+  });
+
+  it("leaves unset query members out", async () => {
+    const seen = capture({ items: [], next_cursor: null });
+    await fetchAgents();
+    expect(seen.mock.calls[0][0]).toBe("/v1/agents");
+  });
+
+  it("encodes ids in the path, never in a query string", async () => {
+    const seen = capture({});
+    await fetchAgent("a/b?c");
+    await fetchAgentDecision("adr:t:0:1");
+    await fetchRevocationRecord("los:core", "evt/1");
+    expect(seen.mock.calls.map((call) => call[0])).toEqual([
+      "/v1/agents/a%2Fb%3Fc",
+      "/v1/agent-decisions/adr%3At%3A0%3A1",
+      "/v1/agent-revocations/los%3Acore/evt%2F1",
+    ]);
+  });
+
+  it("keeps the problem detail apart from the request_id", async () => {
+    respond(
+      429,
+      JSON.stringify({ title: "Too Many Requests", status: 429, detail: "slow down", request_id: "r-9" }),
+      "application/problem+json",
+    );
+    const err = await failure("/v1/agent-decisions/adr:t:0:1");
+    expect(err.detail).toBe("slow down");
+    expect(err.requestId).toBe("r-9");
   });
 });
