@@ -14,7 +14,8 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 ### Security
 
 - **`rustls-webpki` 0.103.15 to 0.103.17 (RUSTSEC-2026-0382, certificate verification may accept distrusted intermediates).** A lockfile-only patch update: no source, configuration or format change, and no other package moved. The library verifies the chain of a TLS client certificate (the operator API's mTLS principal path) and of the servers Kavach connects to over TLS. Local result, CI could not run: `cargo deny check advisories` no longer lists it.
-- **`tokio` 1.53.1 to 1.53.3 (RUSTSEC-2026-0386, `AsyncFd::new` and related constructors violate I/O safety).** A lockfile-only patch update (the package's version and checksum; no other package or dependency edge moved). Every listener and the provider client run on tokio. Still reported: four crates (`libsqlite3-sys`, `zstd`, `zstd-safe`, `zstd-sys`) that are in `Cargo.lock` only: none is in any build graph (normal, build or dev, all targets, all features).
+- **`tokio` 1.53.1 to 1.53.3 (RUSTSEC-2026-0386, `AsyncFd::new` and related constructors violate I/O safety).** A lockfile-only patch update (the package's version and checksum; no other package or dependency edge moved). Every listener and the provider client run on tokio.
+- **`zstd` 0.13.3 to 0.13.5, `zstd-safe` 7.2.4 to 7.4.1, `zstd-sys` 2.0.16 to 2.1.3 (RUSTSEC-2026-0391, -0398, -0403, -0410).** A lockfile-only update within semver: these three packages move and no dependency edge changes. The only dependent is `polars-arrow`, as an optional dependency that no feature enables: zstd is in no build graph (`cargo tree -p kavach-batch --all-features` lists none), and the `kavach-batch` tests pass unchanged. Still reported: `libsqlite3-sys` (RUSTSEC-2026-0459), in `Cargo.lock` only via `sqlx-sqlite` and in no build graph; it cannot be updated (see the audit ignore).
 
 ### Fixed
 
