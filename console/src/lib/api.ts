@@ -1,4 +1,4 @@
-import type { components, operations } from "./openapi";
+import type { components, operations, paths } from "./openapi";
 
 /** Every type the API sends or accepts, generated from docs/openapi.yaml. */
 type Schemas = components["schemas"];
@@ -308,4 +308,67 @@ export function fetchRevocationRecord(system: string, eventId: string): Promise<
   return request(
     `/v1/agent-revocations/${encodeURIComponent(system)}/${encodeURIComponent(eventId)}`,
   );
+}
+
+/** Why an agent's state was changed, from the spec's closed set. */
+export type AgentReasonCode = Schemas["AgentReasonCode"];
+
+/** The body of a restrict, quarantine or revoke. */
+export type StopAgentRequest = Schemas["StopAgentRequest"];
+
+/** What a restrict, quarantine or revoke returns: the state now, and what was done. */
+export type AgentStopResult = Schemas["AgentStopResult"];
+
+/**
+ * `restrict`, `quarantine` or `revoke`: the last segment of every
+ * `/v1/agents/{agent_id}/<action>` path in the spec, so a path added or
+ * renamed there changes this type.
+ */
+export type StopAction = Extract<keyof paths, `/v1/agents/{agent_id}/${string}`> extends
+  `/v1/agents/{agent_id}/${infer Action}`
+  ? Action
+  : never;
+
+/** The path of a stop: the agent id is encoded, the action is one the spec names. */
+export function stopAgentPath(agentId: string, action: StopAction): string {
+  return `/v1/agents/${encodeURIComponent(agentId)}/${action}`;
+}
+
+/** One principal with `stop_agent`; the API decides whether this caller may. */
+export function stopAgent(
+  agentId: string,
+  action: StopAction,
+  body: StopAgentRequest,
+): Promise<AgentStopResult> {
+  return request(stopAgentPath(agentId, action), { method: "POST", body });
+}
+
+/** What a reinstatement may bring an agent back to (never `revoked`, never past `active`). */
+export type ReinstateTo = Extract<AgentStateName, "active" | "restricted">;
+
+/**
+ * The `params` of a `reinstate_agent` change request. The spec gives them
+ * only in `ChangeProposal`'s description (`{agent_id, to: active |
+ * restricted, reason_code?, note?}`): `params` itself is an open object, so
+ * no generated type names these members (noted on #218).
+ */
+export type ReinstateAgentParams = {
+  agent_id: AgentStateView["agent_id"];
+  to: ReinstateTo;
+  reason_code?: AgentReasonCode;
+  note?: StopAgentRequest["note"];
+};
+
+/** `POST /v1/change-requests` for a reinstatement: the generated proposal with typed params. */
+export type ReinstateProposal = Omit<Schemas["ChangeProposal"], "kind" | "params"> & {
+  kind: Extract<ChangeKind, "reinstate_agent">;
+  params: ReinstateAgentParams;
+};
+
+/**
+ * Proposes bringing an agent back. Nothing changes until a different
+ * principal approves the change request (ADR-013 §3, ADR-009).
+ */
+export function proposeReinstatement(proposal: ReinstateProposal): Promise<ChangeRequest> {
+  return changeFetch("/v1/change-requests", proposal);
 }

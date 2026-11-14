@@ -1,4 +1,4 @@
-import type { HTMLAttributes } from "react";
+import type { ComponentProps, HTMLAttributes } from "react";
 import { cn } from "../../lib/cn";
 
 type CardProps = HTMLAttributes<HTMLDivElement>;
@@ -26,7 +26,7 @@ export function CardTitle({
   className,
   children,
   ...props
-}: HTMLAttributes<HTMLHeadingElement>) {
+}: ComponentProps<"h2">) {
   return (
     <h2 className={cn("text-base font-semibold text-ink", className)} {...props}>
       {children}
