@@ -1,4 +1,4 @@
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "./ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "./ui/Card";
@@ -19,10 +19,6 @@ export class ErrorBoundary extends Component<
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { error };
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo): void {
-    console.error("Console error:", error, info.componentStack);
   }
 
   render() {

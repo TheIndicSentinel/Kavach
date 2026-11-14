@@ -118,6 +118,16 @@ jobs:
       - name: Build console
         run: ./scripts/build-console.sh
 
+      # Typecheck, lint (TypeScript, React hooks, jsx-a11y), unit tests, and
+      # the generated API types must match docs/openapi.yaml.
+      - name: Console checks
+        working-directory: console
+        run: |
+          npm run typecheck
+          npm run lint
+          npm test
+          npm run check:api
+
       # Production npm dependency licence allowlist (PRD NFR-1). OFL-1.1 covers the
       # @fontsource fonts; MPL-2.0 covers build-time CSS tooling (lightningcss) that is
       # not included in the built console bundle.
