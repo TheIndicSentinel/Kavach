@@ -13,6 +13,7 @@ import {
   type ChangeRequest,
   type ChangeStatus,
 } from "../lib/api";
+import { changeRequestAnchor } from "../lib/agentActions";
 import { formatDateTime } from "../lib/format";
 
 const KIND_LABELS: Record<ChangeKind, string> = {
@@ -155,7 +156,7 @@ export default function ChangeRequestsPage() {
 
       <div className="space-y-4">
         {(requests ?? []).map((request) => (
-          <Card key={request.id}>
+          <Card key={request.id} id={changeRequestAnchor(request.id)}>
             <CardHeader>
               <div className="flex flex-wrap items-center gap-3">
                 <CardTitle>{KIND_LABELS[request.kind]}</CardTitle>

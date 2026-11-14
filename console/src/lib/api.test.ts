@@ -6,8 +6,13 @@ import {
   fetchAgentDecision,
   fetchAgents,
   fetchRevocationRecord,
+  proposeReinstatement,
   request,
+  stopAgent,
+  stopAgentPath,
+  type StopAction,
 } from "./api";
+import { reinstateProposalBody, stopRequestBody } from "./agentActions";
 
 function stubStorage() {
   const store = new Map<string, string>();
@@ -144,5 +149,66 @@ describe("agent calls", () => {
     const err = await failure("/v1/agent-decisions/adr:t:0:1");
     expect(err.detail).toBe("slow down");
     expect(err.requestId).toBe("r-9");
+  });
+});
+
+describe("agent actions", () => {
+  function capture(status: number, body: unknown) {
+    const seen = vi.fn(async (_path: string, _init?: RequestInit) =>
+      new Response(JSON.stringify(body), {
+        status,
+        headers: { "Content-Type": status < 400 ? "application/json" : "application/problem+json" },
+      }),
+    );
+    vi.stubGlobal("fetch", seen);
+    return seen;
+  }
+
+  it("posts each stop to its own path with the reason code and note", async () => {
+    const actions: StopAction[] = ["restrict", "quarantine", "revoke"];
+    const seen = capture(200, {});
+    const body = stopRequestBody({ reasonCode: "policy_violation", note: "seen in the audit" });
+    for (const action of actions) await stopAgent("agent:a/b", action, body);
+    expect(seen.mock.calls.map((call) => call[0])).toEqual([
+      "/v1/agents/agent%3Aa%2Fb/restrict",
+      "/v1/agents/agent%3Aa%2Fb/quarantine",
+      "/v1/agents/agent%3Aa%2Fb/revoke",
+    ]);
+    for (const call of seen.mock.calls) {
+      expect(call[1]?.method).toBe("POST");
+      expect(JSON.parse(String(call[1]?.body))).toEqual({
+        reason_code: "policy_violation",
+        note: "seen in the audit",
+      });
+      expect((call[1]?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
+    }
+    expect(stopAgentPath("x", "revoke")).toBe("/v1/agents/x/revoke");
+  });
+
+  it("proposes a reinstatement through the change-request API, never a reinstate path", async () => {
+    const seen = capture(201, { id: "cr-1" });
+    await proposeReinstatement(
+      reinstateProposalBody("agent:a", "active", { reasonCode: "reviewed", note: "" }),
+    );
+    expect(seen.mock.calls[0][0]).toBe("/v1/change-requests");
+    expect(seen.mock.calls[0][1]?.method).toBe("POST");
+    expect(JSON.parse(String(seen.mock.calls[0][1]?.body))).toEqual({
+      kind: "reinstate_agent",
+      params: { agent_id: "agent:a", to: "active", reason_code: "reviewed" },
+    });
+  });
+
+  it.each([
+    [403, "forbidden", "req-403"],
+    [409, "this would loosen the agent's state", "req-409"],
+  ])("reports a %i refusal of a stop with its detail and request_id", async (status, detail, id) => {
+    capture(status, { title: "refused", status, detail, request_id: id });
+    const err = await stopAgent("agent:a", "restrict", { reason_code: "other" }).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(status);
+    expect((err as ApiError).detail).toBe(detail);
+    expect((err as ApiError).requestId).toBe(id);
   });
 });

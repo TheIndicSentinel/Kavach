@@ -1,5 +1,11 @@
 // Response bodies typed from openapi.d.ts, so a spec change breaks the tests.
-import type { AgentDecisionLookup, AgentStateView, RevocationLookup } from "../lib/api";
+import type {
+  AgentDecisionLookup,
+  AgentStateView,
+  AgentStopResult,
+  ChangeRequest,
+  RevocationLookup,
+} from "../lib/api";
 
 export const neverChanged: AgentStateView = {
   agent_id: "agent:collections-bot",
@@ -89,4 +95,51 @@ export const revocationLookup: RevocationLookup = {
     hash: "recordhash43",
     sig: "sig43",
   },
+};
+
+export const quarantineApplied: AgentStopResult = {
+  agent_id: "agent:collections-bot",
+  state: "quarantined",
+  change_no: 1,
+  reason_code: "rogue_behaviour",
+  changed_by: "operator-1",
+  approved_by: null,
+  change_request_id: null,
+  changed_at: "2026-11-15T09:00:00Z",
+  applied: true,
+  record: "pending",
+};
+
+export const revokeHalfway: AgentStopResult = {
+  agent_id: "agent:payments-bot",
+  state: "revoked",
+  change_no: 4,
+  reason_code: "compromise_suspected",
+  changed_by: "operator-1",
+  approved_by: null,
+  change_request_id: null,
+  changed_at: "2026-11-15T09:05:00Z",
+  applied: true,
+  record: "written",
+  mandates_revoked: ["mandate-7"],
+  mandates_not_revoked: ["mandate-8"],
+};
+
+export const reinstateProposed: ChangeRequest = {
+  id: "cr-0099",
+  tenant_id: "bank-1",
+  kind: "reinstate_agent",
+  params: { agent_id: "agent:payments-bot", to: "active", reason_code: "reviewed" },
+  binding: { agent_id: "agent:payments-bot", from_state: "quarantined", change_no: 3 },
+  change_digest: "sha256:abc",
+  reason: null,
+  proposer: "operator-1",
+  proposer_key: "oidc:iss#operator-1",
+  status: "pending",
+  decided_by: null,
+  decided_by_key: null,
+  outcome: null,
+  created_at: "2026-11-15T09:10:00Z",
+  expires_at: "2026-11-16T09:10:00Z",
+  decided_at: null,
 };
