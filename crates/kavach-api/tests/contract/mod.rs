@@ -127,8 +127,15 @@ pub fn validate(
 ) {
     let shown = format!("{} {path} -> {status} ({listener})", method.to_uppercase());
     let Some(template) = template_for(listener, path) else {
-        // Not an API path: the console's pages, or a not-found problem.
-        if status == 200 && content_type.starts_with("text/") {
+        // Not an API path: the console's page and files, its plain "not
+        // built" page (404), or a not-found problem.
+        let console_file = ["text/", "application/javascript", "image/", "font/"]
+            .iter()
+            .any(|kind| content_type.starts_with(kind));
+        if status == 200 && console_file {
+            return;
+        }
+        if status == 404 && content_type.starts_with("text/plain") {
             return;
         }
         let problem = &spec()["components"]["responses"]["Problem"];

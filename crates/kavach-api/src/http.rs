@@ -28,7 +28,8 @@ use crate::state::AppState;
 /// The operator router. In agent-only mode (hosted builds, where the credit
 /// track is frozen) it serves the operator surface of the agent path alone:
 /// health, metrics, runtime, change requests, the audit log and the evidence
-/// reads. Every other route is an unknown path.
+/// reads. Every other API route is an unknown path. The console is served
+/// in both modes (see [`crate::console`]).
 pub fn router(state: Arc<AppState>) -> Router {
     let agent_only = state
         .dataplane()
@@ -107,16 +108,9 @@ pub fn router(state: Arc<AppState>) -> Router {
             .route("/v1/admin/batch-jobs/{job_id}", get(get_batch_job))
     };
 
-    // The governance console, when it was built into this binary and the
-    // credit track is served; else an unknown path is a problem.
-    #[cfg(console_embedded)]
-    let router = if agent_only {
-        router.fallback(crate::problem::not_found)
-    } else {
-        router.fallback(crate::console::fallback)
-    };
-    #[cfg(not(console_embedded))]
-    let router = router.fallback(crate::problem::not_found);
+    // The governance console, in both modes: the built console when this
+    // binary has one, else a plain "not built" page. API paths stay problems.
+    let router = router.fallback(crate::console::fallback);
 
     router
         .method_not_allowed_fallback(crate::problem::method_not_allowed)
