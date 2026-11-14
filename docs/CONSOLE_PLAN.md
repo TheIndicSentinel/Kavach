@@ -32,6 +32,7 @@ The operator API (`docs/openapi.yaml`). The Cedar action is what the principal n
 | `GET /v1/runtime` | `read_governance` | Overview (partial) | UI-0: show posture (relaxations, insecure dev, HSM, checkpoints, dev clock) |
 | `GET/POST /v1/change-requests`, `GET …/{id}`, `POST …/{id}/approve \| reject \| cancel` | `read_change_requests`, `propose_*`, `approve_*` | Change requests | UI-0: add `reinstate_agent`; UI-2: propose it |
 | `GET /v1/admin/audit` | `read_audit` | Audit | done; UI-0 wording |
+| `GET /v1/agents?state=&limit=&cursor=` | `read_agent_state` | none | UI-1 (list) |
 | `GET /v1/agents/{agent_id}` | `read_agent_state` | none | UI-1 |
 | `POST /v1/agents/{agent_id}/restrict \| quarantine \| revoke` | `stop_agent` | none | UI-2 |
 | `GET /v1/agent-decisions/{record_id}` | `read_evidence` (rate limited, audited) | none | UI-1 |

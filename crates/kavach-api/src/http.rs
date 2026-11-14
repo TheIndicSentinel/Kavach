@@ -68,6 +68,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/reconciliation/closed-records",
             post(crate::closed_records::reconcile_closed_records),
         )
+        .route("/v1/agents", get(crate::agents::list_agents))
         .route("/v1/agents/{agent_id}", get(crate::agents::get_agent))
         .route(
             "/v1/agents/{agent_id}/restrict",

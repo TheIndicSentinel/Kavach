@@ -1015,6 +1015,16 @@ impl Dataplane {
         &self.core
     }
 
+    /// The agent ids this configuration has a passport for in its own
+    /// tenant, in ascending byte order. Other tenants' passports are not in
+    /// it.
+    pub fn agent_ids(&self) -> impl Iterator<Item = &str> {
+        self.passports
+            .iter()
+            .filter(|(tenant, _)| *tenant == self.tenant)
+            .map(|(_, agent)| agent.as_str())
+    }
+
     /// The checkpoint writer's state (the background task ticks it).
     pub fn checkpointer(&self) -> &Arc<Checkpointer<EvidenceBackend>> {
         &self.checkpointer
