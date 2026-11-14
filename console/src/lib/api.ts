@@ -1,7 +1,14 @@
-import type { components } from "./openapi";
+import type { components, operations } from "./openapi";
 
 /** Every type the API sends or accepts, generated from docs/openapi.yaml. */
 type Schemas = components["schemas"];
+
+/** The JSON body of an operation's 200 response. */
+type Ok<Op extends keyof operations> = operations[Op]["responses"] extends {
+  200: { content: { "application/json": infer Body } };
+}
+  ? Body
+  : never;
 
 const PRINCIPAL_KEY = "kavach.principal";
 const TOKEN_KEY = "kavach.accessToken";
@@ -48,12 +55,15 @@ export class ApiError extends Error {
   readonly status: number;
   /** The server's `request_id`, to quote when reporting a refusal. */
   readonly requestId?: string;
+  /** The refusal without the request id appended (the problem `detail`, or the status). */
+  readonly detail: string;
 
-  constructor(message: string, status: number, requestId?: string) {
+  constructor(message: string, status: number, requestId?: string, detail?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
     this.requestId = requestId;
+    this.detail = detail ?? message;
   }
 }
 
@@ -111,6 +121,7 @@ export async function request<T>(
       requestId ? `${message} (request ${requestId})` : message,
       response.status,
       requestId,
+      message,
     );
   }
   if (payload === undefined) {
@@ -250,4 +261,51 @@ export function rejectChange(id: string, reason?: string): Promise<ChangeRequest
 
 export function cancelChange(id: string): Promise<ChangeRequest> {
   return changeFetch(`/v1/change-requests/${encodeURIComponent(id)}/cancel`);
+}
+
+export type AgentStateName = Schemas["AgentStateName"];
+
+/** An agent's state and the last change to it (ADR-013). */
+export type AgentStateView = Schemas["AgentStateView"];
+
+/** One page of `GET /v1/agents`. */
+export type AgentStatePage = Schemas["AgentStatePage"];
+
+/** The query `GET /v1/agents` accepts: `state`, `limit` and `cursor`. */
+export type AgentListQuery = NonNullable<operations["listAgents"]["parameters"]["query"]>;
+
+/** `GET /v1/agent-decisions/{record_id}`: the signed record and its outcome, if any. */
+export type AgentDecisionLookup = Ok<"getAgentDecision">;
+
+/** `GET /v1/agent-revocations/{system}/{event_id}`: the signed revocation record. */
+export type RevocationLookup = Ok<"getRevocationRecord">;
+
+/** The path of one page of agents; only the members that are set go in the query. */
+export function agentsPath(query: AgentListQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.state) params.set("state", query.state);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor) params.set("cursor", query.cursor);
+  const search = params.toString();
+  return search ? `/v1/agents?${search}` : "/v1/agents";
+}
+
+export function fetchAgents(query: AgentListQuery = {}): Promise<AgentStatePage> {
+  return request(agentsPath(query));
+}
+
+export function fetchAgent(agentId: string): Promise<AgentStateView> {
+  return request(`/v1/agents/${encodeURIComponent(agentId)}`);
+}
+
+/** Audited and rate limited by the API: call it once per lookup the operator asks for. */
+export function fetchAgentDecision(recordId: string): Promise<AgentDecisionLookup> {
+  return request(`/v1/agent-decisions/${encodeURIComponent(recordId)}`);
+}
+
+/** Audited and rate limited by the API: call it once per lookup the operator asks for. */
+export function fetchRevocationRecord(system: string, eventId: string): Promise<RevocationLookup> {
+  return request(
+    `/v1/agent-revocations/${encodeURIComponent(system)}/${encodeURIComponent(eventId)}`,
+  );
 }

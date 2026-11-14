@@ -1,5 +1,8 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./components/layout/AppShell";
+import AgentDetailPage from "./pages/AgentDetailPage";
+import AgentEvidencePage from "./pages/AgentEvidencePage";
+import AgentsPage from "./pages/AgentsPage";
 import AuditPage from "./pages/AuditPage";
 import BatchJobDetailPage from "./pages/BatchJobDetailPage";
 import BatchJobsPage from "./pages/BatchJobsPage";
@@ -21,6 +24,9 @@ export default function App() {
         <Route index element={<Navigate to="/overview" replace />} />
         <Route path="overview" element={<OverviewPage />} />
         <Route path="evaluate" element={<EvaluatePage />} />
+        <Route path="agents" element={<AgentsPage />} />
+        <Route path="agents/:agentId" element={<AgentDetailPage />} />
+        <Route path="agent-evidence" element={<AgentEvidencePage />} />
         <Route path="policies" element={<PoliciesPage />} />
         <Route path="policies/:packId" element={<PolicyDetailPage />} />
         <Route path="models" element={<ModelsPage />} />
