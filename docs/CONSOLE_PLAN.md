@@ -94,7 +94,7 @@ Each step is one PR from `main`, with the repo's five-question checklist. New np
 
 - Role-aware views: hide or disable actions the principal cannot perform (the API stays the gate).
 - Console tests and lint in CI, an automated accessibility check, end-to-end tests against a dev stack.
-- OIDC authorization code with PKCE in place of the pasted token, with the token storage ADR: [ADR-018](ADR-018-console-login-and-token-storage.md) (proposed; also roadmap 1.4).
+- OIDC authorization code with PKCE in place of the pasted token, with the token storage ADR: [ADR-018](ADR-018-console-login-and-token-storage.md) (accepted; also roadmap 1.4).
 
 ## 5. Open decisions
 
