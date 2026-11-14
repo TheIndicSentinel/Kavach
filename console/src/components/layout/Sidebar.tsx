@@ -98,7 +98,6 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
 
       <footer className="border-t border-white/10 px-5 py-4 text-xs text-stone-500">
         <p className="font-medium text-stone-400">कवच · Shield</p>
-        <p className="mt-1">DPDP-aware · RBI-aligned posture</p>
       </footer>
     </aside>
   );

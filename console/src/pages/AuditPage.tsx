@@ -31,7 +31,7 @@ export default function AuditPage() {
       <PageHeader
         title="Admin audit"
         hindi="प्रशासनिक ऑडिट"
-        subtitle="Dual-control governance mutations — pack activate, rollback, and model promotion."
+        subtitle="Approved governance changes: who proposed each one and who approved it."
       />
 
       <Card>

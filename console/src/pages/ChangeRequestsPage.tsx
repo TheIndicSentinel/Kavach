@@ -23,6 +23,7 @@ const KIND_LABELS: Record<ChangeKind, string> = {
   erase_evidence: "Erase evidence (DPDP)",
   apply_retention: "Run retention",
   activate_model: "Activate model version",
+  reinstate_agent: "Reinstate agent",
 };
 
 function statusVariant(status: ChangeStatus): "active" | "warning" | "muted" | "default" {
@@ -126,8 +127,12 @@ export default function ChangeRequestsPage() {
         }
       />
 
-      {error && <p className="mb-4 text-sm text-decision-block">{error}</p>}
-      {message && <p className="mb-4 text-sm text-decision-pass">{message}</p>}
+      <div role="alert" className="mb-4 text-sm text-decision-block empty:mb-0">
+        {error}
+      </div>
+      <div role="status" aria-live="polite" className="mb-4 text-sm text-decision-pass empty:mb-0">
+        {message}
+      </div>
 
       {requests === null && !error && <Skeleton className="h-32 w-full" />}
       {requests !== null && requests.length === 0 && (
