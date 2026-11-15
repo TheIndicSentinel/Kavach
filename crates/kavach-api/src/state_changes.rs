@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use super::{precheck_model, AppState};
+use super::{precheck_model, AppState, EVALUATE_LOCK};
 use crate::auth::{AuthenticatedPrincipal, PrincipalSource};
 use crate::error::ApiError;
 use crate::governance::RuntimeResponse;
@@ -373,10 +373,12 @@ impl AppState {
         prepared: Prepared,
         now: DateTime<Utc>,
     ) -> Result<ChangeRequest, ApiError> {
+        // Read before anything is written, so a poisoned runtime lock refuses
+        // the approval with nothing changed.
+        let version_before = self.runtime()?.pointer_version;
         if let Some(change) = prepared.agent_change.clone() {
             self.carry_out_agent_change(change).await?;
         }
-        let version_before = self.runtime().pointer_version;
         let moves_pointer = prepared
             .effects
             .iter()
@@ -502,7 +504,7 @@ impl AppState {
         Ok(self
             .service
             .lock()
-            .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?
+            .map_err(|_| EVALUATE_LOCK.poisoned())?
             .model()
             .clone())
     }
@@ -750,7 +752,7 @@ impl AppState {
         actors: Actors<'_>,
     ) -> Result<Prepared, ApiError> {
         let path = pack_source_path(&self.packs_dir, &params.pack_id)?;
-        let current = self.runtime();
+        let current = self.runtime()?;
         if current.pack_path == path.display().to_string() {
             return Err(ApiError::BadRequest(format!(
                 "pack already active: {}",
@@ -840,7 +842,7 @@ impl AppState {
         let model = self.live_model()?;
         precheck_model(&model)?;
 
-        let current = self.runtime();
+        let current = self.runtime()?;
         let runtime = RuntimeResponse {
             pack_id: pack.pack.id.clone(),
             pack_version: pack.pack.version.clone(),
@@ -905,7 +907,7 @@ impl AppState {
                 "provide status and/or governance_mode".into(),
             ));
         }
-        let current = self.runtime();
+        let current = self.runtime()?;
         if current.model_id != params.model_id {
             return Err(ApiError::BadRequest(
                 "runtime model differs from requested model_id".into(),
@@ -1028,7 +1030,7 @@ impl AppState {
         params: ActivateModelParams,
         actors: Actors<'_>,
     ) -> Result<Prepared, ApiError> {
-        let current = self.runtime();
+        let current = self.runtime()?;
         let (path, yaml, digest) = self.model_file_for_activation(&params, &current)?;
         let path_str = path.display().to_string();
 

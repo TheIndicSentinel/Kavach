@@ -522,7 +522,7 @@ async fn change_request_needs_a_distinct_approver_and_the_shown_digest() {
     assert_eq!(request["status"], "pending");
     assert_eq!(request["binding"]["pointer_version"], 0);
     assert_eq!(
-        state.runtime().pack_id,
+        state.runtime().unwrap().pack_id,
         "finance-v0",
         "proposal changes nothing"
     );
@@ -544,8 +544,8 @@ async fn change_request_needs_a_distinct_approver_and_the_shown_digest() {
     assert_eq!(status, StatusCode::OK, "{applied}");
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["decided_by"], "admin-2");
-    assert_eq!(state.runtime().pack_id, "finance-v1");
-    assert_eq!(state.runtime().pointer_version, 1);
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v1");
+    assert_eq!(state.runtime().unwrap().pointer_version, 1);
 
     // A retry by the same approver returns the applied request; anyone else
     // gets a conflict.
@@ -623,7 +623,7 @@ async fn approval_fails_when_the_runtime_moved_since_proposal() {
     .await;
     assert_eq!(stored["status"], "failed");
     assert_eq!(
-        state.runtime().governance_mode,
+        state.runtime().unwrap().governance_mode,
         kavach_domain::GovernanceMode::Shadow
     );
     let _ = std::fs::remove_dir_all(root);
@@ -1169,7 +1169,7 @@ async fn runtime_exposes_pack_sha256() {
         .expect("state");
     let expected = kavach_policy::pack_digest(&std::fs::read(&pack).unwrap());
     assert_eq!(
-        state.runtime().pack_sha256.as_deref(),
+        state.runtime().unwrap().pack_sha256.as_deref(),
         Some(expected.as_str())
     );
 }
@@ -1190,7 +1190,7 @@ async fn rollback_refuses_tampered_previous_pack() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(state.runtime().pack_id, "finance-v1");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v1");
 
     // Tamper with the previous pack file after it was pinned at activation.
     let original = std::fs::read_to_string(&v0_path).unwrap();
@@ -1198,7 +1198,7 @@ async fn rollback_refuses_tampered_previous_pack() {
     let status = apply_as_admins(&router(state.clone()), "rollback_pack", json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(
-        state.runtime().pack_id,
+        state.runtime().unwrap().pack_id,
         "finance-v1",
         "runtime must not change"
     );
@@ -1222,7 +1222,7 @@ async fn rollback_refuses_tampered_previous_pack() {
     std::fs::write(&v0_path, original).unwrap();
     let status = apply_as_admins(&router(state.clone()), "rollback_pack", json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(state.runtime().pack_id, "finance-v0");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v0");
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1344,7 +1344,7 @@ async fn signed_packs_required_when_signers_configured() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(state.runtime().pack_id, "finance-v0");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v0");
 
     // Signed v1: activation succeeds.
     write_signature(&provider, &v1_path).await;
@@ -1355,7 +1355,7 @@ async fn signed_packs_required_when_signers_configured() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(state.runtime().pack_id, "finance-v1");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v1");
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1559,6 +1559,6 @@ async fn ungoverned_models_and_pack_mismatch_are_visible() {
         approve(&app, &as_principal("admin-2"), &request).await.0,
         StatusCode::OK
     );
-    assert_eq!(state.runtime().model_version, "1.1.0");
+    assert_eq!(state.runtime().unwrap().model_version, "1.1.0");
     let _ = std::fs::remove_dir_all(root);
 }
