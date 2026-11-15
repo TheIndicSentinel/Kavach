@@ -12,6 +12,11 @@
 //! RFC 7009 revocation and end-session. Tokens are EdDSA JWTs signed with a
 //! key from a 32-byte seed. **A test tool only**: it approves everyone who
 //! asks.
+//!
+//! Who signs in is the configured user, or, when [`Behaviour::users`] lists
+//! more, the one the browser names in the [`USER_COOKIE`] cookie at the
+//! double's origin (a Playwright check sets it before it signs in). A name
+//! the double does not know is refused, never replaced by the default.
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
@@ -53,10 +58,17 @@ pub struct DoubleConfig {
     pub listen: SocketAddr,
 }
 
+/// The cookie, at the double's origin, that names who signs in by `sub`
+/// (one of [`Behaviour::users`]).
+pub const USER_COOKIE: &str = "oidc_double_user";
+
 /// What a test may change while the double runs.
 #[derive(Debug, Clone)]
 pub struct Behaviour {
     pub user: TestUser,
+    /// Users a sign-in may name in the [`USER_COOKIE`] cookie, by `sub`.
+    /// A sign-in that names none signs in `user`.
+    pub users: HashMap<String, TestUser>,
     /// `expires_in` of access tokens (and their `exp`, from now).
     pub expires_in: i64,
     /// Replace the ID token's nonce / aud / iss.
@@ -233,8 +245,21 @@ async fn jwks(State(s): State<Arc<Shared>>) -> Json<Value> {
     Json(jwks_for(&s.config.seed, &s.config.kid))
 }
 
+/// The `sub` the [`USER_COOKIE`] cookie names, if the browser sent one.
+fn named_user(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .filter_map(|pair| pair.trim().split_once('='))
+        .find(|(name, _)| *name == USER_COOKIE)
+        .map(|(_, sub)| sub.to_string())
+}
+
 async fn authorize(
     State(s): State<Arc<Shared>>,
+    headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     let field = |k: &str| q.get(k).cloned().unwrap_or_default();
@@ -247,8 +272,17 @@ async fn authorize(
     {
         return oauth_error("invalid_request");
     }
+    let user = {
+        let b = s.behaviour.lock().unwrap();
+        match named_user(&headers) {
+            None => b.user.clone(),
+            Some(sub) => match b.users.get(&sub) {
+                Some(user) => user.clone(),
+                None => return oauth_error("access_denied"),
+            },
+        }
+    };
     let code = s.issue();
-    let user = s.behaviour.lock().unwrap().user.clone();
     s.codes.lock().unwrap().insert(
         code.clone(),
         CodeGrant {
@@ -367,6 +401,7 @@ impl OidcDouble {
         let shared = Arc::new(Shared {
             behaviour: Mutex::new(Behaviour {
                 user: config.user.clone(),
+                users: HashMap::new(),
                 expires_in: 300,
                 id_token_nonce: None,
                 id_token_aud: None,
