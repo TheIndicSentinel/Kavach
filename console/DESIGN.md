@@ -55,6 +55,40 @@ Fonts are self-hosted (no external CDN) for on-prem bank VPCs.
 | `PageHeader` | `ui/PageHeader.tsx` | Page title + optional Hindi subtitle |
 | `AppShell` | `layout/AppShell.tsx` | Sidebar + top bar + main |
 | `KavachLogo` | `brand/KavachLogo.tsx` | Shield mark + wordmark |
+| `RoleHint` | `ui/RoleHint.tsx` | The line shown in place of a control the viewer's groups are known to lack |
+| `ProblemAlert` | `ui/ProblemAlert.tsx` | A refusal in `role=alert`: problem detail, HTTP status, `request_id` |
+
+### Role hints (the server decides)
+
+`src/lib/permissions.ts` copies which Cedar group may do which console action
+from `crates/kavach-auth/policies/kavach.cedar`; `permissions.test.ts` reads
+that file and fails when the two disagree. A page takes a viewer,
+`{ principal, groups }`:
+
+- **Groups unknown** (`null`, every mode today): every control shows and the
+  API decides.
+- **Groups known and allowed:** the control shows, with no hint.
+- **Groups known and lacking the action:** the control is not rendered. One
+  `RoleHint` line takes its place, in muted text with an `Info` icon:
+  "Your groups (…) don't include one that may <action>. The server decides;
+  ask an admin if you need this." Never word it as if the console were the
+  control.
+
+The change-request proposer rule still applies on top (the proposer gets
+cancel only; anyone else approve and reject).
+
+### Actions, status and focus
+
+- Submit and action buttons use `aria-disabled` (with a guard in the
+  handler), never `disabled`, while a request is in flight: a disabled button
+  drops keyboard focus to the page body.
+- Every result goes in an always-rendered `role=status` region; every refusal
+  in an always-rendered `ProblemAlert`. A field error is tied to its field
+  with `aria-invalid` and `aria-describedby`, and focus moves to that field.
+- When the control that started an action is gone afterwards, focus moves to
+  the result (change requests) or the page's heading (agent detail).
+- Change-request results are plain `text-ink`, not green: the status says
+  what happened (approved, rejected, cancelled), and colour is not the signal.
 
 ## Layout
 
