@@ -88,7 +88,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     };
 
     // The credit track: Decision Governance (evaluate, packs, models,
-    // retention, incidents, batch) and its console.
+    // decision events, retention, tombstones, incidents, batch). The console
+    // is served in both modes and leaves these pages out when agent-only.
     let router = if agent_only {
         router
     } else {
