@@ -739,7 +739,8 @@ export interface components {
         };
         ConsoleSession: {
             principal: string;
-            groups: string[];
+            /** @description The groups the server's Cedar policy evaluates the principal in: the token's groups and the principal's memberships in the entities file, sorted. `null` when they are unknown or decide nothing (no policy loaded). For display only; the server authorises every request. */
+            groups: string[] | null;
             /**
              * Format: date-time
              * @description The absolute limit; a refresh never moves it.
