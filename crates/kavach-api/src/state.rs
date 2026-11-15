@@ -47,6 +47,8 @@ pub struct AppState {
     /// live-swap order agree.
     governance_lock: tokio::sync::Mutex<()>,
     dataplane: Option<crate::dataplane::Dataplane>,
+    /// Console sign-in (ADR-018); `None` unless configured.
+    console_login: Option<std::sync::Arc<crate::console_login::ConsoleLogin>>,
 }
 
 /// One of the process-wide locks of [`AppState`], for refusing requests once
@@ -190,6 +192,7 @@ impl AppState {
             ),
             governance_lock: tokio::sync::Mutex::new(()),
             dataplane,
+            console_login: None,
         })
     }
 
@@ -220,6 +223,20 @@ impl AppState {
             require_hardening: false,
         };
         Self::from_config(&config).await
+    }
+
+    /// Turns console sign-in on (ADR-018). Off unless this is called.
+    #[must_use]
+    pub fn with_console_login(
+        mut self,
+        login: std::sync::Arc<crate::console_login::ConsoleLogin>,
+    ) -> Self {
+        self.console_login = Some(login);
+        self
+    }
+
+    pub fn console_login(&self) -> Option<&std::sync::Arc<crate::console_login::ConsoleLogin>> {
+        self.console_login.as_ref()
     }
 
     pub fn hmac_secret(&self) -> Option<&str> {
