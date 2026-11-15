@@ -120,6 +120,23 @@ load (`useAgentOnly`) and then:
 Until the server answers, or if it cannot be asked, every page shows and the
 API answers a route it does not serve with 404.
 
+### Sign-in screen and header (ADR-018)
+
+`GET /auth/config` decides what the console offers, once per page load (`src/lib/session.ts`). No page renders until it is known (`SessionGate`, a "Checking your session…" `role=status`).
+
+| Mode | When | `/signin` shows | Pages |
+|---|---|---|---|
+| Login | `login_configured` | "Sign in to Kavach": a plain link to `/auth/login` (never a form or a fetch: CSP `form-action`), and a line saying tokens stay on the server and the browser holds only an HttpOnly session cookie | only with a live `GET /auth/session`; otherwise sent to `/signin` |
+| Development fallback | no login, `pasted_token_allowed` (server in `--insecure-dev`) | "Development sign-in": the pasted token / principal ID form, with a "Development fallback." note | as before login existed |
+| Not configured | neither | "Console login is not configured on this server", pointing to `docs/INSTALL.md`; no field, no link | none |
+| Settings unreadable | `/auth/config` failed | the failure in `role=alert` and "Try again" | none |
+
+`/signin` (`src/pages/SignInPage.tsx`) is outside the app shell: a single card with the logo, an `h1`, a `role=status` region ("Your session ended. Sign in again." after a 401) and a `role=alert` region (the `?error=` message). Only the four codes of the contract map to text; any other value gets "Sign-in did not complete. Try again.", and the raw value is never rendered.
+
+Header (`TopBar`), login mode: "Signed in as `<principal>`", the absolute session end on wide screens, and a **Sign out** button, reachable by keyboard. Sign-out is a `POST /auth/logout`; it then goes to `/signin` inside the app, or, when the server returns an end-session URL that is `https:` (or on the console's own loopback origin in development), navigates there by script. A sign-out the server does not confirm shows a `ProblemAlert` under the header and leaves the operator signed in. In the development fallback the header shows the pasted principal, as before, and no sign-out.
+
+Settings, login mode: the session card (principal, groups, session end, idle end) and what sign-in does: tokens stay on the server, the browser holds only the HttpOnly cookie, and signing out ends the Kavach session, not the IdP session unless the server is set to. In the development fallback it keeps the pasted-token form, labelled as a development fallback.
+
 ### Responsive breakpoints
 
 | Breakpoint | Behavior |

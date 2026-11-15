@@ -1,6 +1,8 @@
 // Response bodies for the browser tests, typed from the generated OpenAPI
 // types, so a spec change that these bodies no longer match fails typecheck.
 import type { components } from "../src/lib/openapi";
+// TODO(openapi): replace with generated types once /auth/* is in openapi.yaml
+import type { AuthConfig, AuthSession, LogoutResponse } from "../src/lib/session";
 import {
   neverChanged,
   quarantineApplied,
@@ -168,6 +170,35 @@ export const forbidden: Schemas["Problem"] = {
   code: "forbidden",
   request_id: "req-e2e-403",
   error: "The principal may not do this.",
+};
+
+/** `GET /auth/config`: console login configured. */
+export const authConfigLogin: AuthConfig = { login_configured: true, pasted_token_allowed: false };
+
+/** `GET /auth/config`: no console login, --insecure-dev (the development fallback). */
+export const authConfigDev: AuthConfig = { login_configured: false, pasted_token_allowed: true };
+
+/** `GET /auth/config`: no console login and no fallback. */
+export const authConfigNone: AuthConfig = { login_configured: false, pasted_token_allowed: false };
+
+export const authSession: AuthSession = {
+  principal: "oidc-operator-7",
+  groups: ["kavach-operators"],
+  expires_at: "2026-11-15T18:00:00Z",
+  idle_expires_at: "2026-11-15T10:15:00Z",
+};
+
+export const logoutLocal: LogoutResponse = { end_session_url: null };
+
+/** The 401 problem `GET /auth/session` and every call answer when no session is live. */
+export const noSession: Schemas["Problem"] = {
+  type: "/problems/unauthorized",
+  title: "Unauthorized",
+  status: 401,
+  detail: "No live console session.",
+  code: "unauthorized",
+  request_id: "req-e2e-401",
+  error: "No live console session.",
 };
 
 export { neverChanged, quarantineApplied, reinstateProposed };
