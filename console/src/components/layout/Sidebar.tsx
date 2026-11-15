@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { KavachLogo } from "../brand/KavachLogo";
 import { cn } from "../../lib/cn";
+import { isCreditTrackPath } from "../../lib/creditTrack";
 
 const primaryNav = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard },
@@ -44,9 +45,12 @@ const governanceNav = [
 type SidebarProps = {
   open: boolean;
   onNavigate: () => void;
+  /** The server runs --agent-only: leave out the credit track's pages. `null`: not known yet, show all. */
+  agentOnly?: boolean | null;
 };
 
-export function Sidebar({ open, onNavigate }: SidebarProps) {
+export function Sidebar({ open, onNavigate, agentOnly = null }: SidebarProps) {
+  const served = (item: { to: string }) => agentOnly !== true || !isCreditTrackPath(item.to);
   return (
     <aside
       className={cn(
@@ -58,12 +62,14 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
       <div className="border-b border-white/10 px-5 py-5">
         <KavachLogo />
         <p className="mt-3 text-xs leading-relaxed text-stone-400">
-          On-prem AI governance for regulated credit decisions.
+          {agentOnly === true
+            ? "Authorization and runtime control for AI agents."
+            : "On-prem AI governance for regulated credit decisions."}
         </p>
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Main navigation">
-        {primaryNav.map((item) => (
+        {primaryNav.filter(served).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -110,7 +116,7 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
           <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-400">
             Governance
           </p>
-          {governanceNav.map((item) => (
+          {governanceNav.filter(served).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
