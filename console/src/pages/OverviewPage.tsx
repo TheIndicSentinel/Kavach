@@ -18,38 +18,48 @@ const capabilities = [
     icon: Scale,
     title: "Sync evaluate",
     description: "HTTP and gRPC paths with enforce and shadow semantics.",
+    creditTrack: true,
   },
   {
     icon: Database,
     title: "Evidence chain",
     description: "Hash-linked audit trail with input digest only — no raw PII.",
+    creditTrack: false,
   },
   {
     icon: ShieldCheck,
     title: "Operator access control",
     description: "Cedar policies decide each operator action; the caller is named by a bearer token.",
+    creditTrack: false,
   },
   {
     icon: Activity,
     title: "Batch ingest",
     description: "NDJSON worker for partner LOS exports (primary install path).",
     href: "/batch",
+    creditTrack: true,
   },
 ] as const;
 
 export default function OverviewPage() {
   const health = useHealth();
   const runtime = useRuntime();
+  // --agent-only: the credit track (models, packs, evaluate, batch) is not served.
+  const agentOnly = runtime.kind === "ok" && runtime.data.agent_only;
 
   return (
     <section>
       <PageHeader
         title="Overview"
         hindi="अवलोकन"
-        subtitle="System health, active model posture, and governance capabilities for your on-prem deployment."
+        subtitle={
+          agentOnly
+            ? "System health and the runtime posture of this agent-only server."
+            : "System health, active model posture, and governance capabilities for your on-prem deployment."
+        }
       />
 
-      {runtime.kind === "ok" && runtime.data.model_pack_mismatch && (
+      {runtime.kind === "ok" && !agentOnly && runtime.data.model_pack_mismatch && (
         <div
           role="alert"
           className="mb-6 rounded-lg border border-saffron-400/40 bg-saffron-100/40 px-4 py-3 text-sm text-ink"
@@ -73,7 +83,7 @@ export default function OverviewPage() {
         <Card>
           <CardHeader>
             <CardTitle>API health</CardTitle>
-            <CardDescription>Sync evaluate service liveness</CardDescription>
+            <CardDescription>Liveness of this API server (GET /health)</CardDescription>
           </CardHeader>
           {health.kind === "loading" && <Skeleton className="h-8 w-32" />}
           {health.kind === "ok" && (
@@ -92,65 +102,69 @@ export default function OverviewPage() {
           )}
         </Card>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>Active model</CardTitle>
-            <CardDescription>Pinned model record; status and mode are governed</CardDescription>
-          </CardHeader>
-          {runtime.kind === "loading" && <Skeleton className="h-20 w-full" />}
-          {runtime.kind === "error" && (
-            <p className="text-sm text-muted">{runtime.message}</p>
-          )}
-          {runtime.kind === "ok" && (
-            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
-              <dt className="text-muted">Model</dt>
-              <dd>
-                <Link
-                  to={`/models/${runtime.data.model_id}`}
-                  className="font-medium text-kavach-700 hover:text-saffron-600"
-                >
-                  {runtime.data.model_id}
-                </Link>
-              </dd>
-              <dt className="text-muted">Version</dt>
-              <dd className="font-medium text-ink">{runtime.data.model_version}</dd>
-              <dt className="text-muted">Pack</dt>
-              <dd>
-                <Link
-                  to={`/policies/${runtime.data.pack_id}`}
-                  className="font-medium text-peacock-700 hover:underline"
-                >
-                  {runtime.data.pack_id}
-                </Link>
-              </dd>
-              <dt className="text-muted">Mode</dt>
-              <dd>
-                <span className="rounded-md bg-peacock-600/10 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-peacock-700">
-                  {runtime.data.governance_mode}
-                </span>
-              </dd>
-            </dl>
-          )}
-        </Card>
+        {!agentOnly && (
+          <>
+          <Card>
+            <CardHeader>
+              <CardTitle>Active model</CardTitle>
+              <CardDescription>Pinned model record; status and mode are governed</CardDescription>
+            </CardHeader>
+            {runtime.kind === "loading" && <Skeleton className="h-20 w-full" />}
+            {runtime.kind === "error" && (
+              <p className="text-sm text-muted">{runtime.message}</p>
+            )}
+            {runtime.kind === "ok" && (
+              <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+                <dt className="text-muted">Model</dt>
+                <dd>
+                  <Link
+                    to={`/models/${runtime.data.model_id}`}
+                    className="font-medium text-kavach-700 hover:text-saffron-600"
+                  >
+                    {runtime.data.model_id}
+                  </Link>
+                </dd>
+                <dt className="text-muted">Version</dt>
+                <dd className="font-medium text-ink">{runtime.data.model_version}</dd>
+                <dt className="text-muted">Pack</dt>
+                <dd>
+                  <Link
+                    to={`/policies/${runtime.data.pack_id}`}
+                    className="font-medium text-peacock-700 hover:underline"
+                  >
+                    {runtime.data.pack_id}
+                  </Link>
+                </dd>
+                <dt className="text-muted">Mode</dt>
+                <dd>
+                  <span className="rounded-md bg-peacock-600/10 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-peacock-700">
+                    {runtime.data.governance_mode}
+                  </span>
+                </dd>
+              </dl>
+            )}
+          </Card>
 
-        <Card className="md:col-span-2 xl:col-span-1">
-          <CardHeader>
-            <CardTitle>Jurisdiction</CardTitle>
-            <CardDescription>
-              {runtime.kind === "ok"
-                ? `${runtime.data.sector} sector · India`
-                : "Finance sector · India"}
-            </CardDescription>
-          </CardHeader>
-          <p className="text-sm leading-relaxed text-muted">
-            Policy pack{" "}
-            <code className="rounded bg-stone-100 px-1.5 py-0.5 text-xs text-ink">
-              {runtime.kind === "ok" ? runtime.data.pack_id : "finance-v0"}
-            </code>{" "}
-            sets the rules for credit evaluations (consent presence, DTI thresholds,
-            human-review gates). Each evidence record names the pack that decided it.
-          </p>
-        </Card>
+          <Card className="md:col-span-2 xl:col-span-1">
+            <CardHeader>
+              <CardTitle>Jurisdiction</CardTitle>
+              <CardDescription>
+                {runtime.kind === "ok"
+                  ? `${runtime.data.sector} sector · India`
+                  : "Finance sector · India"}
+              </CardDescription>
+            </CardHeader>
+            <p className="text-sm leading-relaxed text-muted">
+              Policy pack{" "}
+              <code className="rounded bg-stone-100 px-1.5 py-0.5 text-xs text-ink">
+                {runtime.kind === "ok" ? runtime.data.pack_id : "finance-v0"}
+              </code>{" "}
+              sets the rules for credit evaluations (consent presence, DTI thresholds,
+              human-review gates). Each evidence record names the pack that decided it.
+            </p>
+          </Card>
+          </>
+        )}
       </div>
 
       {runtime.kind === "ok" && <PosturePanel runtime={runtime.data} />}
@@ -160,7 +174,7 @@ export default function OverviewPage() {
           Platform capabilities
         </h2>
         <div className="grid gap-4 sm:grid-cols-2">
-          {capabilities.map((item) => (
+          {capabilities.filter((item) => !(agentOnly && item.creditTrack)).map((item) => (
             <Card key={item.title} className="flex gap-4">
               <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-kavach-900/5 text-kavach-700">
                 <item.icon className="h-5 w-5" aria-hidden />

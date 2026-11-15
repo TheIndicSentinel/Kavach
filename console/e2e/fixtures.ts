@@ -35,6 +35,7 @@ export const runtime: Schemas["RuntimeView"] = {
   pointer_drift: false,
   insecure_dev: true,
   require_hardening: false,
+  agent_only: false,
   relaxations: ["insecure_dev", "principal_header", "memory_evidence_store"],
   checkpoint_lag_seconds: 12,
   checkpoint_stalled: false,

@@ -104,6 +104,22 @@ Desktop (≥ lg): fixed 256px sidebar
 └──────────────┴────────────────────────────────────┘
 ```
 
+### Agent-only servers
+
+A server started with `--agent-only` serves no credit-track route, and
+`GET /v1/runtime` says so (`agent_only: true`). The shell asks once per page
+load (`useAgentOnly`) and then:
+
+- the sidebar leaves out Evaluate, Policies, Models, Batch jobs, Incidents,
+  Retention and Decision events (`src/lib/creditTrack.ts`); the agent pages,
+  Change requests and Audit stay;
+- a credit-track path shows "Not served on this server" with a link to Agents,
+  and calls none of its routes (a credit-track page waits for the answer);
+- Overview drops the active model, jurisdiction and credit capability cards.
+
+Until the server answers, or if it cannot be asked, every page shows and the
+API answers a route it does not serve with 404.
+
 ### Responsive breakpoints
 
 | Breakpoint | Behavior |

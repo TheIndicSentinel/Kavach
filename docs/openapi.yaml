@@ -1161,6 +1161,7 @@ components:
         - insecure_dev
         - require_hardening
         - relaxations
+        - agent_only
       dependentRequired:
         checkpoint_lag_seconds: [checkpoint_stalled, checkpoint_last_seq, checkpoint_uncovered_records]
       properties:
@@ -1186,6 +1187,12 @@ components:
           description: >-
             The process was started with `--require-hardening`: it refused to start unless every
             guarantee was on, and `POST /v1/dev/clock` is not mounted.
+        agent_only:
+          type: boolean
+          description: >-
+            The process runs with `--agent-only`: this listener does not serve the credit track
+            (evaluate, packs, models, decision events, retention, tombstones, incidents, batch jobs),
+            and change requests of those kinds are refused. The console leaves those pages out.
         relaxations:
           type: array
           description: >-
