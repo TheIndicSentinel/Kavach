@@ -63,6 +63,11 @@ pub struct RuntimeView {
     /// Every way this process runs with a guarantee relaxed, by name (a
     /// fixed set, see BYPASS_INVENTORY.md section 1). Empty in production.
     pub relaxations: Vec<&'static str>,
+    /// True when the data plane runs agent-only (`--agent-only`): the
+    /// operator listener does not serve the credit track (evaluate, packs,
+    /// models, decision events, retention, tombstones, incidents, batch
+    /// jobs). The console uses it to leave those pages out.
+    pub agent_only: bool,
 }
 
 pub async fn runtime(
@@ -95,6 +100,9 @@ pub async fn runtime(
         insecure_dev: state.insecure_dev(),
         require_hardening: state.require_hardening(),
         relaxations: state.relaxations().iter().map(|r| r.as_str()).collect(),
+        agent_only: state
+            .dataplane()
+            .is_some_and(crate::dataplane::Dataplane::agent_only),
     }))
 }
 
