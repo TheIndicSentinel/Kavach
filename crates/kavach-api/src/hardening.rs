@@ -109,6 +109,13 @@ pub fn origin_of(endpoint: &str) -> Option<String> {
     })
 }
 
+/// How an error or log line names an endpoint: [`origin_of`], or
+/// `(unparseable)`. Never the userinfo, path, query or fragment, any of
+/// which can carry a credential.
+pub(crate) fn shown_endpoint(endpoint: &str) -> String {
+    origin_of(endpoint).unwrap_or_else(|| "(unparseable)".into())
+}
+
 #[cfg(unix)]
 fn mode_of(path: &Path) -> Result<Option<u32>, ()> {
     use std::os::unix::fs::PermissionsExt;
