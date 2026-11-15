@@ -1278,7 +1278,16 @@ async fn logs_carry_no_session_cookie_token_or_client_secret() {
             "a secret in the logs:\n{text}"
         );
     }
-    for marker in ["eyJ", "Bearer ey", "Basic a2F2"] {
+    // The redactor is the backstop, not the property: no token may reach the
+    // logger at all, so its markers must not appear either. Without this, an
+    // access token (a JWT) logged by the flow is masked and the scan passes.
+    for marker in [
+        "eyJ",
+        "Bearer ey",
+        "Basic a2F2",
+        "[redacted-token]",
+        "[redacted]",
+    ] {
         assert!(!text.contains(marker), "{marker} in the logs:\n{text}");
     }
 }
