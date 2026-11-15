@@ -29,7 +29,13 @@ function SessionCard({ session }: { session: AuthSession }) {
         </div>
         <div>
           <dt className="text-muted">Groups</dt>
-          <dd className="text-ink">{session.groups.length ? session.groups.join(", ") : "none"}</dd>
+          <dd className="text-ink">
+            {session.groups === null
+              ? "not known to the console; the server decides each request"
+              : session.groups.length
+                ? session.groups.join(", ")
+                : "none"}
+          </dd>
         </div>
         <div>
           <dt className="text-muted">Session ends by</dt>

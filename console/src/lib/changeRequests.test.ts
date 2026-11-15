@@ -51,6 +51,15 @@ describe("viewerFor: the session in login mode", () => {
     expect(viewerFor({ principal: "oidc-user-9", groups: [] }, fallback).groups).toEqual([]);
   });
 
+  it("keeps the session's principal when the server does not know the groups", () => {
+    // No Cedar policy loaded: every control shows, and the proposer rule
+    // still knows who the viewer is.
+    expect(viewerFor({ principal: "oidc-user-9", groups: null }, fallback)).toEqual({
+      principal: "oidc-user-9",
+      groups: null,
+    });
+  });
+
   it("falls back when there is no session (development fallback, signed out)", () => {
     expect(viewerFor({ principal: null, groups: null }, fallback)).toBe(fallback);
     expect(viewerFor({ principal: null, groups: null }, UNKNOWN_VIEWER).groups).toBeNull();

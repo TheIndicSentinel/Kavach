@@ -65,9 +65,12 @@ from `crates/kavach-auth/policies/kavach.cedar`; `permissions.test.ts` reads
 that file and fails when the two disagree. A page takes a viewer,
 `{ principal, groups }`:
 
-- **Groups unknown** (`null`: the development fallback, and the moment before
-  `GET /auth/session` answers): every control shows and the API decides. In
-  login mode the viewer is the session's principal and groups
+- **Groups unknown** (`null`: the development fallback, the moment before
+  `GET /auth/session` answers, and a server with no Cedar policy loaded):
+  every control shows and the API decides. In login mode the viewer is the
+  session's principal and the groups `GET /auth/session` returns: the groups
+  the server's Cedar policy evaluates the principal in, which are the token's
+  groups merged with the principal's memberships in the entities file
   (`useViewer` in `src/lib/changeRequests.ts`).
 - **Groups known and allowed:** the control shows, with no hint.
 - **Groups known and lacking the action:** the control is not rendered. One

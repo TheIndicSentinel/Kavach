@@ -45,12 +45,14 @@ export function currentViewer(
 
 /**
  * The viewer for a page. Signed in (login mode), it is the principal and the
- * groups `GET /auth/session` returned: the token's groups, which the API
- * passes to Cedar as they are. Otherwise (the development fallback, or no
- * session yet) it is `fallback`, whose groups stay unknown.
+ * groups `GET /auth/session` returned: the groups the server's Cedar policy
+ * evaluates the principal in (the token's and the entities file's), or null
+ * when the server does not know them or they decide nothing. Otherwise (the
+ * development fallback, or no session yet) it is `fallback`, whose groups
+ * stay unknown.
  */
 export function viewerFor(session: SessionViewer, fallback: Viewer): Viewer {
-  if (session.principal === null || session.groups === null) return fallback;
+  if (session.principal === null) return fallback;
   return { principal: session.principal, groups: session.groups };
 }
 
