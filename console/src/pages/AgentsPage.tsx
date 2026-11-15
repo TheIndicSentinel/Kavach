@@ -134,7 +134,7 @@ export default function AgentsPage() {
       <PageHeader
         title="Agents"
         hindi="एजेंट"
-        subtitle="Every agent a passport names in this tenant, and its state. Read-only: stopping and reinstating agents are not in the console yet."
+        subtitle="Every agent a passport names in this tenant, and its state. Open an agent for the actions its state allows."
       />
 
       <AgentLookup />
