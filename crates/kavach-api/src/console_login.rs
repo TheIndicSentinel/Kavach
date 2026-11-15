@@ -410,7 +410,11 @@ struct Session {
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionView {
     pub principal: String,
-    pub groups: Vec<String>,
+    /// The groups Cedar evaluates the principal in: the token's groups and
+    /// the principal's memberships in the entities file. `None` (JSON
+    /// `null`) when no Cedar policy is loaded (`--access-control none`), so
+    /// groups decide nothing. For the console's role hints only.
+    pub groups: Option<Vec<String>>,
     pub expires_at: DateTime<Utc>,
     pub idle_expires_at: DateTime<Utc>,
 }
@@ -842,7 +846,8 @@ impl ConsoleLogin {
                 .map_or(session.absolute_expires, |t| *t);
             SessionView {
                 principal: session.principal.clone(),
-                groups: tokens.groups.clone(),
+                // The token's groups; the handler widens them to what Cedar sees.
+                groups: Some(tokens.groups.clone()),
                 expires_at: session.absolute_expires,
                 idle_expires_at: (last_seen + idle).min(session.absolute_expires),
             }
@@ -1224,7 +1229,19 @@ pub async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
         return refused;
     }
     match login.view(verifier, cookie).await {
-        Some(view) => Json(view).into_response(),
+        Some(mut view) => {
+            // The token's groups alone would miss the entities file's
+            // memberships, and with no policy loaded groups mean nothing. A
+            // group name Cedar refuses (so every request with it is refused
+            // too) leaves the groups unknown.
+            view.groups = match (state.access_control(), view.groups.take()) {
+                (Some(cedar), Some(token_groups)) => {
+                    cedar.effective_groups(&view.principal, &token_groups).ok()
+                }
+                _ => None,
+            };
+            Json(view).into_response()
+        }
         None => no_session(),
     }
 }

@@ -1079,6 +1079,31 @@ async fn a_viewer_session_cannot_stop_an_agent() {
 }
 
 #[tokio::test]
+async fn the_session_names_the_groups_cedar_evaluates_the_principal_in() {
+    // `viewer-1` is a member of `viewers` in the entities file; its token
+    // adds `operators`. Cedar sees both, so the console's hints must too.
+    let h = harness_as(user("viewer-1", &["operators"]), |_| {}).await;
+    let cookie = sign_in(&h).await;
+    let reply = session(&h, &cookie).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.json()["groups"], json!(["operators", "viewers"]));
+}
+
+#[tokio::test]
+async fn with_no_policy_loaded_the_session_groups_are_unknown() {
+    // `--access-control none` (development only): groups decide nothing,
+    // so the session says it does not know them and the console shows
+    // every control.
+    let mut config = plain_config(true);
+    config.access_control = kavach_api::AccessControlKind::None;
+    let h = harness_on(config, admin(), |_| {}).await;
+    let cookie = sign_in(&h).await;
+    let reply = session(&h, &cookie).await;
+    assert_eq!(reply.status, StatusCode::OK, "{}", reply.text());
+    assert_eq!(reply.json()["groups"], Value::Null);
+}
+
+#[tokio::test]
 async fn the_proposer_cannot_approve_their_own_change_through_a_second_session() {
     let proposer = user("ops-1", &["admins", "change-approvers"]);
     let h = harness_as(proposer, |_| {}).await;

@@ -1218,8 +1218,14 @@ components:
       properties:
         principal: { type: string }
         groups:
-          type: array
+          type: [array, "null"]
           items: { type: string }
+          description: >-
+            The groups the server's Cedar policy evaluates the principal in:
+            the token's groups and the principal's memberships in the
+            entities file, sorted. `null` when they are unknown or decide
+            nothing (no policy loaded). For display only; the server
+            authorises every request.
         expires_at:
           type: string
           format: date-time
