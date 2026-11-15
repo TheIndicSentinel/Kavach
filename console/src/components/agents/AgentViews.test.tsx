@@ -93,7 +93,7 @@ describe("evidence views", () => {
       },
     };
     const shown = text(render(<DecisionRecordView result={withOutcome} />));
-    expect(shown).toContain("Outcome delivered");
+    expect(shown).toContain("Outcome Delivered: The provider accepted the call.");
     expect(shown).not.toContain("No outcome is recorded");
   });
 
@@ -106,9 +106,10 @@ describe("evidence views", () => {
     expect(shown).toContain("sha256-jcs-v1:abc");
   });
 
-  it("renders no role=status or role=alert of its own", () => {
+  it("renders no role=alert of its own, and only the empty copy-feedback status regions", () => {
     const html = render(<RevocationRecordView result={revocationLookup} />);
-    expect(byRole(html, "status")).toEqual([]);
+    // One role=status per verify command (UI-3), each empty until Copy is pressed.
+    expect(byRole(html, "status")).toEqual(["", ""]);
     expect(byRole(html, "alert")).toEqual([]);
   });
 });

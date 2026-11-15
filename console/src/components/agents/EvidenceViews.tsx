@@ -3,6 +3,8 @@ import { Link } from "react-router-dom";
 import { DecisionBadge } from "../ui/DecisionBadge";
 import type { AgentDecisionLookup, RevocationLookup } from "../../lib/api";
 import { agentPath, FieldList, mono, timestamp } from "./AgentViews";
+import { VerifyCommands } from "../evidence/VerifyCommands";
+import { agentDecisionCommands, outcomeText, revocationCommands } from "../../lib/evidence";
 
 /** What the page may say about evidence, and nothing more (docs/CONSOLE_PLAN.md section 3). */
 export function EvidenceNotice() {
@@ -97,7 +99,7 @@ export function DecisionRecordView({ result }: { result: AgentDecisionLookup }) 
           <>
             <FieldList
               fields={[
-                ["Outcome", outcome.outcome],
+                ["Outcome", outcomeText(outcome.outcome)],
                 ["Reason", outcome.reason],
                 ["Recorded at", timestamp(outcome.ts)],
                 ["Record hash", mono(outcome.record_hash)],
@@ -107,9 +109,11 @@ export function DecisionRecordView({ result }: { result: AgentDecisionLookup }) 
             <RawRecord value={outcome} />
           </>
         ) : (
-          <p className="text-sm text-muted">No outcome is recorded for this record.</p>
+          <p className="text-sm text-muted">{outcomeText(null)}</p>
         )}
       </section>
+
+      <VerifyCommands commands={agentDecisionCommands(record.record_id)} />
     </div>
   );
 }
@@ -142,6 +146,9 @@ export function RevocationRecordView({ result }: { result: RevocationLookup }) {
         ]}
       />
       <RawRecord value={record} />
+      <div className="mt-6">
+        <VerifyCommands commands={revocationCommands()} />
+      </div>
     </section>
   );
 }

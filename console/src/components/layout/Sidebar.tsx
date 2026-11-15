@@ -6,6 +6,8 @@ import {
   FileSearch,
   ClipboardCheck,
   FileKey,
+  FileCheck,
+  ListChecks,
   Layers,
   LayoutDashboard,
   ScrollText,
@@ -25,6 +27,7 @@ const primaryNav = [
 const agentNav = [
   { to: "/agents", label: "Agents", icon: Bot },
   { to: "/agent-evidence", label: "Agent evidence", icon: FileKey },
+  { to: "/reconciliation", label: "Closed loans", icon: ListChecks },
 ] as const;
 
 const governanceNav = [
@@ -35,6 +38,7 @@ const governanceNav = [
   { to: "/audit", label: "Audit", icon: ClipboardList },
   { to: "/incidents", label: "Incidents", icon: TriangleAlert },
   { to: "/retention", label: "Retention", icon: ShieldOff },
+  { to: "/decision-events", label: "Decision events", icon: FileCheck },
 ] as const;
 
 type SidebarProps = {
