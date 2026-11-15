@@ -1,8 +1,8 @@
 # Kavach Console — Design System
 
-Production UI foundation for the governance console. Milestone B.4 (policy lifecycle) should extend these patterns — not introduce a parallel design.
+The design system of the governance console, as built. A new page extends these patterns; it does not introduce a parallel design.
 
-What the console covers, what it still lacks against the backend, and the order of work: [docs/CONSOLE_PLAN.md](../docs/CONSOLE_PLAN.md).
+Which API operation each page calls, what the console still lacks against the backend, and the order of work: [docs/CONSOLE_PLAN.md](../docs/CONSOLE_PLAN.md).
 
 ## Principles
 
@@ -21,8 +21,12 @@ What the console covers, what it still lacks against the backend, and the order 
 | Styling | Tailwind CSS 4 (`@tailwindcss/vite`) |
 | Icons | Lucide React |
 | Utilities | `clsx` + `tailwind-merge` (`cn()`) |
+| API types | Generated from `docs/openapi.yaml` by openapi-typescript (`npm run gen:api` → `src/lib/openapi.d.ts`; `npm run check:api` fails on drift) |
+| Lint | ESLint 9 with `typescript-eslint`, `react-hooks` and `jsx-a11y` (`npm run lint`) |
+| Unit tests | Vitest (`npm test`); pages and components render to static markup (`src/test/markup.ts`) |
+| Browser tests | Playwright in Chromium against a stubbed API (`npm run test:e2e`, `e2e/`), with axe (`@axe-core/playwright`) |
 
-No heavy component library — primitives in `src/components/ui/` follow shadcn-style patterns without the dependency overhead.
+The last four rows are development tools, none of them in the built bundle; each needed the owner's approval. No heavy component library — primitives in `src/components/ui/` follow shadcn-style patterns without the dependency overhead.
 
 ## Brand tokens
 
@@ -46,17 +50,35 @@ Fonts are self-hosted (no external CDN) for on-prem bank VPCs.
 
 ## Components
 
+Paths are under `src/components/`.
+
 | Component | Path | Purpose |
 |---|---|---|
 | `Button` | `ui/Button.tsx` | Primary (saffron), secondary (navy), ghost |
 | `Card` | `ui/Card.tsx` | Content panels |
+| `Badge` | `ui/Badge.tsx` | Small labelled tag (default, active, muted, warning) |
 | `DecisionBadge` | `ui/DecisionBadge.tsx` | Domain decision display |
 | `StatusIndicator` | `ui/StatusIndicator.tsx` | Health / liveness |
 | `PageHeader` | `ui/PageHeader.tsx` | Page title + optional Hindi subtitle |
-| `AppShell` | `layout/AppShell.tsx` | Sidebar + top bar + main |
-| `KavachLogo` | `brand/KavachLogo.tsx` | Shield mark + wordmark |
+| `DataTable` | `ui/DataTable.tsx` | Table from `md` up, stacked cards below |
+| `Dialog` | `ui/Dialog.tsx` | Modal confirmation (`role=alertdialog`): focus moves in, Tab stays inside, Escape cancels, focus returns to the opener |
+| `TextField` | `ui/TextField.tsx` | Labelled input whose hint and error are announced with it |
+| `Skeleton` | `ui/Skeleton.tsx` | Loading placeholder for async data |
 | `RoleHint` | `ui/RoleHint.tsx` | The line shown in place of a control the viewer's groups are known to lack |
 | `ProblemAlert` | `ui/ProblemAlert.tsx` | A refusal in `role=alert`: problem detail, HTTP status, `request_id` |
+| `AppShell` | `layout/AppShell.tsx` | Skip link, sidebar, top bar and main; asks `GET /v1/runtime` for `agent_only` |
+| `Sidebar` | `layout/Sidebar.tsx` | Navigation in three groups (main, Agents, Governance); credit-track pages left out on an agent-only server |
+| `TopBar` | `layout/TopBar.tsx` | Menu button below `lg`, environment, principal; with sign-in, the session end and Sign out |
+| `NotServed` | `layout/NotServed.tsx` | In place of a credit-track page on an agent-only server |
+| `SessionGate` | `layout/SessionGate.tsx` | Renders no page until the sign-in mode and session are known (ADR-018) |
+| `DevTokenForm` | `auth/DevTokenForm.tsx` | The pasted token / principal form, development fallback only |
+| `ErrorBoundary` | `ErrorBoundary.tsx` | A render error shows a card instead of a blank page |
+| `KavachLogo` | `brand/KavachLogo.tsx` | Shield mark + wordmark |
+| Agent views | `agents/AgentViews.tsx`, `agents/EvidenceViews.tsx` | Agent state badge and field lists; agent decision and revocation records, with what the page may say about evidence |
+| Agent actions | `agents/AgentActions.tsx` | Restrict, quarantine and revoke dialogs with reason code and note; the reinstatement proposal; the result |
+| Evidence views | `evidence/LookupPanel.tsx`, `evidence/VerifyCommands.tsx`, `evidence/DecisionEventView.tsx`, `evidence/ClosedRecordsViews.tsx` | A lookup's status, refusal and result; copyable verify commands (the console runs none); a decision event; closed-records counts and findings |
+
+`SessionGate` and `DevTokenForm` come with the ADR-018 sign-in work.
 
 ### Role hints (the server decides)
 
@@ -168,24 +190,38 @@ Chrome stores the `__Host-` Secure cookie on `http://127.0.0.1`, because it trea
 
 Test at **375px**, **768px**, and **1280px** before shipping UI changes.
 
-## B.4 guidance
+## Pages
 
-Policy lifecycle UI is implemented (read-only v1):
+The routes in `src/App.tsx`. "Credit" pages are left out on an agent-only server (`src/lib/creditTrack.ts`). The API operation behind each call is in [docs/CONSOLE_PLAN.md](../docs/CONSOLE_PLAN.md) section 2.
 
-- `/policies` — pack inventory and rule detail
-- `/models` — model inventory and promotion metadata
-- `GET /v1/runtime`, `/v1/packs`, `/v1/models` — governance APIs
+| Route | Page | Nav group | Calls (`src/lib/api.ts`) | Credit |
+|---|---|---|---|---|
+| `/overview` (`/` redirects here) | `OverviewPage` | main | `fetchHealth`, `fetchRuntime` | no |
+| `/evaluate` | `EvaluatePage` | main | `evaluateRequest` | yes |
+| `/settings` | `SettingsPage` | main | none (session or development token) | no |
+| `/agents` | `AgentsPage` | Agents | `fetchAgents` | no |
+| `/agents/:agentId` | `AgentDetailPage` | Agents | `fetchAgent`, `stopAgent`, `proposeReinstatement` | no |
+| `/agent-evidence` | `AgentEvidencePage` | Agents ("Agent evidence") | `fetchAgentDecision`, `fetchRevocationRecord` | no |
+| `/reconciliation` | `ReconciliationPage` | Agents ("Closed loans") | `reconcileClosedRecords` | no |
+| `/policies`, `/policies/:packId` | `PoliciesPage`, `PolicyDetailPage` | Governance | `fetchPacks`, `fetchPack`, `proposeChange` | yes |
+| `/models`, `/models/:modelId` | `ModelsPage`, `ModelDetailPage` | Governance | `fetchModels`, `fetchModel`, `proposeChange` | yes |
+| `/batch`, `/batch/:jobId` | `BatchJobsPage`, `BatchJobDetailPage` | Governance ("Batch jobs") | `fetchBatchJobs`, `fetchBatchJob` | yes |
+| `/changes` | `ChangeRequestsPage` | Governance ("Change requests") | `fetchChangeRequests`, `approveChange`, `rejectChange`, `cancelChange` | no |
+| `/audit` | `AuditPage` | Governance | `fetchAuditLog` | no |
+| `/incidents` | `IncidentsPage` | Governance | `fetchIncidents` | yes |
+| `/retention` | `RetentionPage` | Governance | `fetchRetentionSettings`, `fetchTombstones`, `proposeChange` | yes |
+| `/decision-events` | `DecisionEventsPage` | Governance | `fetchDecisionEvent` | yes |
+| `/signin` | `SignInPage` | outside the shell | none directly (`startSession` in `App.tsx` reads `GET /auth/config` on load); links to `/auth/login` | no |
 
-- `/retention` — retention policy and tombstones
-- `/batch` — batch job inventory (Postgres lifecycle)
+Any other path redirects to `/overview`; there is no 404 page. `/signin` and the `/auth/*` calls (`src/lib/session.ts`) come with the ADR-018 sign-in work.
 
-When adding mutations (activate, rollback, promote):
+### Adding a page
 
-- Reuse `Card`, `PageHeader`, `DecisionBadge`, `Button`
-- Add data tables with the same border/radius tokens
-- Place new routes under the **Governance** nav section (replace "Soon" stubs)
-- Use skeleton loaders, not placeholder text, for async data
-- Format dates with `formatDateTime()` from `lib/format.ts`
+- Reuse `PageHeader`, `Card`, `DataTable`, `Badge`/`DecisionBadge`, `Button`, `Dialog`, `TextField`, `ProblemAlert` and `RoleHint`.
+- Call the API only through `src/lib/api.ts` with the generated types. A new operation is called by a page or listed with its reason in `console/api-coverage-exempt.txt`; CI checks both ways.
+- Add the route to `src/App.tsx` and the sidebar group it belongs to; a credit-track page also goes in `CREDIT_TRACK_PATHS`.
+- Use skeleton loaders, not placeholder text, for async data. Format dates with `formatDateTime()` from `lib/format.ts`.
+- Add the page to `PAGES` in `e2e/a11y.e2e.ts` (axe), and its actions to the keyboard specs in `e2e/`.
 
 ## Local development
 
@@ -193,6 +229,10 @@ When adding mutations (activate, rollback, promote):
 cd console
 npm run dev          # Vite on :5173, proxies API to :8080
 npm run build        # → dist/ (embedded by kavach-api)
+npm run typecheck && npm run lint && npm test
+npm run gen:api      # regenerate src/lib/openapi.d.ts; check:api compares it with the git index
+npm run test:e2e     # Playwright + axe against a stubbed API (Chromium)
+python3 ../scripts/console_path_coverage.py --list   # which page calls which operation
 ```
 
 Run `kavach-api` on port 8080 for live API integration during dev.

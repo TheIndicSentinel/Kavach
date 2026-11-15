@@ -1,104 +1,134 @@
 # Console plan: matching the UI to the backend
 
-Status: accepted direction, 2026-11-14. Owner priority: this track goes before the rest of the hardening roadmap (Phase 1 resumes from 1.2 when the owner says so).
+Status: accepted direction, 2026-11-14. Revised 2026-11-15: steps UI-0 to UI-4 are built, every operator API operation is called by the console or listed with a reason, and the open decisions are closed. Owner priority: this track goes before the rest of the hardening roadmap (Phase 1 resumes from 1.2 when the owner says so).
 
-This document records what the console does today, what the backend offers that the console does not show, and the order in which the gap is closed. Each step is one pull request. The console's visual rules stay in [console/DESIGN.md](../console/DESIGN.md); this file is about scope and order.
+This document records what the console does, which backend operations it uses, and what is still missing. The console's visual rules and components are in [console/DESIGN.md](../console/DESIGN.md); this file is about scope and order.
 
-## 1. Where the console stands (read on 2026-11-14 at 17d0232)
+## 1. Where the console stands (read on 2026-11-15)
 
-Facts, from the code:
+Facts, from the code at `4fefaf8` plus the ADR-018 sign-in (#248 backend, #250 console), so it describes the console with sign-in:
 
-- **Stack.** React 19, TypeScript (strict), Vite 7, React Router 7, Tailwind CSS 4, Lucide icons. 37 source files, about 3,100 lines. Fonts are self-hosted. No component library.
-- **It is wired, for the credit track.** `console/src/lib/api.ts` calls 17 endpoints: health, runtime, evaluate, packs, models, audit, incidents, batch jobs, retention, tombstones and the change-request lifecycle (propose, list, approve with the reviewed digest, reject, cancel). There are 14 routes.
-- **Nothing for the agent track.** No page calls `/v1/agents/*`, `/v1/agent-decisions/*`, `/v1/agent-revocations/*`, `/v1/reconciliation/closed-records` or `/v1/decision-events/*`.
-- **Type drift.** The console's `ChangeKind` lacks `reinstate_agent`, which the backend and `docs/openapi.yaml` have. A `reinstate_agent` request in the list renders with an undefined label. `RuntimeInfo` ignores `checkpoints`, `hsm`, `dev_clock`, `insecure_dev` and `relaxations`, which `/v1/runtime` returns.
-- **Error handling.** `governanceFetch` and `evaluateRequest` call `response.json()` before checking `response.ok`, so a non-JSON error (a proxy's 502 or 504) surfaces as a parse error instead of the status.
-- **Not served in agent-only mode.** `crates/kavach-api/src/http.rs` falls back to a 404 instead of the console when the data plane is agent-only, the mode product direction makes the default for hosted builds.
-- **Why a local build can look empty.** `crates/kavach-api/build.rs` embeds `console/dist` whenever `dist/index.html` exists. A stub `index.html` left in `dist/` embeds a blank page. `scripts/build-console.sh` and `deploy/Dockerfile` build the real console; a plain `cargo build` does not.
-- **No console tests, lint or accessibility checks.** `package.json` has `dev`, `build` and `preview` only. CI builds the console and checks production licences (`ci.yml`, "Build console", "Console licence check").
-- **Authentication.** The console half of ADR-018 option C, built against a stubbed `/auth/*` API (the backend routes land separately). `GET /auth/config` picks one of three modes on load. With console login configured, `/signin` offers a plain link to `/auth/login`; pages render only with a live `GET /auth/session` (principal, groups and expiry kept in memory only); every request sends `X-Kavach-Console: 1` with same-origin credentials and never `Authorization` or `X-Kavach-Principal`; `kavach.accessToken` and `kavach.principal` are removed from `sessionStorage` on load and never written; a 401 sends the operator to `/signin` with "Your session ended. Sign in again."; and the header's Sign out posts `/auth/logout` and follows an end-session URL only if it is `https:`. Without login, and only when the server runs with `--insecure-dev`, the pasted-token field stays as a labelled development fallback; otherwise the console says login is not configured and offers no field. The real IdP round trip is tested after the backend lands.
-- **Security headers.** None are set by `kavach-api` (roadmap items 1.3 and 1.4).
-- **Wording.** The sidebar footer says "DPDP-aware · RBI-aligned posture" and the Overview page describes Cedar RBAC "via X-Kavach-Principal header", which is development-only. Both conflict with the project's rule against unproven claims.
+- **Stack.** React 19, TypeScript (strict), Vite 7, React Router 7, Tailwind CSS 4, Lucide icons. At `4fefaf8`: 65 source files, about 6,900 lines, without tests and the generated `openapi.d.ts`. Fonts are self-hosted. No component library.
+- **It is wired for both tracks.** Every API call is in `console/src/lib/api.ts` (and, with sign-in, the `/auth/*` calls in `console/src/lib/session.ts`). Section 2 lists each operation and the page that calls it. There are 18 routes in the app shell, plus `/signin` outside it.
+- **Types come from the spec.** `npm run gen:api` (openapi-typescript) generates `src/lib/openapi.d.ts` from `docs/openapi.yaml`; `npm run check:api` fails when the committed file differs (#222). `api.ts` hand-types only `ReinstateAgentParams`, because `ChangeProposal.params` is untyped in the spec (issue #218).
+- **Error handling.** `request()` checks the status before parsing. A problem body becomes an `ApiError` with status, `detail` and `request_id`; a non-JSON error (a proxy's 502) shows its status (#220).
+- **Served in agent-only mode.** `kavach-api --agent-only` serves the console (#224). `GET /v1/runtime` reports `agent_only`, and the console then leaves the credit-track pages out of the navigation and shows "Not served on this server" on their paths (#244).
+- **Only a real build is embedded.** `crates/kavach-api/build.rs` embeds `console/dist` only when its `index.html` loads a script from `/assets/` and every asset it names exists; otherwise `/` answers "console not built" (404) (#224).
+- **Tests, lint and accessibility in CI.** The "Format, Clippy, Test" job builds the console and runs typecheck, ESLint (with `jsx-a11y` and `react-hooks`), Vitest (16 test files at `4fefaf8`), `check:api`, the Playwright suite against a stubbed API in Chromium with axe (WCAG 2.2 AA tags) on every page and state, keyboard flows and a CSP check (#222, #239, #241), the production licence check, and the API path check in section 2. With sign-in (#248, #250) it adds stubbed sign-in specs and a real round trip against `kavach-api` and an OIDC test double.
+- **Authentication (ADR-018 option C).** `kavach-api` is a backend-for-frontend: `GET /auth/login` starts an authorization code flow with PKCE, the IdP tokens stay in server memory, and the browser holds only an HttpOnly `__Host-kavach_session` cookie. `GET /auth/config` picks one of three modes on load. With login configured, `/signin` offers a plain link to `/auth/login`, and pages render only with a live `GET /auth/session`; every request sends `X-Kavach-Console: 1` with same-origin credentials and never `Authorization` or `X-Kavach-Principal`. Without login, and only when the server runs with `--insecure-dev`, the pasted-token field stays as a labelled development fallback (`sessionStorage`); otherwise the console says login is not configured and offers no field.
+- **Role-aware views.** `src/lib/permissions.ts` copies the Cedar policy's group-to-action map, and a test fails when it and `kavach.cedar` disagree. With the session's groups known, a control the groups lack is replaced by a `RoleHint`; with groups unknown every control shows. The API stays the gate (#239, #241).
+- **Security headers.** Every console response carries a strict Content-Security-Policy (`default-src 'self'`, no inline script or style, `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self'`), `nosniff` and `Referrer-Policy: no-referrer` (#224). API responses get their own headers in #237 (roadmap 1.3), which the sign-in work builds on.
+- **Wording.** The sidebar's "DPDP-aware · RBI-aligned posture" and the Overview's "via X-Kavach-Principal header" are gone (#220).
 
-Not read for this plan: the Evaluate, Retention, Models and Batch detail pages in full, and the CSS.
+## 2. Backend surface and where it is in the console
 
-## 2. Backend surface and where it belongs in the console
+The operations in `docs/openapi.yaml`. The Cedar action is what the principal needs (`crates/kavach-auth/policies/kavach.cedar`; for change requests, `crates/kavach-api/src/change_requests.rs`). "Exempt" means listed with its reason in [`console/api-coverage-exempt.txt`](../console/api-coverage-exempt.txt).
 
-The operator API (`docs/openapi.yaml`). The Cedar action is what the principal needs (`crates/kavach-auth/policies/kavach.cedar`).
+CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console API path coverage") fails when an operation is neither called from `console/src` nor exempt, and when an exemption is stale.
 
-| Endpoint | Action | Console today | Step |
+| Operation | Cedar action | Console | Status |
 |---|---|---|---|
 | `GET /health` | `read_health` | Overview | done |
-| `GET /v1/runtime` | `read_governance` | Overview (partial) | UI-0: show posture (relaxations, insecure dev, HSM, checkpoints, dev clock) |
-| `GET/POST /v1/change-requests`, `GET …/{id}`, `POST …/{id}/approve \| reject \| cancel` | `read_change_requests`, `propose_*`, `approve_*` | Change requests | UI-0: add `reinstate_agent`; UI-2: propose it |
-| `GET /v1/admin/audit` | `read_audit` | Audit | done; UI-0 wording |
-| `GET /v1/agents?state=&limit=&cursor=` | `read_agent_state` | none | UI-1 (list) |
-| `GET /v1/agents/{agent_id}` | `read_agent_state` | none | UI-1 |
-| `POST /v1/agents/{agent_id}/restrict \| quarantine \| revoke` | `stop_agent` | none | UI-2 |
-| `GET /v1/agent-decisions/{record_id}` | `read_evidence` (rate limited, audited) | none | UI-1 |
-| `GET /v1/agent-revocations/{system}/{event_id}` | `read_evidence` (rate limited, audited) | none | UI-1 |
-| `POST /v1/reconciliation/closed-records` | `reconcile_closed_records` (rate limited, audited; revokes nothing) | none | UI-3 |
-| `GET /v1/decision-events/{evidence_id}` | `read_evidence` | none | UI-3 |
-| Credit track: evaluate, packs, models, retention, tombstones, incidents, batch jobs | various | pages exist | frozen: keep working, no new features |
-| `GET /metrics` | `read_metrics` | none | not planned: Prometheus and Grafana own it |
-| `POST /v1/dev/clock` | `set_dev_clock`, dev stacks only | none | not planned |
+| `GET /metrics` | `read_metrics` | none | exempt: Prometheus text format for Prometheus and Grafana (`deploy/monitoring/`) |
+| `POST /v1/evaluate` | `evaluate` | Evaluate | done (credit track, frozen) |
+| `GET /v1/runtime` | `read_governance` | Overview (posture); the shell reads `agent_only` | done (UI-0 #220, #244) |
+| `GET /v1/packs` | `read_governance` | Policies | done (credit track) |
+| `GET /v1/packs/{pack_id}` | `read_governance` | Policy detail | done (credit track) |
+| `GET /v1/models` | `read_governance` | Models | done (credit track) |
+| `GET /v1/models/{model_id}` | `read_governance` | Model detail | done (credit track) |
+| `GET /v1/change-requests` | `read_change_requests` | Change requests | done |
+| `POST /v1/change-requests` | `propose_<kind>` | Policy detail (`activate_pack`), Model detail (`update_model`), Retention (`update_retention`, `apply_retention`), Agent detail (`reinstate_agent`, UI-2 #233) | done; `rollback_pack`, `erase_evidence` and `activate_model` are not proposed from the console |
+| `GET /v1/change-requests/{id}` | `read_change_requests` | none | exempt: the list returns the same `ChangeRequest` items, and the console has no single-request view |
+| `POST /v1/change-requests/{id}/approve` | `approve_<kind>` | Change requests | done (role-aware #239) |
+| `POST /v1/change-requests/{id}/reject` | `approve_<kind>` | Change requests | done (role-aware #239) |
+| `POST /v1/change-requests/{id}/cancel` | `propose_<kind>` | Change requests | done (role-aware #239) |
+| `GET /v1/admin/audit` | `read_audit` | Audit | done |
+| `POST /v1/dev/clock` | `set_dev_clock` | none | exempt: development stacks only, driven by the `kavach` CLI |
+| `GET /v1/agents?state=&limit=&cursor=` | `read_agent_state` | Agents | done (endpoint #227, UI-1 #232) |
+| `GET /v1/agents/{agent_id}` | `read_agent_state` | Agent detail | done (UI-1 #232) |
+| `POST /v1/agents/{agent_id}/restrict` | `stop_agent` | Agent detail | done (UI-2 #233) |
+| `POST /v1/agents/{agent_id}/quarantine` | `stop_agent` | Agent detail | done (UI-2 #233) |
+| `POST /v1/agents/{agent_id}/revoke` | `stop_agent` | Agent detail | done (UI-2 #233) |
+| `GET /v1/agent-decisions/{record_id}` | `read_evidence` (rate limited, audited) | Agent evidence | done (UI-1 #232) |
+| `GET /v1/agent-revocations/{system}/{event_id}` | `read_evidence` (rate limited, audited) | Agent evidence | done (UI-1 #232) |
+| `POST /v1/reconciliation/closed-records` | `reconcile_closed_records` (rate limited, audited; revokes nothing) | Closed loans (`/reconciliation`) | done (UI-3 #234) |
+| `GET /v1/decision-events/{evidence_id}` | `read_evidence` | Decision events | done (UI-3 #234) |
+| `GET /v1/admin/retention` | `read_retention` | Retention | done (credit track) |
+| `GET /v1/admin/tombstones` | `read_tombstones` | Retention | done (credit track) |
+| `GET /v1/admin/incidents` | `read_incidents` | Incidents | done (credit track) |
+| `GET /v1/admin/batch-jobs` | `read_batch_jobs` | Batch jobs | done (credit track) |
+| `GET /v1/admin/batch-jobs/{job_id}` | `read_batch_jobs` | Batch job detail | done (credit track) |
+| `POST /v1/authorize` | agent token | none | exempt: agent listener |
+| `POST /v1/tools/{tool}` | agent token | none | exempt: agent listener |
+| `POST /v1/sor/events` | issuer signature | none | exempt: system-of-record listener |
+| `GET /auth/config` | none (public) | every page load (`startSession` in `App.tsx`) | done (ADR-018 sign-in) |
+| `GET /auth/login` | none (public) | Sign-in: the link on `/signin` | done (ADR-018 sign-in) |
+| `GET /auth/callback` | none (public) | none | exempt: the IdP redirects the browser there; the console never requests or links it |
+| `GET /auth/session` | session cookie | `SessionGate`, header, Settings | done (ADR-018 sign-in) |
+| `POST /auth/logout` | session cookie | header: Sign out | done (ADR-018 sign-in) |
 
-The agent listener (`/v1/authorize`, `/v1/tools/{tool}`) and `/v1/sor/events` are for agents and systems of record, not operators. The console does not call them.
+The credit-track pages keep working and get no new features. On an `--agent-only` server they are left out (#244).
 
-### Backend gaps the console needs
+### Backend gaps the console still has
 
-- **No list or search for agents, mandates or decision records.** Every agent read is by exact id. The console can look things up but cannot browse. A browsable view needs an additive, read-only, paginated endpoint (proposed in UI-1, owner approval required, OpenAPI and Cedar updated in the same PR).
-- **Console in agent-only mode.** Serving the console when the credit track is off needs a change in `http.rs` and a credit-free navigation. Owner decision.
+- **ADR-017 unknown outcomes and resolutions** have no read endpoint, and the agent-decision lookup carries no resolution. The console shows neither until one exists.
+- **Reinstatement parameters are untyped** in the spec (`ChangeProposal.params`), so `ReinstateAgentParams` is the one hand-written request type.
+- **One change request by id.** `GET /v1/change-requests/{id}` exists but the console does not use it: after proposing a reinstatement it links to the list. A detail view would use it and drop the exemption.
+- **Three change kinds** (`rollback_pack`, `erase_evidence`, `activate_model`) are listed, approved, rejected and cancelled in the console, but proposed only through the API.
+- Done since 2026-11-14: the agent list endpoint (#227) and the console on agent-only servers (#224, #244).
+
+Other known gaps, from issue #218 and the sign-in work: no 404 page (an unknown console path goes to Overview); console sessions live in one `kavach-api` process (a restart signs everyone out, and replicas do not share them); the browser suites run in Chromium only, and Firefox and WebKit are not covered, the sign-in round trip included.
 
 ## 3. Standards the console is held to
 
-- **Accessibility:** WCAG 2.2 level AA. Keyboard reachable, visible focus, a skip link, labelled controls, status messages announced (`role="status"`/`aria-live`), no colour-only meaning (decision and state badges carry text).
-- **Web security:** OWASP ASVS 5.0 level 2 for the browser side. A strict Content-Security-Policy with no inline script, `frame-ancestors 'none'`, `nosniff`, `Referrer-Policy: no-referrer` (roadmap 1.3 and 1.4). No `dangerouslySetInnerHTML`. The token is never logged or put in a URL.
+- **Accessibility:** WCAG 2.2 level AA. Keyboard reachable, visible focus, a skip link, labelled controls, status messages announced (`role="status"`/`aria-live`), no colour-only meaning (decision and state badges carry text). axe runs on every page and state in CI.
+- **Web security:** OWASP ASVS 5.0 level 2 for the browser side. A strict Content-Security-Policy with no inline script, `frame-ancestors 'none'`, `nosniff`, `Referrer-Policy: no-referrer`. No `dangerouslySetInnerHTML`. No token is ever logged or put in a URL; with sign-in, the browser holds no token at all.
 - **Errors:** RFC 9457 problem details. The console shows `detail` and the `request_id`, and the HTTP status when the body is not a problem.
 - **Privacy:** no telemetry, no third-party requests, self-hosted fonts. The console never asks for, shows or stores raw personal data. Loans appear only as the references and pseudonyms the API returns.
-- **Wording:** the project's claim rules apply to UI text. No "compliant", "production-grade" or latency claims. Evidence wording follows the verifiers: an agent record is "signature verified against the listed keys", and one record proves nothing about the chain. The console shows hashes and the verify command; it does not verify bundles itself.
+- **Wording:** the project's claim rules apply to UI text. No "compliant", "production-grade" or latency claims. Evidence wording follows the verifiers: an agent record is "signature verified against the listed keys", and one record proves nothing about the chain. The console shows hashes and the verify commands; it does not verify bundles itself.
 - **Safety in the UI:** stopping an agent asks for a reason code and confirmation, and says what happens (restrict: no external effects; quarantine: mandates suspended; revoke: permanent, mandates revoked). The result shows `record: pending` honestly when the reconciler still has to write the evidence record. Reinstating is a change request that a different principal approves; the UI says so and does not offer an approve button to the proposer.
-- **Contracts:** request and response types come from `docs/openapi.yaml`, not hand-written copies.
+- **Contracts:** request and response types come from `docs/openapi.yaml`, not hand-written copies, and every operator operation is called or exempt with a reason (section 2).
 
 ## 4. Steps
 
-Each step is one PR from `main`, with the repo's five-question checklist. New npm dependencies, including dev-only tools, need the owner's approval first.
+Each step was one or more PRs from `main`, with the repo's five-question checklist.
 
-### UI-0: foundations (no new dependencies)
+### UI-0: foundations — done (#220, #222, #224)
 
-- One fetch helper: checks `ok` before parsing, turns problem details into a typed error with status and `request_id`, and handles non-JSON bodies.
-- Types match `docs/openapi.yaml` by hand for now (`reinstate_agent`, the full runtime view). Generated types follow when the generator is approved.
+- One fetch helper: checks the status before parsing, turns problem details into a typed error with status and `request_id`, and handles non-JSON bodies.
+- Types generated from `docs/openapi.yaml` (#222), including `reinstate_agent` and the full runtime view.
 - Overview shows the runtime posture: relaxations by name, insecure dev, HSM status, checkpoints, dev clock.
-- Remove the unproven claims and the stale header wording.
+- The unproven claims and the stale header wording are gone.
 - Accessibility basics: skip link, `aria-live` for action results, the drawer closes on Escape.
-- Done when: `npm run build` passes, the console shows real data against a dev stack, and no page hand-writes a type that the spec defines differently.
+- The console is served in agent-only mode with security headers (#224).
 
-### UI-1: agent track, read-only
+### UI-1: agent track, read-only — done (#227, #232)
 
-- Agent page: look up an agent by id, show its state and history fields (state, change number, reason code, note, who changed it, approver, change request, time).
+- Agents list (`GET /v1/agents`, #227) and agent page: state and history fields (state, change number, reason code, note, who changed it, approver, change request, time).
 - Evidence lookups: an agent decision record by record id (with its outcome, if any), a revocation record by system and event id. Each lookup is audited and rate limited by the API; the page says so.
-- Backend: propose the list endpoint (section 2) as its own PR.
 
-### UI-2: agent actions
+### UI-2: agent actions — done (#233)
 
 - Restrict, quarantine and revoke from the agent page, with reason code, optional note (256 characters, never in the evidence chain), and a confirmation that names the effect.
-- Show the result: `applied`, `record` (`written`, `pending`, `unchanged`), and for revoke the mandates revoked and not revoked, with "repeat the revoke to finish" when the second list is not empty.
+- The result: `applied`, `record` (`written`, `pending`, `unchanged`), and for revoke the mandates revoked and not revoked, with "repeat the revoke to finish" when the second list is not empty.
 - Reinstate: propose a `reinstate_agent` change request (`to: active | restricted`), never from `revoked`.
 
-### UI-3: evidence and reconciliation
+### UI-3: evidence and reconciliation — done (#234), one item waiting
 
-- Closed-records reconciliation: upload or paste the lender's list, show findings, state plainly that the call revokes nothing.
-- Decision events (credit) by evidence id, and the `kavach evidence verify` command for offline verification.
-- Unknown outcomes and resolutions (ADR-017) once the read endpoints exist.
+- Closed-records reconciliation (Closed loans): upload or paste the lender's list, show findings, state plainly that the call revokes nothing.
+- Decision events (credit) by evidence id, with `kavach-evidence verify --file` for the exported chain and `kavach why --export` for one event. Agent records get `kavach-evidence verify-bundle`, `kavach why --bundle` (decisions only) and the independent Python verifier. The console runs none of these; it shows them to copy.
+- Waiting: unknown outcomes and resolutions (ADR-017), once the read endpoints exist (section 2).
 
-### UI-4: hardening and polish
+### UI-4: hardening and polish — done (#239, #241, #244, ADR-018 sign-in)
 
-- Role-aware views: hide or disable actions the principal cannot perform (the API stays the gate).
-- Console tests and lint in CI, an automated accessibility check, end-to-end tests against a dev stack.
-- OIDC authorization code with PKCE in place of the pasted token, with the token storage ADR: [ADR-018](ADR-018-console-login-and-token-storage.md) (accepted; also roadmap 1.4).
+- Role-aware views: a control the viewer's known groups lack is replaced by a role hint (the API stays the gate).
+- Console tests and lint in CI, axe on every page, keyboard and CSP checks; the sign-in round trip against `kavach-api` and an OIDC test double.
+- OIDC authorization code with PKCE in place of the pasted token, per [ADR-018](ADR-018-console-login-and-token-storage.md) option C.
+- The API path check (section 2).
 
-## 5. Open decisions
+## 5. Decisions (closed)
 
-1. Serve the console in agent-only mode (section 2).
-2. The list and search endpoint for agents, mandates and decision records.
-3. Approval for dev tools: ESLint, Vitest and openapi-typescript (UI-0/UI-1), Playwright (UI-4).
+1. **Serve the console in agent-only mode:** done. Served in #224; credit-free navigation from `agent_only` in `GET /v1/runtime` in #244.
+2. **The list endpoint:** agents only, built in #227 (`GET /v1/agents`, keyset paging, admins only). No list or search for mandates or decision records was built, and the console does not need one for the current pages.
+3. **Dev tools:** approved and in the tree: ESLint, Vitest and openapi-typescript (#222), Playwright and axe (#239, #241).
+4. **Console login and token storage:** ADR-018 option C, accepted in #228, built in the sign-in PRs.
