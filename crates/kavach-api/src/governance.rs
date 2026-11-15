@@ -35,6 +35,7 @@ pub struct RuntimeResponse {
     pub model_pack_mismatch: bool,
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent facts in a JSON response, not a state
 #[derive(Debug, Serialize)]
 pub struct RuntimeView {
     #[serde(flatten)]
