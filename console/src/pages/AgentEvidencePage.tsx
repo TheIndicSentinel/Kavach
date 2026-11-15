@@ -1,15 +1,16 @@
-import { useRef, useState, type FormEvent, type ReactNode, type RefObject } from "react";
+import { useRef, useState, type FormEvent, type RefObject } from "react";
 import {
   DecisionRecordView,
   EvidenceNotice,
   RevocationRecordView,
 } from "../components/agents/EvidenceViews";
+import { LookupPanel } from "../components/evidence/LookupPanel";
 import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
-import { ProblemAlert } from "../components/ui/ProblemAlert";
 import { RoleHint } from "../components/ui/RoleHint";
 import { TextField } from "../components/ui/TextField";
+import { useLookup, type Lookup } from "../hooks/useLookup";
 import { LOOKUP_MAX_LENGTH, idProblem, recordIdProblem } from "../lib/agents";
 import {
   fetchAgentDecision,
@@ -25,65 +26,6 @@ function evidenceHint(viewer: Viewer): string | null {
   return roleHint(viewer, "read_evidence", "read evidence records");
 }
 
-type Lookup<T> =
-  | { phase: "idle" }
-  | { phase: "loading"; what: string }
-  | { phase: "done"; what: string; result: T }
-  | { phase: "error"; what: string; error: unknown };
-
-/**
- * One lookup at a time, started only by a submit: each call is audited and
- * rate limited, so nothing here fetches on its own or on every keystroke.
- */
-function useLookup<T>() {
-  const [lookup, setLookup] = useState<Lookup<T>>({ phase: "idle" });
-  const latest = useRef(0);
-
-  function run(what: string, call: () => Promise<T>) {
-    const id = ++latest.current;
-    setLookup({ phase: "loading", what });
-    call().then(
-      (result) => {
-        if (latest.current === id) setLookup({ phase: "done", what, result });
-      },
-      (error: unknown) => {
-        if (latest.current === id) setLookup({ phase: "error", what, error });
-      },
-    );
-  }
-
-  return { lookup, run };
-}
-
-function lookupStatus(lookup: Lookup<unknown>): string {
-  switch (lookup.phase) {
-    case "loading":
-      return `Looking up ${lookup.what}…`;
-    case "done":
-      return `Found ${lookup.what}.`;
-    default:
-      return "";
-  }
-}
-
-function LookupResult<T>({
-  lookup,
-  render,
-}: {
-  lookup: Lookup<T>;
-  render: (result: T) => ReactNode;
-}) {
-  return (
-    <div className="mt-6">
-      <ProblemAlert error={lookup.phase === "error" ? lookup.error : null} className="mb-4 empty:mb-0" />
-      <p role="status" aria-live="polite" className="mb-4 text-sm text-muted empty:mb-0">
-        {lookupStatus(lookup)}
-      </p>
-      {lookup.phase === "done" && render(lookup.result)}
-    </div>
-  );
-}
-
 /** Checks every field, focuses the first one refused, and says whether all passed. */
 function checkFields(
   checks: { problem: string | null; set: (problem: string | null) => void; ref: RefObject<HTMLInputElement | null> }[],
@@ -97,11 +39,17 @@ function checkFields(
   return first === null;
 }
 
-function DecisionLookup({ viewer }: { viewer: Viewer }) {
+function DecisionLookup({
+  viewer,
+  initial,
+}: {
+  viewer: Viewer;
+  initial?: Lookup<AgentDecisionLookup>;
+}) {
   const input = useRef<HTMLInputElement>(null);
   const [recordId, setRecordId] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
-  const { lookup, run } = useLookup<AgentDecisionLookup>();
+  const { lookup, run } = useLookup<AgentDecisionLookup>(initial);
   const hint = evidenceHint(viewer);
 
   function submit(event: FormEvent) {
@@ -109,7 +57,7 @@ function DecisionLookup({ viewer }: { viewer: Viewer }) {
     if (lookup.phase === "loading") return;
     const id = recordId.trim();
     if (!checkFields([{ problem: recordIdProblem(id), set: setProblem, ref: input }])) return;
-    run(`record ${id}`, () => fetchAgentDecision(id));
+    run(`Looking up record ${id}`, () => fetchAgentDecision(id));
   }
 
   return (
@@ -144,8 +92,10 @@ function DecisionLookup({ viewer }: { viewer: Viewer }) {
               Look up record
             </Button>
           </form>
-          <LookupResult
+          <LookupPanel
             lookup={lookup}
+            notFound="No agent decision record with that id on this server."
+            done={(result) => `Found record ${result.record.record_id}.`}
             render={(result) => <DecisionRecordView result={result} />}
           />
         </>
@@ -154,14 +104,20 @@ function DecisionLookup({ viewer }: { viewer: Viewer }) {
   );
 }
 
-function RevocationLookupCard({ viewer }: { viewer: Viewer }) {
+function RevocationLookupCard({
+  viewer,
+  initial,
+}: {
+  viewer: Viewer;
+  initial?: Lookup<RevocationLookup>;
+}) {
   const systemInput = useRef<HTMLInputElement>(null);
   const eventInput = useRef<HTMLInputElement>(null);
   const [system, setSystem] = useState("");
   const [eventId, setEventId] = useState("");
   const [systemProblem, setSystemProblem] = useState<string | null>(null);
   const [eventProblem, setEventProblem] = useState<string | null>(null);
-  const { lookup, run } = useLookup<RevocationLookup>();
+  const { lookup, run } = useLookup<RevocationLookup>(initial);
   const hint = evidenceHint(viewer);
 
   function submit(event: FormEvent) {
@@ -174,7 +130,9 @@ function RevocationLookupCard({ viewer }: { viewer: Viewer }) {
       { problem: idProblem("event id", evt), set: setEventProblem, ref: eventInput },
     ]);
     if (!ok) return;
-    run(`the revocation for event ${evt} from ${sys}`, () => fetchRevocationRecord(sys, evt));
+    run(`Looking up the revocation for event ${evt} from ${sys}`, () =>
+      fetchRevocationRecord(sys, evt),
+    );
   }
 
   return (
@@ -220,8 +178,12 @@ function RevocationLookupCard({ viewer }: { viewer: Viewer }) {
               Look up revocation
             </Button>
           </form>
-          <LookupResult
+          <LookupPanel
             lookup={lookup}
+            notFound="No revocation record for that system and event id on this server."
+            done={(result) =>
+              `Found the revocation for event ${result.record.event_id} from ${result.record.source_system}.`
+            }
             render={(result) => <RevocationRecordView result={result} />}
           />
         </>
@@ -230,8 +192,19 @@ function RevocationLookupCard({ viewer }: { viewer: Viewer }) {
   );
 }
 
-/** `viewer` is for tests; the app passes none and the page reads it. */
-export default function AgentEvidencePage({ viewer: given }: { viewer?: Viewer }) {
+type AgentEvidencePageProps = {
+  /** For tests; the app passes none and the page reads it. */
+  viewer?: Viewer;
+  /** For tests: each lookup's phase, as if it had been submitted. */
+  decision?: Lookup<AgentDecisionLookup>;
+  revocation?: Lookup<RevocationLookup>;
+};
+
+export default function AgentEvidencePage({
+  viewer: given,
+  decision,
+  revocation,
+}: AgentEvidencePageProps) {
   const current = useViewer();
   const viewer = given ?? current;
   return (
@@ -250,8 +223,8 @@ export default function AgentEvidencePage({ viewer: given }: { viewer?: Viewer }
       </Card>
 
       <div className="space-y-6">
-        <DecisionLookup viewer={viewer} />
-        <RevocationLookupCard viewer={viewer} />
+        <DecisionLookup viewer={viewer} initial={decision} />
+        <RevocationLookupCard viewer={viewer} initial={revocation} />
       </div>
     </section>
   );

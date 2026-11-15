@@ -6,6 +6,7 @@ import { PageHeader } from "../components/ui/PageHeader";
 import { ProblemAlert } from "../components/ui/ProblemAlert";
 import { RoleHint } from "../components/ui/RoleHint";
 import { Skeleton } from "../components/ui/Skeleton";
+import type { Resource } from "../hooks/useResource";
 import {
   approveChange,
   cancelChange,
@@ -128,7 +129,12 @@ export function RequestButtons({ request, viewer, busy, onAct }: RequestButtonsP
   );
 }
 
-export default function ChangeRequestsPage() {
+type ChangeRequestsPageProps = {
+  /** For tests: the list's read, in place of the API's answer. */
+  resource?: Resource<ChangeRequest[]>;
+};
+
+export default function ChangeRequestsPage({ resource: given }: ChangeRequestsPageProps = {}) {
   const viewer = useViewer();
   const [filter, setFilter] = useState<ChangeStatus | undefined>("pending");
   const [requests, setRequests] = useState<ChangeRequest[] | null>(null);
@@ -183,6 +189,12 @@ export default function ChangeRequestsPage() {
     }
   }
 
+  // The list is not refetched through useResource: after a refused action
+  // the request stays on screen, with its buttons and focus.
+  const listed = given ? (given.phase === "ok" ? given.data : null) : requests;
+  const shownError = given?.phase === "error" ? given.error : error;
+  const loading = listed === null && !shownError;
+
   return (
     <section>
       <PageHeader
@@ -209,7 +221,7 @@ export default function ChangeRequestsPage() {
         }
       />
 
-      <ProblemAlert error={error} className="mb-4 empty:mb-0" />
+      <ProblemAlert error={shownError} className="mb-4 empty:mb-0" />
       <div
         ref={result}
         tabIndex={-1}
@@ -217,16 +229,23 @@ export default function ChangeRequestsPage() {
         aria-live="polite"
         className="mb-4 text-sm font-medium text-ink empty:mb-0"
       >
-        {message}
+        {message ?? (loading ? "Loading change requests…" : "")}
       </div>
 
-      {requests === null && !error && <Skeleton className="h-32 w-full" />}
-      {requests !== null && requests.length === 0 && (
-        <p className="text-sm text-muted">No change requests.</p>
+      {loading && <Skeleton className="h-32 w-full" />}
+      {listed === null && shownError !== null && (
+        <Button variant="ghost" size="sm" onClick={reload}>
+          Try again
+        </Button>
+      )}
+      {listed !== null && listed.length === 0 && (
+        <p className="text-sm text-muted">
+          {filter === "pending" ? "No pending change requests." : "No change requests."}
+        </p>
       )}
 
       <div className="space-y-4">
-        {(requests ?? []).map((request) => (
+        {(listed ?? []).map((request) => (
           <Card key={request.id} id={changeRequestAnchor(request.id)}>
             <CardHeader>
               <div className="flex flex-wrap items-center gap-3">

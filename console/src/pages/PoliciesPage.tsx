@@ -1,32 +1,21 @@
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { DataTable } from "../components/ui/DataTable";
 import { PageHeader } from "../components/ui/PageHeader";
-import { Skeleton } from "../components/ui/Skeleton";
+import { ResourceState } from "../components/ui/ResourceState";
+import { useResource, type Resource } from "../hooks/useResource";
 import { fetchPacks, type PackSummary } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 
-export default function PoliciesPage() {
-  const [packs, setPacks] = useState<PackSummary[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+type PoliciesPageProps = {
+  /** For tests: the read of GET /v1/packs, in place of the API's answer. */
+  resource?: Resource<PackSummary[]>;
+};
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchPacks()
-      .then((data) => {
-        if (!cancelled) setPacks(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load packs");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+export default function PoliciesPage({ resource: given }: PoliciesPageProps) {
+  const { resource: read, retry } = useResource(fetchPacks);
+  const resource = given ?? read;
 
   return (
     <section>
@@ -44,26 +33,17 @@ export default function PoliciesPage() {
           </CardDescription>
         </CardHeader>
 
-        {error && (
-          <p className="mb-4 text-sm text-decision-block">
-            {error}
-            {error.includes("401") || error.includes("403") ? (
-              <> — configure principal in Settings.</>
-            ) : null}
-          </p>
-        )}
-
-        {packs === null && !error && (
-          <div className="space-y-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        )}
-
-        {packs && (
+        <ResourceState
+          resource={resource}
+          loading="Loading policy packs…"
+          summary={(packs) => `${packs.length} ${packs.length === 1 ? "pack" : "packs"}.`}
+          onRetry={retry}
+        >
+          {(packs) => (
           <DataTable
             rows={packs}
             rowKey={(row) => `${row.id}-${row.version}`}
+            emptyMessage="No policy packs in the packs directory yet."
             columns={[
               {
                 key: "id",
@@ -109,7 +89,8 @@ export default function PoliciesPage() {
               },
             ]}
           />
-        )}
+          )}
+        </ResourceState>
       </Card>
     </section>
   );

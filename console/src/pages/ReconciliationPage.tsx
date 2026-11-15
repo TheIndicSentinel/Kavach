@@ -9,7 +9,7 @@ import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
 import { RoleHint } from "../components/ui/RoleHint";
-import { useLookup } from "../hooks/useLookup";
+import { useLookup, type Lookup } from "../hooks/useLookup";
 import { reconcileClosedRecords, type ClosedRecordsResult } from "../lib/api";
 import { useViewer } from "../lib/changeRequests";
 import { cn } from "../lib/cn";
@@ -23,15 +23,21 @@ import { roleHint, type Viewer } from "../lib/permissions";
 const EXAMPLE =
   '{"system": "lms", "records": [{"record_ref": "lms:loan/L-1", "state": "paid", "closed_at": "2026-10-01T06:00:00Z"}]}';
 
-/** `viewer` is for tests; the app passes none and the page reads it. */
-export default function ReconciliationPage({ viewer: given }: { viewer?: Viewer }) {
+type ReconciliationPageProps = {
+  /** For tests; the app passes none and the page reads it. */
+  viewer?: Viewer;
+  /** For tests: the call's phase, as if Reconcile had been pressed. */
+  lookup?: Lookup<ClosedRecordsResult>;
+};
+
+export default function ReconciliationPage({ viewer: given, lookup: initial }: ReconciliationPageProps) {
   const current = useViewer();
   const hint = roleHint(given ?? current, "reconcile_closed_records", "reconcile closed loans");
   const listInput = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const [list, setList] = useState("");
   const [problems, setProblems] = useState<string[]>([]);
-  const { lookup, run, reset } = useLookup<ClosedRecordsResult>();
+  const { lookup, run, reset } = useLookup<ClosedRecordsResult>(initial);
 
   function refuse(found: string[]) {
     setProblems(found);
@@ -116,7 +122,7 @@ export default function ReconciliationPage({ viewer: given }: { viewer?: Viewer 
                   accept="application/json,.json"
                   onChange={load}
                   aria-describedby="closed-records-file-hint"
-                  className="block text-sm text-ink file:mr-3 file:rounded-lg file:border file:border-border file:bg-white file:px-3 file:py-1.5 file:text-sm file:font-semibold"
+                  className="block w-full max-w-full text-sm text-ink file:mr-3 file:rounded-lg file:border file:border-border file:bg-white file:px-3 file:py-1.5 file:text-sm file:font-semibold"
                 />
                 <p id="closed-records-file-hint" className="mt-1 text-xs text-muted">
                   Read in this browser into the box below. Up to 1 MiB.
@@ -144,7 +150,7 @@ export default function ReconciliationPage({ viewer: given }: { viewer?: Viewer 
                   )}
                 />
                 <p id="closed-records-list-hint" className="mt-1 text-xs text-muted">
-                  For example: <code className="font-mono">{EXAMPLE}</code>. state is paid or disputed;
+                  For example: <code className="font-mono break-all">{EXAMPLE}</code>. state is paid or disputed;
                   closed_at is when the lender says it was paid or disputed.
                 </p>
                 {invalid && (

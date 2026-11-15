@@ -44,11 +44,12 @@ test.describe("axe, WCAG 2.2 AA tags", () => {
     });
   }
 
-  test("an unknown path: the console has no 404 page and shows Overview", async ({ page }) => {
+  test("an unknown path: a 404 page that names the path and links to Overview", async ({ page }) => {
     await page.goto("/no-such-page");
-    await expect(page).toHaveURL(/\/overview$/);
-    await expect(page.getByRole("heading", { level: 1, name: "Overview" })).toBeVisible();
-    await expect(page.getByText("credit-risk").filter({ visible: true }).first()).toBeVisible();
+    await expect(page).toHaveURL(/\/no-such-page$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Page not found" })).toBeVisible();
+    await expect(page.getByText("The console has no page at /no-such-page.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Go to Overview" })).toBeVisible();
     await expectNoViolations(page);
   });
 
