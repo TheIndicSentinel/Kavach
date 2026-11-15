@@ -1,6 +1,6 @@
 # ADR-018: Console Login (OIDC Authorization Code with PKCE) and Where Operator Tokens Live
 
-**Status:** Accepted (2026-11-14). Option C, with the owner's answers to the open questions (see "Decisions on the open questions"). Nothing here is built. **Implementation is gated:** it starts after roadmap 1.3 (API security headers) lands, it is a second-review area (a client credential and session tokens), and it needs the owner's go.  
+**Status:** Accepted (2026-11-14). Option C, with the owner's answers to the open questions (see "Decisions on the open questions"). **Backend implemented on this branch, pending merge** (`feat/console-login-backend`, on top of roadmap 1.3); the console's sign-in screen is separate work. It is a second-review area (a client credential and session tokens; see SECOND_REVIEW.md).  
 **Date:** 2026-11-14  
 **Deciders:** Kavach product/engineering (owner decision, 2026-11-14)  
 **Related:** ADR-008 (API authentication; it deferred console login to this ADR), ADR-009 (change requests), ADR-013 (kill switch), ADR-014 (tenancy), [CONSOLE_PLAN.md](CONSOLE_PLAN.md) UI-4, [SECURITY_PROPERTIES.md](SECURITY_PROPERTIES.md), [THREAT_MODEL.md](THREAT_MODEL.md)

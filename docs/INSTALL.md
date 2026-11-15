@@ -232,6 +232,37 @@ Issuer, audience and one JWKS source must be set together. Tokens must be signed
 
 *Keycloak (development):* create a realm and a confidential client with the service-account flow, add an audience mapper for `kavach-api` and a *Group Membership* mapper named `groups` (full path off). Then `--oidc-issuer http(s)://<host>/realms/<realm>`, `--oidc-jwks-url https://<host>/realms/<realm>/protocol/openid-connect/certs` (or save that JSON as the JWKS file), and get a token with `curl -d grant_type=client_credentials -d client_id=... -d client_secret=... https://<host>/realms/<realm>/protocol/openid-connect/token`.
 
+**Console sign-in (ADR-018).** Off unless `--console-client-id` is set. With it, the console signs in through `kavach-api`: the API runs the authorization code flow with PKCE against your IdP as a confidential client, keeps the tokens on the server, and gives the browser only an `HttpOnly` session cookie. It needs operator OIDC (above) on the same issuer: the access tokens the API gets for a console user must pass the same issuer, audience and JWKS checks as a CLI token, so a person is the same Cedar principal either way. Sessions live in the API process's memory: a restart signs everyone out, and with several replicas a user's requests must reach the replica that holds their session.
+
+*At the IdP*, register one client for the console:
+
+- confidential client (client secret), standard flow (authorization code) only, with **PKCE S256 required**; no implicit flow, no direct-access grants, no service account;
+- client authentication `client_secret_basic`;
+- exactly one redirect URI, `https://<console host>/auth/callback` (the console host is where the operator listener is reached); no wildcards;
+- a post-logout redirect URI `https://<console host>/signin` if you turn on `--console-idp-logout`;
+- access tokens for this client must carry the operator audience (`--oidc-audience`, for example with a Keycloak audience mapper) and the groups claim; the client id itself must differ from the operator and agent audiences;
+- a refresh token for the session (in Keycloak, the default for the standard flow); `offline_access` is refused.
+
+Put the client secret alone on one line in a file only the API's user can read (`chmod 600`; `--require-hardening` refuses a file readable by group or others).
+
+| Flag | Env | Default | Meaning |
+|---|---|---|---|
+| `--console-client-id` | `KAVACH_CONSOLE_CLIENT_ID` | — | The console's client id; turns console sign-in on |
+| `--console-client-secret-file` | `KAVACH_CONSOLE_CLIENT_SECRET_FILE` | — | File holding the client secret (one line) |
+| `--console-redirect-uri` | `KAVACH_CONSOLE_REDIRECT_URI` | — | The registered redirect URI, exactly `https://<host>/auth/callback` (`http://localhost`, `127.0.0.1` or `[::1]` only with `--insecure-dev`). Its scheme, host and port are the console origin that cookie requests must come from |
+| `--console-authorization-endpoint`, `--console-token-endpoint` | `KAVACH_CONSOLE_AUTHORIZATION_ENDPOINT`, `KAVACH_CONSOLE_TOKEN_ENDPOINT` | discovery | Set both to skip discovery; otherwise read once at startup from `{issuer}/.well-known/openid-configuration`, which must name the same issuer and support S256. HTTPS only outside `--insecure-dev` |
+| `--console-revocation-endpoint` | `KAVACH_CONSOLE_REVOCATION_ENDPOINT` | discovery | RFC 7009 endpoint; logout (and a sign-in refused because the session table is full) revokes the refresh token there |
+| `--console-end-session-endpoint` | `KAVACH_CONSOLE_END_SESSION_ENDPOINT` | discovery | Used only with `--console-idp-logout` |
+| `--console-scope` | `KAVACH_CONSOLE_SCOPE` | `openid` | Space-separated; must include `openid`, must not include `offline_access` |
+| `--console-session-idle-minutes` | `KAVACH_CONSOLE_SESSION_IDLE_MINUTES` | `15` | A session ends after this long without a request (5–60) |
+| `--console-session-absolute-minutes` | `KAVACH_CONSOLE_SESSION_ABSOLUTE_MINUTES` | `480` | A session ends this long after sign-in, whatever happens (at least the idle limit, at most 720). A token refresh never extends it |
+| `--console-idp-logout` | `KAVACH_CONSOLE_IDP_LOGOUT` | off | Logout also returns the IdP's end-session URL (with `client_id` and `post_logout_redirect_uri`, never `id_token_hint`), so the console signs the user out of the IdP too |
+| `--console-max-sessions` | `KAVACH_CONSOLE_MAX_SESSIONS` | `1000` | Most live sessions (1–10000); when full, new sign-ins are refused (`sessions_full`) and existing sessions keep working |
+
+Startup refuses a partial configuration, a value outside its bounds, a client id equal to an audience, a non-HTTPS redirect URI or endpoint outside `--insecure-dev`, and discovery that names another issuer. The routes are `GET /auth/config`, `GET /auth/login`, `GET /auth/callback`, `GET /auth/session` and `POST /auth/logout` on the operator listener (see `docs/openapi.yaml`). A request with the session cookie must also send `X-Kavach-Console: 1` and come from the console origin; with the cookie and `Authorization` (or `X-Kavach-Principal`) together it is refused.
+
+*Development IdP.* `cargo run -p kavach-api --example oidc_double -- --client-secret-file <dir>/console.secret --jwks-out <dir>/jwks.json [--listen 127.0.0.1:9400] [--sub dev-admin] [--groups admins]` starts the OIDC test double the Rust tests use: it signs in the one configured user without asking, writes a new JWKS each run (and a random client secret, owner-only, if the file is missing), and prints the `kavach-api` flags to use. Its URLs are plain-HTTP loopback, so `kavach-api` needs `--insecure-dev` with it, and the redirect URI must be `http://127.0.0.1:<port>/auth/callback` (or `localhost`). Never point a deployment at it.
+
 **mTLS principals (machine callers).** With `--tls-cert`, `--tls-key`, `--tls-client-ca` and `--mtls-principal-san uri` (env `KAVACH_MTLS_PRINCIPAL_SAN`; `dns` also supported), the client certificate's single URI SAN is the Cedar principal on HTTP and gRPC. Add that id to the entities file with its groups, for example:
 
 ```json
