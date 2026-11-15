@@ -70,7 +70,7 @@ pub async fn runtime(
     credentials: Credentials,
 ) -> Result<Json<RuntimeView>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
-    let runtime = state.runtime();
+    let runtime = state.runtime()?;
     let stored_pointer_version = state
         .admin()
         .get_runtime_pointers()
@@ -103,7 +103,7 @@ pub async fn list_policy_packs(
     credentials: Credentials,
 ) -> Result<Json<Vec<crate::registry::PackSummary>>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
-    let runtime = state.runtime();
+    let runtime = state.runtime()?;
     let packs = list_packs(state.packs_dir(), &runtime.pack_id, &runtime.pack_version)?;
     Ok(Json(packs))
 }
@@ -123,7 +123,7 @@ pub async fn list_model_records(
     credentials: Credentials,
 ) -> Result<Json<Vec<crate::registry::ModelSummary>>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
-    let runtime = state.runtime();
+    let runtime = state.runtime()?;
     let models = list_models(
         state.models_dir(),
         &runtime.model_path,
