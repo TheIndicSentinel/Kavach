@@ -1,8 +1,6 @@
 // Response bodies for the browser tests, typed from the generated OpenAPI
 // types, so a spec change that these bodies no longer match fails typecheck.
 import type { components } from "../src/lib/openapi";
-// TODO(openapi): replace with generated types once /auth/* is in openapi.yaml
-import type { AuthConfig, AuthSession, LogoutResponse } from "../src/lib/session";
 import {
   neverChanged,
   quarantineApplied,
@@ -173,22 +171,37 @@ export const forbidden: Schemas["Problem"] = {
 };
 
 /** `GET /auth/config`: console login configured. */
-export const authConfigLogin: AuthConfig = { login_configured: true, pasted_token_allowed: false };
+export const authConfigLogin: Schemas["ConsoleAuthConfig"] = { login_configured: true, pasted_token_allowed: false };
 
 /** `GET /auth/config`: no console login, --insecure-dev (the development fallback). */
-export const authConfigDev: AuthConfig = { login_configured: false, pasted_token_allowed: true };
+export const authConfigDev: Schemas["ConsoleAuthConfig"] = { login_configured: false, pasted_token_allowed: true };
 
 /** `GET /auth/config`: no console login and no fallback. */
-export const authConfigNone: AuthConfig = { login_configured: false, pasted_token_allowed: false };
+export const authConfigNone: Schemas["ConsoleAuthConfig"] = { login_configured: false, pasted_token_allowed: false };
 
-export const authSession: AuthSession = {
+/** A session whose token names the Cedar group `operators` (the API passes it to Cedar as it is). */
+export const authSession: Schemas["ConsoleSession"] = {
   principal: "oidc-operator-7",
-  groups: ["kavach-operators"],
+  groups: ["operators"],
   expires_at: "2026-11-15T18:00:00Z",
   idle_expires_at: "2026-11-15T10:15:00Z",
 };
 
-export const logoutLocal: LogoutResponse = { end_session_url: null };
+/** A viewers-only session: the role hints take the place of the stop and approve controls. */
+export const viewerSession: Schemas["ConsoleSession"] = {
+  ...authSession,
+  principal: "oidc-viewer-3",
+  groups: ["viewers"],
+};
+
+/** An admin and change approver: every control shows. */
+export const approverSession: Schemas["ConsoleSession"] = {
+  ...authSession,
+  principal: "oidc-admin-2",
+  groups: ["admins", "change-approvers"],
+};
+
+export const logoutLocal: Schemas["ConsoleLogout"] = { end_session_url: null };
 
 /** The 401 problem `GET /auth/session` and every call answer when no session is live. */
 export const noSession: Schemas["Problem"] = {

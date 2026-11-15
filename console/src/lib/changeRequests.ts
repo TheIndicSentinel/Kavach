@@ -1,7 +1,7 @@
 // Which change-request buttons to offer. The API stays the gate: these rules
 // only drop buttons the API is known (or, from the groups, expected) to
 // refuse, never add a permission.
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { getAccessToken, getPrincipal, type ChangeRequest } from "./api";
 import {
   UNKNOWN_VIEWER,
@@ -11,22 +11,23 @@ import {
   proposeAction,
   type Viewer,
 } from "./permissions";
+import { useSessionViewer, type SessionViewer } from "./session";
 
 export type { Viewer } from "./permissions";
 
 /**
- * Who the console acts as, when it can tell without asking the API.
+ * Who the console acts as outside login mode, when it can tell without
+ * asking the API (in login mode {@link viewerFor} uses the session instead).
  *
  * The principal is known in one case: no access token, and a principal ID
  * sent as `X-Kavach-Principal`, which the API (in --insecure-dev) takes as
  * the principal verbatim. With a token the console does not know who it is:
  * the token's claims are not read here.
  *
- * The groups are unknown in every mode today. The header carries none: the
- * API resolves a header principal with no groups and Cedar takes its
- * memberships from the server's entities file, which the console cannot
- * see. `groups` is a parameter so that a source that does know them (the
- * session endpoint, later) can pass them in.
+ * The groups are unknown here. The header carries none: the API resolves a
+ * header principal with no groups and Cedar takes its memberships from the
+ * server's entities file, which the console cannot see. `groups` is a
+ * parameter for a caller that does know them.
  */
 export function currentViewer(
   token?: string,
@@ -43,13 +44,30 @@ export function currentViewer(
 }
 
 /**
- * The viewer for a page, read once: Settings reloads the page when the
- * credentials change. `groups` is the hook argument for a caller that knows
- * them; without it they are unknown and every control shows.
+ * The viewer for a page. Signed in (login mode), it is the principal and the
+ * groups `GET /auth/session` returned: the token's groups, which the API
+ * passes to Cedar as they are. Otherwise (the development fallback, or no
+ * session yet) it is `fallback`, whose groups stay unknown.
+ */
+export function viewerFor(session: SessionViewer, fallback: Viewer): Viewer {
+  if (session.principal === null || session.groups === null) return fallback;
+  return { principal: session.principal, groups: session.groups };
+}
+
+/**
+ * The viewer for a page: the session's principal and groups in login mode,
+ * following the session as it changes. Outside login mode it is read once
+ * ({@link currentViewer}): Settings reloads the page when the credentials
+ * change. `groups` is the hook argument for a caller that knows them there.
  */
 export function useViewer(groups: readonly string[] | null = null): Viewer {
-  const [viewer] = useState(() => currentViewer(undefined, undefined, groups));
-  return viewer;
+  const [fallback] = useState(() => currentViewer(undefined, undefined, groups));
+  const session = useSessionViewer();
+  const { principal, groups: sessionGroups } = session;
+  return useMemo(
+    () => viewerFor({ principal, groups: sessionGroups }, fallback),
+    [principal, sessionGroups, fallback],
+  );
 }
 
 export type ChangeRequestAction = "approve" | "reject" | "cancel";

@@ -1,7 +1,8 @@
 // Console sign-in (ADR-018 option C) in a browser, against the stubbed API:
 // each mode /auth/config selects, a stubbed sign-in and sign-out, a session
-// that ends, the keyboard, axe on every state, and what the browser holds
-// afterwards. The real IdP round trip against the backend comes later.
+// that ends, the keyboard, axe on every state, what the browser holds
+// afterwards, and the role hints the session's groups drive. The real IdP
+// round trip against the backend is in roundtrip.roundtrip.ts.
 import type { Page, Request } from "@playwright/test";
 import type { ApiStub } from "./api";
 import { expectNoViolations } from "./axe";
@@ -16,11 +17,11 @@ import { expect, test } from "./page";
  * cookie as the real server would, and answers 303 to `/`.
  * `POST /auth/logout` ends it.
  */
-async function loginMode(page: Page, api: ApiStub, signedIn: boolean) {
+async function loginMode(page: Page, api: ApiStub, signedIn: boolean, session = body.authSession) {
   const server = { live: signedIn };
   api.set("GET /auth/config", { json: body.authConfigLogin });
   api.set("GET /auth/session", () =>
-    server.live ? { json: body.authSession } : { status: 401, json: body.noSession },
+    server.live ? { json: session } : { status: 401, json: body.noSession },
   );
   api.set("POST /auth/logout", () => {
     server.live = false;
@@ -90,7 +91,7 @@ test.describe("login mode", () => {
     await loginMode(page, api, true);
     await page.goto("/settings");
     await expect(page.getByRole("heading", { level: 1, name: "Settings" })).toBeVisible();
-    await expect(page.getByText("kavach-operators")).toBeVisible();
+    await expect(page.getByText("operators", { exact: true })).toBeVisible();
     await expect(page.locator("input")).toHaveCount(0);
     await expectNoViolations(page);
   });
@@ -170,6 +171,61 @@ test.describe("login mode", () => {
     await page.goBack();
     await expect(signInHeading(page)).toBeVisible();
     await expect(page.getByText("credit-risk")).toHaveCount(0);
+  });
+});
+
+test.describe("login mode: role hints from the session's groups", () => {
+  const agent = body.quarantined;
+  const approve = (page: Page) => page.getByRole("button", { name: "Approve and apply" });
+  const reject = (page: Page) => page.getByRole("button", { name: "Reject" });
+
+  test("viewers only: agent detail shows the hint lines, not the stop or reinstate controls", async ({
+    page,
+    api,
+  }) => {
+    await loginMode(page, api, true, body.viewerSession);
+    api.set(`GET /v1/agents/${agent.agent_id}`, { json: agent });
+    await page.goto(`/agents/${agent.agent_id}`);
+    await expect(page.getByRole("status").filter({ hasText: `Agent ${agent.agent_id} is quarantined.` })).toBeVisible();
+    await expect(
+      page.getByText("Your groups (viewers) don't include one that may stop agents."),
+    ).toBeVisible();
+    await expect(
+      page.getByText("Your groups (viewers) don't include one that may propose reinstating an agent."),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Request reinstatement" })).toHaveCount(0);
+    await expectNoViolations(page);
+  });
+
+  test("viewers only: a pending change request shows the hint line, not approve or reject", async ({
+    page,
+    api,
+  }) => {
+    await loginMode(page, api, true, body.viewerSession);
+    await page.goto("/changes");
+    await expect(
+      page.getByText("Your groups (viewers) don't include one that may approve or reject this change."),
+    ).toBeVisible();
+    await expect(approve(page)).toHaveCount(0);
+    await expect(reject(page)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Cancel (proposer)" })).toHaveCount(0);
+    await expectNoViolations(page);
+  });
+
+  test("admins and change-approvers: the controls show, with no hint line", async ({ page, api }) => {
+    await loginMode(page, api, true, body.approverSession);
+    api.set(`GET /v1/agents/${agent.agent_id}`, { json: agent });
+    await page.goto(`/agents/${agent.agent_id}`);
+    await expect(page.getByRole("button", { name: "Revoke", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Request reinstatement" })).toBeVisible();
+    await expect(page.getByText(/Your groups \(/)).toHaveCount(0);
+
+    await page.getByRole("link", { name: "Change requests" }).first().click();
+    await expect(approve(page)).toBeVisible();
+    await expect(reject(page)).toBeVisible();
+    await expect(page.getByText(/Your groups \(/)).toHaveCount(0);
+    await expectNoViolations(page);
   });
 });
 
