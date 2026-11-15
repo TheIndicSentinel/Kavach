@@ -2,7 +2,7 @@
 // each mode /auth/config selects, a stubbed sign-in and sign-out, a session
 // that ends, the keyboard, axe on every state, what the browser holds
 // afterwards, and the role hints the session's groups drive. The real IdP
-// round trip against the backend is in roundtrip.roundtrip.ts.
+// round trip against the backend is in signin.roundtrip.ts.
 import type { Page, Request } from "@playwright/test";
 import type { ApiStub } from "./api";
 import { expectNoViolations } from "./axe";
