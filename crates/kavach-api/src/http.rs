@@ -110,6 +110,23 @@ pub fn router(state: Arc<AppState>) -> Router {
             .route("/v1/admin/batch-jobs/{job_id}", get(get_batch_job))
     };
 
+    // The console session cookie step (ADR-018) covers the API routes
+    // above only: it is added before the sign-in routes and the console
+    // fallback, so neither passes through it. The agent and system-of-record
+    // routers have no such step and never read the cookie.
+    let router = router.route_layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::console_login::cookie_step,
+    ));
+
+    // Console sign-in (ADR-018). Answers "not configured" unless it is.
+    let router = router
+        .route("/auth/config", get(crate::console_login::config))
+        .route("/auth/login", get(crate::console_login::login))
+        .route("/auth/callback", get(crate::console_login::callback))
+        .route("/auth/session", get(crate::console_login::session))
+        .route("/auth/logout", post(crate::console_login::logout));
+
     // The governance console, in both modes: the built console when this
     // binary has one, else a plain "not built" page. API paths stay problems.
     let router = router.fallback(crate::console::fallback);
