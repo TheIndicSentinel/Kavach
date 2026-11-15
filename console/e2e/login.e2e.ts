@@ -2,29 +2,13 @@
 // each mode /auth/config selects, a stubbed sign-in and sign-out, a session
 // that ends, the keyboard, axe on every state, and what the browser holds
 // afterwards. The real IdP round trip against the backend comes later.
-import AxeBuilder from "@axe-core/playwright";
-import type { Locator, Page, Request } from "@playwright/test";
-import { expect, test, type ApiStub } from "./api";
+import type { Page, Request } from "@playwright/test";
+import type { ApiStub } from "./api";
+import { expectNoViolations } from "./axe";
 import * as body from "./fixtures";
-
-const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
-
-async function expectNoViolations(page: Page) {
-  const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
-  const found = results.violations.map(
-    (v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(" ")).join(" | ")}`,
-  );
-  expect(found).toEqual([]);
-}
-
-/** Presses Tab until `target` has focus; fails if it never does. */
-async function tabTo(page: Page, target: Locator, limit = 60) {
-  for (let i = 0; i < limit; i++) {
-    if (await target.evaluate((el) => el === document.activeElement)) return;
-    await page.keyboard.press("Tab");
-  }
-  await expect(target).toBeFocused();
-}
+import { tabTo } from "./keys";
+// The server's CSP guard (page.ts) runs on every login state too.
+import { expect, test } from "./page";
 
 /**
  * Login mode with a stubbed server session. `/auth/login` (a top-level
