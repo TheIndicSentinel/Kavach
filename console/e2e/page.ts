@@ -59,7 +59,14 @@ export const test = apiTest.extend<{ csp: CspGuard }>({
           return;
         }
         const response = await route.fetch();
-        await route.fulfill({ response, headers: { ...response.headers(), ...SERVER_HEADERS } });
+        try {
+          await route.fulfill({ response, headers: { ...response.headers(), ...SERVER_HEADERS } });
+        } catch (error) {
+          // The browser dropped the request while it was fetched (the page
+          // moved on, or the test ended): there is no page left to serve it
+          // to, so nothing renders without the CSP. Any other error fails.
+          if (!String(error).includes("Fetch response has been disposed")) throw error;
+        }
       });
 
       await provide(guard);
