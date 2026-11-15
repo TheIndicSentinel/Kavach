@@ -25,9 +25,9 @@ use kavach_ports::TimeSource;
 use kavach_ports_testkit::agent_evidence::{request, revocation_draft, TestSigner};
 use kavach_ports_testkit::FakeClock;
 use kavach_storage::testing::isolated_database_urls;
-use kavach_storage::{MemoryAgentEvidenceStore, StoragePool};
+use kavach_storage::{MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, StoragePool};
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestCaseError, TestRunner};
+use proptest::test_runner::{Config, RngSeed, TestCaseError, TestRunner};
 
 static CASES: AtomicU32 = AtomicU32::new(0);
 
@@ -355,9 +355,33 @@ fn the_memory_store_and_postgres_agree_on_every_observable() {
     };
     let postgres = pool.agent_evidence_store();
 
+    // Two runs of 40 cases. The first has a fixed seed, so its sequences are
+    // the same on every machine and the coverage floor below is checked
+    // against them alone: it holds or fails on every run, never by chance
+    // (with a random seed, some runs never repeated a resolution and the
+    // floor failed). The second has a random seed, so each run still tries
+    // sequences no earlier run did; the stores must agree on those too.
+    // A proptest upgrade that changes how sequences are generated can move
+    // the fixed run's tallies; if the floor then fails, pick a new seed.
+    run_cases(&runtime, &postgres, RngSeed::Fixed(FLOOR_SEED));
+    check_coverage_floor();
+    run_cases(&runtime, &postgres, RngSeed::Random);
+}
+
+/// The seed of the run the coverage floor is checked against.
+const FLOOR_SEED: u64 = 1;
+
+/// Forty random sequences, each run against both stores, compared after
+/// every step.
+fn run_cases(
+    runtime: &tokio::runtime::Runtime,
+    postgres: &PostgresAgentEvidenceStore,
+    rng_seed: RngSeed,
+) {
     let mut runner = TestRunner::new(Config {
         cases: 40,
         failure_persistence: None,
+        rng_seed,
         ..Config::default()
     });
     runner
@@ -385,7 +409,10 @@ fn the_memory_store_and_postgres_agree_on_every_observable() {
             })
         })
         .unwrap_or_else(|e| panic!("{e}"));
+}
 
+/// The fixed-seed sequences got somewhere.
+fn check_coverage_floor() {
     // The sequences got somewhere: allows, replays, conflicts, outcomes both
     // recorded and refused, resolutions kept, repeated and refused, and
     // revocations all happened, and the stores agreed about each.
