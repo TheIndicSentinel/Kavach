@@ -8,6 +8,7 @@ import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
 import { ProblemAlert } from "../components/ui/ProblemAlert";
+import { RoleHint } from "../components/ui/RoleHint";
 import { TextField } from "../components/ui/TextField";
 import { LOOKUP_MAX_LENGTH, idProblem, recordIdProblem } from "../lib/agents";
 import {
@@ -16,6 +17,13 @@ import {
   type AgentDecisionLookup,
   type RevocationLookup,
 } from "../lib/api";
+import { useViewer } from "../lib/changeRequests";
+import { roleHint, type Viewer } from "../lib/permissions";
+
+/** Both lookups read signed evidence: `read_evidence`. */
+function evidenceHint(viewer: Viewer): string | null {
+  return roleHint(viewer, "read_evidence", "read evidence records");
+}
 
 type Lookup<T> =
   | { phase: "idle" }
@@ -89,11 +97,12 @@ function checkFields(
   return first === null;
 }
 
-function DecisionLookup() {
+function DecisionLookup({ viewer }: { viewer: Viewer }) {
   const input = useRef<HTMLInputElement>(null);
   const [recordId, setRecordId] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
   const { lookup, run } = useLookup<AgentDecisionLookup>();
+  const hint = evidenceHint(viewer);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -109,37 +118,43 @@ function DecisionLookup() {
         <CardTitle>Agent decision record</CardTitle>
         <CardDescription>By record id, with its outcome if one is recorded.</CardDescription>
       </CardHeader>
-      <form onSubmit={submit} noValidate className="flex flex-col gap-3 sm:flex-row sm:items-start">
-        <TextField
-          id="decision-record-id"
-          label="Record id"
-          value={recordId}
-          onChange={setRecordId}
-          hint="adr:<tenant>:<partition>:<sequence>"
-          error={problem}
-          maxLength={LOOKUP_MAX_LENGTH}
-          ref={input}
-          className="flex-1"
-        />
-        <Button
-          type="submit"
-          variant="secondary"
-          className="sm:mt-7 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
-          // aria-disabled, not disabled, so keyboard focus stays on the button.
-          aria-disabled={lookup.phase === "loading"}
-        >
-          Look up record
-        </Button>
-      </form>
-      <LookupResult
-        lookup={lookup}
-        render={(result) => <DecisionRecordView result={result} />}
-      />
+      {hint ? (
+        <RoleHint>{hint}</RoleHint>
+      ) : (
+        <>
+          <form onSubmit={submit} noValidate className="flex flex-col gap-3 sm:flex-row sm:items-start">
+            <TextField
+              id="decision-record-id"
+              label="Record id"
+              value={recordId}
+              onChange={setRecordId}
+              hint="adr:<tenant>:<partition>:<sequence>"
+              error={problem}
+              maxLength={LOOKUP_MAX_LENGTH}
+              ref={input}
+              className="flex-1"
+            />
+            <Button
+              type="submit"
+              variant="secondary"
+              className="sm:mt-7 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+              // aria-disabled, not disabled, so keyboard focus stays on the button.
+              aria-disabled={lookup.phase === "loading"}
+            >
+              Look up record
+            </Button>
+          </form>
+          <LookupResult
+            lookup={lookup}
+            render={(result) => <DecisionRecordView result={result} />}
+          />
+        </>
+      )}
     </Card>
   );
 }
 
-function RevocationLookupCard() {
+function RevocationLookupCard({ viewer }: { viewer: Viewer }) {
   const systemInput = useRef<HTMLInputElement>(null);
   const eventInput = useRef<HTMLInputElement>(null);
   const [system, setSystem] = useState("");
@@ -147,6 +162,7 @@ function RevocationLookupCard() {
   const [systemProblem, setSystemProblem] = useState<string | null>(null);
   const [eventProblem, setEventProblem] = useState<string | null>(null);
   const { lookup, run } = useLookup<RevocationLookup>();
+  const hint = evidenceHint(viewer);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -170,45 +186,54 @@ function RevocationLookupCard() {
           loan only by a keyed pseudonym.
         </CardDescription>
       </CardHeader>
-      <form onSubmit={submit} noValidate className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-start">
-        <TextField
-          id="revocation-system"
-          label="System"
-          value={system}
-          onChange={setSystem}
-          hint="The system of record that sent the event."
-          error={systemProblem}
-          maxLength={LOOKUP_MAX_LENGTH}
-          ref={systemInput}
-        />
-        <TextField
-          id="revocation-event-id"
-          label="Event id"
-          value={eventId}
-          onChange={setEventId}
-          error={eventProblem}
-          maxLength={LOOKUP_MAX_LENGTH}
-          ref={eventInput}
-        />
-        <Button
-          type="submit"
-          variant="secondary"
-          className="sm:mt-7 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
-          // aria-disabled, not disabled, so keyboard focus stays on the button.
-          aria-disabled={lookup.phase === "loading"}
-        >
-          Look up revocation
-        </Button>
-      </form>
-      <LookupResult
-        lookup={lookup}
-        render={(result) => <RevocationRecordView result={result} />}
-      />
+      {hint ? (
+        <RoleHint>{hint}</RoleHint>
+      ) : (
+        <>
+          <form onSubmit={submit} noValidate className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-start">
+            <TextField
+              id="revocation-system"
+              label="System"
+              value={system}
+              onChange={setSystem}
+              hint="The system of record that sent the event."
+              error={systemProblem}
+              maxLength={LOOKUP_MAX_LENGTH}
+              ref={systemInput}
+            />
+            <TextField
+              id="revocation-event-id"
+              label="Event id"
+              value={eventId}
+              onChange={setEventId}
+              error={eventProblem}
+              maxLength={LOOKUP_MAX_LENGTH}
+              ref={eventInput}
+            />
+            <Button
+              type="submit"
+              variant="secondary"
+              className="sm:mt-7 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+              // aria-disabled, not disabled, so keyboard focus stays on the button.
+              aria-disabled={lookup.phase === "loading"}
+            >
+              Look up revocation
+            </Button>
+          </form>
+          <LookupResult
+            lookup={lookup}
+            render={(result) => <RevocationRecordView result={result} />}
+          />
+        </>
+      )}
     </Card>
   );
 }
 
-export default function AgentEvidencePage() {
+/** `viewer` is for tests; the app passes none and the page reads it. */
+export default function AgentEvidencePage({ viewer: given }: { viewer?: Viewer }) {
+  const current = useViewer();
+  const viewer = given ?? current;
   return (
     <section>
       <PageHeader
@@ -225,8 +250,8 @@ export default function AgentEvidencePage() {
       </Card>
 
       <div className="space-y-6">
-        <DecisionLookup />
-        <RevocationLookupCard />
+        <DecisionLookup viewer={viewer} />
+        <RevocationLookupCard viewer={viewer} />
       </div>
     </section>
   );
