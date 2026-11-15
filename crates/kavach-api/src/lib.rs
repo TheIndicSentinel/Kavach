@@ -24,6 +24,7 @@ pub mod hmac_auth;
 pub mod http;
 pub mod incidents;
 pub mod lifecycle;
+pub mod limits;
 pub mod metrics;
 pub mod mtls;
 pub mod oidc;
@@ -49,11 +50,14 @@ pub use error::ApiError;
 pub use grpc::{status_from_api, GrpcEvaluateService};
 pub use http::router;
 pub use kavach_storage::{DatabaseTls, DEFAULT_POOL_SIZE};
+pub use limits::ListenerLimits;
 pub use metrics::Metrics;
 pub use mtls::{MtlsSanKind, PeerCertificate};
 pub use oidc::{JwksSource, OidcConfig, OidcVerifier};
 pub use proto::kavach::v1::evaluate_service_server::EvaluateServiceServer;
 pub use state::{AppState, ChangeProposal, DEFAULT_CHANGE_TTL_HOURS};
 pub use tls::{
-    grpc_server_tls_config, serve_http, serve_http_on, serve_http_on_until, serve_http_until,
+    grpc_server_tls_config, serve_grpc_until, serve_http, serve_http_on, serve_http_on_until,
+    serve_http_on_until_with_limits, serve_http_on_with_limits, serve_http_until,
+    serve_http_until_with_limits,
 };

@@ -85,10 +85,11 @@ fn valid_principal_id(id: &str) -> bool {
 }
 
 /// TLS acceptor that exposes the client certificate to HTTP handlers as a
-/// [`PeerCertificate`] request extension.
+/// [`PeerCertificate`] request extension. `A` runs beneath TLS (the
+/// listener limits' [`crate::limits::LimitAcceptor`] in the server).
 #[derive(Clone)]
-pub struct PeerCertAcceptor {
-    inner: RustlsAcceptor<DefaultAcceptor>,
+pub struct PeerCertAcceptor<A = DefaultAcceptor> {
+    inner: RustlsAcceptor<A>,
 }
 
 impl PeerCertAcceptor {
@@ -100,18 +101,30 @@ impl PeerCertAcceptor {
     }
 }
 
+impl<A> PeerCertAcceptor<A> {
+    /// Over a configured TLS acceptor (handshake timeout, inner acceptor).
+    #[must_use]
+    pub fn over(inner: RustlsAcceptor<A>) -> Self {
+        Self { inner }
+    }
+}
+
 type AcceptFuture<I, S> = Pin<
     Box<dyn Future<Output = io::Result<(TlsStream<I>, AddExtension<S, PeerCertificate>)>> + Send>,
 >;
 
-impl<I, S> Accept<I, S> for PeerCertAcceptor
+impl<A, I, S> Accept<I, S> for PeerCertAcceptor<A>
 where
+    A: Accept<I, S> + Clone + Send + Sync + 'static,
+    A::Stream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    A::Service: Send + 'static,
+    A::Future: Send,
     I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     S: Send + 'static,
 {
-    type Stream = TlsStream<I>;
-    type Service = AddExtension<S, PeerCertificate>;
-    type Future = AcceptFuture<I, S>;
+    type Stream = TlsStream<A::Stream>;
+    type Service = AddExtension<A::Service, PeerCertificate>;
+    type Future = AcceptFuture<A::Stream, A::Service>;
 
     fn accept(&self, stream: I, service: S) -> Self::Future {
         let acceptor = self.inner.clone();

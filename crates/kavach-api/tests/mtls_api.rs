@@ -366,3 +366,58 @@ async fn grpc_client_certificate_san_is_the_principal() {
     let status = stranger.evaluate(evaluate_request()).await.unwrap_err();
     assert_eq!(status.code(), tonic::Code::PermissionDenied);
 }
+
+/// The binary's gRPC server (`serve_grpc_until`: its own accept loop, TLS
+/// and listener limits) still makes the certificate SAN the principal.
+#[tokio::test]
+async fn grpc_client_certificate_san_is_the_principal_on_the_limited_listener() {
+    let pki = Pki::new();
+    let config = config(&pki);
+    let state = Arc::new(AppState::from_config(&config).await.expect("state"));
+    let limits = kavach_api::ListenerLimits::default();
+    let service = GrpcEvaluateService::with_limits(state, &limits);
+    let addr = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let tls = config.tls.clone();
+    tokio::spawn(async move {
+        kavach_api::serve_grpc_until(service, addr, tls.as_ref(), std::future::pending(), limits)
+            .await
+            .expect("grpc server");
+    });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut los = grpc_client(&pki, addr, &pki.client(&[LOS])).await;
+    los.evaluate(evaluate_request())
+        .await
+        .expect("operator workload may evaluate");
+
+    let mut stranger = grpc_client(&pki, addr, &pki.client(&["spiffe://bank.test/other"])).await;
+    let status = stranger.evaluate(evaluate_request()).await.unwrap_err();
+    assert_eq!(status.code(), tonic::Code::PermissionDenied);
+
+    // A client from another CA fails the handshake.
+    let other = Pki::new();
+    let tls = ClientTlsConfig::new()
+        .ca_certificate(Certificate::from_pem(&pki.ca_pem))
+        .identity({
+            let (cert, key) = other.client(&[LOS]);
+            Identity::from_pem(cert, key)
+        })
+        .domain_name("localhost");
+    let refused = match Channel::from_shared(format!("https://127.0.0.1:{}", addr.port()))
+        .unwrap()
+        .tls_config(tls)
+        .unwrap()
+        .connect()
+        .await
+    {
+        Err(_) => true,
+        Ok(channel) => EvaluateServiceClient::new(channel)
+            .evaluate(evaluate_request())
+            .await
+            .is_err(),
+    };
+    assert!(refused, "a certificate from another CA was accepted");
+}
