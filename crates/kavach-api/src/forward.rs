@@ -29,8 +29,12 @@ pub struct HttpForwarder {
 
 /// Parses a provider endpoint: http(s), a host, no credentials, query or
 /// fragment. Returns the messages URL and whether it is plain HTTP.
+///
+/// An error names the endpoint by scheme, host and port only: it reaches
+/// stderr at startup, and the rest of the endpoint can carry a credential.
 pub fn messages_url(endpoint: &str) -> Result<(Url, bool), String> {
-    let base = Url::parse(endpoint).map_err(|e| format!("endpoint {endpoint:?}: {e}"))?;
+    // `url::ParseError` displays a fixed phrase, never the input.
+    let base = Url::parse(endpoint).map_err(|e| format!("endpoint does not parse: {e}"))?;
     let plain = match base.scheme() {
         "https" => false,
         "http" => true,
@@ -43,7 +47,9 @@ pub fn messages_url(endpoint: &str) -> Result<(Url, bool), String> {
         || base.fragment().is_some()
     {
         return Err(format!(
-            "endpoint {endpoint:?} must be a plain base URL (host, optional path)"
+            "endpoint {} must be a plain base URL (host, optional path; no userinfo, query or \
+             fragment)",
+            crate::hardening::shown_endpoint(endpoint)
         ));
     }
     let mut url = base;
@@ -203,5 +209,63 @@ mod tests {
         ] {
             assert!(messages_url(bad).is_err(), "{bad}");
         }
+    }
+
+    /// A refused endpoint is named by scheme, host and port only. The
+    /// secrets have no digits, so no log redactor could hide a leak.
+    #[test]
+    fn a_refused_endpoint_is_named_without_userinfo_path_query_or_fragment() {
+        let secrets = [
+            "opsuser",
+            "topsecretpw",
+            "letmeinplease",
+            "hiddenpath",
+            "hiddenanchor",
+        ];
+        for (endpoint, shown) in [
+            (
+                "https://opsuser:topsecretpw@provider.internal:8443/hiddenpath",
+                "endpoint https://provider.internal:8443 must be a plain base URL",
+            ),
+            (
+                "https://provider.internal/hiddenpath?token=letmeinplease",
+                "endpoint https://provider.internal must be a plain base URL",
+            ),
+            (
+                "http://provider.internal/#hiddenanchor",
+                "endpoint http://provider.internal must be a plain base URL",
+            ),
+            // Unparseable (the port is not a number): nothing of it is shown.
+            (
+                "https://opsuser:topsecretpw@provider.internal:hiddenpath/?token=letmeinplease",
+                "endpoint does not parse: invalid port number",
+            ),
+        ] {
+            let err = messages_url(endpoint).unwrap_err();
+            assert!(err.starts_with(shown), "{err}");
+            for text in [err.clone(), format!("{err:?}")] {
+                for secret in secrets {
+                    assert!(!text.contains(secret), "{secret} in {text}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_endpoint_is_shown_as_its_origin_or_unparseable() {
+        use crate::hardening::shown_endpoint;
+        assert_eq!(
+            shown_endpoint("https://opsuser:topsecretpw@host.example:8443/p?token=letmeinplease#f"),
+            "https://host.example:8443"
+        );
+        assert_eq!(
+            shown_endpoint("http://host.example/"),
+            "http://host.example"
+        );
+        assert_eq!(
+            shown_endpoint("https://opsuser:topsecretpw@host:bad/"),
+            "(unparseable)"
+        );
+        assert_eq!(shown_endpoint("not a url"), "(unparseable)");
     }
 }
