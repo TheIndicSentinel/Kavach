@@ -45,9 +45,11 @@ tags:
   - name: development
   - name: agent
   - name: sor
+  - name: console-auth
 security:
   - operatorToken: []
   - clientCertificate: []
+  - consoleSession: []
 
 paths:
   /health:
@@ -895,6 +897,109 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /auth/config:
+    get:
+      operationId: getConsoleAuthConfig
+      tags: [console-auth]
+      summary: What the console sign-in screen offers (ADR-018).
+      security: []
+      responses:
+        "200":
+          description: |
+            `login_configured`: console sign-in through the identity
+            provider is configured. `pasted_token_allowed`: the
+            development-only pasted-token sign-in is offered; true only when
+            login is not configured and the server runs with `--insecure-dev`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsoleAuthConfig" }
+
+  /auth/login:
+    get:
+      operationId: consoleLogin
+      tags: [console-auth]
+      summary: Starts a console sign-in (authorization code with PKCE).
+      description: |
+        Redirects to the identity provider's authorization endpoint and sets
+        the login cookie `__Host-kavach_login` (HttpOnly; Secure;
+        SameSite=Lax; Path=/; Max-Age=600). On refusal it redirects to
+        `/signin?error=<code>` (`sessions_full`, `login_unavailable`).
+      security: []
+      responses:
+        "303":
+          $ref: "#/components/responses/ConsoleRedirect"
+
+  /auth/callback:
+    get:
+      operationId: consoleLoginCallback
+      tags: [console-auth]
+      summary: The identity provider's redirect back (ADR-018).
+      description: |
+        Needs the login cookie. On success it sets the session cookie
+        `__Host-kavach_session` (HttpOnly; Secure; SameSite=Strict; Path=/;
+        no Domain), expires the login cookie and redirects to `/`. On any
+        failure it creates no session, expires the login cookie and
+        redirects to `/signin?error=<code>` (`login_failed`,
+        `login_expired`, `sessions_full`, `login_unavailable`).
+      security: []
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+        - { name: error, in: query, schema: { type: string } }
+      responses:
+        "303":
+          $ref: "#/components/responses/ConsoleRedirect"
+
+  /auth/session:
+    get:
+      operationId: getConsoleSession
+      tags: [console-auth]
+      summary: Who is signed in to the console, and until when. Never a token.
+      description: |
+        Needs the session cookie and `X-Kavach-Console: 1`. A cookie sent
+        with `Authorization` or `X-Kavach-Principal` is a 400; a missing
+        console header, or a cross-site `Origin` or `Sec-Fetch-Site`, is a
+        403. A 401 means the session has ended.
+      security:
+        - consoleSession: []
+      parameters:
+        - $ref: "#/components/parameters/ConsoleHeader"
+      responses:
+        "200":
+          description: The live session.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsoleSession" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
+  /auth/logout:
+    post:
+      operationId: consoleLogout
+      tags: [console-auth]
+      summary: Ends the console session.
+      description: |
+        Same checks as `GET /auth/session`. Ends the session, revokes its
+        refresh token at the identity provider (when it has a revocation
+        endpoint) and expires both cookies, also on a 4xx.
+        `end_session_url` is the identity provider's end-session URL when
+        IdP logout is configured, else null; it never carries
+        `id_token_hint`.
+      security:
+        - consoleSession: []
+      parameters:
+        - $ref: "#/components/parameters/ConsoleHeader"
+      responses:
+        "200":
+          description: The session has ended.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ConsoleLogout" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+
 components:
   securitySchemes:
     operatorToken:
@@ -910,8 +1015,25 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: An agent access token (agent audience); operator tokens are refused.
+    consoleSession:
+      type: apiKey
+      in: cookie
+      name: __Host-kavach_session
+      description: |
+        The console session cookie (ADR-018), only when console sign-in is
+        configured, and only on the operator listener. Every request with it
+        must also send `X-Kavach-Console: 1` and no `Authorization` or
+        `X-Kavach-Principal`; a cross-site `Origin` or `Sec-Fetch-Site` is
+        refused. The server puts the session's access token in front of the
+        request, so authorization is the same as with that token.
 
   parameters:
+    ConsoleHeader:
+      name: X-Kavach-Console
+      in: header
+      required: true
+      description: The console's CSRF header; must be `1`.
+      schema: { type: string, enum: ["1"] }
     Limit:
       name: limit
       in: query
@@ -941,6 +1063,15 @@ components:
       schema: { type: string }
 
   responses:
+    ConsoleRedirect:
+      description: A redirect (to the identity provider, `/` or `/signin?error=<code>`), with no body.
+      headers:
+        Location:
+          required: true
+          schema: { type: string }
+        Set-Cookie:
+          description: The login or session cookie, or an expired one.
+          schema: { type: string }
     Problem:
       description: A refusal (RFC 9457).
       headers:
@@ -1071,6 +1202,47 @@ components:
       required: [status]
       properties:
         status: { type: string }
+
+    ConsoleAuthConfig:
+      type: object
+      additionalProperties: false
+      required: [login_configured, pasted_token_allowed]
+      properties:
+        login_configured: { type: boolean }
+        pasted_token_allowed: { type: boolean }
+
+    ConsoleSession:
+      type: object
+      additionalProperties: false
+      required: [principal, groups, expires_at, idle_expires_at]
+      properties:
+        principal: { type: string }
+        groups:
+          type: [array, "null"]
+          items: { type: string }
+          description: >-
+            The groups the server's Cedar policy evaluates the principal in:
+            the token's groups and the principal's memberships in the
+            entities file, sorted. `null` when they are unknown or decide
+            nothing (no policy loaded). For display only; the server
+            authorises every request.
+        expires_at:
+          type: string
+          format: date-time
+          description: The absolute limit; a refresh never moves it.
+        idle_expires_at:
+          type: string
+          format: date-time
+          description: When the session ends without activity (never after `expires_at`).
+
+    ConsoleLogout:
+      type: object
+      additionalProperties: false
+      required: [end_session_url]
+      properties:
+        end_session_url:
+          type: [string, "null"]
+          description: The identity provider's end-session URL, without `id_token_hint`; null when IdP logout is off.
 
     Decision:
       type: string
