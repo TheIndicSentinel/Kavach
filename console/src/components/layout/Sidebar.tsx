@@ -83,7 +83,7 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
         ))}
 
         <div className="pt-6">
-          <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-500">
+          <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-400">
             Agents
           </p>
           {agentNav.map((item) => (
@@ -107,7 +107,7 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
         </div>
 
         <div className="pt-6">
-          <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-500">
+          <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-400">
             Governance
           </p>
           {governanceNav.map((item) => (

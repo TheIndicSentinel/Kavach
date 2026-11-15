@@ -8,9 +8,10 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b && tsc -p tsconfig.e2e.json",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:e2e": "playwright test",
     "gen:api": "openapi-typescript ../docs/openapi.yaml -o src/lib/openapi.d.ts",
     "check:api": "openapi-typescript ../docs/openapi.yaml -o src/lib/openapi.d.ts && git diff --exit-code -- src/lib/openapi.d.ts"
   },
@@ -28,7 +29,9 @@
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
     "@eslint/js": "^9.39.5",
+    "@playwright/test": "1.65.1",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^5.0.2",

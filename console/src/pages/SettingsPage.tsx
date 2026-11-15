@@ -48,9 +48,9 @@ export default function SettingsPage() {
             <CardTitle>Access credentials</CardTitle>
             <CardDescription>
               The access token is sent as{" "}
-              <code className="rounded bg-stone-100 px-1 text-xs">Authorization: Bearer</code>. Without
+              <code className="rounded bg-stone-100 px-1 text-xs text-ink">Authorization: Bearer</code>. Without
               a token, the principal ID is sent as{" "}
-              <code className="rounded bg-stone-100 px-1 text-xs">X-Kavach-Principal</code>, which the
+              <code className="rounded bg-stone-100 px-1 text-xs text-ink">X-Kavach-Principal</code>, which the
               API refuses unless it runs with --insecure-dev.
             </CardDescription>
           </CardHeader>
@@ -91,7 +91,7 @@ export default function SettingsPage() {
             </div>
             <p className="text-xs leading-relaxed text-muted">
               Example principals from{" "}
-              <code className="rounded bg-stone-100 px-1">
+              <code className="rounded bg-stone-100 px-1 text-ink">
                 crates/kavach-auth/policies/entities.example.json
               </code>
               : <span className="font-medium text-ink">operator-1</span>,{" "}

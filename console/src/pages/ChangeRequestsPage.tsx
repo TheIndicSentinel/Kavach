@@ -14,6 +14,7 @@ import {
   type ChangeStatus,
 } from "../lib/api";
 import { changeRequestAnchor } from "../lib/agentActions";
+import { changeRequestButtons, currentViewer, type Viewer } from "../lib/changeRequests";
 import { formatDateTime } from "../lib/format";
 
 const KIND_LABELS: Record<ChangeKind, string> = {
@@ -67,7 +68,52 @@ function Details({ label, value }: { label: string; value: unknown }) {
   );
 }
 
+type RequestButtonsProps = {
+  request: ChangeRequest;
+  viewer: Viewer;
+  busy: boolean;
+  onAct: (action: (request: ChangeRequest) => Promise<ChangeRequest>, done: string) => void;
+};
+
+/** Approve, reject and cancel, less the ones the API is known to refuse this principal. */
+export function RequestButtons({ request, viewer, busy, onAct }: RequestButtonsProps) {
+  const { actions, note } = changeRequestButtons(request, viewer);
+  if (actions.length === 0) return null;
+  return (
+    <div className="space-y-2">
+      {note && <p className="text-sm text-muted">{note}</p>}
+      <div className="flex flex-wrap gap-2">
+        {actions.includes("approve") && (
+          <Button disabled={busy} onClick={() => onAct(approveChange, "approved")}>
+            Approve and apply
+          </Button>
+        )}
+        {actions.includes("reject") && (
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => onAct((r) => rejectChange(r.id), "rejected")}
+          >
+            Reject
+          </Button>
+        )}
+        {actions.includes("cancel") && (
+          <Button
+            variant="ghost"
+            disabled={busy}
+            onClick={() => onAct((r) => cancelChange(r.id), "cancelled")}
+          >
+            Cancel (proposer)
+          </Button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function ChangeRequestsPage() {
+  // Read once: Settings reloads the page when the credentials change.
+  const [viewer] = useState(() => currentViewer());
   const [filter, setFilter] = useState<ChangeStatus | undefined>("pending");
   const [requests, setRequests] = useState<ChangeRequest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -184,30 +230,12 @@ export default function ChangeRequestsPage() {
               <p className="break-all font-mono text-xs text-muted">
                 digest {request.change_digest}
               </p>
-              {request.status === "pending" && (
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    disabled={busyId === request.id}
-                    onClick={() => act(request, approveChange, "approved")}
-                  >
-                    Approve and apply
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={busyId === request.id}
-                    onClick={() => act(request, (r) => rejectChange(r.id), "rejected")}
-                  >
-                    Reject
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={busyId === request.id}
-                    onClick={() => act(request, (r) => cancelChange(r.id), "cancelled")}
-                  >
-                    Cancel (proposer)
-                  </Button>
-                </div>
-              )}
+              <RequestButtons
+                request={request}
+                viewer={viewer}
+                busy={busyId === request.id}
+                onAct={(action, done) => act(request, action, done)}
+              />
             </div>
           </Card>
         ))}

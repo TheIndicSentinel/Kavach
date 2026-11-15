@@ -27,7 +27,7 @@ export function ProblemAlert({ error, className }: ProblemAlertProps) {
         <div className="rounded-lg border border-decision-block/30 bg-decision-block-bg px-4 py-3 text-sm text-ink">
           <p className="font-medium text-decision-block">{text}</p>
           {api && (
-            <p className="mt-1 text-xs text-muted">
+            <p className="mt-1 text-xs text-stone-700">
               {api.status > 0 && <>HTTP {api.status} · </>}
               {api.requestId ? (
                 <>

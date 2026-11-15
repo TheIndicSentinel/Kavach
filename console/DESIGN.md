@@ -31,7 +31,7 @@ Defined in `src/index.css` via `@theme`:
 | Token | Value | Usage |
 |---|---|---|
 | `kavach-950` … `kavach-500` | Navy scale | Sidebar, headings, trust surfaces |
-| `saffron-500` | `#E8870D` | Primary CTA, logo accent |
+| `saffron-500` | `#E8870D` | Primary CTA (navy `kavach-950` text: white on saffron is under 4.5:1), logo accent |
 | `peacock-600` | `#0D7377` | Secondary accent, environment badges |
 | `surface` | Warm stone `#FAFAF9` | Page background |
 | `decision-*` | Semantic | PASS / ALERT / BLOCK / HUMAN_REVIEW badges |
