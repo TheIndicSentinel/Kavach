@@ -7,34 +7,32 @@
 // sessionStorage, localStorage or IndexedDB.
 import { useSyncExternalStore } from "react";
 import { ApiError, request, setAuthMode, setUnauthorizedHandler } from "./api";
+import type { components } from "./openapi";
 
-// TODO(openapi): replace with generated types once /auth/* is in openapi.yaml
-/** `GET /auth/config` (public). */
-export type AuthConfig = {
-  login_configured: boolean;
-  /** True only when login is not configured and the server runs with --insecure-dev. */
-  pasted_token_allowed: boolean;
-};
+type Schemas = components["schemas"];
 
-// TODO(openapi): replace with generated types once /auth/* is in openapi.yaml
-/** `GET /auth/session` (session cookie). Never carries a token. */
-export type AuthSession = {
-  principal: string;
-  groups: string[];
-  /** The absolute limit: the session ends then, whatever the activity. */
-  expires_at: string;
-  /** When the session ends if nothing uses it before then. */
-  idle_expires_at: string;
-};
+/**
+ * `GET /auth/config` (public). `pasted_token_allowed` is true only when login
+ * is not configured and the server runs with --insecure-dev.
+ */
+export type AuthConfig = Schemas["ConsoleAuthConfig"];
 
-// TODO(openapi): replace with generated types once /auth/* is in openapi.yaml
-/** `POST /auth/logout`. Null unless the server is set to end the IdP session too. */
-export type LogoutResponse = {
-  end_session_url: string | null;
-};
+/**
+ * `GET /auth/session` (session cookie). Never carries a token. `expires_at` is
+ * the absolute limit; `idle_expires_at` is when the session ends if nothing
+ * uses it before then.
+ */
+export type AuthSession = Schemas["ConsoleSession"];
 
-// TODO(openapi): replace with generated types once /auth/* is in openapi.yaml
-/** The fixed set of `/signin?error=` codes the server sends. */
+/** `POST /auth/logout`. `end_session_url` is null unless the server is set to end the IdP session too. */
+export type LogoutResponse = Schemas["ConsoleLogout"];
+
+/**
+ * The fixed set of `/signin?error=` codes the server sends. They travel only
+ * in a redirect's `Location` (see `/auth/login` and `/auth/callback` in
+ * docs/openapi.yaml), so the spec has no schema to generate this from; the
+ * list is `LoginError::code` in crates/kavach-api/src/console_login.rs.
+ */
 export type SignInErrorCode = "login_failed" | "login_expired" | "sessions_full" | "login_unavailable";
 
 /**
