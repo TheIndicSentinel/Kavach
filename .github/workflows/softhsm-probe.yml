@@ -11,6 +11,12 @@ on:
       - ".github/workflows/softhsm-probe.yml"
   workflow_dispatch:
 
+# A newer push to the same PR makes the older run pointless: cancel it.
+# Pushes to main and tags queue instead, so no run there is cut short.
+concurrency:
+  group: softhsm-probe-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

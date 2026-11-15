@@ -7,7 +7,7 @@ on:
     branches: [main, master]
 
 # A newer push to the same PR makes the older run pointless: cancel it
-# (Actions minutes are the limit on a private repository).
+# Pushes to main queue instead, so no run there is cut short.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
