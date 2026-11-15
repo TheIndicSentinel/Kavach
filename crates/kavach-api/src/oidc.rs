@@ -199,15 +199,21 @@ impl OidcVerifier {
                     .map_err(|e| format!("read JWKS {}: {e}", path.display()))?;
                 serde_json::from_str(&text).map_err(|e| format!("parse JWKS: {e}"))
             }
-            (JwksSource::Url(url), Some(client)) => client
-                .get(url)
-                .send()
-                .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(|e| format!("fetch JWKS {url}: {e}"))?
-                .json::<JwkSet>()
-                .await
-                .map_err(|e| format!("parse JWKS {url}: {e}")),
+            // The URL is named by scheme, host and port only, and the reqwest
+            // error drops its copy: these errors reach stderr and the log, and
+            // the rest of the URL can carry a credential.
+            (JwksSource::Url(url), Some(client)) => {
+                let shown = crate::hardening::shown_endpoint(url);
+                client
+                    .get(url)
+                    .send()
+                    .await
+                    .and_then(reqwest::Response::error_for_status)
+                    .map_err(|e| format!("fetch JWKS {shown}: {}", e.without_url()))?
+                    .json::<JwkSet>()
+                    .await
+                    .map_err(|e| format!("parse JWKS {shown}: {}", e.without_url()))
+            }
             (JwksSource::Url(_), None) => Err("JWKS URL client missing".into()),
         }
     }

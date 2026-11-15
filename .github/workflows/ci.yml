@@ -128,6 +128,19 @@ jobs:
           npm test
           npm run check:api
 
+      # Browser checks (console/e2e): axe (WCAG 2.2 AA tags) on every page and
+      # action state, keyboard-only flows, and kavach-api's own CSP enforced on
+      # the built console. Every API call is stubbed; nothing leaves the runner
+      # but the Chromium download. Specs read crates/ files, so this needs the
+      # full checkout.
+      - name: Install Playwright Chromium
+        working-directory: console
+        run: npx playwright install --with-deps chromium
+
+      - name: Console browser checks
+        working-directory: console
+        run: npm run test:e2e
+
       # Production npm dependency licence allowlist (PRD NFR-1). OFL-1.1 covers the
       # @fontsource fonts; MPL-2.0 covers build-time CSS tooling (lightningcss) that is
       # not included in the built console bundle.

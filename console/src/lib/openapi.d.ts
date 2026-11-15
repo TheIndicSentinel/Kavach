@@ -689,6 +689,8 @@ export interface components {
             insecure_dev: boolean;
             /** @description The process was started with `--require-hardening`: it refused to start unless every guarantee was on, and `POST /v1/dev/clock` is not mounted. */
             require_hardening: boolean;
+            /** @description The process runs with `--agent-only`: this listener does not serve the credit track (evaluate, packs, models, decision events, retention, tombstones, incidents, batch jobs), and change requests of those kinds are refused. The console leaves those pages out. */
+            agent_only: boolean;
             /** @description Every way this process runs with a guarantee relaxed, by name (a fixed set, docs/BYPASS_INVENTORY.md section 1). Empty in production. */
             relaxations: ("insecure_dev" | "access_control_none" | "principal_header" | "weaker_database_tls" | "memory_evidence_store" | "memory_agent_stores" | "test_clock" | "dev_clock" | "system_clock_declared_synced" | "unsigned_tool_registry" | "dev_keys" | "test_double_broker")[];
             checkpoint_lag_seconds?: number;

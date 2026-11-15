@@ -9,11 +9,13 @@ import { ProblemAlert } from "../components/ui/ProblemAlert";
 import { Skeleton } from "../components/ui/Skeleton";
 import { stopResultState } from "../lib/agentActions";
 import { fetchAgent, type AgentStateView } from "../lib/api";
+import { useViewer } from "../lib/changeRequests";
 
 type Loaded = { key: string; agent?: AgentStateView; error?: unknown };
 
 export default function AgentDetailPage() {
   const { agentId = "" } = useParams();
+  const viewer = useViewer();
   const [attempt, setAttempt] = useState(0);
   const [loaded, setLoaded] = useState<Loaded | null>(null);
   // The state a stop returned, shown until the agent is read again.
@@ -85,6 +87,7 @@ export default function AgentDetailPage() {
           onStopped={(result) => setStopped({ key, agent: stopResultState(result) })}
           onStale={() => setAttempt((n) => n + 1)}
           fallbackFocus={title}
+          viewer={viewer}
         />
       )}
     </section>

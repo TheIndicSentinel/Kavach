@@ -1,11 +1,20 @@
 import { useEffect, useState } from "react";
-import { Outlet } from "react-router-dom";
+import { Outlet, useLocation } from "react-router-dom";
+import { NotServed } from "./NotServed";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
+import { useAgentOnly } from "../../hooks/useAgentOnly";
 import { cn } from "../../lib/cn";
+import { isCreditTrackPath } from "../../lib/creditTrack";
 
 export function AppShell() {
   const [navOpen, setNavOpen] = useState(false);
+  const { settled, agentOnly } = useAgentOnly();
+  const { pathname } = useLocation();
+  // A credit-track page waits for GET /v1/runtime, so on an agent-only
+  // server it never calls a route that is not served.
+  const creditPage = isCreditTrackPath(pathname);
+  const page = !creditPage ? <Outlet /> : !settled ? null : agentOnly === true ? <NotServed /> : <Outlet />;
 
   // The open drawer closes on Escape, like any modal panel (WCAG 2.1.2).
   useEffect(() => {
@@ -34,12 +43,12 @@ export function AppShell() {
         />
       )}
 
-      <Sidebar open={navOpen} onNavigate={() => setNavOpen(false)} />
+      <Sidebar open={navOpen} onNavigate={() => setNavOpen(false)} agentOnly={agentOnly} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar onOpenNav={() => setNavOpen(true)} />
         <main id="main" tabIndex={-1} className={cn("flex-1 p-4 outline-none sm:p-6 lg:p-8")}>
-          <Outlet />
+          {page}
         </main>
       </div>
     </div>

@@ -35,6 +35,7 @@ pub struct RuntimeResponse {
     pub model_pack_mismatch: bool,
 }
 
+#[allow(clippy::struct_excessive_bools)] // independent facts in a JSON response, not a state
 #[derive(Debug, Serialize)]
 pub struct RuntimeView {
     #[serde(flatten)]
@@ -63,6 +64,11 @@ pub struct RuntimeView {
     /// Every way this process runs with a guarantee relaxed, by name (a
     /// fixed set, see BYPASS_INVENTORY.md section 1). Empty in production.
     pub relaxations: Vec<&'static str>,
+    /// True when the data plane runs agent-only (`--agent-only`): the
+    /// operator listener does not serve the credit track (evaluate, packs,
+    /// models, decision events, retention, tombstones, incidents, batch
+    /// jobs). The console uses it to leave those pages out.
+    pub agent_only: bool,
 }
 
 pub async fn runtime(
@@ -70,7 +76,7 @@ pub async fn runtime(
     credentials: Credentials,
 ) -> Result<Json<RuntimeView>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
-    let runtime = state.runtime();
+    let runtime = state.runtime()?;
     let stored_pointer_version = state
         .admin()
         .get_runtime_pointers()
@@ -95,6 +101,9 @@ pub async fn runtime(
         insecure_dev: state.insecure_dev(),
         require_hardening: state.require_hardening(),
         relaxations: state.relaxations().iter().map(|r| r.as_str()).collect(),
+        agent_only: state
+            .dataplane()
+            .is_some_and(crate::dataplane::Dataplane::agent_only),
     }))
 }
 
@@ -103,7 +112,7 @@ pub async fn list_policy_packs(
     credentials: Credentials,
 ) -> Result<Json<Vec<crate::registry::PackSummary>>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
-    let runtime = state.runtime();
+    let runtime = state.runtime()?;
     let packs = list_packs(state.packs_dir(), &runtime.pack_id, &runtime.pack_version)?;
     Ok(Json(packs))
 }
@@ -123,7 +132,7 @@ pub async fn list_model_records(
     credentials: Credentials,
 ) -> Result<Json<Vec<crate::registry::ModelSummary>>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
-    let runtime = state.runtime();
+    let runtime = state.runtime()?;
     let models = list_models(
         state.models_dir(),
         &runtime.model_path,

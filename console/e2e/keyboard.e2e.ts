@@ -2,7 +2,7 @@
 // Escape cancels, and focus goes back. Also the role-aware change-request
 // buttons, which depend on who the console knows it is.
 import type { Locator, Page } from "@playwright/test";
-import { expect, test } from "./api";
+import { expect, test } from "./page";
 
 const AGENT = "/agents/agent:collections-bot";
 

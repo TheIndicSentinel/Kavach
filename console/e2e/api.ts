@@ -110,3 +110,6 @@ export const test = base.extend<{ api: ApiStub }>({
 });
 
 export { expect };
+
+/** The paths the stub answers; everything else on the origin is the console's own files. */
+export { API_PREFIXES };
