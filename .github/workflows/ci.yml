@@ -99,6 +99,14 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Every operation in docs/openapi.yaml is called from console/src, or
+      # listed with a reason in console/api-coverage-exempt.txt; a stale
+      # exemption fails too. Python standard library only, so it runs first.
+      - name: Console API path coverage
+        run: |
+          python3 -I -m unittest discover -s scripts -p 'test_console_path_coverage.py' -v
+          python3 -I scripts/console_path_coverage.py --list
+
       - name: Install Rust (pinned)
         uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master (2026-10-01)
         with:
