@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Play, RotateCcw } from "lucide-react";
 import { Button } from "../components/ui/Button";
 import {
@@ -9,38 +9,58 @@ import {
 } from "../components/ui/Card";
 import { DecisionBadge } from "../components/ui/DecisionBadge";
 import { PageHeader } from "../components/ui/PageHeader";
-import { ApiError, evaluateRequest, type EvaluateResponse } from "../lib/api";
+import { ProblemAlert } from "../components/ui/ProblemAlert";
+import { RoleHint } from "../components/ui/RoleHint";
+import { evaluateRequest, type EvaluateResponse } from "../lib/api";
+import { useViewer } from "../lib/changeRequests";
+import { cn } from "../lib/cn";
 import { buildPartnerSampleRequest } from "../lib/constants";
 import { formatInr } from "../lib/format";
+import { roleHint, type Viewer } from "../lib/permissions";
 
 function buildSampleRequest(): string {
   return buildPartnerSampleRequest();
 }
 
-export default function EvaluatePage() {
+/** What the status region says: loading, the decision, or nothing. */
+function evaluateStatus(loading: boolean, result: EvaluateResponse | null): string {
+  if (loading) return "Evaluating the request…";
+  if (result) return `Evaluated: returned decision ${result.returned_decision}.`;
+  return "";
+}
+
+/** `viewer` is for tests; the app passes none and the page reads it. */
+export default function EvaluatePage({ viewer: given }: { viewer?: Viewer }) {
+  const current = useViewer();
+  const hint = roleHint(given ?? current, "evaluate", "run evaluate");
   const initialRequest = useMemo(() => buildSampleRequest(), []);
+  const textarea = useRef<HTMLTextAreaElement>(null);
   const [input, setInput] = useState(initialRequest);
   const [result, setResult] = useState<EvaluateResponse | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  // A JSON problem belongs to the field; an API refusal goes to role=alert.
+  const [jsonProblem, setJsonProblem] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [loading, setLoading] = useState(false);
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
-    setLoading(true);
+    if (loading) return;
     setError(null);
     setResult(null);
+    let body: unknown;
     try {
-      const body = JSON.parse(input) as unknown;
-      const response = await evaluateRequest(body);
-      setResult(response);
+      body = JSON.parse(input) as unknown;
+    } catch {
+      setJsonProblem("This is not valid JSON. Check the request formatting.");
+      textarea.current?.focus();
+      return;
+    }
+    setJsonProblem(null);
+    setLoading(true);
+    try {
+      setResult(await evaluateRequest(body));
     } catch (err) {
-      if (err instanceof SyntaxError) {
-        setError("Invalid JSON — check request formatting.");
-      } else if (err instanceof ApiError) {
-        setError(err.message);
-      } else {
-        setError(err instanceof Error ? err.message : "Evaluate failed");
-      }
+      setError(err);
     } finally {
       setLoading(false);
     }
@@ -50,6 +70,7 @@ export default function EvaluatePage() {
     setInput(buildSampleRequest());
     setResult(null);
     setError(null);
+    setJsonProblem(null);
   }
 
   const parsedInput = useMemo(() => {
@@ -107,29 +128,45 @@ export default function EvaluatePage() {
           </label>
           <textarea
             id="request-json"
+            ref={textarea}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             rows={20}
             spellCheck={false}
-            className="w-full rounded-lg border border-border bg-stone-50/50 p-4 font-mono text-sm leading-relaxed text-ink focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20"
+            aria-invalid={jsonProblem ? true : undefined}
+            aria-describedby={jsonProblem ? "request-json-error" : undefined}
+            className={cn(
+              "w-full rounded-lg border bg-stone-50/50 p-4 font-mono text-sm leading-relaxed text-ink focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20",
+              jsonProblem ? "border-decision-block" : "border-border",
+            )}
           />
+          {jsonProblem && (
+            <p id="request-json-error" className="mt-1 text-xs font-medium text-decision-block">
+              {jsonProblem}
+            </p>
+          )}
           <div className="mt-4 flex items-center gap-3">
-            <Button type="submit" disabled={loading}>
-              <Play className="h-4 w-4" aria-hidden />
-              {loading ? "Evaluating…" : "Run evaluate"}
-            </Button>
+            {hint ? (
+              <RoleHint>{hint}</RoleHint>
+            ) : (
+              <Button
+                type="submit"
+                className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                // aria-disabled, not disabled, so keyboard focus stays on the button.
+                aria-disabled={loading}
+              >
+                <Play className="h-4 w-4" aria-hidden />
+                Run evaluate
+              </Button>
+            )}
           </div>
         </Card>
       </form>
 
-      {error && (
-        <Card className="mt-4 border-decision-block/30 bg-decision-block-bg/30">
-          <CardHeader>
-            <CardTitle className="text-decision-block">Request failed</CardTitle>
-            <CardDescription>{error}</CardDescription>
-          </CardHeader>
-        </Card>
-      )}
+      <ProblemAlert error={error} className="mt-4 empty:mt-0" />
+      <p role="status" aria-live="polite" className="mt-4 text-sm text-muted empty:mt-0">
+        {evaluateStatus(loading, result)}
+      </p>
 
       {result && (
         <Card className="mt-4">
