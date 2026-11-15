@@ -65,8 +65,10 @@ from `crates/kavach-auth/policies/kavach.cedar`; `permissions.test.ts` reads
 that file and fails when the two disagree. A page takes a viewer,
 `{ principal, groups }`:
 
-- **Groups unknown** (`null`, every mode today): every control shows and the
-  API decides.
+- **Groups unknown** (`null`: the development fallback, and the moment before
+  `GET /auth/session` answers): every control shows and the API decides. In
+  login mode the viewer is the session's principal and groups
+  (`useViewer` in `src/lib/changeRequests.ts`).
 - **Groups known and allowed:** the control shows, with no hint.
 - **Groups known and lacking the action:** the control is not rendered. One
   `RoleHint` line takes its place, in muted text with an `Info` icon:
@@ -136,6 +138,21 @@ API answers a route it does not serve with 404.
 Header (`TopBar`), login mode: "Signed in as `<principal>`", the absolute session end on wide screens, and a **Sign out** button, reachable by keyboard. Sign-out is a `POST /auth/logout`; it then goes to `/signin` inside the app, or, when the server returns an end-session URL that is `https:` (or on the console's own loopback origin in development), navigates there by script. A sign-out the server does not confirm shows a `ProblemAlert` under the header and leaves the operator signed in. In the development fallback the header shows the pasted principal, as before, and no sign-out.
 
 Settings, login mode: the session card (principal, groups, session end, idle end) and what sign-in does: tokens stay on the server, the browser holds only the HttpOnly cookie, and signing out ends the Kavach session, not the IdP session unless the server is set to. In the development fallback it keeps the pasted-token form, labelled as a development fallback.
+
+Tests. The stubbed browser suite (`npm run test:e2e`, `e2e/login.e2e.ts`) covers each `/auth/config` mode, a stubbed sign-in and sign-out, a 401 that ends the session, sign-in errors, the keyboard, axe on every state, and the role hints a viewers-only session gets. The real round trip (`npm run test:roundtrip`, `playwright.roundtrip.config.ts`, `e2e/signin.roundtrip.ts`) needs `npm run build` and then `cargo build -p kavach-api --bin kavach-api --example oidc_double`. It starts the OIDC test double and kavach-api (this console embedded, `--insecure-dev`, memory stores) on 127.0.0.1, stubs nothing and injects no header. It covers every Playwright item of ADR-018:
+- the sign-in round trip through the double; a reload keeps the session; after sign-out, Back shows no signed-in page;
+- no token in `localStorage`, `sessionStorage`, IndexedDB or `document.cookie`, and the only cookie is `__Host-kavach_session` with Secure, HttpOnly, SameSite=Strict, Path=/, no Domain and no expiry;
+- every page under the server's real CSP, with no `securitypolicyviolation` event and no request to another origin (the top-level redirect to the IdP is the one exception);
+- an ended session, sent to `/signin` with "Your session ended. Sign in again.";
+- keyboard-only sign-in and sign-out, with axe on the signed-out and signed-in pages.
+
+The stack guard (`e2e/stack.ts`) checks the CSP and other-origin rules on every round-trip test.
+
+The ended session is a stand-in. The session clock is the server's wall clock, and the shortest idle limit is 5 minutes, so the spec ends the session on the server by signing out in a second tab and then puts the old cookie back.
+
+A request the CSP blocks never reaches Playwright's request log. So the other-origin check catches only what the CSP lets through, and the CSP listener catches the rest.
+
+Chrome stores the `__Host-` Secure cookie on `http://127.0.0.1`, because it treats loopback as a secure context, so the round trip runs on plain HTTP with the production cookie. The console's origin must be exactly the redirect URI's origin (`127.0.0.1`, not `localhost`).
 
 ### Responsive breakpoints
 
