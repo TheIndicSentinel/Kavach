@@ -6,6 +6,16 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **ADR-019, operator roles and role management (accepted, design only).** It defines:
+  - seven roles (`superadmin`, `user_admin`, `policy_admin`, `approver`, `operator`, `auditor`, `viewer`) with a role-to-action matrix;
+  - per-tenant bindings to an OIDC subject or an IdP group, which Cedar receives alongside the token's groups;
+  - grants and revokes as maker-checker change requests (`grant_role`, `revoke_role`), with no self-grant and no revoking the last `superadmin` or `user_admin`;
+  - a two-person, one-time `superadmin` bootstrap, with superadmin-only decisions flagged in the audit;
+  - a principals directory that stores issuer, subject and display name only;
+  - an access-review export in CSV and JSON.
+
+  Sign-in stays with the IdP and Kavach stores no passwords. The `admins`, `change-approvers`, `operators` and `viewers` groups keep exactly their current permissions, as aliases. SCIM is out of scope. Nothing is implemented yet: [docs/ADR-019-operator-roles.md](docs/ADR-019-operator-roles.md).
+
 - **`scripts/demo.sh`: one command to a seeded Kavach with the console signed in.**
   - **What it does:** builds the console and the binaries from the current tree, then starts kavach-api on `127.0.0.1:8080`, with Postgres evidence, Cedar and console sign-in, plus the OIDC test double and the mock provider. It seeds what the console's real-stack tests use, then prints the URL, one test user per Cedar group (`demo-admin`, `demo-approver`, `demo-operator`, `demo-viewer`) and how to stop.
   - **Postgres:** it needs a Postgres it can reach (default `postgres://kavach@127.0.0.1:55433/postgres`, or `KAVACH_DEMO_DATABASE_URL`). It never starts one: if it can't reach one, it prints the start command. Each run gets its own `kavach_demo_<epoch>` schema, and `scripts/demo.sh stop` drops only that schema.
