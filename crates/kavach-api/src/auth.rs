@@ -326,7 +326,7 @@ async fn authorize_principal(
 
 /// How often this process rewrites one person's directory row. The store
 /// moves `last_seen_at` at most hourly anyway; this spares the round trip.
-const SEEN_INTERVAL: Duration = Duration::from_secs(15 * 60);
+const SEEN_INTERVAL: Duration = Duration::from_mins(15);
 /// Entries kept before the throttle forgets everyone (a bound on memory, not
 /// on correctness: forgetting only costs a write).
 const SEEN_MAX_ENTRIES: usize = 10_000;
