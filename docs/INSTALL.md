@@ -314,6 +314,15 @@ kavach-api ... --oidc-issuer https://idp.bank.example/realms/kavach \
   ```
 
   A `group` subject names an IdP group under the same issuer. `revoke_role` takes `{"binding_id":"rb_..."}`. Nobody may grant a role to themselves or to a group in their token, and the last active person `superadmin` or `user_admin` cannot be revoked (409).
+- To review who holds what (`superadmin`, `user_admin` or `auditor`):
+
+  ```bash
+  curl -sS "$KAVACH/v1/role-bindings" -H "authorization: Bearer $TOKEN"     # add ?include=ended for history
+  curl -sS "$KAVACH/v1/principals?q=asha" -H "authorization: Bearer $TOKEN" # people who have signed in
+  curl -sS -o access-review.csv "$KAVACH/v1/access-review?format=csv" -H "authorization: Bearer $TOKEN"
+  ```
+
+  The access review has one row per active binding: who proposed and approved it, and when the person was last seen. A person not seen for `--access-review-stale-days` (`KAVACH_ACCESS_REVIEW_STALE_DAYS`, default 90) or never is marked `stale`. Members of the alias groups are in the IdP and are not listed; review them there. Each export writes an `export_access_review` audit row, and an export that cannot be audited is refused. `GET /v1/me` returns the caller's own roles to anyone signed in.
 
 *Recovery when every superadmin is gone* (for example both IdP accounts were deleted): this is a database-operator procedure, run as the owner role. End the dead bindings, then start once with `--bootstrap-superadmins` naming two current people:
 

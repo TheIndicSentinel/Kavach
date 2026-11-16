@@ -810,3 +810,290 @@ async fn the_last_person_superadmin_cannot_be_revoked() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
 }
+
+// ---- ADR-019 §8 and §9: the directory, the bindings, the access review ----
+
+const ROLES: [&str; 7] = [
+    "superadmin",
+    "user_admin",
+    "policy_admin",
+    "approver",
+    "operator",
+    "auditor",
+    "viewer",
+];
+
+/// Grants `role` to `subject`: proposed by root-a, approved by root-b.
+/// Returns the change request.
+async fn grant(app: &axum::Router, role: &str, subject: Value) -> Value {
+    let root_a = vec![bearer(&token("root-a", &[]))];
+    let root_b = vec![bearer(&token("root-b", &[]))];
+    let (status, request) =
+        common::propose(app, &root_a, "grant_role", grant_params(role, subject)).await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    let (status, applied) = common::approve(app, &root_b, &request).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    request
+}
+
+const ROLE_READS: [&str; 4] = [
+    "/v1/principals",
+    "/v1/role-bindings",
+    "/v1/access-review",
+    "/v1/access-review?format=csv",
+];
+
+#[tokio::test]
+async fn only_superadmin_user_admin_and_auditor_read_the_directory_and_the_review() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    let app = router(s.clone());
+    for role in &ROLES[1..] {
+        grant(&app, role, person_subject(&format!("{role}-1"))).await;
+    }
+    for role in ROLES {
+        let who = if role == "superadmin" {
+            "root-a".to_string()
+        } else {
+            format!("{role}-1")
+        };
+        let creds = vec![bearer(&token(&who, &[]))];
+        let want = if matches!(role, "superadmin" | "user_admin" | "auditor") {
+            StatusCode::OK
+        } else {
+            StatusCode::FORBIDDEN
+        };
+        for uri in ROLE_READS {
+            let (status, _) = common::call(&app, "GET", uri, &creds, None).await;
+            assert_eq!(status, want, "{role} {uri}");
+        }
+        let (status, me) = common::call(&app, "GET", "/v1/me", &creds, None).await;
+        assert_eq!(status, StatusCode::OK, "{me}");
+        assert_eq!(me, json!({ "principal": who, "roles": [role] }));
+    }
+    // A group, even an alias group, reads none of them: only roles do.
+    let admin = vec![bearer(&token("sso-admin-1", &["admins", "viewers"]))];
+    for uri in ROLE_READS {
+        let (status, _) = common::call(&app, "GET", uri, &admin, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "admins {uri}");
+    }
+    let (_, me) = common::call(&app, "GET", "/v1/me", &admin, None).await;
+    assert_eq!(me, json!({ "principal": "sso-admin-1", "roles": [] }));
+    let (status, _) = common::call(&app, "GET", "/v1/me", &vec![], None).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn principals_page_by_issuer_and_subject_and_match_on_name() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    let app = router(s.clone());
+    // Any authenticated request puts the person in the directory, even a
+    // refused one.
+    for who in ["asha-1", "ravi-2", "ASHA-3"] {
+        get(&s, "/v1/runtime", &[bearer(&token(who, &[]))]).await;
+    }
+    let root = vec![bearer(&token("root-a", &[]))];
+    let mut seen = Vec::new();
+    let mut uri = "/v1/principals?limit=2".to_string();
+    loop {
+        let (status, page) = common::call(&app, "GET", &uri, &root, None).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        let items = page["items"].as_array().unwrap();
+        assert!(items.len() <= 2);
+        seen.extend(
+            items
+                .iter()
+                .map(|p| p["subject"].as_str().unwrap().to_string()),
+        );
+        match page["next_cursor"].as_str() {
+            Some(cursor) => uri = format!("/v1/principals?limit=2&cursor={cursor}"),
+            None => break,
+        }
+    }
+    // root-b never signed in, so is not in the directory.
+    assert_eq!(seen, ["ASHA-3", "asha-1", "ravi-2", "root-a"]);
+
+    let (_, page) = common::call(&app, "GET", "/v1/principals?q=asha", &root, None).await;
+    let found: Vec<&str> = page["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["display_name"].as_str().unwrap())
+        .collect();
+    assert_eq!(found, ["ASHA-3", "asha-1"]);
+    assert_eq!(page["next_cursor"], Value::Null);
+
+    let long = "a".repeat(201);
+    for bad in [
+        format!("/v1/principals?q={long}"),
+        "/v1/principals?q=%01".into(),
+        "/v1/principals?cursor=@@".into(),
+        "/v1/principals?cursor=bm90IGpzb24".into(),
+        "/v1/principals?limit=many".into(),
+        "/v1/principals?unknown=1".into(),
+    ] {
+        let (status, body) = common::call(&app, "GET", &bad, &root, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+    }
+}
+
+#[tokio::test]
+async fn ended_role_bindings_are_listed_only_when_asked() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    let app = router(s.clone());
+    let root_a = vec![bearer(&token("root-a", &[]))];
+    let root_b = vec![bearer(&token("root-b", &[]))];
+    let granted = grant(&app, "operator", person_subject("op-1")).await;
+    let binding = binding_of(&s, "operator", "op-1").await.unwrap();
+    let (status, revoke) = common::propose(
+        &app,
+        &root_b,
+        "revoke_role",
+        json!({ "binding_id": binding }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{revoke}");
+    assert_eq!(
+        common::approve(&app, &root_a, &revoke).await.0,
+        StatusCode::OK
+    );
+
+    let (_, active) = common::call(&app, "GET", "/v1/role-bindings", &root_a, None).await;
+    let active = active["items"].as_array().unwrap();
+    assert_eq!(active.len(), 2);
+    assert!(active
+        .iter()
+        .all(|b| b["role"] == "superadmin" && b["granted_by_change_request"].is_null()));
+
+    let (_, all) = common::call(
+        &app,
+        "GET",
+        "/v1/role-bindings?include=ended",
+        &root_a,
+        None,
+    )
+    .await;
+    let all = all["items"].as_array().unwrap();
+    assert_eq!(all.len(), 3);
+    let ended = all.iter().find(|b| b["id"] == json!(binding)).unwrap();
+    assert_eq!(ended["granted_by_change_request"], granted["id"]);
+    assert_eq!(ended["ended_by_change_request"], revoke["id"]);
+    assert!(ended["ended_at"].is_string());
+
+    let (status, _) =
+        common::call(&app, "GET", "/v1/role-bindings?include=all", &root_a, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+/// The status, headers and text of one GET.
+async fn get_text(
+    app: &axum::Router,
+    uri: &str,
+    creds: &common::Creds,
+) -> (StatusCode, axum::http::HeaderMap, String) {
+    let mut req = Request::builder().uri(uri);
+    for (k, v) in creds {
+        req = req.header(*k, v);
+    }
+    let response = app
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let (parts, body) = response.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    (
+        parts.status,
+        parts.headers,
+        String::from_utf8(bytes.to_vec()).unwrap(),
+    )
+}
+
+async fn exports(s: &AppState) -> Vec<kavach_storage::AuditEntry> {
+    s.admin()
+        .list_audit(200)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.action == kavach_api::roles_api::ACCESS_REVIEW_AUDIT_ACTION)
+        .collect()
+}
+
+#[tokio::test]
+async fn the_access_review_names_who_granted_each_role_and_every_export_is_audited() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    let app = router(s.clone());
+    let root_a = vec![bearer(&token("root-a", &[]))];
+    // aud-1 never signs in; the group's members are in the IdP.
+    let granted = grant(&app, "auditor", person_subject("aud-1")).await;
+    let group = json!({ "kind": "group", "issuer": ISSUER, "value": "=cmd|' /C calc'!A0" });
+    grant(&app, "viewer", group).await;
+
+    let (status, review) = common::call(&app, "GET", "/v1/access-review", &root_a, None).await;
+    assert_eq!(status, StatusCode::OK, "{review}");
+    assert_eq!(
+        review["alias_groups"],
+        json!(["admins", "change-approvers", "operators", "viewers"])
+    );
+    assert_eq!(review["stale_after_days"], 90);
+    let rows = review["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 4, "{review}");
+    let row = |subject: &str| rows.iter().find(|r| r["subject"] == subject).unwrap();
+
+    let root = row("root-a");
+    assert_eq!(root["proposer"], kavach_storage::BOOTSTRAP_ACTOR);
+    assert_eq!(root["approver"], "");
+    assert!(root["change_request_id"].is_null());
+    assert_eq!(root["stale"], false, "root-a signed in just now");
+    assert_eq!(root["display_name"], "root-a");
+    assert_eq!(row("root-b")["stale"], false, "root-b approved the grants");
+
+    let auditor = row("aud-1");
+    assert_eq!(auditor["role"], "auditor");
+    assert_eq!(auditor["proposer"], "root-a");
+    assert_eq!(auditor["approver"], "root-b");
+    assert_eq!(auditor["change_request_id"], granted["id"]);
+    assert_eq!(auditor["stale"], true, "never seen");
+    assert!(auditor["last_seen_at"].is_null());
+    assert_eq!(auditor["display_name"], "");
+
+    let viewers = row("=cmd|' /C calc'!A0");
+    assert_eq!(viewers["subject_kind"], "group");
+    assert!(viewers["stale"].is_null());
+
+    let (status, headers, csv) = get_text(&app, "/v1/access-review?format=csv", &root_a).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers["content-type"], "text/csv; charset=utf-8");
+    assert_eq!(headers["cache-control"], "no-store");
+    assert!(headers["content-disposition"]
+        .to_str()
+        .unwrap()
+        .starts_with("attachment;"));
+    assert!(csv.contains("admins, change-approvers, operators, viewers"));
+    assert!(csv.contains("\"'=cmd|' /C calc'!A0\""), "{csv}");
+    assert!(!csv.contains(",\"=cmd"), "{csv}");
+    // Four rows after the title, the note, a blank line and the header.
+    assert_eq!(csv.split("\r\n").filter(|l| !l.is_empty()).count(), 3 + 4);
+
+    let audited = exports(&s).await;
+    assert_eq!(audited.len(), 2);
+    let mut formats: Vec<&str> = audited
+        .iter()
+        .map(|e| e.payload["format"].as_str().unwrap())
+        .collect();
+    formats.sort_unstable();
+    assert_eq!(formats, ["csv", "json"]);
+    for entry in &audited {
+        assert_eq!(entry.actor_principal, "root-a");
+        assert_eq!(entry.resource_id, "default");
+        assert_eq!(entry.payload["rows"], 4);
+        assert!(
+            entry.acting_as_superadmin,
+            "only the superadmin role allowed it"
+        );
+    }
+
+    let (status, _) =
+        common::call(&app, "GET", "/v1/access-review?format=xml", &root_a, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(exports(&s).await.len(), 2, "a refused export is not one");
+}

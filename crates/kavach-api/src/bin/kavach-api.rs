@@ -645,6 +645,17 @@ struct Cli {
     /// warning.
     #[arg(long, env = "KAVACH_BOOTSTRAP_SUPERADMINS")]
     bootstrap_superadmins: Option<String>,
+
+    /// ADR-019 §9: the access review marks a person stale when they were
+    /// last seen more than this many days ago, or never (1 to 3650).
+    #[arg(
+        long,
+        env = "KAVACH_ACCESS_REVIEW_STALE_DAYS",
+        default_value_t = kavach_api::config::DEFAULT_ACCESS_REVIEW_STALE_DAYS,
+        value_parser = clap::value_parser!(u32)
+            .range(1..=i64::from(kavach_api::config::MAX_ACCESS_REVIEW_STALE_DAYS))
+    )]
+    access_review_stale_days: u32,
 }
 
 impl Cli {
@@ -718,6 +729,7 @@ impl Cli {
                     oidc.as_ref().map(|o| o.issuer.as_str()),
                 )?,
             },
+            access_review_stale_days: self.access_review_stale_days,
         };
         let dataplane = self.agents.into_config(oidc.as_ref())?;
 

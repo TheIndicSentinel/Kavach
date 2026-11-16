@@ -814,3 +814,98 @@ async fn an_unreadable_bindings_table_refuses_the_request_with_503() {
         .unwrap();
     assert_eq!(runtime_status().await, StatusCode::SERVICE_UNAVAILABLE);
 }
+
+// ---- ADR-019 §8 and §9: the role endpoints per tenant ----
+
+/// The subjects in `body[key]`, sorted.
+fn subjects(body: &serde_json::Value, key: &str, field: &str) -> Vec<String> {
+    let mut found: Vec<String> = body[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("no {key} in {body}"))
+        .iter()
+        .map(|item| match field {
+            "subject.value" => item["subject"]["value"].as_str().unwrap().to_string(),
+            _ => item[field].as_str().unwrap().to_string(),
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// Two tenants share one database: each one's directory, bindings and
+/// access review show only its own people. An export that cannot be
+/// audited is refused, while the other reads go on.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_role_endpoints_show_only_their_tenant_and_refuse_an_unaudited_export() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let root = registry();
+    let iss = "https://idp.example";
+    let mut bank_a = config(&root, &runtime, "v0.yaml", false);
+    bank_a.migration_database_url = Some(owner.clone());
+    bank_a.roles.tenant_id = "bank-a".into();
+    bank_a.roles.bootstrap_superadmins = people(iss, ["alice", "bob"]);
+    let mut bank_b = bank_a.clone();
+    bank_b.roles.tenant_id = "bank-b".into();
+    bank_b.roles.bootstrap_superadmins = people(iss, ["carol", "dave"]);
+    let a = start_with(&bank_a).await.expect("bank-a");
+    let b = start_with(&bank_b).await.expect("bank-b");
+    let now = chrono::Utc::now();
+    for (state, tenant, person) in [(&a, "bank-a", "alice"), (&b, "bank-b", "carol")] {
+        state
+            .roles()
+            .record_principal_seen(tenant, iss, person, person, now)
+            .await
+            .unwrap();
+    }
+
+    let reader = as_principal("reader-1");
+    for (state, tenant, seen, bound) in [
+        (&a, "bank-a", ["alice"], ["alice", "bob"]),
+        (&b, "bank-b", ["carol"], ["carol", "dave"]),
+    ] {
+        let app = router(state.clone());
+        let (status, page) = call(&app, "GET", "/v1/principals", &reader, None).await;
+        assert_eq!(status, StatusCode::OK, "{page}");
+        assert_eq!(subjects(&page, "items", "subject"), seen);
+        let (status, list) = call(
+            &app,
+            "GET",
+            "/v1/role-bindings?include=ended",
+            &reader,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        assert_eq!(subjects(&list, "items", "subject.value"), bound);
+        let (status, review) = call(&app, "GET", "/v1/access-review", &reader, None).await;
+        assert_eq!(status, StatusCode::OK, "{review}");
+        assert_eq!(review["tenant_id"], tenant);
+        assert_eq!(subjects(&review, "rows", "subject"), bound);
+    }
+    let exported = |state: Arc<AppState>| async move {
+        audit_actions(&state)
+            .await
+            .iter()
+            .filter(|a| *a == kavach_api::roles_api::ACCESS_REVIEW_AUDIT_ACTION)
+            .count()
+    };
+    assert_eq!(
+        exported(a.clone()).await,
+        2,
+        "the audit log is shared; one export each"
+    );
+
+    let pool = sqlx::PgPool::connect(&owner).await.unwrap();
+    sqlx::query("REVOKE INSERT ON admin_audit_log FROM kavach_runtime")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let app = router(a.clone());
+    let (status, body) = call(&app, "GET", "/v1/access-review?format=csv", &reader, None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let (status, _) = call(&app, "GET", "/v1/principals", &reader, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(exported(a).await, 2);
+}

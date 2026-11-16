@@ -50,6 +50,8 @@ pub struct AppState {
     seen: crate::auth::SeenThrottle,
     /// The tenant this process serves (ADR-014 Tier 1).
     tenant_id: String,
+    /// `--access-review-stale-days` (ADR-019 §9).
+    access_review_stale_days: u32,
     /// Serializes change decisions in this process, so commit order and
     /// live-swap order agree.
     governance_lock: tokio::sync::Mutex<()>,
@@ -197,6 +199,7 @@ impl AppState {
             roles,
             seen: crate::auth::SeenThrottle::default(),
             tenant_id: config.roles.tenant_id.clone(),
+            access_review_stale_days: config.roles.access_review_stale_days,
             changes,
             change_ttl: Duration::seconds(
                 i64::try_from(config.change_ttl_seconds).unwrap_or(i64::MAX),
@@ -341,6 +344,11 @@ impl AppState {
     /// The tenant this process serves (ADR-014 Tier 1).
     pub fn tenant_id(&self) -> &str {
         &self.tenant_id
+    }
+
+    /// Days after which the access review marks a person stale.
+    pub fn access_review_stale_days(&self) -> u32 {
+        self.access_review_stale_days
     }
 
     pub async fn model_states(&self) -> Result<Vec<kavach_storage::ModelState>, ApiError> {

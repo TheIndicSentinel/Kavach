@@ -41,6 +41,7 @@ tags:
   - name: change-requests
   - name: evidence
   - name: agents
+  - name: roles
   - name: admin
   - name: development
   - name: agent
@@ -481,6 +482,116 @@ paths:
         "403": { $ref: "#/components/responses/Forbidden" }
         "404": { $ref: "#/components/responses/NotFound" }
         "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/me:
+    get:
+      operationId: getMe
+      tags: [roles]
+      summary: The caller and the roles bound to them now.
+      description: >-
+        ADR-019 §8. Any authenticated caller; no Cedar action. `roles` are the roles bound to
+        the caller as a person (an mTLS principal has none). It helps a client show the right
+        pages; the server still decides every request. 401 when access control is off or the
+        caller is not authenticated; 503 when the bindings cannot be read.
+      responses:
+        "200":
+          description: The caller and their roles.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Me" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/principals:
+    get:
+      operationId: listPrincipals
+      tags: [roles]
+      summary: The people who have signed in to this tenant (`read_principals`).
+      description: >-
+        ADR-019 §8. In ascending issuer, then subject, order, a page at a time: pass
+        `next_cursor` back as `cursor` for the next page; it is null when no more match. With
+        `q`, only people whose display name or subject contains it, ignoring case.
+      parameters:
+        - name: q
+          in: query
+          description: A case-insensitive substring of the display name or subject.
+          schema: { type: string, maxLength: 200 }
+        - { $ref: "#/components/parameters/Limit" }
+        - name: cursor
+          in: query
+          description: The `next_cursor` of the previous page.
+          schema: { type: string, minLength: 1, maxLength: 4096, pattern: "^[A-Za-z0-9_-]+$" }
+      responses:
+        "200":
+          description: A page of people.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PrincipalPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/role-bindings:
+    get:
+      operationId: listRoleBindings
+      tags: [roles]
+      summary: Who holds which role (`read_principals`).
+      description: >-
+        ADR-019 §8. The tenant's active bindings; with `include=ended`, ended ones too. A
+        binding with a null `granted_by_change_request` came from the startup bootstrap.
+      parameters:
+        - name: include
+          in: query
+          schema: { type: string, enum: [ended] }
+      responses:
+        "200":
+          description: The bindings.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RoleBindingList" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/access-review:
+    get:
+      operationId: getAccessReview
+      tags: [roles]
+      summary: The access review, as JSON or CSV (`read_access_review`).
+      description: >-
+        ADR-019 §9. One row per active binding: the role, the subject, who proposed and who
+        approved the grant, and when the person was last seen. A person last seen more than
+        `stale_after_days` ago, or never, is `stale`; a group's `stale` is null because its
+        members are in the IdP. The alias groups the policy still honours are named, not
+        expanded. Every export writes an audit row (`export_access_review`) before it is
+        returned; an export that cannot be audited is refused (503). In CSV every field is
+        quoted, and one starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a
+        leading `'` so a spreadsheet does not run it.
+      parameters:
+        - name: format
+          in: query
+          schema: { type: string, enum: [json, csv], default: json }
+      responses:
+        "200":
+          description: The access review.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: [no-store] }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AccessReview" }
+            text/csv:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
@@ -1606,6 +1717,131 @@ components:
         approved_by: { type: [string, "null"] }
         change_request_id: { type: [string, "null"] }
         changed_at: { type: string, format: date-time }
+    RoleName:
+      type: string
+      enum: [superadmin, user_admin, policy_admin, approver, operator, auditor, viewer]
+    Me:
+      type: object
+      additionalProperties: false
+      required: [principal, roles]
+      properties:
+        principal: { type: string }
+        roles:
+          type: array
+          items: { $ref: "#/components/schemas/RoleName" }
+    Principal:
+      type: object
+      additionalProperties: false
+      required: [issuer, subject, display_name, first_seen_at, last_seen_at]
+      properties:
+        issuer: { type: string }
+        subject: { type: string }
+        display_name: { type: string }
+        first_seen_at: { type: string, format: date-time }
+        last_seen_at: { type: string, format: date-time }
+    PrincipalPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          maxItems: 200
+          items: { $ref: "#/components/schemas/Principal" }
+        next_cursor:
+          type: [string, "null"]
+          description: Pass as `cursor` for the next page; null when no more match.
+    BindingSubject:
+      type: object
+      additionalProperties: false
+      required: [kind, issuer, value]
+      properties:
+        kind: { type: string, enum: [principal, group] }
+        issuer: { type: string }
+        value: { type: string }
+    RoleBinding:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - role
+        - subject
+        - granted_by_change_request
+        - granted_at
+        - ended_by_change_request
+        - ended_at
+      properties:
+        id: { type: string }
+        role: { $ref: "#/components/schemas/RoleName" }
+        subject: { $ref: "#/components/schemas/BindingSubject" }
+        granted_by_change_request:
+          type: [string, "null"]
+          description: Null for a binding made by the startup bootstrap.
+        granted_at: { type: string, format: date-time }
+        ended_by_change_request: { type: [string, "null"] }
+        ended_at: { type: [string, "null"], format: date-time }
+    RoleBindingList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/RoleBinding" }
+    AccessReviewRow:
+      type: object
+      additionalProperties: false
+      required:
+        - binding_id
+        - role
+        - subject_kind
+        - issuer
+        - subject
+        - display_name
+        - granted_at
+        - change_request_id
+        - proposer
+        - approver
+        - last_seen_at
+        - stale
+      properties:
+        binding_id: { type: string }
+        role: { $ref: "#/components/schemas/RoleName" }
+        subject_kind: { type: string, enum: [principal, group] }
+        issuer: { type: string }
+        subject: { type: string }
+        display_name:
+          type: string
+          description: Empty for a group and for a person never seen.
+        granted_at: { type: string, format: date-time }
+        change_request_id:
+          type: [string, "null"]
+          description: Null for a binding made by the startup bootstrap.
+        proposer:
+          type: string
+          description: The grant's proposer, or the bootstrap for a startup binding.
+        approver:
+          type: string
+          description: The grant's approver; empty for a startup binding.
+        last_seen_at: { type: [string, "null"], format: date-time }
+        stale:
+          type: [boolean, "null"]
+          description: Null for a group.
+    AccessReview:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, generated_at, stale_after_days, alias_groups, note, rows]
+      properties:
+        tenant_id: { type: string }
+        generated_at: { type: string, format: date-time }
+        stale_after_days: { type: integer, minimum: 1 }
+        alias_groups:
+          type: array
+          items: { type: string }
+        note: { type: string }
+        rows:
+          type: array
+          items: { $ref: "#/components/schemas/AccessReviewRow" }
     AgentStatePage:
       type: object
       additionalProperties: false

@@ -307,6 +307,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller and the roles bound to them now.
+         * @description ADR-019 §8. Any authenticated caller; no Cedar action. `roles` are the roles bound to the caller as a person (an mTLS principal has none). It helps a client show the right pages; the server still decides every request. 401 when access control is off or the caller is not authenticated; 503 when the bindings cannot be read.
+         */
+        get: operations["getMe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/principals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The people who have signed in to this tenant (`read_principals`).
+         * @description ADR-019 §8. In ascending issuer, then subject, order, a page at a time: pass `next_cursor` back as `cursor` for the next page; it is null when no more match. With `q`, only people whose display name or subject contains it, ignoring case.
+         */
+        get: operations["listPrincipals"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/role-bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Who holds which role (`read_principals`).
+         * @description ADR-019 §8. The tenant's active bindings; with `include=ended`, ended ones too. A binding with a null `granted_by_change_request` came from the startup bootstrap.
+         */
+        get: operations["listRoleBindings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/access-review": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The access review, as JSON or CSV (`read_access_review`).
+         * @description ADR-019 §9. One row per active binding: the role, the subject, who proposed and who approved the grant, and when the person was last seen. A person last seen more than `stale_after_days` ago, or never, is `stale`; a group's `stale` is null because its members are in the IdP. The alias groups the policy still honours are named, not expanded. Every export writes an audit row (`export_access_review`) before it is returned; an export that cannot be audited is refused (503). In CSV every field is quoted, and one starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'` so a spreadsheet does not run it.
+         */
+        get: operations["getAccessReview"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agents": {
         parameters: {
             query?: never;
@@ -962,6 +1042,78 @@ export interface components {
             change_request_id?: string | null;
             /** Format: date-time */
             changed_at?: string;
+        };
+        /** @enum {string} */
+        RoleName: "superadmin" | "user_admin" | "policy_admin" | "approver" | "operator" | "auditor" | "viewer";
+        Me: {
+            principal: string;
+            roles: components["schemas"]["RoleName"][];
+        };
+        Principal: {
+            issuer: string;
+            subject: string;
+            display_name: string;
+            /** Format: date-time */
+            first_seen_at: string;
+            /** Format: date-time */
+            last_seen_at: string;
+        };
+        PrincipalPage: {
+            items: components["schemas"]["Principal"][];
+            /** @description Pass as `cursor` for the next page; null when no more match. */
+            next_cursor: string | null;
+        };
+        BindingSubject: {
+            /** @enum {string} */
+            kind: "principal" | "group";
+            issuer: string;
+            value: string;
+        };
+        RoleBinding: {
+            id: string;
+            role: components["schemas"]["RoleName"];
+            subject: components["schemas"]["BindingSubject"];
+            /** @description Null for a binding made by the startup bootstrap. */
+            granted_by_change_request: string | null;
+            /** Format: date-time */
+            granted_at: string;
+            ended_by_change_request: string | null;
+            /** Format: date-time */
+            ended_at: string | null;
+        };
+        RoleBindingList: {
+            items: components["schemas"]["RoleBinding"][];
+        };
+        AccessReviewRow: {
+            binding_id: string;
+            role: components["schemas"]["RoleName"];
+            /** @enum {string} */
+            subject_kind: "principal" | "group";
+            issuer: string;
+            subject: string;
+            /** @description Empty for a group and for a person never seen. */
+            display_name: string;
+            /** Format: date-time */
+            granted_at: string;
+            /** @description Null for a binding made by the startup bootstrap. */
+            change_request_id: string | null;
+            /** @description The grant's proposer, or the bootstrap for a startup binding. */
+            proposer: string;
+            /** @description The grant's approver; empty for a startup binding. */
+            approver: string;
+            /** Format: date-time */
+            last_seen_at: string | null;
+            /** @description Null for a group. */
+            stale: boolean | null;
+        };
+        AccessReview: {
+            tenant_id: string;
+            /** Format: date-time */
+            generated_at: string;
+            stale_after_days: number;
+            alias_groups: string[];
+            note: string;
+            rows: components["schemas"]["AccessReviewRow"][];
         };
         AgentStatePage: {
             items: components["schemas"]["AgentStateView"][];
@@ -1892,6 +2044,117 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller and their roles. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Me"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listPrincipals: {
+        parameters: {
+            query?: {
+                /** @description A case-insensitive substring of the display name or subject. */
+                q?: string;
+                /** @description At most this many items (default 50; clamped to 1-200). */
+                limit?: components["parameters"]["Limit"];
+                /** @description The `next_cursor` of the previous page. */
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A page of people. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrincipalPage"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listRoleBindings: {
+        parameters: {
+            query?: {
+                include?: "ended";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The bindings. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RoleBindingList"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    getAccessReview: {
+        parameters: {
+            query?: {
+                format?: "json" | "csv";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The access review. */
+            200: {
+                headers: {
+                    "Cache-Control"?: "no-store";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccessReview"];
+                    "text/csv": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             500: components["responses"]["Internal"];
             503: components["responses"]["Unavailable"];
         };
