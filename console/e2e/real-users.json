@@ -1,0 +1,7 @@
+{
+  "users": [
+    { "sub": "real-admin", "groups": ["admins"] },
+    { "sub": "real-approver", "groups": ["change-approvers"] },
+    { "sub": "real-viewer", "groups": ["viewers"] }
+  ]
+}

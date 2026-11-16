@@ -6,22 +6,28 @@ import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/C
 import { PageHeader } from "../components/ui/PageHeader";
 import { RoleHint } from "../components/ui/RoleHint";
 import { TextField } from "../components/ui/TextField";
-import { useLookup } from "../hooks/useLookup";
+import { useLookup, type Lookup } from "../hooks/useLookup";
 import { fetchDecisionEvent, type DecisionEventLookup } from "../lib/api";
 import { useViewer } from "../lib/changeRequests";
 import { EVIDENCE_ID_LENGTH, evidenceIdProblem } from "../lib/evidence";
 import { roleHint, type Viewer } from "../lib/permissions";
 
-type Found = { evidenceId: string; lookup: DecisionEventLookup };
+export type FoundEvent = { evidenceId: string; lookup: DecisionEventLookup };
 
-/** `viewer` is for tests; the app passes none and the page reads it. */
-export default function DecisionEventsPage({ viewer: given }: { viewer?: Viewer }) {
+type DecisionEventsPageProps = {
+  /** For tests; the app passes none and the page reads it. */
+  viewer?: Viewer;
+  /** For tests: the lookup's phase, as if an id had been submitted. */
+  lookup?: Lookup<FoundEvent>;
+};
+
+export default function DecisionEventsPage({ viewer: given, lookup: initial }: DecisionEventsPageProps) {
   const current = useViewer();
   const hint = roleHint(given ?? current, "read_evidence", "read decision events");
   const input = useRef<HTMLInputElement>(null);
   const [evidenceId, setEvidenceId] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
-  const { lookup, run } = useLookup<Found>();
+  const { lookup, run } = useLookup<FoundEvent>(initial);
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -87,6 +93,7 @@ export default function DecisionEventsPage({ viewer: given }: { viewer?: Viewer 
             </form>
             <LookupPanel
               lookup={lookup}
+              notFound="No decision event with that evidence id on this server."
               done={(found) => `Found decision event ${found.evidenceId}.`}
               render={(found) => (
                 <DecisionEventView result={found.lookup} evidenceId={found.evidenceId} />

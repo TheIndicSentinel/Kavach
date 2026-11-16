@@ -1,30 +1,20 @@
-import { useEffect, useState } from "react";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { DataTable } from "../components/ui/DataTable";
 import { PageHeader } from "../components/ui/PageHeader";
+import { ResourceState, listSummary } from "../components/ui/ResourceState";
 import { Skeleton } from "../components/ui/Skeleton";
+import { useResource, type Resource } from "../hooks/useResource";
 import { fetchIncidents, type IncidentRecord } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 
-export default function IncidentsPage() {
-  const [incidents, setIncidents] = useState<IncidentRecord[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+type IncidentsPageProps = {
+  /** For tests: the read of GET /v1/admin/incidents, in place of the API's answer. */
+  resource?: Resource<IncidentRecord[]>;
+};
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchIncidents()
-      .then((data) => {
-        if (!cancelled) setIncidents(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load incidents");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+export default function IncidentsPage({ resource: given }: IncidentsPageProps) {
+  const { resource: read, retry } = useResource(fetchIncidents);
+  const resource = given ?? read;
 
   return (
     <section>
@@ -42,10 +32,14 @@ export default function IncidentsPage() {
           </CardDescription>
         </CardHeader>
 
-        {error && <p className="mb-4 text-sm text-decision-block">{error}</p>}
-        {incidents === null && !error && <Skeleton className="h-24 w-full" />}
-
-        {incidents && (
+        <ResourceState
+          resource={resource}
+          loading="Loading incidents…"
+          summary={(incidents) => listSummary(incidents.length, "incident", "incidents")}
+          onRetry={retry}
+          skeleton={<Skeleton className="h-24 w-full" />}
+        >
+          {(incidents) => (
           <DataTable
             rows={incidents}
             rowKey={(row) => String(row.id)}
@@ -65,7 +59,8 @@ export default function IncidentsPage() {
               { key: "reason", header: "Reason", render: (row) => row.reason },
             ]}
           />
-        )}
+          )}
+        </ResourceState>
       </Card>
     </section>
   );

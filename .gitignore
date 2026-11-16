@@ -7,6 +7,8 @@ console/node_modules/
 console/dist/
 console/.e2e-dist/
 console/test-results/
+console/.roundtrip-stack/
+console/.real-stack/
 console/playwright-report/
 console/*.tsbuildinfo
 

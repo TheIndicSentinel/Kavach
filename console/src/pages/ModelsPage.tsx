@@ -1,38 +1,27 @@
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Badge } from "../components/ui/Badge";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { DataTable } from "../components/ui/DataTable";
 import { PageHeader } from "../components/ui/PageHeader";
-import { Skeleton } from "../components/ui/Skeleton";
+import { ResourceState } from "../components/ui/ResourceState";
+import { useResource, type Resource } from "../hooks/useResource";
 import { fetchModels, type ModelSummary } from "../lib/api";
 
-export default function ModelsPage() {
-  const [models, setModels] = useState<ModelSummary[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+type ModelsPageProps = {
+  /** For tests: the read of GET /v1/models, in place of the API's answer. */
+  resource?: Resource<ModelSummary[]>;
+};
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchModels()
-      .then((data) => {
-        if (!cancelled) setModels(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load models");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+export default function ModelsPage({ resource: given }: ModelsPageProps) {
+  const { resource: read, retry } = useResource(fetchModels);
+  const resource = given ?? read;
 
   return (
     <section>
       <PageHeader
         title="Models"
         hindi="मॉडल"
-        subtitle="Model inventory with governance mode, risk tier, and pack binding. Promotion workflow is read-only in v1."
+        subtitle="Model inventory with governance mode, risk tier, and pack binding. Open a model to propose its promotion; a different change approver approves it."
       />
 
       <Card>
@@ -43,19 +32,17 @@ export default function ModelsPage() {
           </CardDescription>
         </CardHeader>
 
-        {error && <p className="mb-4 text-sm text-decision-block">{error}</p>}
-
-        {models === null && !error && (
-          <div className="space-y-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        )}
-
-        {models && (
+        <ResourceState
+          resource={resource}
+          loading="Loading models…"
+          summary={(models) => `${models.length} ${models.length === 1 ? "model" : "models"}.`}
+          onRetry={retry}
+        >
+          {(models) => (
           <DataTable
             rows={models}
             rowKey={(row) => `${row.model_id}-${row.version}`}
+            emptyMessage="No model records yet."
             columns={[
               {
                 key: "model",
@@ -129,7 +116,8 @@ export default function ModelsPage() {
               },
             ]}
           />
-        )}
+          )}
+        </ResourceState>
       </Card>
     </section>
   );

@@ -67,10 +67,12 @@ export const COVERED_ACTIONS: readonly CedarAction[] = [
 
 /**
  * Who the console acts as. `groups: null` means the console does not know
- * the groups, and then every control shows and the API decides. Today the
- * groups are unknown in every mode: a token's claims are not read, and the
- * `X-Kavach-Principal` header (--insecure-dev) carries no groups (the API
- * takes them from its entities file, which the console cannot see).
+ * the groups, and then every control shows and the API decides. In login
+ * mode (ADR-018) the groups are the ones `GET /auth/session` returns. In
+ * the development fallback they are unknown: a pasted token's claims are
+ * not read, and the `X-Kavach-Principal` header (--insecure-dev) carries no
+ * groups (the API takes them from its entities file, which the console
+ * cannot see).
  */
 export type Viewer = {
   /** The principal id, when the console knows it; null otherwise. */

@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { afterEach, describe, expect, it } from "vitest";
 import { reinstateProposed } from "../test/fixtures";
-import { changeRequestButtons, currentViewer } from "./changeRequests";
+import { changeRequestButtons, currentViewer, useViewer, viewerFor } from "./changeRequests";
 import { UNKNOWN_VIEWER } from "./permissions";
+import { setSessionStateForTest, type AuthSession } from "./session";
 
 describe("currentViewer", () => {
   it("knows the principal only when it is sent as the header, with no token", () => {
@@ -24,6 +27,70 @@ describe("currentViewer", () => {
 
   it("is unknown where there is no sessionStorage (static rendering)", () => {
     expect(currentViewer()).toEqual(UNKNOWN_VIEWER);
+  });
+});
+
+const SESSION: AuthSession = {
+  principal: "oidc-viewer-3",
+  groups: ["viewers"],
+  expires_at: "2026-11-15T18:00:00Z",
+  idle_expires_at: "2026-11-15T10:15:00Z",
+};
+
+describe("viewerFor: the session in login mode", () => {
+  const fallback = { principal: "operator-1", groups: null };
+
+  it("takes the principal and groups from a live session", () => {
+    expect(viewerFor({ principal: "oidc-viewer-3", groups: ["viewers"] }, fallback)).toEqual({
+      principal: "oidc-viewer-3",
+      groups: ["viewers"],
+    });
+  });
+
+  it("knows an empty group list: no group, not unknown groups", () => {
+    expect(viewerFor({ principal: "oidc-user-9", groups: [] }, fallback).groups).toEqual([]);
+  });
+
+  it("keeps the session's principal when the server does not know the groups", () => {
+    // No Cedar policy loaded: every control shows, and the proposer rule
+    // still knows who the viewer is.
+    expect(viewerFor({ principal: "oidc-user-9", groups: null }, fallback)).toEqual({
+      principal: "oidc-user-9",
+      groups: null,
+    });
+  });
+
+  it("falls back when there is no session (development fallback, signed out)", () => {
+    expect(viewerFor({ principal: null, groups: null }, fallback)).toBe(fallback);
+    expect(viewerFor({ principal: null, groups: null }, UNKNOWN_VIEWER).groups).toBeNull();
+  });
+});
+
+describe("useViewer", () => {
+  function Probe() {
+    return createElement("pre", null, JSON.stringify(useViewer()));
+  }
+  const seen = () =>
+    JSON.parse(
+      renderToStaticMarkup(createElement(Probe))
+        .replace(/^<pre>|<\/pre>$/g, "")
+        .replace(/&quot;/g, '"'),
+    ) as unknown;
+
+  afterEach(() => setSessionStateForTest({ status: "checking" }));
+
+  it("signed in: the session's principal and groups", () => {
+    setSessionStateForTest({ status: "signed_in", session: SESSION });
+    expect(seen()).toEqual({ principal: "oidc-viewer-3", groups: ["viewers"] });
+  });
+
+  it("development fallback and signed out: groups stay unknown", () => {
+    for (const status of ["dev_token", "checking"] as const) {
+      setSessionStateForTest({ status });
+      expect(seen()).toEqual(UNKNOWN_VIEWER);
+    }
+    setSessionStateForTest({ status: "signed_out", ended: true });
+    expect(seen()).toEqual(UNKNOWN_VIEWER);
   });
 });
 

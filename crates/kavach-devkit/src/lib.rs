@@ -87,6 +87,10 @@ pub struct Options {
     pub database_hosts: Vec<String>,
     /// Lifetime of the minted access tokens.
     pub token_hours: i64,
+    /// The `iss` of the minted tokens and `KAVACH_OIDC_ISSUER`: [`ISSUER`],
+    /// or a test IdP's origin when the bundle's tokens must verify next to
+    /// the IdP's own (the console's real-stack browser checks).
+    pub issuer: String,
 }
 
 /// Who a development project holds: agents (each with a token and a
@@ -248,7 +252,13 @@ fn passport(agent: &str) -> AgentPassport {
 }
 
 /// A JWT signed by the dev identity provider.
-fn mint(seed: &[u8; 32], audience: &str, claims: Value, hours: i64) -> Result<String, String> {
+fn mint(
+    seed: &[u8; 32],
+    issuer: &str,
+    audience: &str,
+    claims: Value,
+    hours: i64,
+) -> Result<String, String> {
     // PKCS#8 wrapper for a raw Ed25519 seed.
     let mut der = vec![
         0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04,
@@ -257,7 +267,7 @@ fn mint(seed: &[u8; 32], audience: &str, claims: Value, hours: i64) -> Result<St
     der.extend_from_slice(seed);
     let now = Utc::now().timestamp();
     let mut claims = claims;
-    claims["iss"] = ISSUER.into();
+    claims["iss"] = issuer.into();
     claims["aud"] = audience.into();
     claims["iat"] = now.into();
     claims["exp"] = (now + hours * 3600).into();
@@ -405,7 +415,14 @@ pub async fn generate_with(opts: &Options, world: &World) -> Result<Summary, Str
 
     write_signed_registry(&kavach, &signer, &signer_public).await?;
 
-    write_identity(&kavach, &agents, out, opts.token_hours, &world.agents)?;
+    write_identity(
+        &kavach,
+        &agents,
+        out,
+        &opts.issuer,
+        opts.token_hours,
+        &world.agents,
+    )?;
 
     // The provider: encryption key, trusted credential key, TLS.
     let provider_secret = random32()?;
@@ -439,7 +456,10 @@ pub async fn generate_with(opts: &Options, world: &World) -> Result<Summary, Str
         (&sor_public, &sor_other_public),
         &provider_key,
     )?;
-    write(&kavach.join("kavach.env"), &env_file(&opts.kavach_mount))?;
+    write(
+        &kavach.join("kavach.env"),
+        &env_file(&opts.kavach_mount, &opts.issuer),
+    )?;
     write(&out.join("README.txt"), README)?;
 
     Ok(Summary {
@@ -455,6 +475,7 @@ fn write_identity(
     kavach: &Path,
     agents: &Path,
     out: &Path,
+    issuer: &str,
     hours: i64,
     names: &[String],
 ) -> Result<(), String> {
@@ -471,6 +492,7 @@ fn write_identity(
     for agent in names {
         let token = mint(
             &idp_seed,
+            issuer,
             AGENT_AUDIENCE,
             json!({ "sub": format!("svc-{agent}"), "azp": agent }),
             hours,
@@ -481,6 +503,7 @@ fn write_identity(
         &out.join("operator.jwt"),
         &mint(
             &idp_seed,
+            issuer,
             OPERATOR_AUDIENCE,
             json!({ "sub": "dev-operator", "groups": ["admins", "change-approvers"] }),
             hours,
@@ -490,6 +513,7 @@ fn write_identity(
         &out.join("approver.jwt"),
         &mint(
             &idp_seed,
+            issuer,
             OPERATOR_AUDIENCE,
             json!({ "sub": "dev-approver", "groups": ["change-approvers"] }),
             hours,
@@ -565,10 +589,10 @@ fn write_kavach_config(
     Ok(())
 }
 
-fn env_file(m: &str) -> String {
+fn env_file(m: &str, issuer: &str) -> String {
     format!(
         "# DEVELOPMENT ONLY (kavach-devkit). Keys are dev-…: production startup refuses them.\n\
-         KAVACH_OIDC_ISSUER={ISSUER}\n\
+         KAVACH_OIDC_ISSUER={issuer}\n\
          KAVACH_OIDC_AUDIENCE={OPERATOR_AUDIENCE}\n\
          KAVACH_OIDC_JWKS_FILE={m}/jwks.json\n\
          KAVACH_AGENT_OIDC_AUDIENCE={AGENT_AUDIENCE}\n\
@@ -751,6 +775,7 @@ mod tests {
             provider_hosts: vec!["localhost".into()],
             database_hosts: vec!["localhost".into()],
             token_hours: 1,
+            issuer: ISSUER.into(),
         }
     }
 
@@ -777,6 +802,36 @@ mod tests {
         assert_eq!(event["event_type"], "loan.paid");
         assert_eq!(event["record_ref"], "lms:loan/B-9382");
         assert_eq!(event["tenant_id"], TENANT);
+        std::fs::remove_dir_all(out).unwrap();
+    }
+
+    /// A chosen issuer is the `iss` of every minted token and the issuer
+    /// kavach.env tells kavach-api to accept; nothing still names the default.
+    #[tokio::test]
+    async fn a_chosen_issuer_names_every_token_and_kavach_env() {
+        let out = std::env::temp_dir().join(format!("kavach-devkit-issuer-{}", std::process::id()));
+        let issuer = "http://127.0.0.1:47993";
+        generate(&Options {
+            issuer: issuer.into(),
+            ..options(&out)
+        })
+        .await
+        .unwrap();
+        let env = std::fs::read_to_string(out.join("kavach/kavach.env")).unwrap();
+        assert!(env.contains(&format!("KAVACH_OIDC_ISSUER={issuer}\n")));
+        assert!(!env.contains(ISSUER));
+        let mut tokens = vec![out.join("operator.jwt"), out.join("approver.jwt")];
+        for entry in std::fs::read_dir(out.join("agents")).unwrap() {
+            tokens.push(entry.unwrap().path());
+        }
+        assert!(tokens.len() > 2, "agent tokens were written");
+        for path in tokens {
+            let token = std::fs::read_to_string(&path).unwrap();
+            let payload = token.trim().split('.').nth(1).unwrap();
+            let claims: Value =
+                serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+            assert_eq!(claims["iss"], issuer, "{}", path.display());
+        }
         std::fs::remove_dir_all(out).unwrap();
     }
 
@@ -895,6 +950,7 @@ mod tests {
             provider_hosts: vec!["mock-provider".into(), "172.30.20.30".into()],
             database_hosts: vec!["postgres".into(), "172.30.20.20".into()],
             token_hours: 24,
+            issuer: ISSUER.into(),
         })
         .await
         .unwrap();
@@ -980,6 +1036,7 @@ mod tests {
             provider_hosts: vec![],
             database_hosts: vec!["postgres".into()],
             token_hours: 1,
+            issuer: ISSUER.into(),
         })
         .await;
         assert!(refused.is_err());

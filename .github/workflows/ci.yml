@@ -7,7 +7,7 @@ on:
     branches: [main, master]
 
 # A newer push to the same PR makes the older run pointless: cancel it
-# (Actions minutes are the limit on a private repository).
+# Pushes to main queue instead, so no run there is cut short.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -99,6 +99,14 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Every operation in docs/openapi.yaml is called from console/src, or
+      # listed with a reason in console/api-coverage-exempt.txt; a stale
+      # exemption fails too. Python standard library only, so it runs first.
+      - name: Console API path coverage
+        run: |
+          python3 -I -m unittest discover -s scripts -p 'test_console_path_coverage.py' -v
+          python3 -I scripts/console_path_coverage.py --list
+
       - name: Install Rust (pinned)
         uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master (2026-10-01)
         with:
@@ -140,6 +148,28 @@ jobs:
       - name: Console browser checks
         working-directory: console
         run: npm run test:e2e
+
+      # The real sign-in round trip (ADR-018): kavach-api with console/dist
+      # embedded (built above) and the OIDC test double, both on 127.0.0.1,
+      # memory stores, no database. Nothing is stubbed; no network beyond
+      # loopback. Specs: console/e2e/*.roundtrip.ts.
+      - name: Build kavach-api and the OIDC test double
+        run: cargo build -p kavach-api --bin kavach-api --example oidc_double
+
+      - name: Console sign-in round trip
+        working-directory: console
+        run: npm run test:roundtrip
+
+      # The console against a real, seeded stack (playwright.real.config.ts):
+      # a dev bundle, the OIDC double, the mock provider, and kavach-api in
+      # full and --agent-only modes; every page and action, signed in as an
+      # admin, a change approver and a viewer. Loopback only, memory stores.
+      - name: Build the real-stack binaries
+        run: cargo build -p kavach-devkit --bin kavach-dev -p kavach-mock-provider --bin kavach-mock-provider
+
+      - name: Console on a real stack
+        working-directory: console
+        run: npm run test:real
 
       # Production npm dependency licence allowlist (PRD NFR-1). OFL-1.1 covers the
       # @fontsource fonts; MPL-2.0 covers build-time CSS tooling (lightningcss) that is
