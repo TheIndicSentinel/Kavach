@@ -113,11 +113,13 @@ pub async fn reconcile_closed_records(
     credentials: Credentials,
     StrictJson(body): StrictJson<Body>,
 ) -> Response {
-    if let Err(err) =
-        authorize_credentials(&state, &credentials, KavachAction::ReconcileClosedRecords)
-    {
-        return err.into_response();
-    }
+    let decision =
+        match authorize_credentials(&state, &credentials, KavachAction::ReconcileClosedRecords)
+            .await
+        {
+            Ok(decision) => decision,
+            Err(err) => return err.into_response(),
+        };
     let Some(dp) = state.dataplane() else {
         return refuse(StatusCode::NOT_FOUND, "agent surfaces are not configured");
     };
@@ -161,6 +163,7 @@ pub async fn reconcile_closed_records(
     if let Err(err) = state
         .admin()
         .append_audit(AuditInsert {
+            acting_as_superadmin: decision.acting_as_superadmin,
             action: "closed_records_reconciled".into(),
             resource_type: "reconciliation".into(),
             resource_id: body.system.clone(),

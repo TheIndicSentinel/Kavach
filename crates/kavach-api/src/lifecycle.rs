@@ -27,7 +27,7 @@ pub async fn list_audit_log(
     credentials: Credentials,
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditEntry>>, ApiError> {
-    authorize_credentials(&state, &credentials, KavachAction::ReadAudit)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadAudit).await?;
     let limit = query.limit.clamp(1, 200);
     let entries = state
         .admin()

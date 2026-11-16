@@ -98,9 +98,10 @@ impl PostgresRoleStore {
         &self,
         tenant_id: &str,
         issuer: &str,
-        subject: &str,
+        subject: Option<&str>,
         groups: &[String],
     ) -> Result<BTreeSet<Role>, RoleStoreError> {
+        // A NULL subject matches no person binding.
         let rows: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT role FROM role_bindings \
              WHERE tenant_id = $1 AND issuer = $2 AND ended_at IS NULL \
@@ -239,7 +240,7 @@ impl PostgresRoleStore {
                 "INSERT INTO admin_audit_log \
                     (action, resource_type, resource_id, actor_principal, approver_principal, \
                      payload, acting_as_superadmin) \
-                 VALUES ($1, $2, $3, $4, $5, $6, TRUE)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
             )
             .bind(&audit.action)
             .bind(&audit.resource_type)
@@ -247,6 +248,7 @@ impl PostgresRoleStore {
             .bind(&audit.actor_principal)
             .bind(&audit.approver_principal)
             .bind(audit.payload)
+            .bind(audit.acting_as_superadmin)
             .execute(&mut *tx)
             .await
             .map_err(|e| io(&e))?;

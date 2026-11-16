@@ -177,7 +177,7 @@ async fn health(
     State(state): State<Arc<AppState>>,
     credentials: Credentials,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    authorize_credentials(&state, &credentials, KavachAction::ReadHealth)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadHealth).await?;
     Ok(Json(serde_json::json!({ "status": "ok" })))
 }
 
@@ -185,7 +185,7 @@ async fn metrics(
     State(state): State<Arc<AppState>>,
     credentials: Credentials,
 ) -> Result<impl IntoResponse, ApiError> {
-    authorize_credentials(&state, &credentials, KavachAction::ReadMetrics)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadMetrics).await?;
     let body = state
         .metrics()
         .gather_text()
@@ -218,7 +218,7 @@ async fn evaluate(
             chrono::Utc::now().timestamp(),
         )?;
     }
-    authorize_credentials(state.as_ref(), &credentials, KavachAction::Evaluate)?;
+    authorize_credentials(state.as_ref(), &credentials, KavachAction::Evaluate).await?;
     if crate::strict_json::uses_raw_value_key(&body) {
         return Err(ApiError::BadRequest(crate::strict_json::refusal_message()));
     }

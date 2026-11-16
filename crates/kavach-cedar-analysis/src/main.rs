@@ -1,6 +1,7 @@
 //! Formal analysis of the Kavach agent policies (ADR-003 §6, PRD success
-//! criteria). CI-only: requires the cvc5 1.3.1 solver at `$CVC5` and is never
-//! linked into shipped binaries.
+//! criteria) and of the operator role policies (ADR-019 §2). CI-only:
+//! requires the cvc5 1.3.1 solver at `$CVC5` and is never linked into
+//! shipped binaries.
 //!
 //! Each property is stated as a policy that permits exactly the forbidden
 //! requests. The property holds when no request can be allowed by both the
@@ -16,6 +17,7 @@ use cedar_policy::{PolicySet, Schema};
 use cedar_policy_symcc::{
     solver::LocalSolver, CedarSymCompiler, CompiledPolicy, CompiledPolicySet,
 };
+use kavach_auth::{API_POLICIES, API_SCHEMA};
 use kavach_authz::{AGENT_POLICIES, AGENT_SCHEMA};
 
 /// (name, policy permitting exactly the requests the property forbids).
@@ -166,6 +168,81 @@ const SANITY_VARIANTS: [(&str, &str, &str); 9] = [
     ),
 ];
 
+/// The four role-change actions, as a Cedar action list.
+const ROLE_CHANGES: &str = r#"[Kavach::Action::"propose_grant_role", Kavach::Action::"approve_grant_role", Kavach::Action::"propose_revoke_role", Kavach::Action::"approve_revoke_role"]"#;
+
+/// Operator policy properties (ADR-019 §2): (name, policy permitting exactly
+/// the forbidden requests). `{ROLE_CHANGES}` is replaced before parsing.
+const OPERATOR_PROPERTIES: [(&str, &str); 4] = [
+    (
+        "only superadmin may propose or approve a grant or revoke of superadmin",
+        r#"permit (principal, action in {ROLE_CHANGES}, resource)
+           when { context.role == "superadmin" }
+           unless { principal in Kavach::Role::"superadmin" };"#,
+    ),
+    (
+        "only superadmin and user_admin may change a role binding; no alias group may",
+        r#"permit (principal, action in {ROLE_CHANGES}, resource)
+           unless { principal in Kavach::Role::"superadmin"
+                    || principal in Kavach::Role::"user_admin" };"#,
+    ),
+    (
+        "only superadmin, user_admin and auditor may read the principals or the access review",
+        r#"permit (principal, action in [Kavach::Action::"read_principals", Kavach::Action::"read_access_review"], resource)
+           unless { principal in Kavach::Role::"superadmin"
+                    || principal in Kavach::Role::"user_admin"
+                    || principal in Kavach::Role::"auditor" };"#,
+    ),
+    (
+        "viewer and auditor are allowed no change, approval, evaluation, agent stop or dev clock",
+        r#"permit (principal, action in [
+             Kavach::Action::"evaluate", Kavach::Action::"stop_agent", Kavach::Action::"set_dev_clock",
+             Kavach::Action::"propose_activate_pack", Kavach::Action::"approve_activate_pack",
+             Kavach::Action::"propose_rollback_pack", Kavach::Action::"approve_rollback_pack",
+             Kavach::Action::"propose_update_model", Kavach::Action::"approve_update_model",
+             Kavach::Action::"propose_activate_model", Kavach::Action::"approve_activate_model",
+             Kavach::Action::"propose_update_retention", Kavach::Action::"approve_update_retention",
+             Kavach::Action::"propose_erase_evidence", Kavach::Action::"approve_erase_evidence",
+             Kavach::Action::"propose_apply_retention", Kavach::Action::"approve_apply_retention",
+             Kavach::Action::"propose_reinstate_agent", Kavach::Action::"approve_reinstate_agent",
+             Kavach::Action::"propose_grant_role", Kavach::Action::"approve_grant_role",
+             Kavach::Action::"propose_revoke_role", Kavach::Action::"approve_revoke_role"], resource)
+           when { principal in Kavach::Role::"viewer" || principal in Kavach::Role::"auditor" }
+           unless { principal in Kavach::Role::"superadmin"
+                    || principal in Kavach::Role::"user_admin"
+                    || principal in Kavach::Role::"policy_admin"
+                    || principal in Kavach::Role::"approver"
+                    || principal in Kavach::Role::"operator"
+                    || principal in Kavach::Group::"admins"
+                    || principal in Kavach::Group::"change-approvers"
+                    || principal in Kavach::Group::"operators" };"#,
+    ),
+];
+
+/// Weakened operator policies that must be caught.
+const OPERATOR_SANITY_VARIANTS: [(&str, &str, &str); 4] = [
+    (
+        "user_admin may change superadmin",
+        r#"when { context.role != "superadmin" };"#,
+        r"when { true };",
+    ),
+    (
+        "an alias group may change roles",
+        "  principal in Kavach::Role::\"user_admin\",\n  action in [\n    Kavach::Action::\"propose_grant_role\",",
+        "  principal in Kavach::Group::\"admins\",\n  action in [\n    Kavach::Action::\"propose_grant_role\",",
+    ),
+    (
+        "viewer may read the access review",
+        "    Kavach::Action::\"read_governance\"\n  ],",
+        "    Kavach::Action::\"read_governance\",\n    Kavach::Action::\"read_access_review\"\n  ],",
+    ),
+    (
+        "auditor may approve a pack activation",
+        "    Kavach::Action::\"read_evidence\",\n    Kavach::Action::\"read_principals\",",
+        "    Kavach::Action::\"read_evidence\",\n    Kavach::Action::\"approve_activate_pack\",\n    Kavach::Action::\"read_principals\",",
+    ),
+];
+
 type Compiler = CedarSymCompiler<LocalSolver>;
 
 async fn property_holds(
@@ -209,48 +286,91 @@ async fn never_errors(
     Ok(true)
 }
 
+/// One policy set to analyse: its schema, the shipped policies, the
+/// properties and the weakened variants that must be caught.
+struct Suite<'a> {
+    label: &'a str,
+    schema: &'a str,
+    policies: &'a str,
+    properties: Vec<(&'a str, String)>,
+    sanity: &'a [(&'a str, &'a str, &'a str)],
+}
+
 async fn run() -> Result<bool, String> {
-    let schema = Schema::from_cedarschema_str(AGENT_SCHEMA)
-        .map_err(|e| e.to_string())?
-        .0;
-    let shipped = PolicySet::from_str(AGENT_POLICIES).map_err(|e| e.to_string())?;
     let solver = LocalSolver::cvc5().map_err(|e| format!("cvc5 (set $CVC5): {e}"))?;
     let mut compiler = CedarSymCompiler::new(solver).map_err(|e| e.to_string())?;
+    let suites = [
+        Suite {
+            label: "agent",
+            schema: AGENT_SCHEMA,
+            policies: AGENT_POLICIES,
+            properties: PROPERTIES
+                .iter()
+                .map(|(name, text)| (*name, (*text).to_string()))
+                .collect(),
+            sanity: &SANITY_VARIANTS,
+        },
+        Suite {
+            label: "operator",
+            schema: API_SCHEMA,
+            policies: API_POLICIES,
+            properties: OPERATOR_PROPERTIES
+                .iter()
+                .map(|(name, text)| (*name, text.replace("{ROLE_CHANGES}", ROLE_CHANGES)))
+                .collect(),
+            sanity: &OPERATOR_SANITY_VARIANTS,
+        },
+    ];
+    let mut ok = true;
+    for suite in &suites {
+        println!("-- {} policies", suite.label);
+        ok &= analyse(&mut compiler, suite).await?;
+    }
+    Ok(ok)
+}
+
+async fn analyse(compiler: &mut Compiler, suite: &Suite<'_>) -> Result<bool, String> {
+    let schema = Schema::from_cedarschema_str(suite.schema)
+        .map_err(|e| e.to_string())?
+        .0;
+    let shipped = PolicySet::from_str(suite.policies).map_err(|e| e.to_string())?;
     let mut ok = true;
 
-    let bad: Vec<(&str, PolicySet)> = PROPERTIES
+    let bad: Vec<(&str, PolicySet)> = suite
+        .properties
         .iter()
         .map(|(name, text)| {
             PolicySet::from_str(text)
                 .map(|p| (*name, p))
-                .map_err(|e| e.to_string())
+                .map_err(|e| format!("{name}: {e}"))
         })
         .collect::<Result<_, String>>()?;
 
     for (name, forbidden) in &bad {
-        let holds = property_holds(&mut compiler, &schema, &shipped, forbidden).await?;
+        let holds = property_holds(compiler, &schema, &shipped, forbidden).await?;
         println!("{} {name}", if holds { "PROVEN  " } else { "VIOLATED" });
         ok &= holds;
     }
 
-    let no_errors = never_errors(&mut compiler, &schema, &shipped).await?;
+    let no_errors = never_errors(compiler, &schema, &shipped).await?;
     println!(
         "{} no shipped policy can raise an evaluation error",
         if no_errors { "PROVEN  " } else { "VIOLATED" }
     );
     ok &= no_errors;
 
-    for (label, anchor, replacement) in SANITY_VARIANTS {
-        if !AGENT_POLICIES.contains(anchor) {
-            println!("SANITY  anchor for '{label}' not found; update SANITY_VARIANTS");
+    for (label, anchor, replacement) in suite.sanity {
+        // Exactly once, so the variant weakens the policy it names.
+        if suite.policies.matches(anchor).count() != 1 {
+            println!("SANITY  anchor for '{label}' is not found exactly once; update the variants");
             ok = false;
             continue;
         }
-        let weakened = PolicySet::from_str(&AGENT_POLICIES.replacen(anchor, replacement, 1))
-            .map_err(|e| e.to_string())?;
+        let weakened = PolicySet::from_str(&suite.policies.replacen(anchor, replacement, 1))
+            .map_err(|e| format!("{label}: {e}"))?;
         let mut caught = false;
         for (_, forbidden) in &bad {
-            caught |= !property_holds(&mut compiler, &schema, &weakened, forbidden).await?;
+            caught |= !property_holds(compiler, &schema, &weakened, forbidden).await?;
         }
         println!(
             "{} weakened variant detected: {label}",
@@ -265,16 +385,44 @@ async fn run() -> Result<bool, String> {
 async fn main() -> ExitCode {
     match run().await {
         Ok(true) => {
-            println!("all agent policy properties proven");
+            println!("all agent and operator policy properties proven");
             ExitCode::SUCCESS
         }
         Ok(false) => {
-            eprintln!("agent policy analysis FAILED");
+            eprintln!("policy analysis FAILED");
             ExitCode::FAILURE
         }
         Err(e) => {
-            eprintln!("agent policy analysis error: {e}");
+            eprintln!("policy analysis error: {e}");
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Needs no solver, so it also runs outside the CI analysis job.
+    #[test]
+    fn every_sanity_anchor_appears_exactly_once_and_the_variant_parses() {
+        for (policies, variants) in [
+            (AGENT_POLICIES, &SANITY_VARIANTS[..]),
+            (API_POLICIES, &OPERATOR_SANITY_VARIANTS[..]),
+        ] {
+            for (label, anchor, replacement) in variants {
+                assert_eq!(policies.matches(anchor).count(), 1, "anchor for '{label}'");
+                PolicySet::from_str(&policies.replacen(anchor, replacement, 1))
+                    .unwrap_or_else(|e| panic!("'{label}' does not parse: {e}"));
+            }
+        }
+    }
+
+    #[test]
+    fn every_operator_property_parses() {
+        for (name, text) in OPERATOR_PROPERTIES {
+            PolicySet::from_str(&text.replace("{ROLE_CHANGES}", ROLE_CHANGES))
+                .unwrap_or_else(|e| panic!("'{name}' does not parse: {e}"));
         }
     }
 }

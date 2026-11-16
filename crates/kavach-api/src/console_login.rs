@@ -742,6 +742,7 @@ impl ConsoleLogin {
         let audited = state
             .admin()
             .append_audit(kavach_storage::AuditInsert {
+                acting_as_superadmin: false,
                 action: "console_login".into(),
                 resource_type: "console_session".into(),
                 resource_id: session.audit_ref.clone(),
@@ -980,6 +981,7 @@ impl ConsoleLogin {
         let audited = state
             .admin()
             .append_audit(kavach_storage::AuditInsert {
+                acting_as_superadmin: false,
                 action: "console_logout".into(),
                 resource_type: "console_session".into(),
                 resource_id: session.audit_ref.clone(),

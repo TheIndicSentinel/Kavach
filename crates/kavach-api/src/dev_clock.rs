@@ -158,9 +158,11 @@ pub async fn set_dev_clock(
             "no fixed development clock: start the stack with `kavach dev up --clock`",
         );
     };
-    if let Err(e) = authorize_credentials(&state, &credentials, KavachAction::SetDevClock) {
-        return e.into_response();
-    }
+    let decision =
+        match authorize_credentials(&state, &credentials, KavachAction::SetDevClock).await {
+            Ok(decision) => decision,
+            Err(e) => return e.into_response(),
+        };
     let Ok(StrictJson(body)) = body else {
         return refuse(
             StatusCode::BAD_REQUEST,
@@ -181,6 +183,7 @@ pub async fn set_dev_clock(
     let audited = state
         .admin()
         .append_audit(AuditInsert {
+            acting_as_superadmin: decision.acting_as_superadmin,
             action: "dev_clock_set".into(),
             resource_type: "dev_clock".into(),
             resource_id: "dataplane".into(),

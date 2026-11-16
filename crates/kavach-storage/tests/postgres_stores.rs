@@ -172,6 +172,7 @@ async fn runtime_pointers_and_audit_round_trip() {
     for action in ["first", "second", "third"] {
         admin
             .append_audit(AuditInsert {
+                acting_as_superadmin: false,
                 action: action.into(),
                 resource_type: "policy_pack".into(),
                 resource_id: "p".into(),
@@ -194,6 +195,7 @@ async fn an_audit_entry_with_a_key_is_written_once() {
     let Some(pool) = pool().await else { return };
     let admin = pool.admin_store();
     let entry = |n: &str| AuditInsert {
+        acting_as_superadmin: false,
         action: "mandates_revoked_by_event".into(),
         resource_type: "loan".into(),
         resource_id: "lms:loan/L-1".into(),

@@ -724,9 +724,93 @@ async fn the_superadmin_bootstrap_applies_once_at_startup() {
     assert_eq!(bindings.len(), 2, "a second bootstrap writes nothing");
     assert!(state
         .roles()
-        .roles_for("bank-a", iss, "carol", &[])
+        .roles_for("bank-a", iss, Some("carol"), &[])
         .await
         .unwrap()
         .is_empty());
     assert_eq!(state.tenant_id(), "bank-a");
+}
+
+// ---- ADR-019: bindings decide per tenant, and an unreadable store refuses ----
+
+fn person(iss: &str, sub: &str) -> kavach_api::auth::AuthenticatedPrincipal {
+    kavach_api::auth::AuthenticatedPrincipal {
+        id: sub.into(),
+        groups: vec![],
+        source: kavach_api::auth::PrincipalSource::Jwt,
+        issuer: Some(iss.into()),
+        subject: Some(sub.into()),
+    }
+}
+
+/// Two tenants share one database: a binding in one is nothing in the other.
+#[tokio::test(flavor = "multi_thread")]
+async fn role_bindings_apply_only_in_their_own_tenant() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let root = registry();
+    let iss = "https://idp.example";
+    let mut bank_a = config(&root, &runtime, "v0.yaml", false);
+    bank_a.migration_database_url = Some(owner);
+    bank_a.roles.tenant_id = "bank-a".into();
+    bank_a.roles.bootstrap_superadmins = people(iss, ["alice", "bob"]);
+    let mut bank_b = bank_a.clone();
+    bank_b.roles.tenant_id = "bank-b".into();
+    bank_b.roles.bootstrap_superadmins = Vec::new();
+    let a = start_with(&bank_a).await.expect("bank-a");
+    let b = start_with(&bank_b).await.expect("bank-b");
+
+    let bound = |state: Arc<AppState>, who| async move {
+        kavach_api::auth::bound_roles(&state, &who).await.unwrap()
+    };
+    assert_eq!(
+        bound(a.clone(), person(iss, "alice")).await,
+        vec!["superadmin"]
+    );
+    assert!(bound(b, person(iss, "alice")).await.is_empty());
+    assert!(
+        bound(a, person("https://other.example", "alice"))
+            .await
+            .is_empty(),
+        "the same subject at another issuer is another person"
+    );
+}
+
+/// ADR-019 §3: if the bindings cannot be read, a request the entities file
+/// alone would allow is refused with 503, not decided on groups alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_unreadable_bindings_table_refuses_the_request_with_503() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let root = registry();
+    let mut config = config(&root, &runtime, "v0.yaml", false);
+    config.migration_database_url = Some(owner.clone());
+    config.access_control = AccessControlKind::Cedar {
+        policy_path: repo("crates/kavach-auth/policies/kavach.cedar"),
+        entities_path: repo("crates/kavach-auth/policies/entities.example.json"),
+    };
+    let state = start_with(&config).await.expect("start");
+    let runtime_status = || async {
+        router(state.clone())
+            .oneshot(
+                Request::builder()
+                    .uri("/v1/runtime")
+                    .header("x-kavach-principal", "admin-1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+    };
+    assert_eq!(runtime_status().await, StatusCode::OK);
+
+    let pool = sqlx::PgPool::connect(&owner).await.unwrap();
+    sqlx::query("REVOKE SELECT ON role_bindings FROM kavach_runtime")
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(runtime_status().await, StatusCode::SERVICE_UNAVAILABLE);
 }

@@ -36,6 +36,7 @@ pub fn key(stored: &StoredRevocation) -> String {
 #[must_use]
 pub fn entry(stored: &StoredRevocation) -> AuditInsert {
     AuditInsert {
+        acting_as_superadmin: false,
         action: "mandates_revoked_by_event".into(),
         resource_type: "loan".into(),
         resource_id: stored.record_ref.clone(),

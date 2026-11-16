@@ -56,7 +56,11 @@ pub struct OidcConfig {
 /// Identity established from a verified token.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedToken {
+    /// The configured principal claim: the display id the audit records.
     pub principal: String,
+    /// The `sub` claim, which role bindings name (ADR-019); `None` when the
+    /// token has none, so only group bindings can apply.
+    pub subject: Option<String>,
     pub groups: Vec<String>,
 }
 
@@ -369,6 +373,14 @@ impl OidcVerifier {
                 )
             })?
             .to_string();
+        // A `sub` no binding could name is treated as absent rather than
+        // rejected: tokens accepted before ADR-019 stay accepted, and the
+        // only effect is that no person binding applies.
+        let subject = claims
+            .get("sub")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty() && s.len() <= MAX_ID_LEN)
+            .map(str::to_string);
         let groups = match claims.get(&self.config.groups_claim) {
             None | Some(Value::Null) => vec![],
             Some(Value::Array(items)) => items
@@ -389,7 +401,11 @@ impl OidcVerifier {
                 ))
             }
         };
-        Ok(VerifiedToken { principal, groups })
+        Ok(VerifiedToken {
+            principal,
+            subject,
+            groups,
+        })
     }
 }
 
@@ -606,6 +622,7 @@ mod tests {
             verifier.verify(&token(1, "good")).unwrap(),
             VerifiedToken {
                 principal: "alice".into(),
+                subject: Some("alice".into()),
                 groups: vec!["ops".into()]
             }
         );

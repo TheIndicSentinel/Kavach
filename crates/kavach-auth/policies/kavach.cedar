@@ -270,3 +270,155 @@ permit (
   action == Kavach::Action::"approve_reinstate_agent",
   resource == Kavach::System::"api"
 );
+
+// Operator roles (ADR-019 §2). A role is a Kavach::Role parent of the user,
+// and only a role binding in Kavach creates one: an IdP group with a role's
+// name is a Kavach::Group and gets nothing from these policies. The four
+// groups above are kept unchanged as aliases.
+//
+// The `superadmin-` @id prefix is reserved for superadmin: an audit row is
+// flagged acting_as_superadmin when every policy that allowed the request
+// has that prefix. Maker-checker (a different approver) is checked before
+// Cedar for every role, superadmin included.
+
+@id("superadmin-may-do-everything")
+permit (
+  principal in Kavach::Role::"superadmin",
+  action,
+  resource == Kavach::System::"api"
+);
+
+@id("role-user-admin-may-read")
+permit (
+  principal in Kavach::Role::"user_admin",
+  action in [
+    Kavach::Action::"read_health",
+    Kavach::Action::"read_change_requests",
+    Kavach::Action::"read_principals",
+    Kavach::Action::"read_access_review"
+  ],
+  resource == Kavach::System::"api"
+);
+
+// Only a superadmin may grant or revoke superadmin.
+@id("role-user-admin-may-change-roles-except-superadmin")
+permit (
+  principal in Kavach::Role::"user_admin",
+  action in [
+    Kavach::Action::"propose_grant_role",
+    Kavach::Action::"approve_grant_role",
+    Kavach::Action::"propose_revoke_role",
+    Kavach::Action::"approve_revoke_role"
+  ],
+  resource == Kavach::System::"api"
+)
+when { context.role != "superadmin" };
+
+@id("role-policy-admin-may-read")
+permit (
+  principal in Kavach::Role::"policy_admin",
+  action in [
+    Kavach::Action::"read_health",
+    Kavach::Action::"read_governance",
+    Kavach::Action::"read_incidents",
+    Kavach::Action::"read_batch_jobs",
+    Kavach::Action::"read_agent_state",
+    Kavach::Action::"read_retention",
+    Kavach::Action::"read_tombstones",
+    Kavach::Action::"read_change_requests"
+  ],
+  resource == Kavach::System::"api"
+);
+
+@id("role-policy-admin-may-propose-governance-changes")
+permit (
+  principal in Kavach::Role::"policy_admin",
+  action in [
+    Kavach::Action::"propose_activate_pack",
+    Kavach::Action::"propose_rollback_pack",
+    Kavach::Action::"propose_update_model",
+    Kavach::Action::"propose_activate_model",
+    Kavach::Action::"propose_update_retention",
+    Kavach::Action::"propose_erase_evidence",
+    Kavach::Action::"propose_apply_retention",
+    Kavach::Action::"propose_reinstate_agent"
+  ],
+  resource == Kavach::System::"api"
+);
+
+@id("role-approver-may-read")
+permit (
+  principal in Kavach::Role::"approver",
+  action in [
+    Kavach::Action::"read_health",
+    Kavach::Action::"read_governance",
+    Kavach::Action::"read_retention",
+    Kavach::Action::"read_tombstones",
+    Kavach::Action::"read_change_requests"
+  ],
+  resource == Kavach::System::"api"
+);
+
+@id("role-approver-may-approve-governance-changes")
+permit (
+  principal in Kavach::Role::"approver",
+  action in [
+    Kavach::Action::"approve_activate_pack",
+    Kavach::Action::"approve_rollback_pack",
+    Kavach::Action::"approve_update_model",
+    Kavach::Action::"approve_activate_model",
+    Kavach::Action::"approve_update_retention",
+    Kavach::Action::"approve_erase_evidence",
+    Kavach::Action::"approve_apply_retention",
+    Kavach::Action::"approve_reinstate_agent"
+  ],
+  resource == Kavach::System::"api"
+);
+
+@id("role-operator-may-run-the-system")
+permit (
+  principal in Kavach::Role::"operator",
+  action in [
+    Kavach::Action::"read_health",
+    Kavach::Action::"read_governance",
+    Kavach::Action::"read_metrics",
+    Kavach::Action::"evaluate",
+    Kavach::Action::"read_incidents",
+    Kavach::Action::"read_batch_jobs",
+    Kavach::Action::"read_agent_state",
+    Kavach::Action::"stop_agent",
+    Kavach::Action::"reconcile_closed_records"
+  ],
+  resource == Kavach::System::"api"
+);
+
+@id("role-auditor-may-read-everything")
+permit (
+  principal in Kavach::Role::"auditor",
+  action in [
+    Kavach::Action::"read_health",
+    Kavach::Action::"read_governance",
+    Kavach::Action::"read_metrics",
+    Kavach::Action::"read_incidents",
+    Kavach::Action::"read_batch_jobs",
+    Kavach::Action::"read_agent_state",
+    Kavach::Action::"read_retention",
+    Kavach::Action::"read_tombstones",
+    Kavach::Action::"read_change_requests",
+    Kavach::Action::"read_audit",
+    Kavach::Action::"read_evidence",
+    Kavach::Action::"read_principals",
+    Kavach::Action::"read_access_review"
+  ],
+  resource == Kavach::System::"api"
+);
+
+@id("role-viewer-may-read-governance-and-health")
+permit (
+  principal in Kavach::Role::"viewer",
+  action in [
+    Kavach::Action::"read_health",
+    Kavach::Action::"read_governance"
+  ],
+  resource == Kavach::System::"api"
+);

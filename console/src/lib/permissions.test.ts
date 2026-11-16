@@ -15,27 +15,56 @@ import {
   type CedarAction,
 } from "./permissions";
 
-const CEDAR = new URL("../../../crates/kavach-auth/policies/kavach.cedar", import.meta.url);
+const CEDAR = new URL(
+  "../../../crates/kavach-auth/policies/kavach.cedar",
+  import.meta.url,
+);
 
 type Permit = { id: string; group: string; action: string };
 
-/**
- * Every policy in the file, read as `permit (principal in Group, action ==
- * Action, resource == System::"api")`. Anything the table cannot model (a
- * forbid, a condition, a principal that is not a group, a set of actions)
- * fails here rather than being skipped.
- */
-function readPolicies(source: string): Permit[] {
-  const code = source.replace(/\/\/[^\n]*/g, "");
-  const statements = code
+/** The seven ADR-019 roles; their permits are not group hints. */
+const ROLES = [
+  "superadmin",
+  "user_admin",
+  "policy_admin",
+  "approver",
+  "operator",
+  "auditor",
+  "viewer",
+] as const;
+
+/** A `permit` whose principal is one of the seven roles (ADR-019 §2). */
+const ROLE_PERMIT = new RegExp(
+  `^@id\\("([^"]+)"\\)\\s*permit\\s*\\(\\s*principal\\s+in\\s+Kavach::Role::"(${ROLES.join("|")})"\\s*,`,
+);
+
+function statementsOf(source: string): string[] {
+  return source
+    .replace(/\/\/[^\n]*/g, "")
     .split(";")
     .map((statement) => statement.trim())
     .filter(Boolean);
+}
+
+/**
+ * Every group policy in the file, read as `permit (principal in Group,
+ * action == Action, resource == System::"api")`. Role permits (ADR-019) are
+ * left to the role-based gating; anything else the table cannot model (a
+ * forbid, a condition, a principal that is neither a group nor a role, a
+ * set of actions) fails here rather than being skipped.
+ */
+function readPolicies(source: string): Permit[] {
+  const statements = statementsOf(source).filter(
+    (statement) => !ROLE_PERMIT.test(statement),
+  );
   return statements.map((statement) => {
     const match = statement.match(
       /^@id\("([^"]+)"\)\s*permit\s*\(\s*principal\s+in\s+Kavach::Group::"([^"]+)"\s*,\s*action\s*==\s*Kavach::Action::"([^"]+)"\s*,\s*resource\s*==\s*Kavach::System::"api"\s*\)$/,
     );
-    if (!match) throw new Error(`the role-hint table cannot model this policy:\n${statement}`);
+    if (!match)
+      throw new Error(
+        `the role-hint table cannot model this policy:\n${statement}`,
+      );
     return { id: match[1], group: match[2], action: match[3] };
   });
 }
@@ -77,6 +106,25 @@ describe("the role-hint table matches kavach.cedar", () => {
     expect(COVERED_ACTIONS.filter((action) => !named.has(action))).toEqual([]);
   });
 
+  it("leaves out only permits for the seven roles, and every role has one", () => {
+    const rolePermits = statementsOf(readFileSync(CEDAR, "utf8"))
+      .map((statement) => statement.match(ROLE_PERMIT))
+      .filter((match): match is RegExpMatchArray => match !== null);
+    expect(new Set(rolePermits.map((match) => match[2]))).toEqual(
+      new Set(ROLES),
+    );
+    expect(() =>
+      readPolicies(
+        '@id("x") forbid (principal in Kavach::Role::"viewer", action, resource == Kavach::System::"api");',
+      ),
+    ).toThrow(/cannot model/);
+    expect(() =>
+      readPolicies(
+        '@id("x") permit (principal in Kavach::Role::"admins", action, resource == Kavach::System::"api");',
+      ),
+    ).toThrow(/cannot model/);
+  });
+
   it("refuses a policy it cannot model", () => {
     expect(() =>
       readPolicies(
@@ -90,7 +138,8 @@ describe("mayProbably and roleHint", () => {
   const viewer = (groups: string[] | null) => ({ principal: "p-1", groups });
 
   it("allows everything when the groups are unknown", () => {
-    for (const action of COVERED_ACTIONS) expect(mayProbably(UNKNOWN_VIEWER, action)).toBe(true);
+    for (const action of COVERED_ACTIONS)
+      expect(mayProbably(UNKNOWN_VIEWER, action)).toBe(true);
     expect(roleHint(viewer(null), "stop_agent", "stop agents")).toBeNull();
   });
 
@@ -113,6 +162,8 @@ describe("mayProbably and roleHint", () => {
     expect(roleHint(viewer(["viewers"]), "stop_agent", "stop agents")).toBe(
       "Your groups (viewers) don't include one that may stop agents. The server decides; ask an admin if you need this.",
     );
-    expect(roleHint(viewer([]), "evaluate", "run evaluate")).toMatch(/^Your groups \(none\)/);
+    expect(roleHint(viewer([]), "evaluate", "run evaluate")).toMatch(
+      /^Your groups \(none\)/,
+    );
   });
 });

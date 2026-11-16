@@ -1,7 +1,17 @@
 namespace Kavach {
-  entity User in [Group];
+  // A role (ADR-019) is its own entity type, never a Group, so an IdP group
+  // named like a role gets nothing from the name. Only a role binding makes
+  // a Role a parent of the User Cedar evaluates.
+  entity User in [Group, Role];
   entity Group;
+  entity Role;
   entity System;
+
+  // The role being granted or revoked, so a policy can keep `superadmin`
+  // changes to superadmins (ADR-019 §2).
+  type RoleChange = {
+    role: String,
+  };
 
   action evaluate appliesTo {
     principal: [User],
@@ -156,5 +166,40 @@ namespace Kavach {
   action approve_reinstate_agent appliesTo {
     principal: [User],
     resource: [System],
+  };
+
+  // Operator roles (ADR-019).
+  action read_principals appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action read_access_review appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action propose_grant_role appliesTo {
+    principal: [User],
+    resource: [System],
+    context: RoleChange,
+  };
+
+  action approve_grant_role appliesTo {
+    principal: [User],
+    resource: [System],
+    context: RoleChange,
+  };
+
+  action propose_revoke_role appliesTo {
+    principal: [User],
+    resource: [System],
+    context: RoleChange,
+  };
+
+  action approve_revoke_role appliesTo {
+    principal: [User],
+    resource: [System],
+    context: RoleChange,
   };
 }

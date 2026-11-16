@@ -57,14 +57,14 @@ async fn roles_come_from_person_and_group_bindings_in_the_tenant_only() {
     bind(&pool, "rb_4", "t1", "operator", "principal", "bob").await;
 
     let roles = store
-        .roles_for("t1", ISS, "alice", &groups(&["audit-team", "other"]))
+        .roles_for("t1", ISS, Some("alice"), &groups(&["audit-team", "other"]))
         .await;
     let roles = roles_of(roles);
     assert_eq!(roles, vec![Role::Approver, Role::Auditor]);
 
     // Same subject under another issuer: nothing.
     let other = RoleBackend::Postgres(pool.role_store())
-        .roles_for("t1", "https://other.example", "alice", &[])
+        .roles_for("t1", "https://other.example", Some("alice"), &[])
         .await
         .expect("lookup");
     assert!(other.is_empty());
@@ -72,7 +72,7 @@ async fn roles_come_from_person_and_group_bindings_in_the_tenant_only() {
     // Tenant t2's superadmin binding does not reach t1, and vice versa.
     let t2 = roles_of(
         store
-            .roles_for("t2", ISS, "alice", &groups(&["audit-team"]))
+            .roles_for("t2", ISS, Some("alice"), &groups(&["audit-team"]))
             .await,
     );
     assert_eq!(t2, vec![Role::Superadmin]);
@@ -101,7 +101,7 @@ async fn an_ended_binding_gives_no_role_and_a_second_active_one_is_refused() {
         .execute(&pool.pool)
         .await
         .expect("end binding");
-    assert!(roles_of(store.roles_for("t1", ISS, "alice", &[]).await).is_empty());
+    assert!(roles_of(store.roles_for("t1", ISS, Some("alice"), &[]).await).is_empty());
     // Once ended, the same role can be bound again.
     bind(&pool, "rb_3", "t1", "approver", "principal", "alice").await;
     let all = store.list_bindings("t1", true).await.expect("list");
@@ -155,7 +155,7 @@ async fn an_unknown_stored_role_fails_the_lookup_closed() {
         .expect("drop check as owner");
     bind(&pool, "rb_1", "t1", "root", "principal", "alice").await;
     let err = RoleBackend::Postgres(pool.role_store())
-        .roles_for("t1", ISS, "alice", &[])
+        .roles_for("t1", ISS, Some("alice"), &[])
         .await
         .expect_err("unknown role is an error, not an empty set");
     assert!(err.to_string().contains("unknown"), "{err}");
@@ -194,7 +194,7 @@ async fn the_bootstrap_writes_two_flagged_superadmins_once() {
         store.list_bindings("t1", true).await.expect("list").len(),
         2
     );
-    assert!(roles_of(store.roles_for("t1", ISS, "carol", &[]).await).is_empty());
+    assert!(roles_of(store.roles_for("t1", ISS, Some("carol"), &[]).await).is_empty());
 
     let audit = pool.admin_store().list_audit(50).await.expect("audit");
     let rows: Vec<_> = audit

@@ -25,6 +25,9 @@ pub struct AuditEntry {
 
 #[derive(Debug, Clone)]
 pub struct AuditInsert {
+    /// Allowed only by a superadmin policy, or the superadmin bootstrap
+    /// (ADR-019 §7); stored as the entry's `acting_as_superadmin`.
+    pub acting_as_superadmin: bool,
     pub action: String,
     pub resource_type: String,
     pub resource_id: String,
@@ -121,16 +124,6 @@ fn poisoned<T>(_: T) -> AdminStoreError {
 
 impl MemoryAdminStore {
     pub fn append_audit(&self, insert: AuditInsert) -> Result<AuditEntry, AdminStoreError> {
-        self.append_audit_flagged(insert, false)
-    }
-
-    /// [`Self::append_audit`], with the entry's `acting_as_superadmin` set
-    /// as given (ADR-019 §7).
-    pub fn append_audit_flagged(
-        &self,
-        insert: AuditInsert,
-        acting_as_superadmin: bool,
-    ) -> Result<AuditEntry, AdminStoreError> {
         let mut next_id = self
             .next_id
             .lock()
@@ -145,7 +138,7 @@ impl MemoryAdminStore {
             approver_principal: insert.approver_principal,
             payload: insert.payload,
             created_at: Utc::now(),
-            acting_as_superadmin,
+            acting_as_superadmin: insert.acting_as_superadmin,
         };
         self.audit
             .lock()

@@ -298,7 +298,9 @@ kavach-api ... --oidc-issuer https://idp.bank.example/realms/kavach \
 - Each entry is `<issuer>#<subject>`: the configured `--oidc-issuer`, then the person's OIDC `sub` (the subject may itself contain `#`). The two must be different people. One entry, three, a repeat, another issuer, or no operator OIDC stops the start with an error.
 - It writes only while the tenant has no active `superadmin` binding. The write is two bindings plus one audit row each (`bootstrap_superadmin`, flagged `acting_as_superadmin`), in one transaction. A later start with the setting still present writes nothing and logs a warning: remove the setting once it has run.
 - The log names nobody; the audit rows hold the subjects.
-- Roles take effect on requests once the role checks ship (ADR-019 step 2b); until then the groups in `--cedar-entities` and the token decide, as before.
+- Roles decide requests together with groups: a request is allowed if the person's roles or groups allow it. The `admins`, `change-approvers`, `operators` and `viewers` groups keep their permissions. Bindings are read on every request; if they cannot be read, the request is refused with 503 rather than decided on groups alone.
+- A person binding matches the token's `sub` under the configured `--oidc-issuer`. A token without `sub` gets only its group bindings. Certificate (mTLS) principals are never bound to a role.
+- A decision that only the `superadmin` role allows is recorded with `acting_as_superadmin` set on its audit row.
 
 *Recovery when every superadmin is gone* (for example both IdP accounts were deleted): this is a database-operator procedure, run as the owner role. End the dead bindings, then start once with `--bootstrap-superadmins` naming two current people:
 
