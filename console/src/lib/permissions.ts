@@ -6,7 +6,12 @@
 import type { ChangeKind } from "./api";
 
 /** The Cedar groups the policy file names. */
-export const CEDAR_GROUPS = ["viewers", "operators", "admins", "change-approvers"] as const;
+export const CEDAR_GROUPS = [
+  "viewers",
+  "operators",
+  "admins",
+  "change-approvers",
+] as const;
 
 export type CedarGroup = (typeof CEDAR_GROUPS)[number];
 
@@ -20,9 +25,23 @@ const CHANGE_KINDS_RECORD: Record<ChangeKind, true> = {
   apply_retention: true,
   activate_model: true,
   reinstate_agent: true,
+  grant_role: true,
+  revoke_role: true,
 };
 
 export const CHANGE_KINDS = Object.keys(CHANGE_KINDS_RECORD) as ChangeKind[];
+
+/**
+ * Role changes (ADR-019 §4). No group is permitted them; only the
+ * superadmin and user_admin roles are, which this group table does not
+ * model, so their controls always show and the server decides.
+ */
+const ROLE_CHANGE_KINDS: readonly ChangeKind[] = ["grant_role", "revoke_role"];
+
+/** The change kinds the group table covers. */
+const GROUP_CHANGE_KINDS = CHANGE_KINDS.filter(
+  (kind) => !ROLE_CHANGE_KINDS.includes(kind),
+);
 
 /** The Cedar actions behind the console's action controls. */
 export type CedarAction =
@@ -50,9 +69,9 @@ export const GROUP_ACTIONS: Record<CedarGroup, readonly CedarAction[]> = {
     "read_evidence",
     "reconcile_closed_records",
     "stop_agent",
-    ...CHANGE_KINDS.map(propose),
+    ...GROUP_CHANGE_KINDS.map(propose),
   ],
-  "change-approvers": CHANGE_KINDS.map(approve),
+  "change-approvers": GROUP_CHANGE_KINDS.map(approve),
 };
 
 /** Every Cedar action the table covers, whether or not a group holds it. */
@@ -61,8 +80,8 @@ export const COVERED_ACTIONS: readonly CedarAction[] = [
   "read_evidence",
   "reconcile_closed_records",
   "stop_agent",
-  ...CHANGE_KINDS.map(propose),
-  ...CHANGE_KINDS.map(approve),
+  ...GROUP_CHANGE_KINDS.map(propose),
+  ...GROUP_CHANGE_KINDS.map(approve),
 ];
 
 /**
@@ -89,12 +108,14 @@ function isGroup(name: string): name is CedarGroup {
 
 /**
  * Whether the viewer's groups probably allow `action`: true when the groups
- * are unknown. Probably, because the API also adds the memberships its
+ * are unknown or the table does not cover the action (role changes). Probably, because the API also adds the memberships its
  * entities file gives the principal, which the console cannot see.
  */
 export function mayProbably(viewer: Viewer, action: CedarAction): boolean {
-  if (viewer.groups === null) return true;
-  return viewer.groups.some((group) => isGroup(group) && GROUP_ACTIONS[group].includes(action));
+  if (viewer.groups === null || !COVERED_ACTIONS.includes(action)) return true;
+  return viewer.groups.some(
+    (group) => isGroup(group) && GROUP_ACTIONS[group].includes(action),
+  );
 }
 
 /**
@@ -102,14 +123,21 @@ export function mayProbably(viewer: Viewer, action: CedarAction): boolean {
  * lack, or null when the control shows. `what` finishes "may …", e.g.
  * "stop agents".
  */
-export function roleHint(viewer: Viewer, action: CedarAction, what: string): string | null {
+export function roleHint(
+  viewer: Viewer,
+  action: CedarAction,
+  what: string,
+): string | null {
   if (mayProbably(viewer, action)) return null;
   return deniedLine(viewer, what);
 }
 
 /** The hint wording, for a caller that has already decided the control is hidden. */
 export function deniedLine(viewer: Viewer, what: string): string {
-  const groups = viewer.groups && viewer.groups.length > 0 ? viewer.groups.join(", ") : "none";
+  const groups =
+    viewer.groups && viewer.groups.length > 0
+      ? viewer.groups.join(", ")
+      : "none";
   return `Your groups (${groups}) don't include one that may ${what}. The server decides; ask an admin if you need this.`;
 }
 

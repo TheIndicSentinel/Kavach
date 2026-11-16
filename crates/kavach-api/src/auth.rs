@@ -221,7 +221,7 @@ pub async fn authorize_credentials(
         return Ok(Decision::default());
     }
     let principal = resolve_credentials(state, credentials)?;
-    authorize_principal(state, &principal, action).await
+    authorize_principal(state, &principal, action, None).await
 }
 
 /// gRPC: token from `authorization` metadata, certificate from the TLS
@@ -241,7 +241,7 @@ pub async fn authorize_metadata(
         metadata(md, PRINCIPAL_HEADER),
         peer,
     )?;
-    authorize_principal(state, &principal, action).await
+    authorize_principal(state, &principal, action, None).await
 }
 
 /// Resolves and authorizes the caller, returning the principal. Change
@@ -251,8 +251,29 @@ pub async fn authorized_principal(
     credentials: &Credentials,
     action: KavachAction,
 ) -> Result<Authorized, ApiError> {
+    authorized_for(state, credentials, action, None).await
+}
+
+/// [`authorized_principal`] for one of the four role-change actions: Cedar
+/// decides with the role being granted or revoked in its context, so only a
+/// `superadmin` may propose or approve a `superadmin` change (ADR-019 §4).
+pub async fn authorized_role_change(
+    state: &AppState,
+    credentials: &Credentials,
+    action: KavachAction,
+    role: kavach_storage::Role,
+) -> Result<Authorized, ApiError> {
+    authorized_for(state, credentials, action, Some(role.as_str())).await
+}
+
+async fn authorized_for(
+    state: &AppState,
+    credentials: &Credentials,
+    action: KavachAction,
+    role_change: Option<&str>,
+) -> Result<Authorized, ApiError> {
     let principal = resolve_credentials(state, credentials)?;
-    let decision = authorize_principal(state, &principal, action).await?;
+    let decision = authorize_principal(state, &principal, action, role_change).await?;
     Ok(Authorized {
         principal,
         acting_as_superadmin: decision.acting_as_superadmin,
@@ -261,7 +282,7 @@ pub async fn authorized_principal(
 
 /// Where a principal's bindings live: `(issuer, subject)`, or `None` for a
 /// principal no binding can name (a certificate workload).
-fn binding_identity(principal: &AuthenticatedPrincipal) -> Option<(&str, Option<&str>)> {
+pub(crate) fn binding_identity(principal: &AuthenticatedPrincipal) -> Option<(&str, Option<&str>)> {
     match principal.source {
         PrincipalSource::Jwt => Some((
             principal.issuer.as_deref().unwrap_or_default(),
@@ -300,6 +321,7 @@ async fn authorize_principal(
     state: &AppState,
     principal: &AuthenticatedPrincipal,
     action: KavachAction,
+    role_change: Option<&str>,
 ) -> Result<Decision, ApiError> {
     let Some(auth) = state.access_control() else {
         return Ok(Decision::default());
@@ -312,7 +334,7 @@ async fn authorize_principal(
             groups: &principal.groups,
             roles: &roles,
             action,
-            role_change: None,
+            role_change,
         })
         .map_err(|e| ApiError::Internal(format!("cedar authorize: {e}")))?;
     if decision.allowed {

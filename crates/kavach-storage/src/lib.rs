@@ -42,8 +42,9 @@ pub use retention::{
     TombstoneReason, TombstoneRecord,
 };
 pub use roles::{
-    BindingSubject, BootstrapOutcome, MemoryRoleStore, PrincipalRecord, Role, RoleBackend,
-    RoleBinding, RoleStoreError, SubjectKind, BOOTSTRAP_ACTOR, BOOTSTRAP_AUDIT_ACTION,
+    binding_not_active_reason, duplicate_binding_reason, grant_refusal, last_admin_reason,
+    revoke_target, BindingSubject, BootstrapOutcome, MemoryRoleStore, PrincipalRecord, Role,
+    RoleBackend, RoleBinding, RoleStoreError, SubjectKind, BOOTSTRAP_ACTOR, BOOTSTRAP_AUDIT_ACTION,
     DISPLAY_NAME_MAX_CHARS, LAST_SEEN_GRANULARITY, ROLE_BINDING_RESOURCE,
 };
 pub use startup::{check_startup_pack, StartupPackCheck, StartupPackError};

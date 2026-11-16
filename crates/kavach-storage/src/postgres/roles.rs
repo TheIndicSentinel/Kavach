@@ -6,9 +6,9 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::roles::{
-    bootstrap_audit, check_bootstrap_subjects, new_binding, truncate_display_name, BindingSubject,
-    BootstrapOutcome, PrincipalRecord, Role, RoleBinding, RoleStoreError, SubjectKind,
-    LAST_SEEN_GRANULARITY,
+    binding_not_active_reason, bootstrap_audit, check_bootstrap_subjects, duplicate_binding_reason,
+    last_admin_reason, new_binding, truncate_display_name, BindingSubject, BootstrapOutcome,
+    PrincipalRecord, Role, RoleBinding, RoleStoreError, SubjectKind, LAST_SEEN_GRANULARITY,
 };
 
 #[derive(Clone)]
@@ -92,6 +92,122 @@ impl PostgresRoleStore {
         .execute(&mut **tx)
         .await
         .map(|_| ())
+    }
+
+    /// The approval's check of a grant: takes the tenant lock, then looks
+    /// for the same active binding.
+    pub(crate) async fn check_grant(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: &str,
+        role: Role,
+        subject: &BindingSubject,
+    ) -> Result<Option<String>, sqlx::Error> {
+        Self::lock_tenant(tx, tenant_id).await?;
+        let duplicate: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM role_bindings \
+             WHERE tenant_id = $1 AND role = $2 AND subject_kind = $3 AND issuer = $4 \
+               AND subject = $5 AND ended_at IS NULL)",
+        )
+        .bind(tenant_id)
+        .bind(role.as_str())
+        .bind(subject.kind.as_str())
+        .bind(&subject.issuer)
+        .bind(&subject.value)
+        .fetch_one(&mut **tx)
+        .await?;
+        Ok(duplicate.then(|| duplicate_binding_reason(role)))
+    }
+
+    /// The approval's check of a revoke: takes the tenant lock, so two
+    /// concurrent revokes of a role's last two person bindings are decided
+    /// one after the other and the second sees the first.
+    pub(crate) async fn check_end(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: &str,
+        binding_id: &str,
+    ) -> Result<Option<String>, sqlx::Error> {
+        Self::lock_tenant(tx, tenant_id).await?;
+        let target: Option<(String, String)> = sqlx::query_as(
+            "SELECT role, subject_kind FROM role_bindings \
+             WHERE id = $1 AND tenant_id = $2 AND ended_at IS NULL",
+        )
+        .bind(binding_id)
+        .bind(tenant_id)
+        .fetch_optional(&mut **tx)
+        .await?;
+        let Some((role, kind)) = target else {
+            return Ok(Some(binding_not_active_reason(binding_id)));
+        };
+        // A role the code does not know cannot be guarded; it is refused
+        // anyway rather than ended blind.
+        let Some(role) = Role::parse(&role) else {
+            return Ok(Some(format!(
+                "role binding holds an unknown role: {binding_id}"
+            )));
+        };
+        if !role.is_guarded() || kind != SubjectKind::Principal.as_str() {
+            return Ok(None);
+        }
+        let others: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM role_bindings \
+             WHERE tenant_id = $1 AND role = $2 AND subject_kind = 'principal' \
+               AND ended_at IS NULL AND id <> $3)",
+        )
+        .bind(tenant_id)
+        .bind(role.as_str())
+        .bind(binding_id)
+        .fetch_one(&mut **tx)
+        .await?;
+        Ok((!others).then(|| last_admin_reason(role)))
+    }
+
+    pub(crate) async fn insert_binding(
+        tx: &mut Transaction<'_, Postgres>,
+        binding: &RoleBinding,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(&format!(
+            "INSERT INTO role_bindings ({BINDING_COLUMNS}) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, NULL)"
+        ))
+        .bind(&binding.id)
+        .bind(&binding.tenant_id)
+        .bind(binding.role.as_str())
+        .bind(binding.subject.kind.as_str())
+        .bind(&binding.subject.issuer)
+        .bind(&binding.subject.value)
+        .bind(binding.granted_by_change_request.as_deref())
+        .bind(binding.granted_at)
+        .execute(&mut **tx)
+        .await
+        .map(|_| ())
+    }
+
+    /// Ends an active binding; an error when it is not active (the check
+    /// under the same lock said it was).
+    pub(crate) async fn end_binding(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: &str,
+        binding_id: &str,
+        change_request_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), RoleStoreError> {
+        let ended = sqlx::query(
+            "UPDATE role_bindings SET ended_at = $3, ended_by_change_request = $4 \
+             WHERE id = $1 AND tenant_id = $2 AND ended_at IS NULL",
+        )
+        .bind(binding_id)
+        .bind(tenant_id)
+        .bind(now)
+        .bind(change_request_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| io(&e))?
+        .rows_affected();
+        if ended == 1 {
+            Ok(())
+        } else {
+            Err(RoleStoreError::Io(binding_not_active_reason(binding_id)))
+        }
     }
 
     pub async fn roles_for(
@@ -221,20 +337,9 @@ impl PostgresRoleStore {
             .map(|s| new_binding(tenant_id, Role::Superadmin, s.clone(), None, now))
             .collect();
         for binding in &written {
-            sqlx::query(&format!(
-                "INSERT INTO role_bindings ({BINDING_COLUMNS}) \
-                 VALUES ($1, $2, $3, $4, $5, $6, NULL, $7, NULL, NULL)"
-            ))
-            .bind(&binding.id)
-            .bind(&binding.tenant_id)
-            .bind(binding.role.as_str())
-            .bind(binding.subject.kind.as_str())
-            .bind(&binding.subject.issuer)
-            .bind(&binding.subject.value)
-            .bind(binding.granted_at)
-            .execute(&mut *tx)
-            .await
-            .map_err(|e| io(&e))?;
+            Self::insert_binding(&mut tx, binding)
+                .await
+                .map_err(|e| io(&e))?;
             let audit = bootstrap_audit(binding);
             sqlx::query(
                 "INSERT INTO admin_audit_log \

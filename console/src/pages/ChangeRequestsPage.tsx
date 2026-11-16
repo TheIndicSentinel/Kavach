@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
-import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
+import {
+  Card,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
 import { ProblemAlert } from "../components/ui/ProblemAlert";
 import { RoleHint } from "../components/ui/RoleHint";
@@ -17,7 +22,11 @@ import {
   type ChangeStatus,
 } from "../lib/api";
 import { changeRequestAnchor } from "../lib/agentActions";
-import { changeRequestButtons, useViewer, type Viewer } from "../lib/changeRequests";
+import {
+  changeRequestButtons,
+  useViewer,
+  type Viewer,
+} from "../lib/changeRequests";
 import { formatDateTime } from "../lib/format";
 
 const KIND_LABELS: Record<ChangeKind, string> = {
@@ -29,9 +38,13 @@ const KIND_LABELS: Record<ChangeKind, string> = {
   apply_retention: "Run retention",
   activate_model: "Activate model version",
   reinstate_agent: "Reinstate agent",
+  grant_role: "Grant role",
+  revoke_role: "Revoke role",
 };
 
-function statusVariant(status: ChangeStatus): "active" | "warning" | "muted" | "default" {
+function statusVariant(
+  status: ChangeStatus,
+): "active" | "warning" | "muted" | "default" {
   switch (status) {
     case "pending":
       return "warning";
@@ -56,7 +69,9 @@ function Details({ label, value }: { label: string; value: unknown }) {
   if (entries.length === 0) return null;
   return (
     <div>
-      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">{label}</p>
+      <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+        {label}
+      </p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
         {entries.map(([key, item]) => (
           <div key={key} className="contents">
@@ -75,7 +90,10 @@ type RequestButtonsProps = {
   request: ChangeRequest;
   viewer: Viewer;
   busy: boolean;
-  onAct: (action: (request: ChangeRequest) => Promise<ChangeRequest>, done: string) => void;
+  onAct: (
+    action: (request: ChangeRequest) => Promise<ChangeRequest>,
+    done: string,
+  ) => void;
 };
 
 /**
@@ -83,14 +101,24 @@ type RequestButtonsProps = {
  * principal (the proposer rule) or its groups are known to lack (a hint line
  * takes their place; the server still decides).
  */
-export function RequestButtons({ request, viewer, busy, onAct }: RequestButtonsProps) {
+export function RequestButtons({
+  request,
+  viewer,
+  busy,
+  onAct,
+}: RequestButtonsProps) {
   const { actions, note, hint } = changeRequestButtons(request, viewer);
   if (actions.length === 0 && !note && !hint) return null;
   // aria-disabled, not disabled, while a request is in flight: a disabled
   // button would drop keyboard focus to the page body. `act` ignores a press.
-  const press = (action: (request: ChangeRequest) => Promise<ChangeRequest>, done: string) => () => {
-    if (!busy) onAct(action, done);
-  };
+  const press =
+    (
+      action: (request: ChangeRequest) => Promise<ChangeRequest>,
+      done: string,
+    ) =>
+    () => {
+      if (!busy) onAct(action, done);
+    };
   const busyClass = "aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
   return (
     <div className="space-y-2">
@@ -99,7 +127,11 @@ export function RequestButtons({ request, viewer, busy, onAct }: RequestButtonsP
       {actions.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {actions.includes("approve") && (
-            <Button aria-disabled={busy} className={busyClass} onClick={press(approveChange, "approved")}>
+            <Button
+              aria-disabled={busy}
+              className={busyClass}
+              onClick={press(approveChange, "approved")}
+            >
               Approve and apply
             </Button>
           )}
@@ -134,7 +166,9 @@ type ChangeRequestsPageProps = {
   resource?: Resource<ChangeRequest[]>;
 };
 
-export default function ChangeRequestsPage({ resource: given }: ChangeRequestsPageProps = {}) {
+export default function ChangeRequestsPage({
+  resource: given,
+}: ChangeRequestsPageProps = {}) {
   const viewer = useViewer();
   const [filter, setFilter] = useState<ChangeStatus | undefined>("pending");
   const [requests, setRequests] = useState<ChangeRequest[] | null>(null);
@@ -240,7 +274,9 @@ export default function ChangeRequestsPage({ resource: given }: ChangeRequestsPa
       )}
       {listed !== null && listed.length === 0 && (
         <p className="text-sm text-muted">
-          {filter === "pending" ? "No pending change requests." : "No change requests."}
+          {filter === "pending"
+            ? "No pending change requests."
+            : "No change requests."}
         </p>
       )}
 
@@ -250,11 +286,14 @@ export default function ChangeRequestsPage({ resource: given }: ChangeRequestsPa
             <CardHeader>
               <div className="flex flex-wrap items-center gap-3">
                 <CardTitle>{KIND_LABELS[request.kind]}</CardTitle>
-                <Badge variant={statusVariant(request.status)}>{request.status}</Badge>
+                <Badge variant={statusVariant(request.status)}>
+                  {request.status}
+                </Badge>
               </div>
               <CardDescription>
-                Proposed by <span className="font-medium text-ink">{request.proposer}</span> on{" "}
-                {formatDateTime(request.created_at)}
+                Proposed by{" "}
+                <span className="font-medium text-ink">{request.proposer}</span>{" "}
+                on {formatDateTime(request.created_at)}
                 {request.status === "pending"
                   ? ` · expires ${formatDateTime(request.expires_at)}`
                   : request.decided_by
@@ -263,10 +302,15 @@ export default function ChangeRequestsPage({ resource: given }: ChangeRequestsPa
               </CardDescription>
             </CardHeader>
             <div className="space-y-4">
-              {request.reason && <p className="text-sm text-ink">“{request.reason}”</p>}
+              {request.reason && (
+                <p className="text-sm text-ink">“{request.reason}”</p>
+              )}
               <div className="grid gap-4 md:grid-cols-2">
                 <Details label="Change" value={request.params} />
-                <Details label="Bound to (must still hold at approval)" value={request.binding} />
+                <Details
+                  label="Bound to (must still hold at approval)"
+                  value={request.binding}
+                />
               </div>
               {request.outcome != null && request.status !== "applied" && (
                 <Details label="Outcome" value={request.outcome} />

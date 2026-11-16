@@ -10,10 +10,11 @@ use axum::{
 };
 use chrono::Utc;
 use kavach_auth::KavachAction;
-use kavach_storage::{ChangeKind, ChangeRequest, ChangeStatus};
+use kavach_storage::{ChangeKind, ChangeRequest, ChangeStatus, Role};
 use serde::Deserialize;
+use serde_json::Value;
 
-use crate::auth::{authorized_principal, Credentials};
+use crate::auth::{authorized_principal, authorized_role_change, Authorized, Credentials};
 use crate::error::ApiError;
 use crate::state::{AppState, ChangeProposal};
 
@@ -28,6 +29,8 @@ pub fn propose_action(kind: ChangeKind) -> KavachAction {
         ChangeKind::ApplyRetention => KavachAction::ProposeApplyRetention,
         ChangeKind::ActivateModel => KavachAction::ProposeActivateModel,
         ChangeKind::ReinstateAgent => KavachAction::ProposeReinstateAgent,
+        ChangeKind::GrantRole => KavachAction::ProposeGrantRole,
+        ChangeKind::RevokeRole => KavachAction::ProposeRevokeRole,
     }
 }
 
@@ -42,6 +45,88 @@ pub fn approve_action(kind: ChangeKind) -> KavachAction {
         ChangeKind::ApplyRetention => KavachAction::ApproveApplyRetention,
         ChangeKind::ActivateModel => KavachAction::ApproveActivateModel,
         ChangeKind::ReinstateAgent => KavachAction::ApproveReinstateAgent,
+        ChangeKind::GrantRole => KavachAction::ApproveGrantRole,
+        ChangeKind::RevokeRole => KavachAction::ApproveRevokeRole,
+    }
+}
+
+/// Whether the kind changes operator access, which every deployment has,
+/// rather than the credit track (packs, models, retention, erasure).
+fn serves_agent_only(kind: ChangeKind) -> bool {
+    matches!(
+        kind,
+        ChangeKind::ReinstateAgent | ChangeKind::GrantRole | ChangeKind::RevokeRole
+    )
+}
+
+/// The role a pending or decided role-change request changes: a grant's
+/// from its parameters, a revoke's from the binding frozen at proposal.
+/// `None` for every other kind.
+fn role_of_request(request: &ChangeRequest) -> Result<Option<Role>, ApiError> {
+    let source = match request.kind {
+        ChangeKind::GrantRole => &request.params,
+        ChangeKind::RevokeRole => &request.binding,
+        _ => return Ok(None),
+    };
+    source
+        .get("role")
+        .and_then(Value::as_str)
+        .and_then(Role::parse)
+        .map(Some)
+        .ok_or_else(|| ApiError::Internal(format!("change request {} names no role", request.id)))
+}
+
+/// Authorizes `action` for a request of `role` (or of no role).
+async fn authorize_for(
+    state: &AppState,
+    credentials: &Credentials,
+    action: KavachAction,
+    role: Option<Role>,
+) -> Result<Authorized, ApiError> {
+    match role {
+        Some(role) => authorized_role_change(state, credentials, action, role).await,
+        None => authorized_principal(state, credentials, action).await,
+    }
+}
+
+/// The role a role-change proposal changes. A revoke's comes from the
+/// binding it names; the caller must first be allowed to propose a revoke
+/// of the least role, so whether a binding id exists is not told to
+/// someone who may revoke nothing.
+async fn role_of_proposal(
+    state: &AppState,
+    credentials: &Credentials,
+    proposal: &ChangeProposal,
+) -> Result<Option<Role>, ApiError> {
+    match proposal.kind {
+        ChangeKind::GrantRole => proposal
+            .params
+            .get("role")
+            .and_then(Value::as_str)
+            .and_then(Role::parse)
+            .map(Some)
+            .ok_or_else(|| {
+                ApiError::BadRequest("invalid params: role must be one of the seven roles".into())
+            }),
+        ChangeKind::RevokeRole => {
+            authorized_role_change(
+                state,
+                credentials,
+                KavachAction::ProposeRevokeRole,
+                Role::Viewer,
+            )
+            .await?;
+            let binding_id = proposal
+                .params
+                .get("binding_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| ApiError::BadRequest("invalid params: binding_id".into()))?;
+            state
+                .active_binding(binding_id)
+                .await
+                .map(|binding| Some(binding.role))
+        }
+        _ => Ok(None),
     }
 }
 
@@ -59,11 +144,10 @@ pub async fn propose(
     credentials: Credentials,
     StrictJson(proposal): StrictJson<ChangeProposal>,
 ) -> Result<(StatusCode, Json<ChangeRequest>), ApiError> {
-    // Every kind of change request there is today belongs to the credit
-    // track (packs, models, retention, erasure), which a hosted build does
-    // not serve. A kind of the agent path will be allowed here when it
-    // exists.
-    if proposal.kind != ChangeKind::ReinstateAgent
+    // The credit track's kinds (packs, models, retention, erasure) are not
+    // served by an agent-only build; agent reinstatement and operator roles
+    // are.
+    if !serves_agent_only(proposal.kind)
         && state
             .dataplane()
             .is_some_and(crate::dataplane::Dataplane::agent_only)
@@ -72,8 +156,8 @@ pub async fn propose(
             "this kind of change request is not available in agent-only mode".into(),
         ));
     }
-    let proposer =
-        authorized_principal(&state, &credentials, propose_action(proposal.kind)).await?;
+    let role = role_of_proposal(&state, &credentials, &proposal).await?;
+    let proposer = authorize_for(&state, &credentials, propose_action(proposal.kind), role).await?;
     let request = state.propose_change(&proposer, proposal).await?;
     Ok((StatusCode::CREATED, Json(request)))
 }
@@ -126,13 +210,14 @@ pub async fn get(
     Ok(Json(with_display_status(request)))
 }
 
-async fn kind_of(state: &AppState, id: &str) -> Result<ChangeKind, ApiError> {
-    state
+/// The kind of the request and, for a role change, the role it changes.
+async fn kind_of(state: &AppState, id: &str) -> Result<(ChangeKind, Option<Role>), ApiError> {
+    let request = state
         .changes()
         .get(id)
         .await
-        .map(|request| request.kind)
-        .map_err(|_| ApiError::NotFound(format!("change request {id}")))
+        .map_err(|_| ApiError::NotFound(format!("change request {id}")))?;
+    Ok((request.kind, role_of_request(&request)?))
 }
 
 #[derive(Debug, Deserialize)]
@@ -148,8 +233,8 @@ pub async fn approve(
     Path(id): Path<String>,
     Json(body): Json<ApproveBody>,
 ) -> Result<Json<ChangeRequest>, ApiError> {
-    let kind = kind_of(&state, &id).await?;
-    let approver = authorized_principal(&state, &credentials, approve_action(kind)).await?;
+    let (kind, role) = kind_of(&state, &id).await?;
+    let approver = authorize_for(&state, &credentials, approve_action(kind), role).await?;
     Ok(Json(
         state
             .approve_change(&approver, &id, &body.change_digest)
@@ -169,8 +254,8 @@ pub async fn reject(
     Path(id): Path<String>,
     body: Option<Json<RejectBody>>,
 ) -> Result<Json<ChangeRequest>, ApiError> {
-    let kind = kind_of(&state, &id).await?;
-    let checker = authorized_principal(&state, &credentials, approve_action(kind)).await?;
+    let (kind, role) = kind_of(&state, &id).await?;
+    let checker = authorize_for(&state, &credentials, approve_action(kind), role).await?;
     let reason = body.and_then(|Json(body)| body.reason);
     Ok(Json(state.reject_change(&checker, &id, reason).await?))
 }
@@ -180,7 +265,7 @@ pub async fn cancel(
     credentials: Credentials,
     Path(id): Path<String>,
 ) -> Result<Json<ChangeRequest>, ApiError> {
-    let kind = kind_of(&state, &id).await?;
-    let proposer = authorized_principal(&state, &credentials, propose_action(kind)).await?;
+    let (kind, role) = kind_of(&state, &id).await?;
+    let proposer = authorize_for(&state, &credentials, propose_action(kind), role).await?;
     Ok(Json(state.cancel_change(&proposer, &id).await?))
 }

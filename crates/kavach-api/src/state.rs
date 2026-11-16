@@ -633,6 +633,9 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
         EvidenceStoreKind::Memory => {
             let admin = std::sync::Arc::new(MemoryAdminStore::default());
             let retention = std::sync::Arc::new(MemoryRetentionStore::default());
+            // One role store: approved grants and revokes write where the
+            // per-request lookups read.
+            let roles = std::sync::Arc::new(kavach_storage::MemoryRoleStore::default());
             (
                 EvidenceBackend::Memory(MemoryChain::new()),
                 IncidentBackend::memory(),
@@ -642,8 +645,9 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
                 ChangeRequestBackend::Memory(std::sync::Arc::new(MemoryChangeStore::new(
                     admin.clone(),
                     retention,
+                    roles.clone(),
                 ))),
-                RoleBackend::memory(admin),
+                RoleBackend::memory_with(roles, admin),
                 None,
             )
         }

@@ -55,6 +55,39 @@ impl Role {
     pub fn parse(value: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|role| role.as_str() == value)
     }
+
+    /// The administrator roles whose last active person binding in a tenant
+    /// cannot be revoked (ADR-019 §4).
+    #[must_use]
+    pub fn is_guarded(self) -> bool {
+        matches!(self, Self::Superadmin | Self::UserAdmin)
+    }
+}
+
+/// Why a revoke was refused: it would end the tenant's last active person
+/// binding of a guarded role. Group bindings do not count, because Kavach
+/// cannot see whether a group has members.
+#[must_use]
+pub fn last_admin_reason(role: Role) -> String {
+    format!(
+        "last_admin: the tenant would have no active person binding for {}",
+        role.as_str()
+    )
+}
+
+/// Why a grant was refused: the same binding is already active.
+#[must_use]
+pub fn duplicate_binding_reason(role: Role) -> String {
+    format!(
+        "duplicate: an active {} binding for this subject already exists",
+        role.as_str()
+    )
+}
+
+/// Why a revoke was refused: the binding is not active in this tenant.
+#[must_use]
+pub fn binding_not_active_reason(binding_id: &str) -> String {
+    format!("role binding is not active: {binding_id}")
 }
 
 /// Who a binding names.
@@ -196,6 +229,50 @@ pub(crate) fn check_bootstrap_subjects(subjects: &[BindingSubject]) -> Result<()
     }
 }
 
+/// ADR-019 §4: why a grant of `role` to `subject` cannot apply over
+/// `bindings` (the tenant's, any state), or `None`.
+#[must_use]
+pub fn grant_refusal(
+    bindings: &[RoleBinding],
+    tenant_id: &str,
+    role: Role,
+    subject: &BindingSubject,
+) -> Option<String> {
+    bindings
+        .iter()
+        .any(|b| {
+            b.is_active() && b.tenant_id == tenant_id && b.role == role && &b.subject == subject
+        })
+        .then(|| duplicate_binding_reason(role))
+}
+
+/// ADR-019 §4: the active binding a revoke ends, or why it cannot: the
+/// binding is not active in the tenant, or it is the tenant's last active
+/// person binding of a guarded role.
+pub fn revoke_target<'a>(
+    bindings: &'a [RoleBinding],
+    tenant_id: &str,
+    binding_id: &str,
+) -> Result<&'a RoleBinding, String> {
+    let target = bindings
+        .iter()
+        .find(|b| b.id == binding_id && b.tenant_id == tenant_id && b.is_active())
+        .ok_or_else(|| binding_not_active_reason(binding_id))?;
+    if target.role.is_guarded() && target.subject.kind == SubjectKind::Principal {
+        let others = bindings.iter().any(|b| {
+            b.id != target.id
+                && b.is_active()
+                && b.tenant_id == tenant_id
+                && b.role == target.role
+                && b.subject.kind == SubjectKind::Principal
+        });
+        if !others {
+            return Err(last_admin_reason(target.role));
+        }
+    }
+    Ok(target)
+}
+
 pub(crate) fn new_binding(
     tenant_id: &str,
     role: Role,
@@ -233,6 +310,50 @@ fn poisoned<T>(_: T) -> RoleStoreError {
 }
 
 impl MemoryRoleStore {
+    /// The approval's check of a grant, under the change store's mutex.
+    pub(crate) fn check_grant(
+        &self,
+        tenant_id: &str,
+        role: Role,
+        subject: &BindingSubject,
+    ) -> Result<Option<String>, RoleStoreError> {
+        let inner = self.inner.lock().map_err(poisoned)?;
+        Ok(grant_refusal(&inner.bindings, tenant_id, role, subject))
+    }
+
+    /// The approval's check of a revoke, under the change store's mutex.
+    pub(crate) fn check_end(
+        &self,
+        tenant_id: &str,
+        binding_id: &str,
+    ) -> Result<Option<String>, RoleStoreError> {
+        let inner = self.inner.lock().map_err(poisoned)?;
+        Ok(revoke_target(&inner.bindings, tenant_id, binding_id).err())
+    }
+
+    pub(crate) fn insert(&self, binding: RoleBinding) -> Result<(), RoleStoreError> {
+        self.inner.lock().map_err(poisoned)?.bindings.push(binding);
+        Ok(())
+    }
+
+    pub(crate) fn end(
+        &self,
+        tenant_id: &str,
+        binding_id: &str,
+        change_request_id: &str,
+        now: DateTime<Utc>,
+    ) -> Result<(), RoleStoreError> {
+        let mut inner = self.inner.lock().map_err(poisoned)?;
+        let binding = inner
+            .bindings
+            .iter_mut()
+            .find(|b| b.id == binding_id && b.tenant_id == tenant_id && b.is_active())
+            .ok_or_else(|| RoleStoreError::Io(binding_not_active_reason(binding_id)))?;
+        binding.ended_at = Some(now);
+        binding.ended_by_change_request = Some(change_request_id.to_string());
+        Ok(())
+    }
+
     fn roles_for(
         &self,
         tenant_id: &str,
@@ -363,10 +484,14 @@ pub enum RoleBackend {
 impl RoleBackend {
     #[must_use]
     pub fn memory(admin: Arc<MemoryAdminStore>) -> Self {
-        Self::Memory {
-            roles: Arc::new(MemoryRoleStore::default()),
-            admin,
-        }
+        Self::memory_with(Arc::new(MemoryRoleStore::default()), admin)
+    }
+
+    /// A memory backend over `roles`, which the memory change store shares
+    /// so an approved grant or revoke writes where the lookups read.
+    #[must_use]
+    pub fn memory_with(roles: Arc<MemoryRoleStore>, admin: Arc<MemoryAdminStore>) -> Self {
+        Self::Memory { roles, admin }
     }
 
     /// The roles bound, in `tenant_id`, to the person `(issuer, subject)` or
@@ -557,6 +682,87 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(t2, BootstrapOutcome::AlreadyPresent);
+    }
+
+    #[test]
+    fn a_grant_is_refused_only_for_an_active_duplicate_in_the_tenant() {
+        let now = Utc::now();
+        let mut ended = new_binding("t1", Role::Operator, person("bob"), None, now);
+        ended.ended_at = Some(now);
+        let bindings = vec![
+            new_binding("t1", Role::Approver, person("alice"), None, now),
+            ended,
+        ];
+        assert_eq!(
+            grant_refusal(&bindings, "t1", Role::Approver, &person("alice")),
+            Some(duplicate_binding_reason(Role::Approver))
+        );
+        assert_eq!(
+            grant_refusal(&bindings, "t2", Role::Approver, &person("alice")),
+            None
+        );
+        assert_eq!(
+            grant_refusal(&bindings, "t1", Role::Auditor, &person("alice")),
+            None
+        );
+        assert_eq!(
+            grant_refusal(&bindings, "t1", Role::Operator, &person("bob")),
+            None,
+            "an ended binding can be granted again"
+        );
+    }
+
+    #[test]
+    fn a_revoke_never_leaves_a_guarded_role_without_a_person() {
+        let now = Utc::now();
+        let group = BindingSubject {
+            kind: SubjectKind::Group,
+            issuer: "https://idp.example".into(),
+            value: "root-team".into(),
+        };
+        let a = new_binding("t1", Role::Superadmin, person("a"), None, now);
+        let b = new_binding("t1", Role::Superadmin, person("b"), None, now);
+        let g = new_binding("t1", Role::Superadmin, group, None, now);
+        let other_tenant = new_binding("t2", Role::Superadmin, person("c"), None, now);
+        let ua = new_binding("t1", Role::UserAdmin, person("u"), None, now);
+        let op = new_binding("t1", Role::Operator, person("o"), None, now);
+        let bindings = vec![
+            a.clone(),
+            b.clone(),
+            g.clone(),
+            other_tenant.clone(),
+            ua.clone(),
+            op.clone(),
+        ];
+
+        assert_eq!(revoke_target(&bindings, "t1", &a.id).unwrap().id, a.id);
+        // The group binding is never the last person.
+        assert_eq!(revoke_target(&bindings, "t1", &g.id).unwrap().id, g.id);
+        assert_eq!(
+            revoke_target(&bindings, "t1", &ua.id).unwrap_err(),
+            last_admin_reason(Role::UserAdmin)
+        );
+        // Unguarded roles can lose their last binding.
+        assert_eq!(revoke_target(&bindings, "t1", &op.id).unwrap().id, op.id);
+        // Another tenant's binding is not found here.
+        assert_eq!(
+            revoke_target(&bindings, "t1", &other_tenant.id).unwrap_err(),
+            binding_not_active_reason(&other_tenant.id)
+        );
+
+        // With b ended, a is the last person superadmin: a group or another
+        // tenant's superadmin does not count.
+        let mut ended_b = b;
+        ended_b.ended_at = Some(now);
+        let bindings = vec![a.clone(), ended_b.clone(), g, other_tenant];
+        assert_eq!(
+            revoke_target(&bindings, "t1", &a.id).unwrap_err(),
+            last_admin_reason(Role::Superadmin)
+        );
+        assert_eq!(
+            revoke_target(&bindings, "t1", &ended_b.id).unwrap_err(),
+            binding_not_active_reason(&ended_b.id)
+        );
     }
 
     #[test]

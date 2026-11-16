@@ -3,9 +3,10 @@ use serde_json::Value;
 use sqlx::{PgPool, Postgres, Transaction};
 
 use super::admin::{insert_audit, upsert_model_state, upsert_pointers};
+use super::PostgresRoleStore;
 use crate::change_requests::{
-    decision_audit, ApprovalCommit, ChangeKind, ChangeRequest, ChangeStatus, ChangeStoreError,
-    CloseRequest, GovernanceEffect,
+    decision_audit, granted_binding, Applying, ApprovalCommit, ChangeKind, ChangeRequest,
+    ChangeStatus, ChangeStoreError, CloseRequest, GovernanceEffect,
 };
 
 const COLUMNS: &str = "id, tenant_id, kind, params, binding, change_digest, reason, proposer, \
@@ -149,8 +150,14 @@ impl PostgresChangeStore {
             });
         }
 
+        let applying = Applying {
+            request_id: &request.id,
+            proposer: &request.proposer,
+            approver: &commit.approver,
+            now: commit.now,
+        };
         for effect in &commit.effects {
-            apply_effect(&mut tx, effect, &request.proposer, &commit.approver).await?;
+            apply_effect(&mut tx, effect, applying).await?;
         }
         insert_audit(&mut *tx, &commit.audit).await.map_err(io)?;
         let applied = decide(
@@ -293,6 +300,20 @@ async fn check_effect(
                 )
             }))
         }
+        GovernanceEffect::GrantRole {
+            tenant_id,
+            role,
+            subject,
+            ..
+        } => PostgresRoleStore::check_grant(tx, tenant_id, *role, subject)
+            .await
+            .map_err(io),
+        GovernanceEffect::EndRoleBinding {
+            tenant_id,
+            binding_id,
+        } => PostgresRoleStore::check_end(tx, tenant_id, binding_id)
+            .await
+            .map_err(io),
         _ => Ok(None),
     }
 }
@@ -300,9 +321,11 @@ async fn check_effect(
 async fn apply_effect(
     tx: &mut Transaction<'_, Postgres>,
     effect: &GovernanceEffect,
-    proposer: &str,
-    approver: &str,
+    applying: Applying<'_>,
 ) -> Result<(), ChangeStoreError> {
+    let Applying {
+        proposer, approver, ..
+    } = applying;
     match effect {
         GovernanceEffect::None => {}
         GovernanceEffect::SetPointers(pointers) => {
@@ -338,6 +361,31 @@ async fn apply_effect(
         }
         GovernanceEffect::TombstoneSet { evidence_ids, .. } => {
             insert_tombstones(tx, evidence_ids, "retention", proposer, approver).await?;
+        }
+        GovernanceEffect::GrantRole {
+            binding_id,
+            tenant_id,
+            role,
+            subject,
+        } => {
+            let binding = granted_binding(binding_id, tenant_id, *role, subject, &applying);
+            PostgresRoleStore::insert_binding(tx, &binding)
+                .await
+                .map_err(io)?;
+        }
+        GovernanceEffect::EndRoleBinding {
+            tenant_id,
+            binding_id,
+        } => {
+            PostgresRoleStore::end_binding(
+                tx,
+                tenant_id,
+                binding_id,
+                applying.request_id,
+                applying.now,
+            )
+            .await
+            .map_err(io)?;
         }
     }
     Ok(())

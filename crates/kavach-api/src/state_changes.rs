@@ -11,8 +11,9 @@ use chrono::{DateTime, Utc};
 use kavach_domain::{GovernanceMode, ModelRecord, ModelStatus};
 use kavach_policy::{LoadedPolicyPack, PackLoader};
 use kavach_storage::{
-    evidence_set_digest, ApprovalCommit, AuditInsert, ChangeKind, ChangeRequest, ChangeStatus,
-    ChangeStoreError, CloseRequest, GovernanceEffect, RuntimePointers, TombstoneReason,
+    evidence_set_digest, grant_refusal, revoke_target, ApprovalCommit, AuditInsert, BindingSubject,
+    ChangeKind, ChangeRequest, ChangeStatus, ChangeStoreError, CloseRequest, GovernanceEffect,
+    Role, RoleBinding, RuntimePointers, SubjectKind, TombstoneReason, ROLE_BINDING_RESOURCE,
 };
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -20,7 +21,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::{precheck_model, AppState, EVALUATE_LOCK};
-use crate::auth::{Authorized, PrincipalSource};
+use crate::auth::{
+    binding_identity, AuthenticatedPrincipal, Authorized, PrincipalSource, DEV_HEADER_ISSUER,
+};
 use crate::error::ApiError;
 use crate::governance::RuntimeResponse;
 use crate::registry::pack_source_path;
@@ -129,6 +132,73 @@ struct EraseEvidenceParams {
     evidence_id: String,
 }
 
+/// A grant's subject as the request carries it (ADR-019 §4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SubjectParams {
+    kind: SubjectKind,
+    issuer: String,
+    value: String,
+}
+
+impl SubjectParams {
+    fn subject(&self) -> BindingSubject {
+        BindingSubject {
+            kind: self.kind,
+            issuer: self.issuer.clone(),
+            value: self.value.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GrantRoleParams {
+    role: Role,
+    subject: SubjectParams,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RevokeRoleParams {
+    binding_id: String,
+}
+
+/// An OIDC subject is at most 255 ASCII characters (OIDC Core §2); a group
+/// name gets the same room twice over.
+const MAX_SUBJECT_CHARS: usize = 512;
+
+/// True when `subject` names `principal`: their own person binding, or a
+/// group their current credential carries, under their issuer.
+fn names_the_caller(principal: &AuthenticatedPrincipal, subject: &BindingSubject) -> bool {
+    let Some((issuer, sub)) = binding_identity(principal) else {
+        return false;
+    };
+    if subject.issuer != issuer {
+        return false;
+    }
+    match subject.kind {
+        SubjectKind::Principal => sub == Some(subject.value.as_str()),
+        SubjectKind::Group => principal.groups.contains(&subject.value),
+    }
+}
+
+/// ADR-019 §4, no self-grant: refused for the proposer at proposal and for
+/// the approver at approval, by person and by any group in their token.
+fn refuse_self_grant(
+    principal: &AuthenticatedPrincipal,
+    params: &Value,
+    who: &str,
+) -> Result<(), ApiError> {
+    let params: GrantRoleParams = parse(params)?;
+    if names_the_caller(principal, &params.subject.subject()) {
+        return Err(ApiError::ForbiddenBecause(format!(
+            "the {who} cannot grant a role to themselves or to a group they belong to"
+        )));
+    }
+    Ok(())
+}
+
 fn parse<T: DeserializeOwned>(params: &Value) -> Result<T, ApiError> {
     serde_json::from_value(params.clone()).map_err(|e| {
         ApiError::BadRequest(format!(
@@ -232,6 +302,9 @@ impl AppState {
         proposal: ChangeProposal,
     ) -> Result<ChangeRequest, ApiError> {
         let reason = validate_reason(proposal.reason)?;
+        if proposal.kind == ChangeKind::GrantRole {
+            refuse_self_grant(proposer, &proposal.params, "proposer")?;
+        }
         let _guard = self.governance_lock.lock().await;
         let actors = Actors {
             proposer: &proposer.id,
@@ -320,6 +393,11 @@ impl AppState {
         if request.change_digest != echoed_digest {
             return Err(store_error(ChangeStoreError::DigestMismatch));
         }
+        // Refused without closing the request: another approver may still
+        // approve it.
+        if request.kind == ChangeKind::GrantRole {
+            refuse_self_grant(approver, &request.params, "approver")?;
+        }
         let now = Utc::now();
         if request.expires_at <= now {
             self.close(&request, ChangeStatus::Expired, approver, "expired")
@@ -353,7 +431,9 @@ impl AppState {
                     "change request failed: {reason}"
                 )));
             }
-            Err(ApiError::Internal(message)) => return Err(ApiError::Internal(message)),
+            // A fault reading state is not a verdict on the request: it
+            // stays pending for a retry.
+            Err(err @ (ApiError::Internal(_) | ApiError::Unavailable(_))) => return Err(err),
             Err(err) => {
                 let reason = err.to_string();
                 self.close(&request, ChangeStatus::Failed, approver, &reason)
@@ -538,7 +618,148 @@ impl AppState {
             ChangeKind::ReinstateAgent => {
                 self.prepare_reinstate_agent(parse(params)?, actors).await
             }
+            ChangeKind::GrantRole => self.prepare_grant_role(parse(params)?).await,
+            ChangeKind::RevokeRole => self.prepare_revoke_role(parse(params)?).await,
         }
+    }
+
+    /// The tenant's active bindings, for the checks of a grant or revoke. A
+    /// read failure is a 503, as for the per-request lookup.
+    async fn active_bindings(&self) -> Result<Vec<RoleBinding>, ApiError> {
+        self.roles
+            .list_bindings(self.tenant_id(), false)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "role bindings could not be read");
+                ApiError::Unavailable("role bindings could not be read".into())
+            })
+    }
+
+    /// The active binding `binding_id` in this tenant, or 404.
+    pub async fn active_binding(&self, binding_id: &str) -> Result<RoleBinding, ApiError> {
+        self.active_bindings()
+            .await?
+            .into_iter()
+            .find(|b| b.id == binding_id)
+            .ok_or_else(|| ApiError::NotFound(format!("active role binding {binding_id}")))
+    }
+
+    /// Who a binding may name here: this deployment's OIDC issuer, or, on an
+    /// `--insecure-dev` stack, a header principal under the dev source.
+    fn check_subject(&self, subject: &SubjectParams) -> Result<(), ApiError> {
+        let value_ok = !subject.value.is_empty()
+            && subject.value.chars().count() <= MAX_SUBJECT_CHARS
+            && !subject.value.chars().any(char::is_control);
+        if !value_ok {
+            return Err(ApiError::BadRequest(format!(
+                "invalid params: subject.value must be 1 to {MAX_SUBJECT_CHARS} characters \
+                 without control characters"
+            )));
+        }
+        let oidc = self
+            .oidc()
+            .is_some_and(|verifier| verifier.issuer() == subject.issuer);
+        let dev = self.insecure_dev() && subject.issuer == DEV_HEADER_ISSUER;
+        if dev && subject.kind == SubjectKind::Group {
+            return Err(ApiError::BadRequest(
+                "invalid params: the dev source binds header principals, not groups".into(),
+            ));
+        }
+        if !(oidc || dev) {
+            return Err(ApiError::BadRequest(
+                "invalid params: subject.issuer is not this deployment's OIDC issuer".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// `grant_role` (ADR-019 §4). The binding is written by the approval's
+    /// transaction, which checks again, under the tenant's bindings lock,
+    /// that it is not already active.
+    async fn prepare_grant_role(&self, params: GrantRoleParams) -> Result<Prepared, ApiError> {
+        self.check_subject(&params.subject)?;
+        let tenant = self.tenant_id().to_string();
+        let subject = params.subject.subject();
+        if let Some(reason) = grant_refusal(
+            &self.active_bindings().await?,
+            &tenant,
+            params.role,
+            &subject,
+        ) {
+            return Err(ApiError::Conflict(reason));
+        }
+        let binding_id = format!("rb_{}", uuid::Uuid::new_v4().simple());
+        Ok(Prepared {
+            params: to_value(&params)?,
+            binding: json!({
+                "tenant_id": tenant,
+                "role": params.role,
+                "subject": params.subject,
+            }),
+            expected_version: None,
+            effects: vec![GovernanceEffect::GrantRole {
+                binding_id: binding_id.clone(),
+                tenant_id: tenant.clone(),
+                role: params.role,
+                subject: subject.clone(),
+            }],
+            live: None,
+            resource_type: ROLE_BINDING_RESOURCE,
+            resource_id: binding_id.clone(),
+            audit_payload: json!({
+                "tenant_id": tenant,
+                "role": params.role,
+                "subject_kind": subject.kind,
+                "issuer": subject.issuer,
+                "subject": subject.value,
+            }),
+            outcome: json!({ "binding_id": binding_id, "role": params.role }),
+            agent_change: None,
+        })
+    }
+
+    /// `revoke_role` (ADR-019 §4). Refused when it would end the tenant's
+    /// last active person binding of `superadmin` or `user_admin`; the
+    /// approval's transaction checks again under the tenant's bindings lock.
+    async fn prepare_revoke_role(&self, params: RevokeRoleParams) -> Result<Prepared, ApiError> {
+        let tenant = self.tenant_id().to_string();
+        let bindings = self.active_bindings().await?;
+        if !bindings.iter().any(|b| b.id == params.binding_id) {
+            return Err(ApiError::NotFound(format!(
+                "active role binding {}",
+                params.binding_id
+            )));
+        }
+        let target =
+            revoke_target(&bindings, &tenant, &params.binding_id).map_err(ApiError::Conflict)?;
+        let subject = &target.subject;
+        Ok(Prepared {
+            params: to_value(&params)?,
+            binding: json!({
+                "tenant_id": tenant,
+                "binding_id": target.id,
+                "role": target.role,
+                "subject": subject,
+            }),
+            expected_version: None,
+            effects: vec![GovernanceEffect::EndRoleBinding {
+                tenant_id: tenant.clone(),
+                binding_id: target.id.clone(),
+            }],
+            live: None,
+            resource_type: ROLE_BINDING_RESOURCE,
+            resource_id: target.id.clone(),
+            audit_payload: json!({
+                "tenant_id": tenant,
+                "binding_id": target.id,
+                "role": target.role,
+                "subject_kind": subject.kind,
+                "issuer": subject.issuer,
+                "subject": subject.value,
+            }),
+            outcome: json!({ "binding_id": target.id, "role": target.role, "ended": true }),
+            agent_change: None,
+        })
     }
 
     /// A reinstatement whose own change is already written (an earlier

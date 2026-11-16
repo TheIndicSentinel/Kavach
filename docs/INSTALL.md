@@ -301,6 +301,19 @@ kavach-api ... --oidc-issuer https://idp.bank.example/realms/kavach \
 - Roles decide requests together with groups: a request is allowed if the person's roles or groups allow it. The `admins`, `change-approvers`, `operators` and `viewers` groups keep their permissions. Bindings are read on every request; if they cannot be read, the request is refused with 503 rather than decided on groups alone.
 - A person binding matches the token's `sub` under the configured `--oidc-issuer`. A token without `sub` gets only its group bindings. Certificate (mTLS) principals are never bound to a role.
 - A decision that only the `superadmin` role allows is recorded with `acting_as_superadmin` set on its audit row.
+- After the bootstrap, roles change only through change requests, approved by a second person (`superadmin` or `user_admin`; only a `superadmin` for `superadmin`):
+
+  ```bash
+  # propose (as one person) ...
+  curl -sS -X POST "$KAVACH/v1/change-requests" -H "authorization: Bearer $TOKEN_A" \
+    -H 'content-type: application/json' \
+    -d '{"kind":"grant_role","params":{"role":"approver","subject":{"kind":"principal","issuer":"https://idp.bank.example/realms/kavach","value":"<subject>"}}}'
+  # ... approve (as another), with the change_digest the proposal returned
+  curl -sS -X POST "$KAVACH/v1/change-requests/<id>/approve" -H "authorization: Bearer $TOKEN_B" \
+    -H 'content-type: application/json' -d '{"change_digest":"<digest>"}'
+  ```
+
+  A `group` subject names an IdP group under the same issuer. `revoke_role` takes `{"binding_id":"rb_..."}`. Nobody may grant a role to themselves or to a group in their token, and the last active person `superadmin` or `user_admin` cannot be revoked (409).
 
 *Recovery when every superadmin is gone* (for example both IdP accounts were deleted): this is a database-operator procedure, run as the owner role. End the dead bindings, then start once with `--bootstrap-superadmins` naming two current people:
 
