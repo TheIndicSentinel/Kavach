@@ -287,6 +287,28 @@ Issuer, audience and one JWKS source must be set together. Tokens must be signed
 
 *Keycloak (development):* create a realm and a confidential client with the service-account flow, add an audience mapper for `kavach-api` and a *Group Membership* mapper named `groups` (full path off). Then `--oidc-issuer http(s)://<host>/realms/<realm>`, `--oidc-jwks-url https://<host>/realms/<realm>/protocol/openid-connect/certs` (or save that JSON as the JWKS file), and get a token with `curl -d grant_type=client_credentials -d client_id=... -d client_secret=... https://<host>/realms/<realm>/protocol/openid-connect/token`.
 
+**Operator roles: the first two superadmins (ADR-019).** Role bindings are stored per tenant (`--tenant-id`, `KAVACH_TENANT_ID`, default `default`). Every grant needs two people who already hold roles, so the first `superadmin` bindings are written once, at startup, outside the change-request flow, and always two at a time:
+
+```bash
+kavach-api ... --oidc-issuer https://idp.bank.example/realms/kavach \
+  --bootstrap-superadmins 'https://idp.bank.example/realms/kavach#<subject-1>,https://idp.bank.example/realms/kavach#<subject-2>'
+# or KAVACH_BOOTSTRAP_SUPERADMINS='...'
+```
+
+- Each entry is `<issuer>#<subject>`: the configured `--oidc-issuer`, then the person's OIDC `sub` (the subject may itself contain `#`). The two must be different people. One entry, three, a repeat, another issuer, or no operator OIDC stops the start with an error.
+- It writes only while the tenant has no active `superadmin` binding. The write is two bindings plus one audit row each (`bootstrap_superadmin`, flagged `acting_as_superadmin`), in one transaction. A later start with the setting still present writes nothing and logs a warning: remove the setting once it has run.
+- The log names nobody; the audit rows hold the subjects.
+- Roles take effect on requests once the role checks ship (ADR-019 step 2b); until then the groups in `--cedar-entities` and the token decide, as before.
+
+*Recovery when every superadmin is gone* (for example both IdP accounts were deleted): this is a database-operator procedure, run as the owner role. End the dead bindings, then start once with `--bootstrap-superadmins` naming two current people:
+
+```sql
+UPDATE role_bindings SET ended_at = now()
+ WHERE tenant_id = '<tenant>' AND role = 'superadmin' AND ended_at IS NULL;
+```
+
+The rows stay (ended, with no change request), and the new bootstrap's audit rows record the recovery.
+
 **Console sign-in (ADR-018).** Off unless `--console-client-id` is set. With it, the console signs in through `kavach-api`: the API runs the authorization code flow with PKCE against your IdP as a confidential client, keeps the tokens on the server, and gives the browser only an `HttpOnly` session cookie. It needs operator OIDC (above) on the same issuer: the access tokens the API gets for a console user must pass the same issuer, audience and JWKS checks as a CLI token, so a person is the same Cedar principal either way. Sessions live in the API process's memory: a restart signs everyone out, and with several replicas a user's requests must reach the replica that holds their session.
 
 *At the IdP*, register one client for the console:

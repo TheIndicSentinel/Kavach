@@ -10,9 +10,10 @@ use kavach_evidence::MemoryChain;
 use kavach_keys::{verify_pack_file, TrustedSigners};
 use kavach_policy::{LoadedPolicyPack, PackLoader};
 use kavach_storage::{
-    check_startup_pack, AdminBackend, AuditInsert, BatchJobBackend, ChangeRequestBackend,
-    EvidenceBackend, IncidentBackend, MemoryAdminStore, MemoryChangeStore, MemoryRetentionStore,
-    RetentionBackend, RetentionStoreError, RuntimePointers, StartupPackCheck, StoragePool,
+    check_startup_pack, AdminBackend, AuditInsert, BatchJobBackend, BootstrapOutcome,
+    ChangeRequestBackend, EvidenceBackend, IncidentBackend, MemoryAdminStore, MemoryChangeStore,
+    MemoryRetentionStore, RetentionBackend, RetentionStoreError, RoleBackend, RuntimePointers,
+    StartupPackCheck, StoragePool,
 };
 
 use crate::config::{AccessControlKind, ApiConfig, EvidenceStoreKind};
@@ -43,6 +44,10 @@ pub struct AppState {
     nonces: crate::hmac_auth::NonceCache,
     changes: ChangeRequestBackend,
     change_ttl: Duration,
+    /// Operator role bindings and the principals directory (ADR-019).
+    roles: RoleBackend,
+    /// The tenant this process serves (ADR-014 Tier 1).
+    tenant_id: String,
     /// Serializes change decisions in this process, so commit order and
     /// live-swap order agree.
     governance_lock: tokio::sync::Mutex<()>,
@@ -113,8 +118,9 @@ impl AppState {
         let (yaml_model, model_sha256) =
             read_model_file(config.model_path(), pack_signers.as_ref())?;
 
-        let (evidence, incidents, batch_jobs, admin, retention, changes, pool) =
+        let (evidence, incidents, batch_jobs, admin, retention, changes, roles, pool) =
             storage_backends(config).await?;
+        bootstrap_superadmins(&roles, &config.roles).await?;
         let dataplane = build_dataplane(config, pool.as_ref()).await?;
 
         if matches!(config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
@@ -186,6 +192,8 @@ impl AppState {
             require_hardening: config.require_hardening,
             mtls_principal_san: config.mtls_principal_san,
             nonces: crate::hmac_auth::NonceCache::default(),
+            roles,
+            tenant_id: config.roles.tenant_id.clone(),
             changes,
             change_ttl: Duration::seconds(
                 i64::try_from(config.change_ttl_seconds).unwrap_or(i64::MAX),
@@ -216,6 +224,7 @@ impl AppState {
             insecure_dev: true,
             mtls_principal_san: None,
             change_ttl_seconds: DEFAULT_CHANGE_TTL_HOURS * 3600,
+            roles: crate::config::RolesConfig::default(),
             migration_database_url: None,
             database_tls: kavach_storage::DatabaseTls::default(),
             database_pool_size: kavach_storage::DEFAULT_POOL_SIZE,
@@ -316,6 +325,15 @@ impl AppState {
 
     pub fn changes(&self) -> &ChangeRequestBackend {
         &self.changes
+    }
+
+    pub fn roles(&self) -> &RoleBackend {
+        &self.roles
+    }
+
+    /// The tenant this process serves (ADR-014 Tier 1).
+    pub fn tenant_id(&self) -> &str {
+        &self.tenant_id
     }
 
     pub async fn model_states(&self) -> Result<Vec<kavach_storage::ModelState>, ApiError> {
@@ -596,6 +614,7 @@ type Backends = (
     AdminBackend,
     RetentionBackend,
     ChangeRequestBackend,
+    RoleBackend,
     Option<StoragePool>,
 );
 
@@ -611,8 +630,10 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
                 AdminBackend::Memory(admin.clone()),
                 RetentionBackend::Memory(retention.clone()),
                 ChangeRequestBackend::Memory(std::sync::Arc::new(MemoryChangeStore::new(
-                    admin, retention,
+                    admin.clone(),
+                    retention,
                 ))),
+                RoleBackend::memory(admin),
                 None,
             )
         }
@@ -632,10 +653,39 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
                 AdminBackend::Postgres(pool.admin_store()),
                 RetentionBackend::Postgres(pool.retention_store()),
                 ChangeRequestBackend::Postgres(pool.change_request_store()),
+                RoleBackend::Postgres(pool.role_store()),
                 Some(pool),
             )
         }
     })
+}
+
+/// ADR-019 §5: writes the first two superadmins, before anything is served,
+/// unless the tenant already has one. The log names no person; the audit
+/// rows do.
+async fn bootstrap_superadmins(
+    roles: &RoleBackend,
+    config: &crate::config::RolesConfig,
+) -> Result<(), ApiError> {
+    if config.bootstrap_superadmins.is_empty() {
+        return Ok(());
+    }
+    let outcome = roles
+        .bootstrap_superadmins(&config.tenant_id, &config.bootstrap_superadmins, Utc::now())
+        .await
+        .map_err(|e| ApiError::Internal(format!("bootstrap superadmins: {e}")))?;
+    match outcome {
+        BootstrapOutcome::Written(bindings) => tracing::warn!(
+            bindings = bindings.len(),
+            "superadmin bootstrap applied (ADR-019 §5): two superadmin bindings written and \
+             audited as bootstrap_superadmin; remove --bootstrap-superadmins"
+        ),
+        BootstrapOutcome::AlreadyPresent => tracing::warn!(
+            "--bootstrap-superadmins ignored: the tenant already has an active superadmin; \
+             remove the setting"
+        ),
+    }
+    Ok(())
 }
 
 /// Reads a model file: the record and the SHA-256 of its bytes. With trusted

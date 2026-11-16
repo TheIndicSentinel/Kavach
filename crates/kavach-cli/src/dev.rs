@@ -126,6 +126,7 @@ fn api_config(project: &Project, clock: Option<Arc<DevClock>>) -> ApiConfig {
         insecure_dev: true,
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
+        roles: kavach_api::RolesConfig::default(),
         migration_database_url: None,
         database_tls: DatabaseTls::development(),
         database_pool_size: DEFAULT_POOL_SIZE,

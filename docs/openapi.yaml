@@ -1700,7 +1700,7 @@ components:
     AuditEntry:
       type: object
       additionalProperties: false
-      required: [id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at]
+      required: [id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at, acting_as_superadmin]
       properties:
         id: { type: integer }
         action: { type: string }
@@ -1710,6 +1710,11 @@ components:
         approver_principal: { type: string }
         payload: {}
         created_at: { $ref: "#/components/schemas/DateTime" }
+        acting_as_superadmin:
+          type: boolean
+          description: >-
+            True when the action was allowed only by a superadmin policy, or is the
+            superadmin bootstrap (ADR-019). False for entries written before the flag existed.
 
     RetentionSettings:
       type: object

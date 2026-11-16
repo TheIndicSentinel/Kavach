@@ -1030,6 +1030,8 @@ export interface components {
             approver_principal: string;
             payload: unknown;
             created_at: components["schemas"]["DateTime"];
+            /** @description True when the action was allowed only by a superadmin policy, or is the superadmin bootstrap (ADR-019). False for entries written before the flag existed. */
+            acting_as_superadmin: boolean;
         };
         RetentionSettings: {
             evidence_retention_days: number;

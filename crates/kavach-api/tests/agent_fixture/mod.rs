@@ -369,6 +369,7 @@ pub fn config(store: EvidenceStoreKind, insecure_dev: bool, rate: u32) -> ApiCon
         insecure_dev,
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
+        roles: kavach_api::RolesConfig::default(),
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,

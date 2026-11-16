@@ -45,7 +45,7 @@ pub mod tls;
 
 pub use config::{
     resolve_access_control, validate_hmac_secret, validate_principal_sources, AccessControlKind,
-    AccessControlMode, ApiConfig, EvidenceStoreKind, TlsConfig, MIN_HMAC_SECRET_BYTES,
+    AccessControlMode, ApiConfig, EvidenceStoreKind, RolesConfig, TlsConfig, MIN_HMAC_SECRET_BYTES,
 };
 pub use error::ApiError;
 pub use grpc::{status_from_api, GrpcEvaluateService};

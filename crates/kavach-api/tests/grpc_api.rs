@@ -145,6 +145,7 @@ async fn spawn_cedar_grpc_server() -> (SocketAddr, tokio::task::JoinHandle<()>) 
         insecure_dev: true,
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
+        roles: kavach_api::RolesConfig::default(),
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,

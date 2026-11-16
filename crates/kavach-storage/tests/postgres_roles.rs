@@ -65,6 +65,13 @@ async fn runtime_role_cannot_alter_evidence_or_governance_history() {
         "UPDATE agent_outcome_resolutions SET reason = 'x'",
         "DELETE FROM agent_outcome_resolutions",
         "TRUNCATE agent_outcome_resolutions",
+        // Role bindings (ADR-019) are ended, never rewritten or removed.
+        "UPDATE role_bindings SET role = 'superadmin'",
+        "UPDATE role_bindings SET subject = 'x'",
+        "UPDATE role_bindings SET granted_at = now()",
+        "DELETE FROM role_bindings",
+        "TRUNCATE role_bindings",
+        "DELETE FROM principals",
     ] {
         let err = sqlx::query(statement)
             .execute(&pool.pool)
@@ -127,6 +134,8 @@ async fn auditor_role_reads_agent_evidence_and_nothing_else() {
         "SELECT * FROM decision_events",
         "SELECT * FROM admin_audit_log",
         "SELECT * FROM replay_guard",
+        "SELECT * FROM role_bindings",
+        "SELECT * FROM principals",
         "CREATE TABLE intruder (id INT)",
     ] {
         let err = sqlx::query(statement)

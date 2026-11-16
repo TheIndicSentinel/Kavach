@@ -10,6 +10,7 @@ mod jobs;
 mod mandates;
 mod migrate;
 mod retention;
+mod roles;
 mod tls;
 
 pub use admin::PostgresAdminStore;
@@ -27,6 +28,7 @@ pub use migrate::{
     connect_pool, connect_runtime, connect_runtime_sized, migrate, DEFAULT_POOL_SIZE,
 };
 pub use retention::PostgresRetentionStore;
+pub use roles::PostgresRoleStore;
 pub use tls::{connect_options, is_weakened, DatabaseTls, DatabaseTlsError};
 
 use sqlx::PgPool;
@@ -109,5 +111,9 @@ impl StoragePool {
 
     pub fn change_request_store(&self) -> PostgresChangeStore {
         PostgresChangeStore::new(self.pool.clone())
+    }
+
+    pub fn role_store(&self) -> PostgresRoleStore {
+        PostgresRoleStore::new(self.pool.clone())
     }
 }

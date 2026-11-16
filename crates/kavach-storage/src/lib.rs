@@ -9,6 +9,7 @@ mod jobs_store;
 mod model_governance;
 mod postgres;
 mod retention;
+mod roles;
 mod startup;
 #[cfg(feature = "test-support")]
 pub mod testing;
@@ -34,10 +35,15 @@ pub use postgres::{
     BatchJobCreate, BatchJobStore, DatabaseTls, DatabaseTlsError, EvidenceSnapshot, JobStoreError,
     NoopBatchJobStore, PostgresAdminStore, PostgresAgentEvidenceStore, PostgresBatchJobStore,
     PostgresChangeStore, PostgresEvidenceStore, PostgresIncidentStore, PostgresMandateStore,
-    PostgresReplayGuard, PostgresRetentionStore, StoragePool, DEFAULT_POOL_SIZE,
+    PostgresReplayGuard, PostgresRetentionStore, PostgresRoleStore, StoragePool, DEFAULT_POOL_SIZE,
 };
 pub use retention::{
     MemoryRetentionStore, RetentionApplyReport, RetentionSettings, RetentionStoreError,
     TombstoneReason, TombstoneRecord,
+};
+pub use roles::{
+    BindingSubject, BootstrapOutcome, MemoryRoleStore, PrincipalRecord, Role, RoleBackend,
+    RoleBinding, RoleStoreError, SubjectKind, BOOTSTRAP_ACTOR, BOOTSTRAP_AUDIT_ACTION,
+    DISPLAY_NAME_MAX_CHARS, LAST_SEEN_GRANULARITY, ROLE_BINDING_RESOURCE,
 };
 pub use startup::{check_startup_pack, StartupPackCheck, StartupPackError};

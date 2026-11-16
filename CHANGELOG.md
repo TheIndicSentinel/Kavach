@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Operator role storage and the superadmin bootstrap (ADR-019 step 2a).** Migration `024_operator_roles.sql` adds `principals` and `role_bindings` (per tenant; a binding names a person or a group, ends but is never deleted; the runtime role cannot change a binding's role, subject or grant time, nor delete either table's rows) and a nullable `admin_audit_log.acting_as_superadmin`. `AuditEntry` gains `acting_as_superadmin` (additive; false for every existing row). `kavach-api --bootstrap-superadmins` (`KAVACH_BOOTSTRAP_SUPERADMINS`) writes exactly two OIDC people as the tenant's first superadmins, once, while none is active; see INSTALL. Roles are stored and looked up but do not yet change any authorisation decision (step 2b).
 - **ADR-019, operator roles and role management (accepted, design only).** It defines:
   - seven roles (`superadmin`, `user_admin`, `policy_admin`, `approver`, `operator`, `auditor`, `viewer`) with a role-to-action matrix;
   - per-tenant bindings to an OIDC subject or an IdP group, which Cedar receives alongside the token's groups;
