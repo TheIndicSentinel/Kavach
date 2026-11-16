@@ -1,11 +1,15 @@
 import { createElement } from "react";
 import { describe, expect, it } from "vitest";
 import { CREDIT_TRACK_PATHS, isCreditTrackPath } from "../../lib/creditTrack";
+import type { Viewer } from "../../lib/permissions";
 import { render, text } from "../../test/markup";
 import { Sidebar } from "./Sidebar";
 
 const nav = (agentOnly: boolean | null) =>
   text(render(createElement(Sidebar, { open: true, onNavigate: () => {}, agentOnly })));
+
+const navFor = (viewer: Viewer) =>
+  text(render(createElement(Sidebar, { open: true, onNavigate: () => {}, viewer })));
 
 const CREDIT_LABELS = ["Evaluate", "Policies", "Models", "Batch jobs", "Incidents", "Retention", "Decision events"];
 const BOTH_TRACKS = ["Overview", "Settings", "Agents", "Agent evidence", "Closed loans", "Change requests", "Audit"];
@@ -40,5 +44,11 @@ describe("Sidebar", () => {
       // The README's tagline: no "regulated" claim the code does not back.
       expect(shown).toContain("Authorization and runtime control for AI agents and credit decisions.");
     }
+  });
+
+  it("shows Users & roles only when known groups or roles may read principals", () => {
+    expect(navFor({ principal: "p", groups: ["viewers"], roles: [] })).not.toContain("Users & roles");
+    expect(navFor({ principal: "p", groups: ["viewers"], roles: ["user_admin"] })).toContain("Users & roles");
+    expect(navFor({ principal: null, groups: null, roles: null })).toContain("Users & roles");
   });
 });

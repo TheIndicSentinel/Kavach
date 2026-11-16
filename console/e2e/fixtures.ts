@@ -290,3 +290,33 @@ export const agentPageTwo: Schemas["AgentStatePage"] = {
   items: [quarantined],
   next_cursor: null,
 };
+
+/** `GET /v1/me`: the current caller has no Kavach roles bound. */
+export const meNoRoles: Schemas["Me"] = { principal: "dev", roles: [] };
+
+/** One read-only page of the Users & roles directory. */
+export const principalPage: Schemas["PrincipalPage"] = {
+  items: [
+    {
+      issuer: "https://idp.example.test",
+      subject: "oidc-admin-2",
+      display_name: "Asha Rao",
+      first_seen_at: "2026-11-01T09:00:00Z",
+      last_seen_at: "2026-11-15T09:30:00Z",
+    },
+  ],
+  next_cursor: "principal-page-2",
+};
+
+export const principalPageTwo: Schemas["PrincipalPage"] = {
+  items: [
+    {
+      issuer: "https://idp.example.test",
+      subject: "oidc-auditor-5",
+      display_name: "Asha Rao (contractor)",
+      first_seen_at: "2026-11-02T09:00:00Z",
+      last_seen_at: "2026-11-14T16:00:00Z",
+    },
+  ],
+  next_cursor: null,
+};

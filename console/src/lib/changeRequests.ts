@@ -3,6 +3,7 @@
 // refuse, never add a permission.
 import { useMemo, useState } from "react";
 import { getAccessToken, getPrincipal, type ChangeRequest } from "./api";
+import { useMe } from "./me";
 import {
   UNKNOWN_VIEWER,
   approveAction,
@@ -65,10 +66,11 @@ export function viewerFor(session: SessionViewer, fallback: Viewer): Viewer {
 export function useViewer(groups: readonly string[] | null = null): Viewer {
   const [fallback] = useState(() => currentViewer(undefined, undefined, groups));
   const session = useSessionViewer();
+  const me = useMe();
   const { principal, groups: sessionGroups } = session;
   return useMemo(
-    () => viewerFor({ principal, groups: sessionGroups }, fallback),
-    [principal, sessionGroups, fallback],
+    () => ({ ...viewerFor({ principal, groups: sessionGroups }, fallback), roles: me?.roles ?? null }),
+    [principal, sessionGroups, fallback, me],
   );
 }
 

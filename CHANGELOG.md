@@ -6,13 +6,14 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Console role-aware navigation and Users directory (ADR-019 step 3, in progress).** The console reads `/v1/me` once per signed-in caller in memory, uses the known groups and assigned roles as page-visibility hints, and shows the persistent superadmin banner. `/users` now provides a searchable, cursor-paged read-only people directory backed by `GET /v1/principals`. The API remains the authorization gate. Role bindings, role proposals, and the access review are still being added in separate slices.
 - **Reading roles and the access review (ADR-019 step 2c, part 2).** Four new read endpoints, all additive:
   - `GET /v1/principals` (`read_principals`): the people who have signed in to the tenant, a page at a time (`limit`, `cursor`), with `?q=` matching the display name or subject, ignoring case.
   - `GET /v1/role-bindings` (`read_principals`): active bindings, and ended ones with `?include=ended`.
   - `GET /v1/access-review?format=json|csv` (`read_access_review`): one row per active binding, with who proposed and who approved the grant and when the person was last seen. A person last seen more than `--access-review-stale-days` ago (`KAVACH_ACCESS_REVIEW_STALE_DAYS`, default 90, 1–3650), or never, is marked stale. The alias groups are named, not expanded. Every export writes an `export_access_review` audit row first; an export that cannot be audited is refused (503). CSV fields are always quoted, and a field starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a leading `'`.
   - `GET /v1/me`: the caller and the roles bound to them now. Any authenticated caller; it decides nothing.
   - Only `superadmin`, `user_admin` and `auditor` read the first three; the alias groups do not. All four answer with `Cache-Control: no-store`.
-  - The console does not call them yet (step 3); they are listed in `console/api-coverage-exempt.txt` until then.
+  - The console calls `GET /v1/me` for role-aware presentation and `GET /v1/principals` for the directory. `GET /v1/role-bindings` and `GET /v1/access-review` remain listed in `console/api-coverage-exempt.txt` until their UI slices land.
 - **Granting and revoking roles (ADR-019 step 2c, part 1).** Two new change kinds: `grant_role` `{role, subject: {kind, issuer, value}}` and `revoke_role` `{binding_id}`. They go through `POST /v1/change-requests` and need a second person to approve. The binding is written or ended only inside the approval's transaction, so a pending grant gives nothing.
   - **Who may change roles:** only `superadmin` and `user_admin` may propose or approve a role change, and only a `superadmin` may touch `superadmin` (Cedar receives the role as context).
   - **No self-grant:** neither the proposer nor the approver may grant a role to themselves or to a group in their token. The approver is refused with the request left pending.

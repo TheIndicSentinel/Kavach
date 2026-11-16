@@ -59,6 +59,10 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `GET /v1/admin/incidents` | `read_incidents` | Incidents | done (credit track) |
 | `GET /v1/admin/batch-jobs` | `read_batch_jobs` | Batch jobs | done (credit track) |
 | `GET /v1/admin/batch-jobs/{job_id}` | `read_batch_jobs` | Batch job detail | done (credit track) |
+| `GET /v1/me` | caller's session | App shell: role-aware page hints and superadmin banner | done (ADR-019 step 3, `/v1/me` is presentation only) |
+| `GET /v1/principals?q=&limit=&cursor=` | `read_principals` | Users & roles: searchable people directory | done (ADR-019 step 3, read-only slice) |
+| `GET /v1/role-bindings` | `read_principals` | Users & roles | exempt until the role-binding directory slice lands |
+| `GET /v1/access-review?format=json\|csv` | `read_access_review` | Users & roles | exempt until the audited access-review slice lands |
 | `POST /v1/authorize` | agent token | none | exempt: agent listener |
 | `POST /v1/tools/{tool}` | agent token | none | exempt: agent listener |
 | `POST /v1/sor/events` | issuer signature | none | exempt: system-of-record listener |
@@ -130,6 +134,12 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - The same loading, empty, error, 401/403 and 404 states on every page, a 404 page, and every page checked at 375px (#254).
 - OIDC authorization code with PKCE in place of the pasted token, per [ADR-018](ADR-018-console-login-and-token-storage.md) option C.
 - The API path check (section 2).
+
+### ADR-019 step 3: operator role management — in progress
+
+- **Done:** `/v1/me` is read once for the current caller and held in memory; known groups and roles inform sidebar visibility, and superadmins see the persistent banner.
+- **Done:** `/users` shows the searchable, cursor-paged people directory. Its read is covered by loading, empty, error, and accessibility tests.
+- **Next slices:** show current role bindings; add maker-checker grant and revoke proposals; add the click-to-load, audited access review and CSV download. Each remains a hint or proposal in the console; the API decides and applies changes only after approval.
 
 ## 5. Decisions (closed)
 

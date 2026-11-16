@@ -17,6 +17,8 @@ const ok = (json: unknown): Stub => ({ json });
 export const defaultStubs: Stubs = {
   "GET /health": ok({ status: "ok" }),
   "GET /v1/runtime": ok(body.runtime),
+  "GET /v1/me": ok(body.meNoRoles),
+  "GET /v1/principals": ok(body.principalPage),
   "GET /v1/packs": ok([body.packSummary]),
   "GET /v1/packs/finance-core": ok(body.pack),
   "GET /v1/models": ok([body.modelSummary]),

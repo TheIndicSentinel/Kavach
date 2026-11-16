@@ -31,6 +31,7 @@ const PAGES: PageCase[] = [
   { path: "/audit", title: "Admin audit", ready: "pack/finance-core" },
   { path: "/incidents", title: "Incidents", ready: "corr-77" },
   { path: "/retention", title: "Retention & erasure", ready: "ev-123" },
+  { path: "/users", title: "Users & roles", ready: "Asha Rao" },
   { path: "/settings", title: "Settings" },
 ];
 

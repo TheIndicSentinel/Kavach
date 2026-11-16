@@ -14,10 +14,13 @@ import {
   Settings,
   ShieldOff,
   TriangleAlert,
+  UsersRound,
 } from "lucide-react";
 import { KavachLogo } from "../brand/KavachLogo";
 import { cn } from "../../lib/cn";
 import { isCreditTrackPath } from "../../lib/creditTrack";
+import { showsPage } from "../../lib/pageAccess";
+import { UNKNOWN_VIEWER, type Viewer } from "../../lib/permissions";
 
 const primaryNav = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard },
@@ -42,15 +45,20 @@ const governanceNav = [
   { to: "/decision-events", label: "Decision events", icon: FileCheck },
 ] as const;
 
+const accessNav = [{ to: "/users", label: "Users & roles", icon: UsersRound }] as const;
+
 type SidebarProps = {
   open: boolean;
   onNavigate: () => void;
   /** The server runs --agent-only: leave out the credit track's pages. `null`: not known yet, show all. */
   agentOnly?: boolean | null;
+  /** Page links are hints based on known groups and roles; the API decides each request. */
+  viewer?: Viewer;
 };
 
-export function Sidebar({ open, onNavigate, agentOnly = null }: SidebarProps) {
-  const served = (item: { to: string }) => agentOnly !== true || !isCreditTrackPath(item.to);
+export function Sidebar({ open, onNavigate, agentOnly = null, viewer = UNKNOWN_VIEWER }: SidebarProps) {
+  const served = (item: { to: string }) =>
+    (agentOnly !== true || !isCreditTrackPath(item.to)) && showsPage(viewer, item.to);
   return (
     <aside
       className={cn(
@@ -117,6 +125,30 @@ export function Sidebar({ open, onNavigate, agentOnly = null }: SidebarProps) {
             Governance
           </p>
           {governanceNav.filter(served).map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              onClick={onNavigate}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-white/10 text-white"
+                    : "text-stone-300 hover:bg-white/5 hover:text-white",
+                )
+              }
+            >
+              <item.icon className="h-4 w-4 shrink-0 opacity-80" aria-hidden />
+              {item.label}
+            </NavLink>
+          ))}
+        </div>
+
+        <div className="pt-6">
+          <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-400">
+            Access
+          </p>
+          {accessNav.filter(served).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

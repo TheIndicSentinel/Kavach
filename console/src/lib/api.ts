@@ -451,6 +451,32 @@ export type Outcome = Schemas["Outcome"];
 /** `GET /v1/decision-events/{evidence_id}`: one evaluate decision event. */
 export type DecisionEventLookup = Ok<"getDecisionEvent">;
 
+/** `GET /v1/me`: the caller and the roles bound to them now. */
+export type RoleName = Schemas["RoleName"];
+export type Me = Schemas["Me"];
+
+export function fetchMe(): Promise<Me> {
+  return request("/v1/me");
+}
+
+export type Principal = Schemas["Principal"];
+export type PrincipalPage = Schemas["PrincipalPage"];
+export type PrincipalQuery = NonNullable<operations["listPrincipals"]["parameters"]["query"]>;
+
+export function principalsPath(query: PrincipalQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.q) params.set("q", query.q);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor) params.set("cursor", query.cursor);
+  const search = params.toString();
+  return search ? `/v1/principals?${search}` : "/v1/principals";
+}
+
+/** The principals directory, a page at a time (`read_principals`). */
+export function fetchPrincipals(query: PrincipalQuery = {}): Promise<PrincipalPage> {
+  return request(principalsPath(query));
+}
+
 /** Rate limited and audited by the API (counts, never references). Reports only; revokes nothing. */
 export function reconcileClosedRecords(body: ClosedRecordsRequest): Promise<ClosedRecordsResult> {
   return request("/v1/reconciliation/closed-records", { method: "POST", body });

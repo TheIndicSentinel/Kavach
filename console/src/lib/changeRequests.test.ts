@@ -81,16 +81,16 @@ describe("useViewer", () => {
 
   it("signed in: the session's principal and groups", () => {
     setSessionStateForTest({ status: "signed_in", session: SESSION });
-    expect(seen()).toEqual({ principal: "oidc-viewer-3", groups: ["viewers"] });
+    expect(seen()).toEqual({ principal: "oidc-viewer-3", groups: ["viewers"], roles: null });
   });
 
   it("development fallback and signed out: groups stay unknown", () => {
     for (const status of ["dev_token", "checking"] as const) {
       setSessionStateForTest({ status });
-      expect(seen()).toEqual(UNKNOWN_VIEWER);
+      expect(seen()).toEqual({ ...UNKNOWN_VIEWER, roles: null });
     }
     setSessionStateForTest({ status: "signed_out", ended: true });
-    expect(seen()).toEqual(UNKNOWN_VIEWER);
+    expect(seen()).toEqual({ ...UNKNOWN_VIEWER, roles: null });
   });
 });
 
