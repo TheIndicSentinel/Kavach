@@ -290,3 +290,99 @@ export const agentPageTwo: Schemas["AgentStatePage"] = {
   items: [quarantined],
   next_cursor: null,
 };
+
+/** `GET /v1/me`: no role bound, so the groups alone decide what shows. */
+export const meNoRoles: Schemas["Me"] = { principal: "dev", roles: [] };
+
+/** `GET /v1/me` for a superadmin: every page shows, with the banner. */
+export const meSuperadmin: Schemas["Me"] = { principal: "oidc-admin-2", roles: ["superadmin"] };
+
+const ISSUER = "https://idp.example.test";
+
+/** `GET /v1/principals`: one page, nothing after it. */
+export const principalPage: Schemas["PrincipalPage"] = {
+  items: [
+    {
+      issuer: ISSUER,
+      subject: "oidc-admin-2",
+      display_name: "Asha Rao",
+      first_seen_at: "2026-11-01T09:00:00Z",
+      last_seen_at: "2026-11-15T09:30:00Z",
+    },
+    {
+      issuer: ISSUER,
+      subject: "oidc-auditor-5",
+      display_name: "oidc-auditor-5",
+      first_seen_at: "2026-11-02T09:00:00Z",
+      last_seen_at: "2026-11-14T16:00:00Z",
+    },
+  ],
+  next_cursor: null,
+};
+
+/** `GET /v1/role-bindings`: two bootstrap superadmins and an approved auditor grant. */
+export const roleBindings: Schemas["RoleBindingList"] = {
+  items: [
+    {
+      id: "rb-1",
+      role: "superadmin",
+      subject: { kind: "principal", issuer: ISSUER, value: "oidc-admin-2" },
+      granted_by_change_request: null,
+      granted_at: "2026-11-01T08:00:00Z",
+      ended_by_change_request: null,
+      ended_at: null,
+    },
+    {
+      id: "rb-2",
+      role: "auditor",
+      subject: { kind: "principal", issuer: ISSUER, value: "oidc-auditor-5" },
+      granted_by_change_request: "cr-roles-1",
+      granted_at: "2026-11-02T10:00:00Z",
+      ended_by_change_request: null,
+      ended_at: null,
+    },
+  ],
+};
+
+/** `GET /v1/access-review?format=json`. */
+export const accessReview: Schemas["AccessReview"] = {
+  tenant_id: "default",
+  generated_at: "2026-11-15T10:00:00Z",
+  stale_after_days: 90,
+  alias_groups: ["admins", "change-approvers", "operators", "viewers"],
+  note: "The alias groups admins, change-approvers, operators and viewers keep their permits and are not listed; review their members in the IdP.",
+  rows: [
+    {
+      binding_id: "rb-2",
+      role: "auditor",
+      subject_kind: "principal",
+      issuer: ISSUER,
+      subject: "oidc-auditor-5",
+      display_name: "oidc-auditor-5",
+      granted_at: "2026-11-02T10:00:00Z",
+      change_request_id: "cr-roles-1",
+      proposer: "oidc-admin-2",
+      approver: "oidc-admin-9",
+      last_seen_at: "2026-11-14T16:00:00Z",
+      stale: false,
+    },
+  ],
+};
+
+/** A session whose groups grant nothing; GET /v1/me gives it superadmin. */
+export const superadminSession: Schemas["ConsoleSession"] = {
+  ...authSession,
+  principal: "oidc-admin-2",
+  groups: [],
+};
+
+/** `POST /v1/change-requests` for a role grant. */
+export const grantProposed: Schemas["ChangeRequest"] = {
+  ...reinstateProposed,
+  id: "cr-roles-2",
+  kind: "grant_role",
+  params: {
+    role: "auditor",
+    subject: { kind: "principal", issuer: "https://idp.example.test", value: "oidc-auditor-5" },
+  },
+};

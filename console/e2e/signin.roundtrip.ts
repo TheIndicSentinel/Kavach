@@ -127,6 +127,7 @@ test("every page under the server's CSP: no violation, and no request to another
     "/audit",
     "/incidents",
     "/retention",
+    "/users",
     "/settings",
   ]) {
     await page.goto(path);

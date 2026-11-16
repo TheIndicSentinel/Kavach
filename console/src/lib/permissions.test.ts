@@ -1,14 +1,18 @@
-// The role-hint table against the Cedar policy file it copies. If someone
-// edits kavach.cedar (or the table) so that they disagree about which group
-// may do which action, this fails, and the hint cannot drift from the policy.
+// The role-hint tables against the Cedar policy file they copy. If someone
+// edits kavach.cedar (or a table) so that they disagree about which group or
+// role may do which action, this fails, and the hints cannot drift from the
+// policy.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   CEDAR_GROUPS,
   COVERED_ACTIONS,
   GROUP_ACTIONS,
+  ROLES,
+  ROLE_ACTIONS,
   UNKNOWN_VIEWER,
   approveAction,
+  deniedLine,
   mayProbably,
   proposeAction,
   roleHint,
@@ -20,23 +24,10 @@ const CEDAR = new URL(
   import.meta.url,
 );
 
-type Permit = { id: string; group: string; action: string };
+type Permit = { id: string; holder: string; actions: string[] | "all" };
 
-/** The seven ADR-019 roles; their permits are not group hints. */
-const ROLES = [
-  "superadmin",
-  "user_admin",
-  "policy_admin",
-  "approver",
-  "operator",
-  "auditor",
-  "viewer",
-] as const;
-
-/** A `permit` whose principal is one of the seven roles (ADR-019 §2). */
-const ROLE_PERMIT = new RegExp(
-  `^@id\\("([^"]+)"\\)\\s*permit\\s*\\(\\s*principal\\s+in\\s+Kavach::Role::"(${ROLES.join("|")})"\\s*,`,
-);
+/** The one condition a role permit may carry: user_admin never touches superadmin. */
+const NOT_SUPERADMIN = /^when\s*\{\s*context\.role\s*!=\s*"superadmin"\s*\}$/;
 
 function statementsOf(source: string): string[] {
   return source
@@ -47,90 +38,109 @@ function statementsOf(source: string): string[] {
 }
 
 /**
- * Every group policy in the file, read as `permit (principal in Group,
- * action == Action, resource == System::"api")`. Role permits (ADR-019) are
- * left to the role-based gating; anything else the table cannot model (a
- * forbid, a condition, a principal that is neither a group nor a role, a
- * set of actions) fails here rather than being skipped.
+ * Every policy in the file, read as `permit (principal in Group or Role,
+ * action == A | action in [A, …] | action, resource == System::"api")`, with
+ * at most the one condition above on a role permit. Anything else the
+ * tables cannot model (a forbid, another condition, another principal)
+ * fails here rather than being skipped.
  */
-function readPolicies(source: string): Permit[] {
-  const statements = statementsOf(source).filter(
-    (statement) => !ROLE_PERMIT.test(statement),
-  );
-  return statements.map((statement) => {
+function readPolicies(source: string): { groups: Permit[]; roles: Permit[] } {
+  const groups: Permit[] = [];
+  const roles: Permit[] = [];
+  for (const statement of statementsOf(source)) {
     const match = statement.match(
-      /^@id\("([^"]+)"\)\s*permit\s*\(\s*principal\s+in\s+Kavach::Group::"([^"]+)"\s*,\s*action\s*==\s*Kavach::Action::"([^"]+)"\s*,\s*resource\s*==\s*Kavach::System::"api"\s*\)$/,
+      /^@id\("([^"]+)"\)\s*permit\s*\(\s*principal\s+in\s+Kavach::(Group|Role)::"([^"]+)"\s*,\s*action(?:\s*==\s*Kavach::Action::"([^"]+)"|\s+in\s*\[([^\]]*)\])?\s*,\s*resource\s*==\s*Kavach::System::"api"\s*\)\s*(.*)$/s,
     );
-    if (!match)
-      throw new Error(
-        `the role-hint table cannot model this policy:\n${statement}`,
-      );
-    return { id: match[1], group: match[2], action: match[3] };
-  });
+    const fail = () => new Error(`the role-hint tables cannot model this policy:\n${statement}`);
+    if (!match) throw fail();
+    const [, id, kind, holder, single, list, condition] = match;
+    const actions =
+      single !== undefined
+        ? [single]
+        : list !== undefined
+          ? list.split(",").map((item) => {
+              const action = item.trim().match(/^Kavach::Action::"([^"]+)"$/);
+              if (!action) throw fail();
+              return action[1];
+            })
+          : ("all" as const);
+    if (kind === "Group") {
+      if (condition !== "" || actions === "all") throw fail();
+      groups.push({ id, holder, actions });
+    } else {
+      if (condition !== "" && !NOT_SUPERADMIN.test(condition)) throw fail();
+      if (!(ROLES as string[]).includes(holder)) throw fail();
+      roles.push({ id, holder, actions });
+    }
+  }
+  return { groups, roles };
 }
 
 const policies = readPolicies(readFileSync(CEDAR, "utf8"));
-const pair = (group: string, action: string) => `${group} may ${action}`;
+const pair = (holder: string, action: string) => `${holder} may ${action}`;
+const covered = new Set<string>(COVERED_ACTIONS);
 
-describe("the role-hint table matches kavach.cedar", () => {
+/** The covered actions the file permits each holder, as "holder may action". */
+function pairsInFile(permits: Permit[]): string[] {
+  return [
+    ...new Set(
+      permits.flatMap((permit) =>
+        (permit.actions === "all" ? [...COVERED_ACTIONS] : permit.actions)
+          .filter((action) => covered.has(action))
+          .map((action) => pair(permit.holder, action)),
+      ),
+    ),
+  ].sort();
+}
+
+describe("the role-hint tables match kavach.cedar", () => {
   it("reads a policy file with policies in it", () => {
-    expect(policies.length).toBeGreaterThan(20);
+    expect(policies.groups.length).toBeGreaterThan(20);
+    expect(policies.roles.length).toBeGreaterThan(7);
   });
 
-  it("names only the groups the table knows", () => {
-    const groups = new Set(policies.map((policy) => policy.group));
-    expect([...groups].sort()).toEqual([...CEDAR_GROUPS].sort());
+  it("names only the groups and roles the tables know", () => {
+    expect([...new Set(policies.groups.map((p) => p.holder))].sort()).toEqual([...CEDAR_GROUPS].sort());
+    expect([...new Set(policies.roles.map((p) => p.holder))].sort()).toEqual([...ROLES].sort());
   });
 
   it("gives each group exactly the covered actions the file permits it", () => {
-    const covered = new Set<string>(COVERED_ACTIONS);
-    const inFile = policies
-      .filter((policy) => covered.has(policy.action))
-      .map((policy) => pair(policy.group, policy.action));
-    const inTable = CEDAR_GROUPS.flatMap((group) =>
-      GROUP_ACTIONS[group].map((action) => pair(group, action)),
-    );
-    expect([...new Set(inTable)].sort()).toEqual([...new Set(inFile)].sort());
+    const inTable = CEDAR_GROUPS.flatMap((group) => GROUP_ACTIONS[group].map((action) => pair(group, action)));
+    expect([...new Set(inTable)].sort()).toEqual(pairsInFile(policies.groups));
   });
 
-  it("covers every propose_ and approve_ action in the file (a new change kind needs a row)", () => {
-    const covered = new Set<string>(COVERED_ACTIONS);
-    const changeActions = policies
-      .map((policy) => policy.action)
-      .filter((action) => /^(propose|approve)_/.test(action));
-    expect(changeActions.filter((action) => !covered.has(action))).toEqual([]);
+  it("gives each role exactly the covered actions the file permits it", () => {
+    const inTable = ROLES.flatMap((role) => ROLE_ACTIONS[role].map((action) => pair(role, action)));
+    expect([...new Set(inTable)].sort()).toEqual(pairsInFile(policies.roles));
+  });
+
+  it("gives superadmin every action, with one permit and no condition", () => {
+    const superadmin = policies.roles.filter((p) => p.holder === "superadmin");
+    expect(superadmin.map((p) => p.actions)).toEqual(["all"]);
+  });
+
+  it("covers every propose_, approve_ and read_ action in the file (a new one needs a row)", () => {
+    const named = [...policies.groups, ...policies.roles].flatMap((p) => (p.actions === "all" ? [] : p.actions));
+    expect(named.filter((action) => /^(propose|approve|read)_/.test(action) && !covered.has(action))).toEqual([]);
   });
 
   it("covers only actions the file names (a renamed action fails)", () => {
-    const named = new Set(policies.map((policy) => policy.action));
+    const named = new Set(
+      [...policies.groups, ...policies.roles].flatMap((p) => (p.actions === "all" ? [] : p.actions)),
+    );
     expect(COVERED_ACTIONS.filter((action) => !named.has(action))).toEqual([]);
   });
 
-  it("leaves out only permits for the seven roles, and every role has one", () => {
-    const rolePermits = statementsOf(readFileSync(CEDAR, "utf8"))
-      .map((statement) => statement.match(ROLE_PERMIT))
-      .filter((match): match is RegExpMatchArray => match !== null);
-    expect(new Set(rolePermits.map((match) => match[2]))).toEqual(
-      new Set(ROLES),
-    );
-    expect(() =>
-      readPolicies(
-        '@id("x") forbid (principal in Kavach::Role::"viewer", action, resource == Kavach::System::"api");',
-      ),
-    ).toThrow(/cannot model/);
-    expect(() =>
-      readPolicies(
-        '@id("x") permit (principal in Kavach::Role::"admins", action, resource == Kavach::System::"api");',
-      ),
-    ).toThrow(/cannot model/);
-  });
-
   it("refuses a policy it cannot model", () => {
-    expect(() =>
-      readPolicies(
-        '@id("x") permit (principal in Kavach::Group::"admins", action == Kavach::Action::"stop_agent", resource == Kavach::System::"api") when { false };',
-      ),
-    ).toThrow(/cannot model/);
+    for (const policy of [
+      '@id("x") permit (principal in Kavach::Group::"admins", action == Kavach::Action::"stop_agent", resource == Kavach::System::"api") when { false };',
+      '@id("x") forbid (principal in Kavach::Role::"viewer", action, resource == Kavach::System::"api");',
+      '@id("x") permit (principal in Kavach::Role::"admins", action, resource == Kavach::System::"api");',
+      '@id("x") permit (principal in Kavach::Group::"admins", action, resource == Kavach::System::"api");',
+      '@id("x") permit (principal in Kavach::Role::"user_admin", action in [Kavach::Action::"read_audit"], resource == Kavach::System::"api") when { true };',
+    ]) {
+      expect(() => readPolicies(policy)).toThrow(/cannot model/);
+    }
   });
 });
 
@@ -167,6 +177,54 @@ describe("mayProbably and roleHint", () => {
     );
     expect(roleHint(viewer([]), "evaluate", "run evaluate")).toMatch(
       /^Your groups \(none\)/,
+    );
+  });
+});
+
+describe("roles from GET /v1/me", () => {
+  const viewer = (groups: string[] | null, roles: Parameters<typeof deniedLine>[0]["roles"]) => ({
+    principal: "p-1",
+    groups,
+    roles,
+  });
+
+  it.each<[string[], string[], CedarAction, boolean]>([
+    // A role adds to the groups; neither takes anything away.
+    [["viewers"], ["operator"], "stop_agent", true],
+    [["viewers"], [], "stop_agent", false],
+    [["admins"], ["viewer"], "stop_agent", true],
+    [[], ["superadmin"], proposeAction("grant_role"), true],
+    [[], ["superadmin"], "read_audit", true],
+    [[], ["user_admin"], approveAction("revoke_role"), true],
+    [[], ["user_admin"], "read_principals", true],
+    [[], ["user_admin"], "read_governance", false],
+    [[], ["auditor"], "read_access_review", true],
+    [[], ["auditor"], proposeAction("grant_role"), false],
+    [["admins"], [], "read_principals", false],
+    [["admins"], [], proposeAction("grant_role"), false],
+    [[], ["policy_admin"], proposeAction("activate_pack"), true],
+    [[], ["policy_admin"], approveAction("activate_pack"), false],
+    [[], ["approver"], approveAction("reinstate_agent"), true],
+    [[], ["viewer"], "read_change_requests", false],
+    // A role name the console does not know grants nothing.
+    [[], ["root"], "read_audit", false],
+  ])("groups %j, roles %j: %s is %s", (groups, roles, action, allowed) => {
+    expect(mayProbably(viewer(groups, roles as never), action)).toBe(allowed);
+  });
+
+  it("shows a role-only action while the roles are unknown", () => {
+    expect(mayProbably(viewer(["admins"], null), "read_principals")).toBe(true);
+    expect(mayProbably(viewer(["admins"], undefined), proposeAction("grant_role"))).toBe(true);
+    // A group-covered action is still decided by the groups.
+    expect(mayProbably(viewer(["viewers"], null), "stop_agent")).toBe(false);
+  });
+
+  it("names the roles next to the groups once they are known", () => {
+    expect(roleHint(viewer(["viewers"], []), "stop_agent", "stop agents")).toBe(
+      "Your roles (none) and groups (viewers) don't include one that may stop agents. The server decides; ask an admin if you need this.",
+    );
+    expect(roleHint(viewer([], ["viewer", "auditor"]), "evaluate", "run evaluate")).toMatch(
+      /^Your roles \(viewer, auditor\) and groups \(none\)/,
     );
   });
 });

@@ -18,6 +18,7 @@ export const PAGES: [string, string][] = [
   ["/audit", "Admin audit"],
   ["/incidents", "Incidents"],
   ["/retention", "Retention & erasure"],
+  ["/users", "Users & roles"],
   ["/settings", "Settings"],
 ];
 

@@ -2,14 +2,17 @@ import { useEffect, useState } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import { NotServed } from "./NotServed";
 import { Sidebar } from "./Sidebar";
+import { SuperadminBanner } from "./SuperadminBanner";
 import { TopBar } from "./TopBar";
 import { useAgentOnly } from "../../hooks/useAgentOnly";
 import { cn } from "../../lib/cn";
+import { useViewer } from "../../lib/changeRequests";
 import { isCreditTrackPath } from "../../lib/creditTrack";
 
 export function AppShell() {
   const [navOpen, setNavOpen] = useState(false);
   const { settled, agentOnly } = useAgentOnly();
+  const viewer = useViewer();
   const { pathname } = useLocation();
   // A credit-track page waits for GET /v1/runtime, so on an agent-only
   // server it never calls a route that is not served.
@@ -43,10 +46,11 @@ export function AppShell() {
         />
       )}
 
-      <Sidebar open={navOpen} onNavigate={() => setNavOpen(false)} agentOnly={agentOnly} />
+      <Sidebar open={navOpen} onNavigate={() => setNavOpen(false)} agentOnly={agentOnly} viewer={viewer} />
 
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar onOpenNav={() => setNavOpen(true)} />
+        <SuperadminBanner roles={viewer.roles ?? null} />
         <main id="main" tabIndex={-1} className={cn("flex-1 p-4 outline-none sm:p-6 lg:p-8")}>
           {page}
         </main>

@@ -79,18 +79,22 @@ describe("useViewer", () => {
 
   afterEach(() => setSessionStateForTest({ status: "checking" }));
 
-  it("signed in: the session's principal and groups", () => {
+  // A static render runs no effect, so GET /v1/me has not answered: the
+  // roles are unknown, and pending wherever there is a caller to ask about.
+  const unknown = { principal: null, groups: null, roles: null };
+
+  it("signed in: the session's principal and groups, roles pending", () => {
     setSessionStateForTest({ status: "signed_in", session: SESSION });
-    expect(seen()).toEqual({ principal: "oidc-viewer-3", groups: ["viewers"] });
+    expect(seen()).toEqual({ principal: "oidc-viewer-3", groups: ["viewers"], roles: null, rolesPending: true });
   });
 
   it("development fallback and signed out: groups stay unknown", () => {
-    for (const status of ["dev_token", "checking"] as const) {
-      setSessionStateForTest({ status });
-      expect(seen()).toEqual(UNKNOWN_VIEWER);
-    }
+    setSessionStateForTest({ status: "dev_token" });
+    expect(seen()).toEqual({ ...unknown, rolesPending: true });
+    setSessionStateForTest({ status: "checking" });
+    expect(seen()).toEqual({ ...unknown, rolesPending: false });
     setSessionStateForTest({ status: "signed_out", ended: true });
-    expect(seen()).toEqual(UNKNOWN_VIEWER);
+    expect(seen()).toEqual({ ...unknown, rolesPending: false });
   });
 });
 
