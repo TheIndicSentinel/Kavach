@@ -62,7 +62,7 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `GET /v1/me` | caller's session | App shell: role-aware page hints and superadmin banner | done (ADR-019 step 3, `/v1/me` is presentation only) |
 | `GET /v1/principals?q=&limit=&cursor=` | `read_principals` | Users & roles: searchable people directory | done (ADR-019 step 3, read-only slice) |
 | `GET /v1/role-bindings` | `read_principals` | Users & roles: active role bindings | done (ADR-019 step 3, read-only slice) |
-| `GET /v1/access-review?format=json\|csv` | `read_access_review` | Users & roles | exempt until the audited access-review slice lands |
+| `GET /v1/access-review?format=json\|csv` | `read_access_review` | Users & roles: on-demand review and CSV download | done (ADR-019 step 3) |
 | `POST /v1/authorize` | agent token | none | exempt: agent listener |
 | `POST /v1/tools/{tool}` | agent token | none | exempt: agent listener |
 | `POST /v1/sor/events` | issuer signature | none | exempt: system-of-record listener |
@@ -135,14 +135,14 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - OIDC authorization code with PKCE in place of the pasted token, per [ADR-018](ADR-018-console-login-and-token-storage.md) option C.
 - The API path check (section 2).
 
-### ADR-019 step 3: operator role management — in progress
+### ADR-019 step 3: operator role management — done
 
 - **Done:** `/v1/me` is read once for the current caller and held in memory; known groups and roles inform sidebar visibility, and superadmins see the persistent banner.
 - **Done:** `/users` shows the searchable, cursor-paged people directory. Its read is covered by loading, empty, error, and accessibility tests.
 - **Done:** `/users` lists active role bindings separately from the people directory, with its own loading, empty and error states.
 - **Done:** `/users` lets an authorized operator propose a role grant for a directory principal. It submits a maker-checker request; the UI states that the pending request grants no access. The API remains authoritative.
 - **Done:** `/users` lets an authorized operator propose revocation of an active role binding by binding id. The UI states that the binding remains active until a different authorized person approves. The API remains authoritative.
-- **Next slice:** add the click-to-load, audited access review and CSV download. The UI remains a hint or proposal; the API decides and applies changes only after approval.
+- **Done:** `/users` loads the access review only on request and displays active binding, grant, approver, last-seen and stale information. JSON loads and CSV downloads use the API's audited export route; the API provides the spreadsheet-safe CSV.
 
 ## 5. Decisions (closed)
 

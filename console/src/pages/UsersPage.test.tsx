@@ -37,7 +37,7 @@ describe("UsersPage directory", () => {
   it("announces loading while principals are being read", () => {
     const html = render(<UsersPage resource={loading} bindingsResource={ok([])} />);
     expect(byRole(html, "status")).toEqual(["Loading people…", "0 active bindings."]);
-    expect(byRole(html, "alert")).toEqual(["", ""]);
+    expect(byRole(html, "alert")).toEqual(["", "", ""]);
     expect(html).toContain('class="animate-pulse');
   });
 

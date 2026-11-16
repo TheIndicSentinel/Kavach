@@ -19,6 +19,7 @@ import { RoleHint } from "../components/ui/RoleHint";
 import { TextField } from "../components/ui/TextField";
 import { roleHint, proposeAction, mayProbably } from "../lib/permissions";
 import { useViewer } from "../lib/changeRequests";
+import { AccessReviewPanel } from "./AccessReviewPanel";
 
 const PAGE_SIZE = 50;
 const QUERY_LIMIT = 512;
@@ -168,6 +169,8 @@ export default function UsersPage({ resource: given, bindingsResource: givenBind
   const revokeAction = proposeAction("revoke_role");
   const canRevoke = mayProbably(viewer, revokeAction);
   const revokeHint = roleHint(viewer, revokeAction, "revoke roles");
+  const canReadAccessReview = mayProbably(viewer, "read_access_review");
+  const accessReviewHint = roleHint(viewer, "read_access_review", "read the access review");
   const [grantTarget, setGrantTarget] = useState<Principal | null>(null);
   const [grantRole, setGrantRole] = useState<RoleName>("viewer");
   const [grantBusy, setGrantBusy] = useState(false);
@@ -362,6 +365,8 @@ export default function UsersPage({ resource: given, bindingsResource: givenBind
           </form>
         </Dialog>
       )}
+
+      <AccessReviewPanel canRead={canReadAccessReview} readHint={accessReviewHint} />
     </section>
   );
 }

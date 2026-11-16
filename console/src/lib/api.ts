@@ -484,6 +484,48 @@ export async function fetchRoleBindings(): Promise<RoleBinding[]> {
   return list.items;
 }
 
+export type AccessReview = Schemas["AccessReview"];
+
+/** One audited snapshot of active role bindings (`read_access_review`). */
+export function fetchAccessReview(): Promise<AccessReview> {
+  return request("/v1/access-review?format=json");
+}
+
+/** One audited CSV export (`read_access_review`); errors retain API request details. */
+export async function fetchAccessReviewCsv(): Promise<string> {
+  const path = "/v1/access-review?format=csv";
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: "GET",
+      headers: { Accept: "text/csv", "X-Kavach-Console": "1", ...authHeaders() },
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError("The API could not be reached", 0);
+  }
+
+  const contentType = response.headers.get("Content-Type") ?? "";
+  const payload: unknown = contentType.includes("json")
+    ? await response.json().catch(() => undefined)
+    : undefined;
+  if (!response.ok) {
+    if (response.status === 401 && authMode === "login") onUnauthorized?.();
+    const { text, requestId } = problemOf(payload);
+    const message = text ?? `GET ${path} failed (${response.status} ${response.statusText})`.trim();
+    throw new ApiError(
+      requestId ? `${message} (request ${requestId})` : message,
+      response.status,
+      requestId,
+      message,
+    );
+  }
+  if (!contentType.includes("text/csv")) {
+    throw new ApiError(`GET ${path} returned an unexpected content type`, response.status);
+  }
+  return response.text();
+}
+
 /** Rate limited and audited by the API (counts, never references). Reports only; revokes nothing. */
 export function reconcileClosedRecords(body: ClosedRecordsRequest): Promise<ClosedRecordsResult> {
   return request("/v1/reconciliation/closed-records", { method: "POST", body });

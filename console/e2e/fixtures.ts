@@ -344,3 +344,42 @@ export const roleBindings: Schemas["RoleBindingList"] = {
     },
   ],
 };
+
+/** Audited operator access snapshot shown on Users & roles. */
+export const accessReview: Schemas["AccessReview"] = {
+  tenant_id: "bank-1",
+  generated_at: "2026-11-16T10:00:00Z",
+  stale_after_days: 90,
+  alias_groups: ["admins", "change-approvers"],
+  note: "Group membership is held by the identity provider.",
+  rows: [
+    {
+      binding_id: "rb-demo-2",
+      role: "auditor",
+      subject_kind: "principal",
+      issuer: "https://idp.example.test",
+      subject: "oidc-auditor-5",
+      display_name: "Asha Rao (contractor)",
+      granted_at: "2026-11-02T10:00:00Z",
+      change_request_id: "cr-role-1",
+      proposer: "admin-1",
+      approver: "admin-2",
+      last_seen_at: "2026-11-14T16:00:00Z",
+      stale: false,
+    },
+    {
+      binding_id: "rb-demo-group",
+      role: "operator",
+      subject_kind: "group",
+      issuer: "https://idp.example.test",
+      subject: "collections-operators",
+      display_name: "",
+      granted_at: "2026-11-03T10:00:00Z",
+      change_request_id: "cr-role-2",
+      proposer: "admin-1",
+      approver: "admin-2",
+      last_seen_at: null,
+      stale: null,
+    },
+  ],
+};

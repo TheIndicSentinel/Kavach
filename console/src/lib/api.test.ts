@@ -5,6 +5,7 @@ import {
   fetchAgent,
   fetchAgentDecision,
   fetchAgents,
+  fetchAccessReviewCsv,
   fetchRevocationRecord,
   proposeReinstatement,
   request,
@@ -235,5 +236,36 @@ describe("agent actions", () => {
     expect((err as ApiError).status).toBe(status);
     expect((err as ApiError).detail).toBe(detail);
     expect((err as ApiError).requestId).toBe(id);
+  });
+});
+
+describe("access review CSV", () => {
+  it("requests the audited CSV with console and same-origin headers", async () => {
+    const csv = '"binding_id","role"\r\n"rb-1","auditor"\r\n';
+    const seen = vi.fn(async (_path: string, _init?: RequestInit) =>
+      new Response(csv, { headers: { "Content-Type": "text/csv; charset=utf-8" } }),
+    );
+    vi.stubGlobal("fetch", seen);
+
+    await expect(fetchAccessReviewCsv()).resolves.toBe(csv);
+    expect(seen.mock.calls[0][0]).toBe("/v1/access-review?format=csv");
+    expect(seen.mock.calls[0][1]?.credentials).toBe("same-origin");
+    expect(seen.mock.calls[0][1]?.headers).toMatchObject({
+      Accept: "text/csv",
+      "X-Kavach-Console": "1",
+    });
+  });
+
+  it("preserves API problem details when the audited export is refused", async () => {
+    respond(
+      503,
+      JSON.stringify({ title: "Unavailable", status: 503, detail: "the export could not be audited", request_id: "req-audit" }),
+      "application/problem+json",
+    );
+    await expect(fetchAccessReviewCsv()).rejects.toMatchObject({
+      status: 503,
+      requestId: "req-audit",
+      detail: "the export could not be audited",
+    });
   });
 });

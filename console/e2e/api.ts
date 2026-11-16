@@ -4,7 +4,7 @@
 import { expect, test as base, type Page, type Request } from "@playwright/test";
 import * as body from "./fixtures";
 
-export type Stub = { status?: number; json: unknown };
+export type Stub = { status?: number; json?: unknown; text?: string; contentType?: string };
 
 /** A stub, or a function of the request that returns one. */
 export type Answer = Stub | ((request: Request) => Stub);
@@ -20,6 +20,12 @@ export const defaultStubs: Stubs = {
   "GET /v1/me": ok(body.meNoRoles),
   "GET /v1/principals": ok(body.principalPage),
   "GET /v1/role-bindings": ok(body.roleBindings),
+  "GET /v1/access-review": (request: Request) => {
+    const format = new URL(request.url()).searchParams.get("format");
+    return format === "csv"
+      ? { text: '"binding_id","role"\r\n"rb-demo-2","auditor"\r\n' }
+      : ok(body.accessReview);
+  },
   "GET /v1/packs": ok([body.packSummary]),
   "GET /v1/packs/finance-core": ok(body.pack),
   "GET /v1/models": ok([body.modelSummary]),
@@ -94,11 +100,19 @@ export async function stubApi(page: Page, origin: string): Promise<ApiStub> {
     api.calls.push({ key, body: request.postDataJSON() as unknown });
     const stub = typeof answer === "function" ? answer(request) : answer;
     const status = stub.status ?? 200;
-    await route.fulfill({
-      status,
-      contentType: status >= 400 ? "application/problem+json" : "application/json",
-      json: stub.json,
-    });
+    if (stub.text !== undefined) {
+      await route.fulfill({
+        status,
+        contentType: stub.contentType ?? "text/csv; charset=utf-8",
+        body: stub.text,
+      });
+    } else {
+      await route.fulfill({
+        status,
+        contentType: stub.contentType ?? (status >= 400 ? "application/problem+json" : "application/json"),
+        json: stub.json,
+      });
+    }
   });
   return api;
 }
