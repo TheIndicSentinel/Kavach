@@ -141,7 +141,8 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - **Done:** `/users` shows the searchable, cursor-paged people directory. Its read is covered by loading, empty, error, and accessibility tests.
 - **Done:** `/users` lists active role bindings separately from the people directory, with its own loading, empty and error states.
 - **Done:** `/users` lets an authorized operator propose a role grant for a directory principal. It submits a maker-checker request; the UI states that the pending request grants no access. The API remains authoritative.
-- **Next slices:** add maker-checker revoke proposals; add the click-to-load, audited access review and CSV download. Each remains a hint or proposal in the console; the API decides and applies changes only after approval.
+- **Done:** `/users` lets an authorized operator propose revocation of an active role binding by binding id. The UI states that the binding remains active until a different authorized person approves. The API remains authoritative.
+- **Next slice:** add the click-to-load, audited access review and CSV download. The UI remains a hint or proposal; the API decides and applies changes only after approval.
 
 ## 5. Decisions (closed)
 

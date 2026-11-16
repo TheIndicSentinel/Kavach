@@ -59,6 +59,10 @@ export function roleGrantParams(role: RoleName, principal: Principal) {
   };
 }
 
+export function roleRevokeParams(binding: RoleBinding) {
+  return { binding_id: binding.id };
+}
+
 function PrincipalRows({ principals, onGrant, canGrant }: {
   principals: readonly Principal[];
   onGrant: (principal: Principal) => void;
@@ -104,7 +108,11 @@ function PrincipalRows({ principals, onGrant, canGrant }: {
   );
 }
 
-function RoleBindingRows({ bindings }: { bindings: readonly RoleBinding[] }) {
+function RoleBindingRows({ bindings, canRevoke, onRevoke }: {
+  bindings: readonly RoleBinding[];
+  canRevoke: boolean;
+  onRevoke: (binding: RoleBinding) => void;
+}) {
   if (bindings.length === 0) {
     return <p className="py-6 text-sm text-muted">No active role bindings.</p>;
   }
@@ -117,6 +125,7 @@ function RoleBindingRows({ bindings }: { bindings: readonly RoleBinding[] }) {
             <th scope="col" className="px-3 py-3 font-semibold">Subject</th>
             <th scope="col" className="px-3 py-3 font-semibold">Identity provider</th>
             <th scope="col" className="px-3 py-3 font-semibold">Granted</th>
+            {canRevoke && <th scope="col" className="px-3 py-3 font-semibold">Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -129,6 +138,13 @@ function RoleBindingRows({ bindings }: { bindings: readonly RoleBinding[] }) {
               </td>
               <td className="break-all px-3 py-3 text-muted">{binding.subject.issuer}</td>
               <td className="px-3 py-3 text-muted">{seenAt(binding.granted_at)}</td>
+              {canRevoke && (
+                <td className="px-3 py-3">
+                  <Button variant="secondary" size="sm" aria-label={`Propose revoke for ${binding.role} role held by ${binding.subject.value}`} onClick={() => onRevoke(binding)}>
+                    Propose revoke
+                  </Button>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -149,11 +165,18 @@ export default function UsersPage({ resource: given, bindingsResource: givenBind
   const grantAction = proposeAction("grant_role");
   const canGrant = mayProbably(viewer, grantAction);
   const grantHint = roleHint(viewer, grantAction, "grant roles");
+  const revokeAction = proposeAction("revoke_role");
+  const canRevoke = mayProbably(viewer, revokeAction);
+  const revokeHint = roleHint(viewer, revokeAction, "revoke roles");
   const [grantTarget, setGrantTarget] = useState<Principal | null>(null);
   const [grantRole, setGrantRole] = useState<RoleName>("viewer");
   const [grantBusy, setGrantBusy] = useState(false);
   const [grantError, setGrantError] = useState<unknown>(null);
   const [grantNotice, setGrantNotice] = useState("");
+  const [revokeTarget, setRevokeTarget] = useState<RoleBinding | null>(null);
+  const [revokeBusy, setRevokeBusy] = useState(false);
+  const [revokeError, setRevokeError] = useState<unknown>(null);
+  const [revokeNotice, setRevokeNotice] = useState("");
   const [searchText, setSearchText] = useState("");
   const [query, setQuery] = useState("");
   const [cursors, setCursors] = useState<string[]>([]);
@@ -187,6 +210,22 @@ export default function UsersPage({ resource: given, bindingsResource: givenBind
       setGrantError(error);
     } finally {
       setGrantBusy(false);
+    }
+  }
+
+  async function submitRevoke(event: FormEvent) {
+    event.preventDefault();
+    if (!revokeTarget || revokeBusy) return;
+    setRevokeBusy(true);
+    setRevokeError(null);
+    try {
+      const request = await proposeChange("revoke_role", roleRevokeParams(revokeTarget));
+      setRevokeTarget(null);
+      setRevokeNotice(`Role revoke proposal ${request.id} is pending. The binding remains active unless a different authorized person approves it.`);
+    } catch (error) {
+      setRevokeError(error);
+    } finally {
+      setRevokeBusy(false);
     }
   }
 
@@ -288,15 +327,41 @@ export default function UsersPage({ resource: given, bindingsResource: givenBind
           <CardTitle>Active role bindings</CardTitle>
           <CardDescription>Roles assigned to people or identity-provider groups in this tenant.</CardDescription>
         </CardHeader>
+        {revokeHint && <RoleHint>{revokeHint}</RoleHint>}
+        {revokeNotice && <p role="status" className="mb-4 text-sm text-ink">{revokeNotice}</p>}
         <ResourceState
           resource={bindingsResource}
           loading="Loading active role bindings…"
           summary={(items) => `${items.length} active ${items.length === 1 ? "binding" : "bindings"}.`}
           onRetry={retryBindings}
         >
-          {(items) => <RoleBindingRows bindings={items} />}
+          {(items) => <RoleBindingRows bindings={items} canRevoke={canRevoke} onRevoke={(binding) => {
+            setRevokeTarget(binding);
+            setRevokeError(null);
+          }} />}
         </ResourceState>
       </Card>
+
+      {revokeTarget && (
+        <Dialog
+          titleId="revoke-role-title"
+          title={`Propose revoking ${revokeTarget.role} from ${revokeTarget.subject.value}`}
+          descriptionId="revoke-role-description"
+          onCancel={() => { if (!revokeBusy) setRevokeTarget(null); }}
+          busy={revokeBusy}
+        >
+          <p id="revoke-role-description" className="mb-4 text-sm text-muted">
+            This submits a maker-checker request. The active binding stays in effect unless a different authorized person approves it.
+          </p>
+          <form onSubmit={submitRevoke} className="space-y-4">
+            <ProblemAlert error={revokeError} />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" aria-disabled={revokeBusy} onClick={() => { if (!revokeBusy) setRevokeTarget(null); }}>Cancel</Button>
+              <Button type="submit" aria-disabled={revokeBusy}>{revokeBusy ? "Submitting…" : "Propose revoke"}</Button>
+            </div>
+          </form>
+        </Dialog>
+      )}
     </section>
   );
 }

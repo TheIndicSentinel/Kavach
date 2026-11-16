@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PrincipalPage, RoleBinding } from "../lib/api";
 import { byRole, render, text } from "../test/markup";
 import { badGateway, failed, forbidden, loading, ok } from "../test/states";
-import UsersPage, { roleGrantParams } from "./UsersPage";
+import UsersPage, { roleGrantParams, roleRevokeParams } from "./UsersPage";
 
 const principal: PrincipalPage["items"][number] = {
   issuer: "https://idp.example.test",
@@ -28,6 +28,10 @@ describe("UsersPage directory", () => {
       role: "auditor",
       subject: { kind: "principal", issuer: principal.issuer, value: principal.subject },
     });
+  });
+
+  it("builds a revoke proposal for the selected active binding", () => {
+    expect(roleRevokeParams(binding)).toEqual({ binding_id: "rb-1" });
   });
 
   it("announces loading while principals are being read", () => {

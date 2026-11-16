@@ -57,3 +57,20 @@ test("a role grant is proposed for the selected directory principal", async ({ p
     },
   });
 });
+
+test("a role revoke is proposed for the selected active binding", async ({ page, api }) => {
+  api.set("GET /v1/me", { json: { principal: "admin-1", roles: ["user_admin"] } });
+  let proposal: unknown;
+  api.set("POST /v1/change-requests", (request) => {
+    proposal = request.postDataJSON();
+    return { json: { ...body.reinstateProposed, id: "cr-revoke-1", kind: "revoke_role", params: proposal } };
+  });
+
+  await page.goto("/users");
+  await page.getByRole("button", { name: "Propose revoke for auditor role held by oidc-auditor-5" }).click();
+  await page.getByRole("alertdialog").getByRole("button", { name: "Propose revoke" }).click();
+
+  await expect(page.getByRole("status")).toContainText("cr-revoke-1 is pending");
+  await expect(page.getByRole("status")).toContainText("binding remains active");
+  expect(proposal).toEqual({ kind: "revoke_role", params: { binding_id: "rb-demo-2" } });
+});
