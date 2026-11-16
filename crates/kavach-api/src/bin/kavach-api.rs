@@ -5,14 +5,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use clap::{Parser, ValueEnum};
+use kavach_api::limits;
 use kavach_api::{
-    grpc_server_tls_config, resolve_access_control, router, serve_http_until, shutdown,
+    resolve_access_control, router, serve_grpc_until, serve_http_until_with_limits, shutdown,
     validate_hmac_secret, validate_principal_sources, AccessControlKind, AccessControlMode,
-    ApiConfig, AppState, EvaluateServiceServer, EvidenceStoreKind, GrpcEvaluateService, JwksSource,
+    ApiConfig, AppState, EvidenceStoreKind, GrpcEvaluateService, JwksSource, ListenerLimits,
     MtlsSanKind, OidcConfig, TlsConfig, DEFAULT_CHANGE_TTL_HOURS,
 };
 use kavach_ports::ReferenceResolver;
-use tonic::transport::Server;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum EvidenceStoreArg {
@@ -159,6 +159,16 @@ struct AgentArgs {
     /// HSM sessions kept open for reuse.
     #[arg(long, env = "KAVACH_HSM_SESSIONS", default_value_t = 8)]
     hsm_sessions: usize,
+    /// Milliseconds one HSM sign or health call may wait for the token
+    /// before it fails closed (the decision or record is not issued;
+    /// 100-60000).
+    #[arg(
+        long,
+        env = "KAVACH_HSM_TIMEOUT_MS",
+        default_value_t = limits::DEFAULT_HSM_TIMEOUT_MS,
+        value_parser = clap::value_parser!(u64).range(limits::HSM_TIMEOUT_MS)
+    )]
+    hsm_timeout_ms: u64,
 }
 
 impl AgentArgs {
@@ -276,6 +286,7 @@ impl AgentArgs {
             pin_file: need(self.hsm_pin_file.as_ref(), "--hsm-pin-file")?,
             roles,
             max_sessions: self.hsm_sessions.max(1),
+            call_timeout: std::time::Duration::from_millis(self.hsm_timeout_ms),
         }))
     }
 }
@@ -586,6 +597,85 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(1..=168)
     )]
     change_request_ttl_hours: u64,
+
+    /// Seconds a request may take to produce its response, reading its
+    /// body included, before it is answered 503 (every listener; 1-300).
+    #[arg(
+        long,
+        env = "KAVACH_REQUEST_TIMEOUT_SECONDS",
+        default_value_t = limits::DEFAULT_REQUEST_TIMEOUT_SECONDS,
+        value_parser = clap::value_parser!(u64).range(limits::REQUEST_TIMEOUT_SECONDS)
+    )]
+    request_timeout_seconds: u64,
+
+    /// Seconds a connection with no request in progress has to deliver a
+    /// complete request head, from being accepted (TLS handshake included)
+    /// or from its last response bytes; then it is closed (every listener;
+    /// 1-120).
+    #[arg(
+        long,
+        env = "KAVACH_HEADER_READ_TIMEOUT_SECONDS",
+        default_value_t = limits::DEFAULT_HEADER_READ_TIMEOUT_SECONDS,
+        value_parser = clap::value_parser!(u64).range(limits::HEADER_READ_TIMEOUT_SECONDS)
+    )]
+    header_read_timeout_seconds: u64,
+
+    /// Seconds a TLS handshake may take (every listener; 1-60).
+    #[arg(
+        long,
+        env = "KAVACH_TLS_HANDSHAKE_TIMEOUT_SECONDS",
+        default_value_t = limits::DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECONDS,
+        value_parser = clap::value_parser!(u64).range(limits::TLS_HANDSHAKE_TIMEOUT_SECONDS)
+    )]
+    tls_handshake_timeout_seconds: u64,
+
+    /// Requests each listener handles at once; one over the cap is answered
+    /// 503 with Retry-After at once, never queued (1-65536).
+    #[arg(
+        long,
+        env = "KAVACH_MAX_IN_FLIGHT_REQUESTS",
+        default_value_t = limits::DEFAULT_MAX_IN_FLIGHT_REQUESTS,
+        value_parser = clap::value_parser!(u64).range(limits::MAX_IN_FLIGHT_REQUESTS)
+    )]
+    max_in_flight_requests: u64,
+}
+
+impl Cli {
+    /// The limits every listener applies (bounds checked again here).
+    fn listener_limits(&self) -> Result<ListenerLimits, String> {
+        ListenerLimits::from_settings(
+            self.request_timeout_seconds,
+            self.header_read_timeout_seconds,
+            self.tls_handshake_timeout_seconds,
+            self.max_in_flight_requests,
+        )
+    }
+}
+
+/// A request must be able to outlast the calls it waits on: the provider
+/// call of a tool call and an HSM signature.
+fn validate_request_timeout(limits: &ListenerLimits, config: &ApiConfig) -> Result<(), String> {
+    let Some(dp) = config.dataplane.as_ref() else {
+        return Ok(());
+    };
+    let request_ms = limits.request_timeout.as_millis();
+    if request_ms <= u128::from(dp.provider_timeout_ms) {
+        return Err(format!(
+            "--request-timeout-seconds ({} s) must exceed --provider-timeout-ms ({} ms)",
+            limits.request_timeout.as_secs(),
+            dp.provider_timeout_ms
+        ));
+    }
+    if let Some(hsm) = dp.hsm.as_ref() {
+        if request_ms <= hsm.call_timeout.as_millis() {
+            return Err(format!(
+                "--request-timeout-seconds ({} s) must exceed --hsm-timeout-ms ({} ms)",
+                limits.request_timeout.as_secs(),
+                hsm.call_timeout.as_millis()
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl Cli {
@@ -667,9 +757,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let agent_listen = cli.agents.agent_listen;
     let grace = std::time::Duration::from_secs(cli.agents.shutdown_grace_seconds);
     let agent_only = cli.agents.agent_only;
-    let (config, console_login) = cli
-        .into_config()
-        .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
+    let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg);
+    let limits = cli.listener_limits().map_err(invalid)?;
+    let (config, console_login) = cli.into_config().map_err(invalid)?;
+    validate_request_timeout(&limits, &config).map_err(invalid)?;
     let hardening_violations = |built: &[kavach_api::relaxations::Relaxation]| {
         let mut violations = kavach_api::hardening::violations(&config, built);
         violations.extend(kavach_api::hardening::console_login_violations(
@@ -725,7 +816,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
     });
     let stopping = state.clone();
-    let grpc_service = EvaluateServiceServer::new(GrpcEvaluateService::new(state));
+    let grpc_service = GrpcEvaluateService::with_limits(state, &limits);
 
     print_banner(&config, http_listen, grpc_listen, &pack_sha256);
 
@@ -753,18 +844,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         tokio::try_join!(
             async move {
                 if let Some(app) = sor_app {
-                    serve_http_until(app, sor_listen, tls_ref, sor_stop, grace).await?;
+                    serve_http_until_with_limits(app, sor_listen, tls_ref, sor_stop, grace, limits)
+                        .await?;
                 }
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             },
             async move {
                 if let Some(app) = agent_app {
-                    serve_http_until(app, agent_listen, tls_ref, agent_stop, grace).await?;
+                    serve_http_until_with_limits(
+                        app,
+                        agent_listen,
+                        tls_ref,
+                        agent_stop,
+                        grace,
+                        limits,
+                    )
+                    .await?;
                 }
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             },
             async move {
-                serve_http_until(http_app, http_listen, tls_ref, http_stop, grace).await?;
+                serve_http_until_with_limits(
+                    http_app,
+                    http_listen,
+                    tls_ref,
+                    http_stop,
+                    grace,
+                    limits,
+                )
+                .await?;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             },
             async move {
@@ -772,14 +880,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 if agent_only {
                     return Ok::<(), Box<dyn std::error::Error + Send + Sync>>(());
                 }
-                let mut builder = Server::builder();
-                if let Some(server_tls) = grpc_server_tls_config(tls_ref).await? {
-                    builder = builder.tls_config(server_tls)?;
-                }
-                builder
-                    .add_service(grpc_service)
-                    .serve_with_shutdown(grpc_listen, grpc_stop)
-                    .await?;
+                serve_grpc_until(grpc_service, grpc_listen, tls_ref, grpc_stop, limits).await?;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
             }
         )

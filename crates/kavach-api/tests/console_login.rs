@@ -1175,6 +1175,83 @@ async fn the_double_signs_in_the_user_its_cookie_names_and_refuses_an_unknown_on
 }
 
 #[tokio::test]
+async fn the_double_in_pick_mode_asks_who_signs_in_and_signs_in_the_one_picked() {
+    // scripts/demo.sh runs the double with --pick, for a person at a browser.
+    let h = harness(|_| {}).await;
+    let viewer = user("live-viewer", &["viewers"]);
+    let odd = user("a<b>&\"c'", &["viewers"]);
+    h.idp.set(|b| {
+        b.users = HashMap::from([
+            (viewer.sub.clone(), viewer.clone()),
+            (odd.sub.clone(), odd.clone()),
+        ]);
+        b.pick = true;
+    });
+
+    let (cookie, url) = begin(&h).await;
+    let state = query_of(&url)["state"].clone();
+    // The cookie is not read: the page comes back, not a redirect.
+    let page = authorize_named(&url, "live-viewer").await;
+    assert_eq!(page.status().as_u16(), 200);
+    assert_eq!(page.headers()["cache-control"], "no-store");
+    assert!(page.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .starts_with("default-src 'none'"));
+    let html = page.text().await.unwrap();
+    assert!(!html.contains("<script"), "{html}");
+    // Every user is listed (the default one too), and a sub is escaped.
+    assert!(html.contains(">ops-1</a>"), "{html}");
+    assert!(html.contains(">live-viewer</a>"), "{html}");
+    assert!(html.contains("a&lt;b&gt;&amp;&quot;c&#39;"), "{html}");
+    assert!(!html.contains("a<b>"), "{html}");
+
+    let links: Vec<String> = html
+        .split("href=\"")
+        .skip(1)
+        .map(|rest| rest.split('"').next().unwrap().replace("&amp;", "&"))
+        .filter(|href| href.contains("/authorize?"))
+        .collect();
+    assert_eq!(links.len(), 3, "{html}");
+    let pick = links
+        .iter()
+        .find(|link| query_of(link).get("login_as").map(String::as_str) == Some("live-viewer"))
+        .expect("a link for live-viewer");
+    assert_eq!(query_of(pick)["state"], state, "the link keeps the request");
+
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(pick)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 303);
+    let back = query_of(response.headers()["location"].to_str().unwrap());
+    let reply = callback(
+        &h,
+        Some(&cookie),
+        &[("code", &back["code"]), ("state", &back["state"])],
+    )
+    .await;
+    let session_cookie = cookie_value(&reply.set_cookie(SESSION_COOKIE).expect("a session"));
+    assert_eq!(
+        session(&h, &session_cookie).await.json()["principal"],
+        "live-viewer"
+    );
+
+    // A login_as the double does not know is refused, never the default.
+    let (_, url) = begin(&h).await;
+    let mut unknown = reqwest::Url::parse(&url).unwrap();
+    unknown
+        .query_pairs_mut()
+        .append_pair("login_as", "nobody-configured");
+    let response = reqwest::get(unknown).await.unwrap();
+    assert_eq!(response.status().as_u16(), 400);
+}
+
+#[tokio::test]
 async fn a_session_and_a_cli_token_of_one_person_are_one_identity() {
     let person = user("ops-1", &["admins", "change-approvers"]);
     let retention = json!({ "evidence_retention_days": 30 });

@@ -171,6 +171,25 @@ jobs:
         working-directory: console
         run: npm run test:real
 
+      # scripts/demo.sh from a fresh clone of this commit, as a person runs it:
+      # it builds the console and the binaries (cargo reuses this job's
+      # dependencies through CARGO_TARGET_DIR), starts the stack against the
+      # Postgres service in a schema of its own, and seeds it. Then every demo
+      # user signs in through the test IdP's "Sign in as" page and opens every
+      # page (console/e2e/signin.demo.ts), and `demo.sh stop` drops the schema.
+      - name: demo.sh from a fresh clone, signed in as each user
+        env:
+          KAVACH_DEMO_DATABASE_URL: postgres://kavach:kavach-ci@localhost:5432/kavach_test
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          command -v psql pg_isready
+          clone="$RUNNER_TEMP/kavach-demo-clone"
+          git clone -q --no-local "$GITHUB_WORKSPACE" "$clone"
+          git -C "$clone" checkout -q --detach "$(git rev-parse HEAD)"
+          trap '"$clone/scripts/demo.sh" stop' EXIT
+          "$clone/scripts/demo.sh"
+          (cd console && npm run test:demo)
+
       # Production npm dependency licence allowlist (PRD NFR-1). OFL-1.1 covers the
       # @fontsource fonts; MPL-2.0 covers build-time CSS tooling (lightningcss) that is
       # not included in the built console bundle.

@@ -50,6 +50,15 @@ cargo test             # core crates; no database needed
 ./scripts/verify.sh    # everything CI runs that your machine supports
 ```
 
+To try the console signed in, with a seeded stack on your machine, start a local Postgres (no Docker needed; [docs/INSTALL.md](docs/INSTALL.md#try-it-on-one-machine-scriptsdemosh) shows how), then:
+
+```bash
+scripts/demo.sh        # builds, starts, seeds; prints the URL and the test users
+scripts/demo.sh stop   # stops everything and drops its schema
+```
+
+Open the URL it prints (`http://127.0.0.1:8080/`, the console that kavach-api serves), choose Sign in, and pick a user. The sign-in goes through a local test identity provider.
+
 Full local setup (Postgres tests, the console, policy proofs, disk use): **[docs/DEVELOPING.md](docs/DEVELOPING.md)**.
 
 ## Documentation
