@@ -1,21 +1,10 @@
-// axe on every page of the console, with the API stubbed. The tags are the
-// WCAG 2.0, 2.1 and 2.2 level A and AA rules axe implements: a pass here is
-// not a WCAG conformance claim, only that axe found nothing it checks for.
-import AxeBuilder from "@axe-core/playwright";
-import type { Page } from "@playwright/test";
-import { expect, test } from "./api";
+// axe on every page of the console, with the API stubbed and the server's
+// Content-Security-Policy applied (e2e/page.ts). The tags are the WCAG 2.0,
+// 2.1 and 2.2 level A and AA rules axe implements: a pass here is not a WCAG
+// conformance claim, only that axe found nothing it checks for.
+import { expectNoViolations } from "./axe";
 import { forbidden } from "./fixtures";
-
-const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"];
-
-/** Fails with each rule, its impact and the elements it flagged. */
-async function expectNoViolations(page: Page) {
-  const results = await new AxeBuilder({ page }).withTags(WCAG_TAGS).analyze();
-  const found = results.violations.map(
-    (v) => `${v.id} (${v.impact}): ${v.nodes.map((n) => n.target.join(" ")).join(" | ")}`,
-  );
-  expect(found).toEqual([]);
-}
+import { expect, test } from "./page";
 
 type PageCase = {
   path: string;
@@ -30,6 +19,8 @@ const PAGES: PageCase[] = [
   { path: "/agents", title: "Agents", ready: "agent:kyc-bot" },
   { path: "/agents/agent:collections-bot", title: "Agent", ready: "Agent agent:collections-bot is active." },
   { path: "/agent-evidence", title: "Agent evidence" },
+  { path: "/decision-events", title: "Decision events" },
+  { path: "/reconciliation", title: "Closed loans" },
   { path: "/policies", title: "Policies", ready: "finance-core" },
   { path: "/policies/finance-core", title: "finance-core", ready: "income-floor" },
   { path: "/models", title: "Models", ready: "credit-risk" },
@@ -52,6 +43,15 @@ test.describe("axe, WCAG 2.2 AA tags", () => {
       await expectNoViolations(page);
     });
   }
+
+  test("an unknown path: a 404 page that names the path and links to Overview", async ({ page }) => {
+    await page.goto("/no-such-page");
+    await expect(page).toHaveURL(/\/no-such-page$/);
+    await expect(page.getByRole("heading", { level: 1, name: "Page not found" })).toBeVisible();
+    await expect(page.getByText("The console has no page at /no-such-page.")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Go to Overview" })).toBeVisible();
+    await expectNoViolations(page);
+  });
 
   test("an API refusal (problem detail in an alert)", async ({ page, api }) => {
     api.set("GET /v1/agents/agent:collections-bot", { status: 403, json: forbidden });

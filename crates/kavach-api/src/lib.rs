@@ -10,6 +10,7 @@ pub mod closed_records;
 pub mod config;
 pub mod console;
 pub mod console_build;
+pub mod console_login;
 pub mod convert;
 pub mod correlation;
 pub mod dataplane;

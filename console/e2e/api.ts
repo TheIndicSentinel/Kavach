@@ -31,9 +31,12 @@ export const defaultStubs: Stubs = {
   "GET /v1/agents": ok(body.agentPage),
   "GET /v1/agents/agent:collections-bot": ok(body.neverChanged),
   "POST /v1/agents/agent:collections-bot/quarantine": ok(body.quarantineApplied),
+  // No console login, --insecure-dev: the development fallback, as before login existed.
+  // e2e/login.e2e.ts sets the other modes.
+  "GET /auth/config": ok(body.authConfigDev),
 };
 
-const API_PREFIXES = ["/health", "/metrics", "/v1/"];
+const API_PREFIXES = ["/health", "/metrics", "/v1/", "/auth/"];
 
 export type ApiStub = {
   /** Answers `key` with `answer` from now on (before or after navigation). */
@@ -110,3 +113,6 @@ export const test = base.extend<{ api: ApiStub }>({
 });
 
 export { expect };
+
+/** The paths the stub answers; everything else on the origin is the console's own files. */
+export { API_PREFIXES };

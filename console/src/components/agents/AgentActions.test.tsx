@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../lib/api";
 import { emptyActionForm } from "../../lib/agentActions";
+import { UNKNOWN_VIEWER, type Viewer } from "../../lib/permissions";
 import { byRole, render, text } from "../../test/markup";
 import {
   neverChanged,
@@ -24,10 +25,21 @@ import {
 const noErrors = { reasonCode: null, note: null };
 const noop = () => {};
 
-function actions(agent = neverChanged) {
+function actions(agent = neverChanged, viewer: Viewer = UNKNOWN_VIEWER) {
   return render(
-    <AgentActions agent={agent} onStopped={noop} onStale={noop} fallbackFocus={{ current: null }} />,
+    <AgentActions
+      agent={agent}
+      onStopped={noop}
+      onStale={noop}
+      fallbackFocus={{ current: null }}
+      viewer={viewer}
+    />,
   );
+}
+
+/** The labels of the buttons in some markup, in order. */
+function buttonLabels(html: string): string[] {
+  return [...html.matchAll(/<button[^>]*>([^<]*)<\/button>/g)].map((m) => m[1]);
 }
 
 function stopDialog(overrides: Partial<Parameters<typeof StopDialog>[0]> = {}) {
@@ -81,6 +93,47 @@ describe("AgentActions", () => {
     expect(text(html)).toContain("The API decides");
     expect(byRole(html, "status")).toEqual([""]);
     expect(html).not.toContain('role="alertdialog"');
+  });
+});
+
+describe("AgentActions: role hints", () => {
+  const admins: Viewer = { principal: null, groups: ["admins"] };
+  const viewers: Viewer = { principal: "viewer-1", groups: ["viewers"] };
+  const approvers: Viewer = { principal: null, groups: ["change-approvers"] };
+
+  it("known allowed: admins get every stop and reinstatement, and no hint", () => {
+    expect(buttonLabels(actions(neverChanged, admins))).toEqual(["Restrict", "Quarantine", "Revoke"]);
+    expect(buttonLabels(actions(quarantined, admins))).toEqual(["Revoke", "Request reinstatement"]);
+    expect(text(actions(quarantined, admins))).not.toContain("Your groups");
+  });
+
+  it("known denied: viewers get no stop or reinstate button, and one line for each", () => {
+    const html = actions(quarantined, viewers);
+    expect(buttonLabels(html)).toEqual([]);
+    const shown = text(html);
+    expect(shown).toContain(
+      "Your groups (viewers) don't include one that may stop agents. The server decides; ask an admin if you need this.",
+    );
+    expect(shown).toContain(
+      "Your groups (viewers) don't include one that may propose reinstating an agent.",
+    );
+  });
+
+  it("known denied for a revoked agent: no repeat revoke, and no reinstatement line", () => {
+    const shown = text(actions({ ...quarantined, state: "revoked" }, approvers));
+    expect(shown).not.toContain("Repeat revoke");
+    expect(shown).toContain("may stop agents");
+    expect(shown).not.toContain("reinstating");
+  });
+
+  it("unknown groups: every action the state allows, and no hint", () => {
+    expect(buttonLabels(actions(quarantined, UNKNOWN_VIEWER))).toEqual([
+      "Revoke",
+      "Request reinstatement",
+    ]);
+    expect(text(actions(quarantined, { principal: "admin-1", groups: null }))).not.toContain(
+      "Your groups",
+    );
   });
 });
 

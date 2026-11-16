@@ -8,24 +8,36 @@ import { LookupPanel } from "../components/evidence/LookupPanel";
 import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
-import { useLookup } from "../hooks/useLookup";
+import { RoleHint } from "../components/ui/RoleHint";
+import { useLookup, type Lookup } from "../hooks/useLookup";
 import { reconcileClosedRecords, type ClosedRecordsResult } from "../lib/api";
+import { useViewer } from "../lib/changeRequests";
 import { cn } from "../lib/cn";
 import {
   CLOSED_RECORDS_LIMITS,
   parseClosedRecords,
   reconciliationSummary,
 } from "../lib/evidence";
+import { roleHint, type Viewer } from "../lib/permissions";
 
 const EXAMPLE =
   '{"system": "lms", "records": [{"record_ref": "lms:loan/L-1", "state": "paid", "closed_at": "2026-10-01T06:00:00Z"}]}';
 
-export default function ReconciliationPage() {
+type ReconciliationPageProps = {
+  /** For tests; the app passes none and the page reads it. */
+  viewer?: Viewer;
+  /** For tests: the call's phase, as if Reconcile had been pressed. */
+  lookup?: Lookup<ClosedRecordsResult>;
+};
+
+export default function ReconciliationPage({ viewer: given, lookup: initial }: ReconciliationPageProps) {
+  const current = useViewer();
+  const hint = roleHint(given ?? current, "reconcile_closed_records", "reconcile closed loans");
   const listInput = useRef<HTMLTextAreaElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const [list, setList] = useState("");
   const [problems, setProblems] = useState<string[]>([]);
-  const { lookup, run, reset } = useLookup<ClosedRecordsResult>();
+  const { lookup, run, reset } = useLookup<ClosedRecordsResult>(initial);
 
   function refuse(found: string[]) {
     setProblems(found);
@@ -94,82 +106,88 @@ export default function ReconciliationPage() {
             The same JSON as <code className="font-mono text-xs">kavach reconcile</code> reads.
           </CardDescription>
         </CardHeader>
-        <form onSubmit={submit} noValidate className="space-y-4">
-          <div>
-            <label htmlFor="closed-records-file" className="mb-1.5 block text-sm font-medium text-ink">
-              Load from a file (optional)
-            </label>
-            <input
-              id="closed-records-file"
-              ref={fileInput}
-              type="file"
-              accept="application/json,.json"
-              onChange={load}
-              aria-describedby="closed-records-file-hint"
-              className="block text-sm text-ink file:mr-3 file:rounded-lg file:border file:border-border file:bg-white file:px-3 file:py-1.5 file:text-sm file:font-semibold"
-            />
-            <p id="closed-records-file-hint" className="mt-1 text-xs text-muted">
-              Read in this browser into the box below. Up to 1 MiB.
-            </p>
-          </div>
-          <div>
-            <label htmlFor="closed-records-list" className="mb-1.5 block text-sm font-medium text-ink">
-              Closed loans (JSON)
-            </label>
-            <textarea
-              id="closed-records-list"
-              ref={listInput}
-              value={list}
-              onChange={(event) => setList(event.target.value)}
-              rows={10}
-              spellCheck={false}
-              autoComplete="off"
-              aria-invalid={invalid || undefined}
-              aria-describedby={
-                invalid ? "closed-records-list-hint closed-records-list-error" : "closed-records-list-hint"
-              }
-              className={cn(
-                "w-full rounded-lg border bg-white px-3 py-2 font-mono text-xs text-ink focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20",
-                invalid ? "border-decision-block" : "border-border",
+        {hint ? (
+          <RoleHint>{hint}</RoleHint>
+        ) : (
+          <>
+            <form onSubmit={submit} noValidate className="space-y-4">
+              <div>
+                <label htmlFor="closed-records-file" className="mb-1.5 block text-sm font-medium text-ink">
+                  Load from a file (optional)
+                </label>
+                <input
+                  id="closed-records-file"
+                  ref={fileInput}
+                  type="file"
+                  accept="application/json,.json"
+                  onChange={load}
+                  aria-describedby="closed-records-file-hint"
+                  className="block w-full max-w-full text-sm text-ink file:mr-3 file:rounded-lg file:border file:border-border file:bg-white file:px-3 file:py-1.5 file:text-sm file:font-semibold"
+                />
+                <p id="closed-records-file-hint" className="mt-1 text-xs text-muted">
+                  Read in this browser into the box below. Up to 1 MiB.
+                </p>
+              </div>
+              <div>
+                <label htmlFor="closed-records-list" className="mb-1.5 block text-sm font-medium text-ink">
+                  Closed loans (JSON)
+                </label>
+                <textarea
+                  id="closed-records-list"
+                  ref={listInput}
+                  value={list}
+                  onChange={(event) => setList(event.target.value)}
+                  rows={10}
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-invalid={invalid || undefined}
+                  aria-describedby={
+                    invalid ? "closed-records-list-hint closed-records-list-error" : "closed-records-list-hint"
+                  }
+                  className={cn(
+                    "w-full rounded-lg border bg-white px-3 py-2 font-mono text-xs text-ink focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20",
+                    invalid ? "border-decision-block" : "border-border",
+                  )}
+                />
+                <p id="closed-records-list-hint" className="mt-1 text-xs text-muted">
+                  For example: <code className="font-mono break-all">{EXAMPLE}</code>. state is paid or disputed;
+                  closed_at is when the lender says it was paid or disputed.
+                </p>
+                {invalid && (
+                  <ul id="closed-records-list-error" className="mt-1 space-y-0.5 text-xs font-medium text-decision-block">
+                    {problems.map((problem) => (
+                      <li key={problem}>{problem}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  type="submit"
+                  variant="secondary"
+                  className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                  // aria-disabled, not disabled, so keyboard focus stays on the button.
+                  aria-disabled={lookup.phase === "loading"}
+                >
+                  Reconcile
+                </Button>
+                <Button variant="ghost" onClick={clear}>
+                  Clear the list and results
+                </Button>
+              </div>
+            </form>
+            <LookupPanel
+              lookup={lookup}
+              done={reconciliationSummary}
+              render={(result) => (
+                <div className="space-y-4">
+                  <ClosedRecordsCounts result={result} />
+                  <ClosedRecordsFindings result={result} />
+                </div>
               )}
             />
-            <p id="closed-records-list-hint" className="mt-1 text-xs text-muted">
-              For example: <code className="font-mono">{EXAMPLE}</code>. state is paid or disputed;
-              closed_at is when the lender says it was paid or disputed.
-            </p>
-            {invalid && (
-              <ul id="closed-records-list-error" className="mt-1 space-y-0.5 text-xs font-medium text-decision-block">
-                {problems.map((problem) => (
-                  <li key={problem}>{problem}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-          <div className="flex flex-wrap gap-3">
-            <Button
-              type="submit"
-              variant="secondary"
-              className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
-              // aria-disabled, not disabled, so keyboard focus stays on the button.
-              aria-disabled={lookup.phase === "loading"}
-            >
-              Reconcile
-            </Button>
-            <Button variant="ghost" onClick={clear}>
-              Clear the list and results
-            </Button>
-          </div>
-        </form>
-        <LookupPanel
-          lookup={lookup}
-          done={reconciliationSummary}
-          render={(result) => (
-            <div className="space-y-4">
-              <ClosedRecordsCounts result={result} />
-              <ClosedRecordsFindings result={result} />
-            </div>
-          )}
-        />
+          </>
+        )}
       </Card>
     </section>
   );

@@ -198,6 +198,32 @@ impl KavachAuthorizer {
         Ok(response.decision() == Decision::Allow)
     }
 
+    /// The groups [`Self::authorize_with_groups`] evaluates `principal_id`
+    /// in: the credential's `groups` and the principal's memberships in the
+    /// static entities file, read back from the entity set Cedar is given.
+    /// Sorted, without repeats. For display only (the console's role
+    /// hints); it decides nothing.
+    pub fn effective_groups(
+        &self,
+        principal_id: &str,
+        groups: &[String],
+    ) -> Result<Vec<String>, AuthError> {
+        let principal = user_uid(principal_id)?;
+        let entities = self.entities_with_principal(&principal, groups)?;
+        let group_type = EntityTypeName::from_str("Kavach::Group")
+            .map_err(|err| AuthError::InvalidPrincipal(err.to_string()))?;
+        let mut found: Vec<String> = entities
+            .ancestors(&principal)
+            .into_iter()
+            .flatten()
+            .filter(|uid| uid.type_name() == &group_type)
+            .map(|uid| uid.id().unescaped().to_string())
+            .collect();
+        found.sort();
+        found.dedup();
+        Ok(found)
+    }
+
     /// Static entities plus `principal` with parents = static memberships ∪
     /// `groups`, validated against the schema.
     fn entities_with_principal(
@@ -368,5 +394,40 @@ mod tests {
         let crafted = r#"admin-1" in Kavach::Group::"admins"#;
         assert!(!auth.authorize(crafted, KavachAction::Evaluate).unwrap());
         assert!(auth.authorize("", KavachAction::Evaluate).is_err());
+    }
+
+    #[test]
+    fn effective_groups_are_the_credential_groups_and_the_static_memberships() {
+        let auth = fixture_authorizer();
+        // A static member of `viewers`, asserted into `operators` by its token:
+        // Cedar sees both, and so does the caller.
+        assert_eq!(
+            auth.effective_groups("viewer-1", &["operators".into()])
+                .unwrap(),
+            ["operators", "viewers"]
+        );
+        assert!(auth
+            .authorize_with_groups("viewer-1", &["operators".into()], KavachAction::Evaluate)
+            .unwrap());
+        // No credential groups: the static memberships alone.
+        assert_eq!(auth.effective_groups("viewer-1", &[]).unwrap(), ["viewers"]);
+        // Unknown to the entities file: the credential's groups, sorted, once.
+        assert_eq!(
+            auth.effective_groups(
+                "sso-user-42",
+                &["viewers".into(), "admins".into(), "viewers".into()]
+            )
+            .unwrap(),
+            ["admins", "viewers"]
+        );
+        assert!(auth
+            .effective_groups("sso-user-42", &[])
+            .unwrap()
+            .is_empty());
+        // The same refusals as authorization.
+        assert!(auth
+            .effective_groups("x", &["bad\u{7}group".into()])
+            .is_err());
+        assert!(auth.effective_groups("", &[]).is_err());
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use axum::{
     body::Bytes,
     extract::State,
-    http::header,
+    http::{header, HeaderValue},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -88,7 +88,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     };
 
     // The credit track: Decision Governance (evaluate, packs, models,
-    // retention, incidents, batch) and its console.
+    // decision events, retention, tombstones, incidents, batch). The console
+    // is served in both modes and leaves these pages out when agent-only.
     let router = if agent_only {
         router
     } else {
@@ -109,6 +110,23 @@ pub fn router(state: Arc<AppState>) -> Router {
             .route("/v1/admin/batch-jobs/{job_id}", get(get_batch_job))
     };
 
+    // The console session cookie step (ADR-018) covers the API routes
+    // above only: it is added before the sign-in routes and the console
+    // fallback, so neither passes through it. The agent and system-of-record
+    // routers have no such step and never read the cookie.
+    let router = router.route_layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::console_login::cookie_step,
+    ));
+
+    // Console sign-in (ADR-018). Answers "not configured" unless it is.
+    let router = router
+        .route("/auth/config", get(crate::console_login::config))
+        .route("/auth/login", get(crate::console_login::login))
+        .route("/auth/callback", get(crate::console_login::callback))
+        .route("/auth/session", get(crate::console_login::session))
+        .route("/auth/logout", post(crate::console_login::logout));
+
     // The governance console, in both modes: the built console when this
     // binary has one, else a plain "not built" page. API paths stay problems.
     let router = router.fallback(crate::console::fallback);
@@ -116,7 +134,43 @@ pub fn router(state: Arc<AppState>) -> Router {
     router
         .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
+        .layer(api_security_headers())
         .with_state(state)
+}
+
+/// The API's Content-Security-Policy. The API serves no HTML, so nothing
+/// may load from a response and nothing may frame one.
+pub const API_CONTENT_SECURITY_POLICY: &str = "default-src 'none'; frame-ancestors 'none'";
+
+/// The API's cache policy: no response is stored.
+pub const API_CACHE_CONTROL: &str = "no-store";
+
+/// The function [`api_security_headers`] maps each response with.
+pub type SetApiHeaders = fn(Response) -> std::future::Ready<Response>;
+
+/// The layer that sets the security headers on every response of an HTTP
+/// listener (the operator, agent and system-of-record routers), problems,
+/// 404 and 405 included. Install with `layer`, not `route_layer`, so the
+/// fallbacks are covered too. A header the response already carries is
+/// kept: the console's responses set their own policy and cache policy
+/// ([`crate::console::security_headers`]), and those stand.
+pub fn api_security_headers() -> axum::middleware::MapResponseLayer<SetApiHeaders, (), ()> {
+    axum::middleware::map_response(set_api_headers as SetApiHeaders)
+}
+
+fn set_api_headers(mut response: Response) -> std::future::Ready<Response> {
+    let headers = response.headers_mut();
+    for (name, value) in [
+        (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+        (header::CACHE_CONTROL, API_CACHE_CONTROL),
+        (header::REFERRER_POLICY, "no-referrer"),
+        (header::CONTENT_SECURITY_POLICY, API_CONTENT_SECURITY_POLICY),
+    ] {
+        headers
+            .entry(name)
+            .or_insert_with(|| HeaderValue::from_static(value));
+    }
+    std::future::ready(response)
 }
 
 async fn health(

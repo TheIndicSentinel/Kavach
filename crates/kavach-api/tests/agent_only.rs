@@ -101,6 +101,19 @@ async fn agent_only_serves_the_agent_path_and_none_of_the_credit_track() {
     assert!(body.contains("agent-only"), "{body}");
 }
 
+/// `GET /v1/runtime` says whether the credit track is served, so the console
+/// can leave its pages out; it is false on a normal stack.
+#[tokio::test]
+async fn the_runtime_says_whether_the_credit_track_is_served() {
+    for agent_only in [true, false] {
+        let gw = world(agent_only).await;
+        let (status, body) = operator(&gw, "GET", "/v1/runtime", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let view: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(view["agent_only"], agent_only, "{body}");
+    }
+}
+
 /// The console is served in agent-only mode too (the built console, or the
 /// plain "not built" page), with its security headers; the credit-track
 /// API paths above stay problems, not the console page.

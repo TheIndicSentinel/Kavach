@@ -140,6 +140,7 @@ pub fn mandate_service() -> Service {
         signing_kid: "kavach-mandate-1".into(),
         mandate_keys: KeySet::new([kavach_pub]),
         sor_issuers: vec![SorIssuer {
+            tenant_id: TENANT.into(),
             system: "lms".into(),
             key: lms_pub,
         }],
@@ -147,6 +148,7 @@ pub fn mandate_service() -> Service {
         passports,
         event_freshness_seconds: 300,
         replay_window_seconds: 24 * 3600,
+        max_clock_error_ms: kavach_mandate::DEFAULT_MAX_CLOCK_ERROR_MS,
     };
     MandateService::new(
         MandateDeps {

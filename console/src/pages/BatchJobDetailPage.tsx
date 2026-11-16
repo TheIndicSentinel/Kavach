@@ -1,11 +1,13 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useCallback, type ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { Badge } from "../components/ui/Badge";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
+import { ResourceState } from "../components/ui/ResourceState";
 import { Skeleton } from "../components/ui/Skeleton";
-import { ApiError, fetchBatchJob, type BatchJob } from "../lib/api";
+import { useResource, type Resource } from "../hooks/useResource";
+import { fetchBatchJob, type BatchJob } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 
 function DetailRow({ label, value }: { label: string; value: ReactNode }) {
@@ -17,33 +19,17 @@ function DetailRow({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-export default function BatchJobDetailPage() {
-  const { jobId } = useParams<{ jobId: string }>();
-  const [job, setJob] = useState<BatchJob | null>(null);
-  const [error, setError] = useState<string | null>(null);
+type BatchJobDetailPageProps = {
+  /** For tests: the job's read, in place of the API's answer. */
+  resource?: Resource<BatchJob>;
+};
 
-  useEffect(() => {
-    if (!jobId) return;
-    let cancelled = false;
-    fetchBatchJob(jobId)
-      .then((data) => {
-        if (!cancelled) setJob(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          const message =
-            err instanceof ApiError && err.status === 404
-              ? `Batch job "${jobId}" not found.`
-              : err instanceof Error
-                ? err.message
-                : "Failed to load batch job";
-          setError(message);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [jobId]);
+export default function BatchJobDetailPage({ resource: given }: BatchJobDetailPageProps = {}) {
+  const { jobId = "" } = useParams<{ jobId: string }>();
+  const load = useCallback(() => fetchBatchJob(jobId), [jobId]);
+  const { resource: read, retry } = useResource(load);
+  const resource = given ?? read;
+  const job = resource.phase === "ok" ? resource.data : null;
 
   return (
     <section>
@@ -57,17 +43,25 @@ export default function BatchJobDetailPage() {
         </Link>
       </div>
 
-      {error && <p className="mb-4 text-sm text-decision-block">{error}</p>}
-      {job === null && !error && <Skeleton className="mb-6 h-32 w-full" />}
+      <PageHeader
+        title={jobId}
+        hindi="बैच विवरण"
+        subtitle={job ? `${job.model_id} · ${job.governance_mode} mode` : "Batch job"}
+        action={job && <Badge variant="active">{job.status}</Badge>}
+      />
+
+      <ResourceState
+        resource={resource}
+        loading="Loading batch job…"
+        notFound={`No batch job ${jobId} on this server.`}
+        onRetry={retry}
+        skeleton={<Skeleton className="mb-6 h-32 w-full" />}
+      >
+        {() => null}
+      </ResourceState>
 
       {job && (
         <>
-          <PageHeader
-            title={job.job_id}
-            hindi="बैच विवरण"
-            subtitle={`${job.model_id} · ${job.governance_mode} mode`}
-            action={<Badge variant="active">{job.status}</Badge>}
-          />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>

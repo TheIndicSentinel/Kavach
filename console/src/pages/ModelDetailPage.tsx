@@ -1,56 +1,29 @@
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
+import { ProposalStatus } from "../components/ui/ProposalStatus";
+import { ResourceState } from "../components/ui/ResourceState";
 import { Skeleton } from "../components/ui/Skeleton";
-import { ApiError, fetchModel, proposeChange, type ModelRecord } from "../lib/api";
+import { useProposal } from "../hooks/useProposal";
+import { useResource, type Resource } from "../hooks/useResource";
+import { fetchModel, type ModelRecord } from "../lib/api";
 
-export default function ModelDetailPage() {
-  const { modelId } = useParams<{ modelId: string }>();
-  const [model, setModel] = useState<ModelRecord | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [promoting, setPromoting] = useState(false);
+type ModelDetailPageProps = {
+  /** For tests: the model's read, in place of the API's answer. */
+  resource?: Resource<ModelRecord>;
+};
 
-  useEffect(() => {
-    if (!modelId) return;
-    let cancelled = false;
-    fetchModel(modelId)
-      .then((data) => {
-        if (!cancelled) setModel(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          const message =
-            err instanceof ApiError && err.status === 404
-              ? `Model "${modelId}" not found.`
-              : err instanceof Error
-                ? err.message
-                : "Failed to load model";
-          setError(message);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [modelId]);
-
-  async function onPromote() {
-    if (!modelId) return;
-    setPromoting(true);
-    setActionMessage(null);
-    try {
-      await proposeChange("update_model", { model_id: modelId, status: "production" });
-      setActionMessage("Change request proposed. A change approver must approve it on the Change requests page.");
-    } catch (err) {
-      setActionMessage(err instanceof Error ? err.message : "Promotion failed");
-    } finally {
-      setPromoting(false);
-    }
-  }
+export default function ModelDetailPage({ resource: given }: ModelDetailPageProps = {}) {
+  const { modelId = "" } = useParams<{ modelId: string }>();
+  const load = useCallback(() => fetchModel(modelId), [modelId]);
+  const { resource: read, retry } = useResource(load);
+  const resource = given ?? read;
+  const { proposal, propose } = useProposal();
+  const model = resource.phase === "ok" ? resource.data : null;
 
   return (
     <section>
@@ -64,29 +37,28 @@ export default function ModelDetailPage() {
         </Link>
       </div>
 
-      {model && (
-        <PageHeader
-          title={model.model_id}
-          hindi="मॉडल विवरण"
-          subtitle={`${model.purpose.replace(/_/g, " ")} · owned by ${model.owner}`}
-          action={
+      <PageHeader
+        title={modelId}
+        hindi="मॉडल विवरण"
+        subtitle={model ? `${model.purpose.replace(/_/g, " ")} · owned by ${model.owner}` : "Model record"}
+        action={
+          model && (
             <Badge variant={model.status === "production" ? "active" : "default"}>
               {model.status}
             </Badge>
-          }
-        />
-      )}
+          )
+        }
+      />
 
-      {error && (
-        <Card className="border-decision-block/30 bg-decision-block-bg/30">
-          <CardHeader>
-            <CardTitle className="text-decision-block">Unable to load model</CardTitle>
-            <CardDescription>{error}</CardDescription>
-          </CardHeader>
-        </Card>
-      )}
-
-      {!model && !error && <Skeleton className="mb-6 h-24 w-full" />}
+      <ResourceState
+        resource={resource}
+        loading="Loading model…"
+        notFound={`No model ${modelId} on this server.`}
+        onRetry={retry}
+        skeleton={<Skeleton className="mb-6 h-24 w-full" />}
+      >
+        {() => null}
+      </ResourceState>
 
       {model && (
         <div className="space-y-4">
@@ -155,12 +127,14 @@ export default function ModelDetailPage() {
                 Dual-control status changes are audited. Governance mode remains authoritative on evaluate path.
               </CardDescription>
             </CardHeader>
-            <Button variant="secondary" disabled={promoting} onClick={onPromote}>
-              {promoting ? "Proposing…" : "Propose promotion to production"}
+            <Button
+              variant="secondary"
+              disabled={proposal.phase === "busy"}
+              onClick={() => void propose("update_model", { model_id: modelId, status: "production" })}
+            >
+              Propose promotion to production
             </Button>
-            {actionMessage && (
-              <p className="mt-3 text-sm text-muted">{actionMessage}</p>
-            )}
+            <ProposalStatus proposal={proposal} />
           </Card>
         </div>
       )}

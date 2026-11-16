@@ -8,6 +8,13 @@ import {
   reinstated,
   reinstateProposed,
 } from "../src/test/fixtures";
+import { decisionLookup, revocationLookup, revokeHalfway } from "../src/test/fixtures";
+import {
+  EVIDENCE_ID,
+  cleanReconciliation,
+  decisionEvent,
+  reconciliation,
+} from "../src/test/evidenceFixtures";
 
 type Schemas = components["schemas"];
 
@@ -28,6 +35,7 @@ export const runtime: Schemas["RuntimeView"] = {
   pointer_drift: false,
   insecure_dev: true,
   require_hardening: false,
+  agent_only: false,
   relaxations: ["insecure_dev", "principal_header", "memory_evidence_store"],
   checkpoint_lag_seconds: 12,
   checkpoint_stalled: false,
@@ -162,4 +170,122 @@ export const forbidden: Schemas["Problem"] = {
   error: "The principal may not do this.",
 };
 
+/** `GET /auth/config`: console login configured. */
+export const authConfigLogin: Schemas["ConsoleAuthConfig"] = { login_configured: true, pasted_token_allowed: false };
+
+/** `GET /auth/config`: no console login, --insecure-dev (the development fallback). */
+export const authConfigDev: Schemas["ConsoleAuthConfig"] = { login_configured: false, pasted_token_allowed: true };
+
+/** `GET /auth/config`: no console login and no fallback. */
+export const authConfigNone: Schemas["ConsoleAuthConfig"] = { login_configured: false, pasted_token_allowed: false };
+
+/** A session whose token names the Cedar group `operators` (the API passes it to Cedar as it is). */
+export const authSession: Schemas["ConsoleSession"] = {
+  principal: "oidc-operator-7",
+  groups: ["operators"],
+  expires_at: "2026-11-15T18:00:00Z",
+  idle_expires_at: "2026-11-15T10:15:00Z",
+};
+
+/** A viewers-only session: the role hints take the place of the stop and approve controls. */
+export const viewerSession: Schemas["ConsoleSession"] = {
+  ...authSession,
+  principal: "oidc-viewer-3",
+  groups: ["viewers"],
+};
+
+/** An admin and change approver: every control shows. */
+export const approverSession: Schemas["ConsoleSession"] = {
+  ...authSession,
+  principal: "oidc-admin-2",
+  groups: ["admins", "change-approvers"],
+};
+
+export const logoutLocal: Schemas["ConsoleLogout"] = { end_session_url: null };
+
+/** The 401 problem `GET /auth/session` and every call answer when no session is live. */
+export const noSession: Schemas["Problem"] = {
+  type: "/problems/unauthorized",
+  title: "Unauthorized",
+  status: 401,
+  detail: "No live console session.",
+  code: "unauthorized",
+  request_id: "req-e2e-401",
+  error: "No live console session.",
+};
+
 export { neverChanged, quarantineApplied, reinstateProposed };
+
+// UI-4 part 2: the states the axe and keyboard checks reach.
+
+export { decisionLookup, revocationLookup, revokeHalfway, quarantined, reinstated };
+export { EVIDENCE_ID, cleanReconciliation, decisionEvent, reconciliation };
+
+/** A revoked agent: only "Repeat revoke" is left. */
+export const revokedAgent: Schemas["AgentStateView"] = {
+  agent_id: "agent:old-bot",
+  state: "revoked",
+  change_no: 5,
+  reason_code: "compromise_suspected",
+  changed_by: "operator-1",
+  approved_by: null,
+  change_request_id: null,
+  changed_at: "2026-11-13T08:00:00Z",
+};
+
+/** What restricting agent:collections-bot returns. */
+export const restrictApplied: Schemas["AgentStopResult"] = {
+  ...quarantineApplied,
+  state: "restricted",
+  reason_code: "operator_request",
+};
+
+export const notFound: Schemas["Problem"] = {
+  type: "/problems/not_found",
+  title: "Not Found",
+  status: 404,
+  detail: "No such record.",
+  code: "not_found",
+  request_id: "req-e2e-404",
+  error: "No such record.",
+};
+
+export const rateLimited: Schemas["Problem"] = {
+  type: "/problems/rate_limited",
+  title: "Too Many Requests",
+  status: 429,
+  detail: "Too many lookups: wait and try again.",
+  code: "rate_limited",
+  request_id: "req-e2e-429",
+  error: "Too many lookups: wait and try again.",
+};
+
+export const evaluateResult: Schemas["EvaluateResponse"] = {
+  policy_decision: "BLOCK",
+  returned_decision: "BLOCK",
+  evidence_id: EVIDENCE_ID,
+  reason_codes: ["INCOME_BELOW_FLOOR"],
+  policy_hits: ["income-floor"],
+  latency_ms: 3,
+};
+
+/** The fixture's pending reinstatement once decided by admin-2 (or cancelled by its proposer). */
+export function reinstateDecided(status: Schemas["ChangeStatus"]): Schemas["ChangeRequest"] {
+  return {
+    ...reinstateProposed,
+    status,
+    decided_by: status === "cancelled" ? reinstateProposed.proposer : "admin-2",
+    decided_at: "2026-11-15T10:00:00Z",
+  };
+}
+
+/** Two pages of agents, for paging: the first names a cursor to the second. */
+export const agentPageOne: Schemas["AgentStatePage"] = {
+  items: [neverChanged, reinstated],
+  next_cursor: "cursor-page-2",
+};
+
+export const agentPageTwo: Schemas["AgentStatePage"] = {
+  items: [quarantined],
+  next_cursor: null,
+};

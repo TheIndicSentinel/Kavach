@@ -1,6 +1,5 @@
-import { useState } from "react";
-import { CheckCircle2, KeyRound } from "lucide-react";
-import { Button } from "../components/ui/Button";
+import { KeyRound, ShieldCheck } from "lucide-react";
+import { DevTokenForm } from "../components/auth/DevTokenForm";
 import {
   Card,
   CardDescription,
@@ -8,132 +7,143 @@ import {
   CardTitle,
 } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
-import {
-  getAccessToken,
-  getPrincipal,
-  setAccessToken,
-  setPrincipal,
-} from "../lib/api";
+import { formatDateTime } from "../lib/format";
+import { useSessionState, type AuthSession } from "../lib/session";
+
+const code = "rounded bg-stone-100 px-1 text-xs text-ink";
+
+function SessionCard({ session }: { session: AuthSession }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-lg bg-saffron-100 text-saffron-600">
+          <ShieldCheck className="h-5 w-5" aria-hidden />
+        </div>
+        <CardTitle>Your session</CardTitle>
+        <CardDescription>As the server reported it when this page loaded.</CardDescription>
+      </CardHeader>
+      <dl className="space-y-3 text-sm">
+        <div>
+          <dt className="text-muted">Principal</dt>
+          <dd className="font-semibold text-ink">{session.principal}</dd>
+        </div>
+        <div>
+          <dt className="text-muted">Groups</dt>
+          <dd className="text-ink">
+            {session.groups === null
+              ? "not known to the console; the server decides each request"
+              : session.groups.length
+                ? session.groups.join(", ")
+                : "none"}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-muted">Session ends by</dt>
+          <dd className="text-ink">{formatDateTime(session.expires_at)}</dd>
+        </div>
+        <div>
+          <dt className="text-muted">Ends sooner if unused until</dt>
+          <dd className="text-ink">{formatDateTime(session.idle_expires_at)}</dd>
+        </div>
+      </dl>
+    </Card>
+  );
+}
+
+function HowSignInWorks() {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>How console sign-in works</CardTitle>
+      </CardHeader>
+      <ul className="list-disc space-y-3 pl-5 text-sm text-muted">
+        <li>
+          You sign in at your organisation's identity provider. The Kavach server receives the tokens and
+          keeps them in its memory; they are never sent to this browser.
+        </li>
+        <li>
+          This browser holds only a session cookie marked HttpOnly, so scripts on the page cannot read it.
+          The console keeps your principal, groups and session times in memory, not in browser storage.
+        </li>
+        <li>
+          Every call still goes through the API's token verification and its Cedar policy. The groups
+          shown here only shape what the console offers; the API decides.
+        </li>
+        <li>
+          <span className="font-medium text-ink">Sign out</span> (top right) ends your Kavach session. You
+          stay signed in at the identity provider unless this server is set to end that session too.
+        </li>
+        <li>
+          A server restart ends every session. Setup: <code className={code}>docs/INSTALL.md</code>.
+        </li>
+      </ul>
+    </Card>
+  );
+}
+
+function DevFallbackCards() {
+  return (
+    <>
+      <Card>
+        <CardHeader>
+          <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-lg bg-saffron-100 text-saffron-600">
+            <KeyRound className="h-5 w-5" aria-hidden />
+          </div>
+          <CardTitle>Development credentials</CardTitle>
+          <CardDescription>
+            A pasted token or principal ID, offered only because console login is not configured and the
+            API runs with --insecure-dev.
+          </CardDescription>
+        </CardHeader>
+        <DevTokenForm />
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Outside development</CardTitle>
+        </CardHeader>
+        <ul className="list-disc space-y-3 pl-5 text-sm text-muted">
+          <li>
+            Configure console login (OIDC authorization code with PKCE, ADR-018). Operators then sign in at
+            the identity provider, and no token is pasted or kept in the browser.
+          </li>
+          <li>
+            A server started with <code className={code}>--require-hardening</code> refuses this pasted-token
+            fallback.
+          </li>
+          <li>
+            Setup: <code className={code}>docs/INSTALL.md</code>.
+          </li>
+        </ul>
+      </Card>
+    </>
+  );
+}
 
 export default function SettingsPage() {
-  const [principal, setPrincipalInput] = useState(getPrincipal());
-  const [token, setTokenInput] = useState(getAccessToken());
-  const [saved, setSaved] = useState(false);
-
-  function onSave(event: React.FormEvent) {
-    event.preventDefault();
-    setPrincipal(principal);
-    setAccessToken(token);
-    setSaved(true);
-    window.setTimeout(() => {
-      setSaved(false);
-      window.location.reload();
-    }, 800);
-  }
+  const session = useSessionState();
 
   return (
     <section>
       <PageHeader
         title="Settings"
         hindi="सेटिंग्स"
-        subtitle="Paste an OIDC access token from your identity provider. The principal header is accepted only when the API runs with --insecure-dev (development)."
+        subtitle={
+          session.status === "signed_in"
+            ? "Your console session and how sign-in works on this server."
+            : "Development credentials for a server without console login."
+        }
       />
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card>
-          <CardHeader>
-            <div className="mb-2 flex h-10 w-10 items-center justify-center rounded-lg bg-saffron-100 text-saffron-600">
-              <KeyRound className="h-5 w-5" aria-hidden />
-            </div>
-            <CardTitle>Access credentials</CardTitle>
-            <CardDescription>
-              The access token is sent as{" "}
-              <code className="rounded bg-stone-100 px-1 text-xs text-ink">Authorization: Bearer</code>. Without
-              a token, the principal ID is sent as{" "}
-              <code className="rounded bg-stone-100 px-1 text-xs text-ink">X-Kavach-Principal</code>, which the
-              API refuses unless it runs with --insecure-dev.
-            </CardDescription>
-          </CardHeader>
-
-          <form onSubmit={onSave} className="space-y-4">
-            <div>
-              <label
-                htmlFor="principal"
-                className="mb-1.5 block text-sm font-medium text-ink"
-              >
-                Principal ID
-              </label>
-              <input
-                id="principal"
-                value={principal}
-                onChange={(event) => setPrincipalInput(event.target.value)}
-                placeholder="operator-1"
-                autoComplete="off"
-                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-stone-400 focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20"
-              />
-            </div>
-            <div>
-              <label
-                htmlFor="token"
-                className="mb-1.5 block text-sm font-medium text-ink"
-              >
-                Access token (OIDC)
-              </label>
-              <input
-                id="token"
-                type="password"
-                value={token}
-                onChange={(event) => setTokenInput(event.target.value)}
-                placeholder="eyJ…"
-                autoComplete="off"
-                className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-stone-400 focus:border-saffron-500 focus:ring-2 focus:ring-saffron-500/20"
-              />
-            </div>
-            <p className="text-xs leading-relaxed text-muted">
-              Example principals from{" "}
-              <code className="rounded bg-stone-100 px-1 text-ink">
-                crates/kavach-auth/policies/entities.example.json
-              </code>
-              : <span className="font-medium text-ink">operator-1</span>,{" "}
-              <span className="font-medium text-ink">viewer-1</span>,{" "}
-              <span className="font-medium text-ink">admin-1</span> (proposes),{" "}
-              <span className="font-medium text-ink">admin-2</span> or{" "}
-              <span className="font-medium text-ink">approver-1</span> (approves).
-            </p>
-            <div className="flex items-center gap-3">
-              <Button type="submit">Save principal</Button>
-              {saved && (
-                <span className="inline-flex items-center gap-1 text-sm font-medium text-decision-pass">
-                  <CheckCircle2 className="h-4 w-4" aria-hidden />
-                  Saved
-                </span>
-              )}
-            </div>
-          </form>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Production deployment</CardTitle>
-            <CardDescription>Recommended auth posture for bank VPCs</CardDescription>
-          </CardHeader>
-          <ul className="space-y-3 text-sm text-muted">
-            <li>
-              Terminate TLS at your ingress; enable mTLS between services where required.
-            </li>
-            <li>
-              Issue OIDC access tokens for the Kavach audience; map IdP groups to Cedar groups
-              (the token's groups claim) — do not rely on manual principal entry.
-            </li>
-            <li>
-              Add HMAC v2 signing (timestamp + nonce) on machine-to-machine evaluate calls for
-              replay protection.
-            </li>
-            <li>
-              See <span className="font-medium text-ink">docs/INSTALL.md</span> for full environment reference.
-            </li>
-          </ul>
-        </Card>
+        {session.status === "signed_in" ? (
+          <>
+            <SessionCard session={session.session} />
+            <HowSignInWorks />
+          </>
+        ) : (
+          <DevFallbackCards />
+        )}
       </div>
     </section>
   );

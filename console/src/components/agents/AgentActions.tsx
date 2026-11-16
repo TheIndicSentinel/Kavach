@@ -4,6 +4,7 @@ import { Button } from "../ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../ui/Card";
 import { Dialog } from "../ui/Dialog";
 import { ProblemAlert } from "../ui/ProblemAlert";
+import { RoleHint } from "../ui/RoleHint";
 import { TextField } from "../ui/TextField";
 import { FieldList, mono } from "./AgentViews";
 import {
@@ -39,6 +40,7 @@ import {
   type ReinstateTo,
   type StopAction,
 } from "../../lib/api";
+import { roleHint, type Viewer } from "../../lib/permissions";
 
 const noErrors: ActionFormErrors = { reasonCode: null, note: null };
 
@@ -343,10 +345,16 @@ type AgentActionsProps = {
   onStale: () => void;
   /** Where focus goes when a dialog closes and its opener is gone. */
   fallbackFocus: RefObject<HTMLElement | null>;
+  /** Who the console acts as; with unknown groups every control the state allows shows. */
+  viewer: Viewer;
 };
 
-/** The stops the agent's state allows, and reinstatement by change request. */
-export function AgentActions({ agent, onStopped, onStale, fallbackFocus }: AgentActionsProps) {
+/**
+ * The stops the agent's state allows, and reinstatement by change request,
+ * less any the viewer's groups are known to lack (a hint line takes their
+ * place; the server still decides).
+ */
+export function AgentActions({ agent, onStopped, onStale, fallbackFocus, viewer }: AgentActionsProps) {
   const [open, setOpen] = useState<Open | null>(null);
   const [form, setForm] = useState<ActionForm>(emptyActionForm);
   const [errors, setErrors] = useState<ActionFormErrors>(noErrors);
@@ -355,8 +363,15 @@ export function AgentActions({ agent, onStopped, onStale, fallbackFocus }: Agent
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const flight = useRef(createFlightGuard());
 
-  const stops = stopActionsFor(agent.state);
-  const targets = reinstateTargetsFor(agent.state);
+  const stateStops = stopActionsFor(agent.state);
+  const stateTargets = reinstateTargetsFor(agent.state);
+  const stopHint = stateStops.length > 0 ? roleHint(viewer, "stop_agent", "stop agents") : null;
+  const reinstateHint =
+    stateTargets.length > 0
+      ? roleHint(viewer, "propose_reinstate_agent", "propose reinstating an agent")
+      : null;
+  const stops = stopHint ? [] : stateStops;
+  const targets = reinstateHint ? [] : stateTargets;
 
   function start(next: Open) {
     setOpen(next);
@@ -411,8 +426,9 @@ export function AgentActions({ agent, onStopped, onStale, fallbackFocus }: Agent
       <CardHeader>
         <CardTitle>Actions</CardTitle>
         <CardDescription>
-          The API decides: the console offers every change the agent's state allows, and a
-          principal without permission gets the API's refusal. A stop takes one principal and
+          The API decides: the console offers every change the agent's state allows, less any
+          your groups are known to lack, and a principal without permission gets the API's
+          refusal. A stop takes one principal and
           takes effect from the agent's next call. Bringing an agent back takes a change request
           that a different principal approves.
         </CardDescription>
@@ -420,7 +436,14 @@ export function AgentActions({ agent, onStopped, onStale, fallbackFocus }: Agent
 
       <ActionStatus outcome={outcome} />
 
-      <div className="flex flex-wrap gap-2">
+      {(stopHint || reinstateHint) && (
+        <div className="mb-3 space-y-1">
+          {stopHint && <RoleHint>{stopHint}</RoleHint>}
+          {reinstateHint && <RoleHint>{reinstateHint}</RoleHint>}
+        </div>
+      )}
+
+      <div className="flex flex-wrap gap-2 empty:hidden">
         {stops.map((action) => (
           <Button
             key={action}

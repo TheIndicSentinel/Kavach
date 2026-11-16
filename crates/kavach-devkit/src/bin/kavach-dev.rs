@@ -35,6 +35,10 @@ enum Command {
         database_hosts: Vec<String>,
         #[arg(long, default_value_t = 24)]
         token_hours: i64,
+        /// The `iss` of the minted tokens and KAVACH_OIDC_ISSUER; a test
+        /// IdP's origin when its tokens and the bundle's must both verify.
+        #[arg(long, default_value = kavach_devkit::ISSUER)]
+        issuer: String,
     },
     /// Sign a system-of-record event with the bundle's dev SoR key and post
     /// it to Kavach's SoR listener; prints the response (the mandate id).
@@ -50,6 +54,11 @@ enum Command {
         subject_ref: String,
         #[arg(long, default_value = "collections-agent")]
         agent: String,
+        /// Send this revoking event (loan.paid or loan.disputed) for the
+        /// borrower's loan instead of an assignment: it revokes every
+        /// mandate issued for that loan.
+        #[arg(long)]
+        revoke: Option<String>,
     },
     /// The test agent's checks, run from inside the agent network: only the
     /// agent listener is reachable, the agent holds no key material, and
@@ -89,6 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             provider_hosts,
             database_hosts,
             token_hours,
+            issuer,
         } => {
             let summary = kavach_devkit::generate(&kavach_devkit::Options {
                 out,
@@ -97,6 +107,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 provider_hosts,
                 database_hosts,
                 token_hours,
+                issuer,
             })
             .await?;
             println!(
@@ -112,15 +123,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             event_id,
             subject_ref,
             agent,
+            revoke,
         } => {
-            let event = kavach_devkit::sor_event(
-                &bundle,
-                &event_id,
-                &subject_ref,
-                &agent,
-                chrono::Utc::now(),
-            )
-            .await?;
+            let now = chrono::Utc::now();
+            let event = match revoke {
+                Some(event_type) => {
+                    kavach_devkit::revoking_event(
+                        &bundle,
+                        &event_id,
+                        &subject_ref,
+                        &event_type,
+                        now,
+                    )
+                    .await?
+                }
+                None => {
+                    kavach_devkit::sor_event(&bundle, &event_id, &subject_ref, &agent, now).await?
+                }
+            };
             let response = reqwest::Client::new()
                 .post(&url)
                 .json(&serde_json::json!({ "event": event }))

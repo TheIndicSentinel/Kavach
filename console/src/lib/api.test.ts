@@ -8,6 +8,7 @@ import {
   fetchRevocationRecord,
   proposeReinstatement,
   request,
+  setAuthMode,
   stopAgent,
   stopAgentPath,
   type StopAction,
@@ -41,7 +42,10 @@ async function failure(path: string): Promise<ApiError> {
 }
 
 beforeEach(stubStorage);
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  setAuthMode(null);
+  vi.unstubAllGlobals();
+});
 
 describe("request", () => {
   it("returns the parsed body of an ok JSON response", async () => {
@@ -89,7 +93,8 @@ describe("request", () => {
     expect(err.message).toBe("The API could not be reached");
   });
 
-  it("sends the bearer token and never the principal header when a token is set", async () => {
+  it("sends the bearer token and never the principal header when a token is set (development fallback)", async () => {
+    setAuthMode("dev_token");
     const seen = vi.fn(async (_path: string, _init?: RequestInit) =>
       new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } }),
     );
