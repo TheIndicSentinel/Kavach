@@ -122,7 +122,7 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - The result: `applied`, `record` (`written`, `pending`, `unchanged`), and for revoke the mandates revoked and not revoked, with "repeat the revoke to finish" when the second list is not empty.
 - Reinstate: propose a `reinstate_agent` change request (`to: active | restricted`), never from `revoked`.
 
-### UI-3: evidence and reconciliation — base done (#234), ADR-017 work in progress
+### UI-3: evidence and reconciliation — done (#234; ADR-017 read-only console slices)
 
 - Closed-records reconciliation (Closed loans): upload or paste the lender's list, show findings, state plainly that the call revokes nothing.
 - Decision events (credit) by evidence id, with `kavach-evidence verify --file` for the exported chain and `kavach why --export` for one event. Agent records get `kavach-evidence verify-bundle`, `kavach why --bundle` (decisions only) and the independent Python verifier. The console runs none of these; it shows them to copy.
@@ -130,7 +130,7 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - **Done (second slice):** both evidence stores expose a tenant-scoped, cursor-paged read of every unknown outcome and its complete resolution history. It includes unresolved, ambiguous, conflicted and confirmed histories; the reconciler's narrower queue remains unchanged.
 - **Done (third slice):** `GET /v1/unknown-outcomes` returns the paged store read with the governing state and source. It uses `read_evidence`, the evidence-read rate limit and an audit record; it does not resend or release a contact slot.
 - **Done (fourth slice):** Agent Evidence has a click-to-load, cursor-paged list showing each unknown outcome's governing state and complete resolution history, with loading, empty, error, retry and role-hint states. The read does not enable a write action.
-- **Waiting:** the remaining R3b operator attestation and two-person conflict-closure workflow from [ADR-017](ADR-017-unknown-outcome-reconciliation.md), including its API change-request safeguards and attacks. The console remains read-only for these outcomes until that phase is complete.
+- **Separate backend work:** ADR-017 R3b operator attestation and two-person conflict closure, including API change-request safeguards and attacks, remain pending. They are not part of the approved read-only UI-3 scope; no outcome write controls are shown in the console.
 
 ### UI-4: hardening and polish — done (#239, #241, #244, ADR-018 sign-in, #253, #254)
 
