@@ -33,6 +33,48 @@ Bank deployment model per [ADR-002](ADR-002-deployment-architecture.md): **two a
 | TLS certificates | Required for production; mTLS optional for service-to-service |
 | IdP | Issues OIDC access tokens (principal + groups) for Cedar RBAC (ADR-008) |
 
+## Try it on one machine: `scripts/demo.sh`
+
+To see the console work before a real install, `scripts/demo.sh` runs a seeded Kavach on your machine, signed in through a local test identity provider. It is for trying Kavach out, not a deployment: everything listens on 127.0.0.1, runs with `--insecure-dev`, and the identity provider signs in whoever picks a name.
+
+**1. A Postgres it can reach (14 or newer; no Docker needed).** demo.sh never starts or stops Postgres. If it cannot reach one, it says so and prints the start command. One way, with the PostgreSQL server binaries installed (from a package manager or a relocatable build):
+
+```bash
+initdb -D ~/kavach-pg/data -U kavach --auth=trust      # once; trust is for loopback development only
+pg_ctl -D ~/kavach-pg/data -l ~/kavach-pg/pg.log \
+  -o '-p 55433 -k /tmp -c listen_addresses=127.0.0.1' start
+```
+
+That matches demo.sh's default, `postgres://kavach@127.0.0.1:55433/postgres`. For another Postgres, set `KAVACH_DEMO_DATABASE_URL` (and give `stop` the same value). Each run creates its own schema, `kavach_demo_<epoch seconds>`. `stop` drops it, and drops no other schema.
+
+**2. Run it** from the repository root. It needs cargo, npm, curl, psql and pg_isready.
+
+```bash
+scripts/demo.sh
+```
+
+It builds the console and then kavach-api (which embeds the console), the OIDC test double, `kavach-dev` and the mock provider; the first build takes a while. It then:
+
+1. generates a development bundle in `.demo/` (owner-only; keys, tokens, logs, pids);
+2. starts the test identity provider on `:9400` and the mock delivery provider on `:8443`;
+3. starts kavach-api on `:8080`, with Postgres evidence, Cedar and console sign-in;
+4. seeds what the console's real-stack tests use: a mandate, agent calls under it (allowed or blocked), a call with a forged mandate, a call by another agent, then the mandate's revocation and a call after it.
+
+**3. Open the URL it prints,** `http://127.0.0.1:8080/`: the console kavach-api serves, not a Vite dev server. Use `127.0.0.1`, not `localhost`: the sign-in returns to the address it was given. Choose **Sign in**. The test identity provider asks who to sign in as, on every sign-in:
+
+| User | Group | What Cedar lets the group do |
+|---|---|---|
+| `demo-admin` | `admins` | every proposal, stop and read |
+| `demo-approver` | `change-approvers` | approve or reject change requests |
+| `demo-operator` | `operators` | evaluate; read governance |
+| `demo-viewer` | `viewers` | read governance and health |
+
+A page that a user's group may not read shows "Not permitted"; the server decides. To switch users, sign out and sign in again.
+
+**4. Stop:** `scripts/demo.sh stop` stops what it started and drops its schema. `scripts/demo.sh status` says whether it runs. A second `scripts/demo.sh` while one runs is refused.
+
+**"The Kavach API is not reachable"** in a console served by `npm run dev` means nothing listens on `:8080` behind the Vite proxy: start `scripts/demo.sh`, or kavach-api yourself.
+
 ## Build
 
 ```bash
