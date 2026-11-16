@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ArrowLeft } from "lucide-react";
 import { Badge } from "../components/ui/Badge";
@@ -7,53 +7,26 @@ import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/C
 import { DataTable } from "../components/ui/DataTable";
 import { DecisionBadge } from "../components/ui/DecisionBadge";
 import { PageHeader } from "../components/ui/PageHeader";
+import { ProposalStatus } from "../components/ui/ProposalStatus";
+import { ResourceState } from "../components/ui/ResourceState";
 import { Skeleton } from "../components/ui/Skeleton";
-import { ApiError, fetchPack, proposeChange, type PolicyPack } from "../lib/api";
+import { useProposal } from "../hooks/useProposal";
+import { useResource, type Resource } from "../hooks/useResource";
+import { fetchPack, type PolicyPack } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 
-export default function PolicyDetailPage() {
-  const { packId } = useParams<{ packId: string }>();
-  const [pack, setPack] = useState<PolicyPack | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [actionMessage, setActionMessage] = useState<string | null>(null);
-  const [activating, setActivating] = useState(false);
+type PolicyDetailPageProps = {
+  /** For tests: the pack's read, in place of the API's answer. */
+  resource?: Resource<PolicyPack>;
+};
 
-  useEffect(() => {
-    if (!packId) return;
-    let cancelled = false;
-    fetchPack(packId)
-      .then((data) => {
-        if (!cancelled) setPack(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          const message =
-            err instanceof ApiError && err.status === 404
-              ? `Policy pack "${packId}" not found.`
-              : err instanceof Error
-                ? err.message
-                : "Failed to load pack";
-          setError(message);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [packId]);
-
-  async function onActivate() {
-    if (!packId) return;
-    setActivating(true);
-    setActionMessage(null);
-    try {
-      await proposeChange("activate_pack", { pack_id: packId });
-      setActionMessage("Change request proposed. A change approver must approve it on the Change requests page.");
-    } catch (err) {
-      setActionMessage(err instanceof Error ? err.message : "Activate failed");
-    } finally {
-      setActivating(false);
-    }
-  }
+export default function PolicyDetailPage({ resource: given }: PolicyDetailPageProps = {}) {
+  const { packId = "" } = useParams<{ packId: string }>();
+  const load = useCallback(() => fetchPack(packId), [packId]);
+  const { resource: read, retry } = useResource(load);
+  const resource = given ?? read;
+  const { proposal, propose } = useProposal();
+  const pack = resource.phase === "ok" ? resource.data : null;
 
   return (
     <section>
@@ -67,25 +40,22 @@ export default function PolicyDetailPage() {
         </Link>
       </div>
 
-      {pack && (
-        <PageHeader
-          title={pack.id}
-          hindi="नीति विवरण"
-          subtitle={pack.description ?? "CEL policy pack for governed credit decisions."}
-          action={<Badge variant="active">v{pack.version}</Badge>}
-        />
-      )}
+      <PageHeader
+        title={packId}
+        hindi="नीति विवरण"
+        subtitle={pack?.description ?? "CEL policy pack for governed credit decisions."}
+        action={pack && <Badge variant="active">v{pack.version}</Badge>}
+      />
 
-      {error && (
-        <Card className="border-decision-block/30 bg-decision-block-bg/30">
-          <CardHeader>
-            <CardTitle className="text-decision-block">Unable to load pack</CardTitle>
-            <CardDescription>{error}</CardDescription>
-          </CardHeader>
-        </Card>
-      )}
-
-      {!pack && !error && <Skeleton className="mb-6 h-24 w-full" />}
+      <ResourceState
+        resource={resource}
+        loading="Loading policy pack…"
+        notFound={`No policy pack ${packId} on this server.`}
+        onRetry={retry}
+        skeleton={<Skeleton className="mb-6 h-24 w-full" />}
+      >
+        {() => null}
+      </ResourceState>
 
       {pack && (
         <div className="space-y-4">
@@ -149,14 +119,12 @@ export default function PolicyDetailPage() {
             </CardHeader>
             <Button
               variant="secondary"
-              disabled={activating}
-              onClick={onActivate}
+              disabled={proposal.phase === "busy"}
+              onClick={() => void propose("activate_pack", { pack_id: packId })}
             >
-              {activating ? "Proposing…" : "Propose activation"}
+              Propose activation
             </Button>
-            {actionMessage && (
-              <p className="mt-3 text-sm text-muted">{actionMessage}</p>
-            )}
+            <ProposalStatus proposal={proposal} />
           </Card>
         </div>
       )}

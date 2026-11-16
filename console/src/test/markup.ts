@@ -2,7 +2,7 @@
 // console has no DOM test environment, so these read the HTML string.
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { createElement } from "react";
 
 /** Renders `element` inside a router, as the app does. */
@@ -47,4 +47,15 @@ export function byRole(html: string, role: string): string[] {
     found.push(text(html.slice(match.index + match[0].length, end)));
   }
   return found;
+}
+
+/** Renders `element` as the route `pattern` (e.g. "/agents/:agentId") at `path`. */
+export function renderAt(path: string, pattern: string, element: ReactElement): string {
+  return renderToStaticMarkup(
+    createElement(
+      MemoryRouter,
+      { initialEntries: [path] },
+      createElement(Routes, null, createElement(Route, { path: pattern, element })),
+    ),
+  );
 }

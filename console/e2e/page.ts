@@ -72,6 +72,10 @@ export const test = apiTest.extend<{ csp: CspGuard }>({
       });
 
       await provide(guard);
+      // A file still loading when the test ends (a font, say) would make its
+      // handler's fetch throw "Test ended" after the test passed. Its page is
+      // finished, so there is nothing left to guard: drop the handler first.
+      await page.unrouteAll({ behavior: "ignoreErrors" });
       expect(guard.violations, "Content-Security-Policy violations under the server's policy").toEqual([]);
     },
     { auto: true },

@@ -14,6 +14,7 @@ import EvaluatePage from "./pages/EvaluatePage";
 import IncidentsPage from "./pages/IncidentsPage";
 import ModelDetailPage from "./pages/ModelDetailPage";
 import ModelsPage from "./pages/ModelsPage";
+import NotFoundPage from "./pages/NotFoundPage";
 import OverviewPage from "./pages/OverviewPage";
 import PoliciesPage from "./pages/PoliciesPage";
 import PolicyDetailPage from "./pages/PolicyDetailPage";
@@ -54,7 +55,7 @@ export default function App() {
           <Route path="incidents" element={<IncidentsPage />} />
           <Route path="retention" element={<RetentionPage />} />
           <Route path="settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to="/overview" replace />} />
+          <Route path="*" element={<NotFoundPage />} />
         </Route>
       </Route>
     </Routes>

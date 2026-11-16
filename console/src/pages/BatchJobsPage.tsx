@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { DataTable } from "../components/ui/DataTable";
 import { PageHeader } from "../components/ui/PageHeader";
+import { ResourceState, listSummary } from "../components/ui/ResourceState";
 import { Skeleton } from "../components/ui/Skeleton";
 import { Badge } from "../components/ui/Badge";
+import { useResource, type Resource } from "../hooks/useResource";
 import { fetchBatchJobs, type BatchJob } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 
@@ -21,25 +22,14 @@ function statusVariant(status: string): "active" | "warning" | "default" | "mute
   }
 }
 
-export default function BatchJobsPage() {
-  const [jobs, setJobs] = useState<BatchJob[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+type BatchJobsPageProps = {
+  /** For tests: the read of GET /v1/admin/batch-jobs, in place of the API's answer. */
+  resource?: Resource<BatchJob[]>;
+};
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchBatchJobs()
-      .then((data) => {
-        if (!cancelled) setJobs(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load batch jobs");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+export default function BatchJobsPage({ resource: given }: BatchJobsPageProps) {
+  const { resource: read, retry } = useResource(fetchBatchJobs);
+  const resource = given ?? read;
 
   return (
     <section>
@@ -58,10 +48,14 @@ export default function BatchJobsPage() {
           </CardDescription>
         </CardHeader>
 
-        {error && <p className="mb-4 text-sm text-decision-block">{error}</p>}
-        {jobs === null && !error && <Skeleton className="h-24 w-full" />}
-
-        {jobs && (
+        <ResourceState
+          resource={resource}
+          loading="Loading batch jobs…"
+          summary={(jobs) => listSummary(jobs.length, "job", "jobs")}
+          onRetry={retry}
+          skeleton={<Skeleton className="h-24 w-full" />}
+        >
+          {(jobs) => (
           <DataTable
             rows={jobs}
             rowKey={(row) => row.job_id}
@@ -110,7 +104,8 @@ export default function BatchJobsPage() {
               },
             ]}
           />
-        )}
+          )}
+        </ResourceState>
       </Card>
     </section>
   );
