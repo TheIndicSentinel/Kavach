@@ -9,8 +9,8 @@ type StatusIndicatorProps = {
 const statusStyles = {
   ok: "bg-decision-pass-bg text-decision-pass",
   error: "bg-decision-block-bg text-decision-block",
-  loading: "bg-stone-100 text-muted animate-pulse",
-  idle: "bg-stone-100 text-muted",
+  loading: "bg-stone-100 text-stone-600 animate-pulse",
+  idle: "bg-stone-100 text-stone-600",
 };
 
 export function StatusIndicator({

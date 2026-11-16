@@ -1015,6 +1015,16 @@ impl Dataplane {
         &self.core
     }
 
+    /// The agent ids this configuration has a passport for in its own
+    /// tenant, in ascending byte order. Other tenants' passports are not in
+    /// it.
+    pub fn agent_ids(&self) -> impl Iterator<Item = &str> {
+        self.passports
+            .iter()
+            .filter(|(tenant, _)| *tenant == self.tenant)
+            .map(|(_, agent)| agent.as_str())
+    }
+
     /// The checkpoint writer's state (the background task ticks it).
     pub fn checkpointer(&self) -> &Arc<Checkpointer<EvidenceBackend>> {
         &self.checkpointer
@@ -2084,6 +2094,7 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
         .fallback(crate::problem::not_found)
         .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
+        .layer(crate::http::api_security_headers())
         .with_state(state)
 }
 
@@ -2094,6 +2105,7 @@ pub fn sor_router(state: Arc<AppState>) -> Router {
         .fallback(crate::problem::not_found)
         .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
+        .layer(crate::http::api_security_headers())
         .layer(DefaultBodyLimit::max(SOR_BODY_LIMIT))
         .with_state(state)
 }

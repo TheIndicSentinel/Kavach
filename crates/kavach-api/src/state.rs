@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use chrono::{Duration, Utc};
@@ -46,7 +47,47 @@ pub struct AppState {
     /// live-swap order agree.
     governance_lock: tokio::sync::Mutex<()>,
     dataplane: Option<crate::dataplane::Dataplane>,
+    /// Console sign-in (ADR-018); `None` unless configured.
+    console_login: Option<std::sync::Arc<crate::console_login::ConsoleLogin>>,
 }
+
+/// One of the process-wide locks of [`AppState`], for refusing requests once
+/// it is poisoned. A poisoned lock means a thread panicked while holding it,
+/// so what it guards may be half-updated (an evaluate can stop midway through
+/// its idempotency cache and evidence chain): it is never used again, and
+/// every request that needs it is refused with a 500 until the process is
+/// restarted. Not a 503: retrying cannot succeed, and an `Unavailable` from
+/// a change's preparation would close the change request as failed.
+struct GuardedLock {
+    name: &'static str,
+    alerted: AtomicBool,
+}
+
+impl GuardedLock {
+    const fn new(name: &'static str) -> Self {
+        Self {
+            name,
+            alerted: AtomicBool::new(false),
+        }
+    }
+
+    /// The refusal for a request that found this lock poisoned. The alert is
+    /// logged once per process and names only the lock, never the request.
+    fn poisoned(&self) -> ApiError {
+        if !self.alerted.swap(true, Ordering::Relaxed) {
+            tracing::error!(
+                lock = self.name,
+                "ALERT kavach-api: the {} lock is poisoned (a thread panicked while holding it); \
+                 requests that need it are refused until the process is restarted",
+                self.name
+            );
+        }
+        ApiError::Internal(format!("{} lock poisoned", self.name))
+    }
+}
+
+static EVALUATE_LOCK: GuardedLock = GuardedLock::new("evaluate");
+static RUNTIME_LOCK: GuardedLock = GuardedLock::new("runtime");
 
 #[path = "state_changes.rs"]
 mod changes;
@@ -151,6 +192,7 @@ impl AppState {
             ),
             governance_lock: tokio::sync::Mutex::new(()),
             dataplane,
+            console_login: None,
         })
     }
 
@@ -181,6 +223,20 @@ impl AppState {
             require_hardening: false,
         };
         Self::from_config(&config).await
+    }
+
+    /// Turns console sign-in on (ADR-018). Off unless this is called.
+    #[must_use]
+    pub fn with_console_login(
+        mut self,
+        login: std::sync::Arc<crate::console_login::ConsoleLogin>,
+    ) -> Self {
+        self.console_login = Some(login);
+        self
+    }
+
+    pub fn console_login(&self) -> Option<&std::sync::Arc<crate::console_login::ConsoleLogin>> {
+        self.console_login.as_ref()
     }
 
     pub fn hmac_secret(&self) -> Option<&str> {
@@ -221,8 +277,13 @@ impl AppState {
         &self.metrics
     }
 
-    pub fn runtime(&self) -> RuntimeResponse {
-        self.runtime.lock().expect("runtime lock poisoned").clone()
+    /// The live runtime view. Fails (500) once the runtime lock is poisoned,
+    /// rather than panicking every request that reads it.
+    pub fn runtime(&self) -> Result<RuntimeResponse, ApiError> {
+        self.runtime
+            .lock()
+            .map(|runtime| runtime.clone())
+            .map_err(|_| RUNTIME_LOCK.poisoned())
     }
 
     pub fn packs_dir(&self) -> &std::path::Path {
@@ -272,10 +333,7 @@ impl AppState {
     ) -> Result<Option<(kavach_domain::DecisionEvent, bool)>, ApiError> {
         // Never hold the evaluate lock across an await.
         let source = {
-            let service = self
-                .service
-                .lock()
-                .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
+            let service = self.service.lock().map_err(|_| EVALUATE_LOCK.poisoned())?;
             match service.evidence_store() {
                 EvidenceBackend::Memory(chain) => Err(chain
                     .events()
@@ -315,10 +373,7 @@ impl AppState {
     fn memory_events_snapshot(
         &self,
     ) -> Result<Option<Vec<kavach_domain::DecisionEvent>>, ApiError> {
-        let service = self
-            .service
-            .lock()
-            .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
+        let service = self.service.lock().map_err(|_| EVALUATE_LOCK.poisoned())?;
         Ok(service.evidence_store().memory_events())
     }
 
@@ -362,13 +417,10 @@ impl AppState {
             .set_model_pack_mismatch(runtime.model_pack_mismatch);
         self.service
             .lock()
-            .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?
+            .map_err(|_| EVALUATE_LOCK.poisoned())?
             .reload_pack_and_model(loaded_pack, model)
             .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
-        *self
-            .runtime
-            .lock()
-            .map_err(|_| ApiError::Internal("runtime lock poisoned".into()))? = runtime.clone();
+        *self.runtime.lock().map_err(|_| RUNTIME_LOCK.poisoned())? = runtime.clone();
         Ok(())
     }
 
@@ -456,10 +508,7 @@ impl AppState {
     }
 
     fn evaluate_inner(&self, request: &EvaluateRequest) -> Result<EvaluateResponse, ApiError> {
-        let mut service = self
-            .service
-            .lock()
-            .map_err(|_| ApiError::Internal("evaluate lock poisoned".into()))?;
+        let mut service = self.service.lock().map_err(|_| EVALUATE_LOCK.poisoned())?;
         let result = service
             .evaluate(EvaluatePath::Sync, request, Utc::now())
             .map_err(ApiError::Evaluate)?;
@@ -790,4 +839,197 @@ fn verify_signed(
         .as_deref()
         .ok_or_else(|| kavach_ports::PortError::invalid("pack has no file digest"))?;
     verify_pack_file(path, digest, signers)
+}
+
+/// Roadmap 1.5: a panic while one of the [`AppState`] locks is held poisons
+/// it. Every request that needs that lock is then refused (never decided,
+/// never panicking), and requests that don't need it are still served.
+#[cfg(test)]
+mod poisoned_lock_tests {
+    use std::path::PathBuf;
+    use std::sync::{Arc, Mutex};
+
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::{json, Value};
+    use tower::ServiceExt;
+
+    use super::AppState;
+    use crate::error::ApiError;
+
+    async fn state() -> Arc<AppState> {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        Arc::new(
+            AppState::from_paths_for_tests(
+                &root.join("packs/finance/v0.yaml"),
+                &root.join("models/finance/credit-underwriting-v1.yaml"),
+                None,
+            )
+            .await
+            .expect("state"),
+        )
+    }
+
+    /// Panics in another thread while holding `lock`, which poisons it.
+    fn poison<T: Send>(lock: &Mutex<T>) {
+        std::thread::scope(|scope| {
+            let holder = scope.spawn(|| {
+                let _held = lock.lock().unwrap();
+                panic!("test: panicking while holding the lock");
+            });
+            assert!(holder.join().is_err());
+        });
+        assert!(lock.is_poisoned());
+    }
+
+    async fn send(
+        state: &Arc<AppState>,
+        method: &str,
+        uri: &str,
+        principal: Option<&str>,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut request = Request::builder().method(method).uri(uri);
+        if let Some(principal) = principal {
+            request = request.header("x-kavach-principal", principal);
+        }
+        let body = match body {
+            Some(value) => {
+                request = request.header("content-type", "application/json");
+                Body::from(value.to_string())
+            }
+            None => Body::empty(),
+        };
+        let response = crate::http::router(Arc::clone(state))
+            .oneshot(request.body(body).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn clean_request() -> kavach_domain::EvaluateRequest {
+        let golden: Value =
+            serde_json::from_str(include_str!("../../../golden/finance/v0/credit_clean.json"))
+                .unwrap();
+        let mut request: kavach_domain::EvaluateRequest =
+            serde_json::from_value(golden["request"].clone()).unwrap();
+        let now = chrono::Utc::now();
+        request.decision_time = now;
+        request.consent.as_mut().expect("consent").timestamp = now;
+        request
+    }
+
+    fn evaluate_body() -> Value {
+        serde_json::to_value(clean_request()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_poisoned_evaluate_lock_refuses_every_decision_and_the_rest_is_served() {
+        let state = state().await;
+        poison(&state.service);
+
+        for _ in 0..2 {
+            let (status, body) =
+                send(&state, "POST", "/v1/evaluate", None, Some(evaluate_body())).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+            assert_eq!(body["code"], "internal", "{body}");
+            assert!(body.get("returned_decision").is_none(), "{body}");
+            assert!(!body.to_string().contains("poison"), "{body}");
+        }
+        // gRPC evaluates through the same call.
+        assert!(matches!(
+            state.evaluate("grpc", &clean_request()),
+            Err(ApiError::Internal(_))
+        ));
+        // A change that reads the live model is refused too.
+        let (status, body) = send(
+            &state,
+            "POST",
+            "/v1/change-requests",
+            Some("admin-1"),
+            Some(json!({
+                "kind": "update_model",
+                "params": { "model_id": "credit-underwriting-v1", "governance_mode": "enforce" },
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+
+        // Nothing was decided: no decision event was recorded.
+        let recorded = state
+            .service
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .evidence_store()
+            .memory_events()
+            .map(|events| events.len());
+        assert_eq!(recorded, Some(0));
+        // The server is still up for what does not need the lock.
+        assert_eq!(
+            send(&state, "GET", "/health", None, None).await.0,
+            StatusCode::OK
+        );
+        assert_eq!(
+            send(&state, "GET", "/v1/runtime", None, None).await.0,
+            StatusCode::OK
+        );
+    }
+
+    #[tokio::test]
+    async fn a_poisoned_runtime_lock_refuses_its_readers_and_leaves_changes_pending() {
+        let state = state().await;
+        let (status, proposed) = send(
+            &state,
+            "POST",
+            "/v1/change-requests",
+            Some("admin-1"),
+            Some(json!({
+                "kind": "update_model",
+                "params": { "model_id": "credit-underwriting-v1", "governance_mode": "enforce" },
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{proposed}");
+        poison(&state.runtime);
+
+        assert!(matches!(state.runtime(), Err(ApiError::Internal(_))));
+        for uri in ["/v1/runtime", "/v1/runtime", "/v1/packs", "/v1/models"] {
+            let (status, body) = send(&state, "GET", uri, None, None).await;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{uri}: {body}");
+            assert_eq!(body["code"], "internal", "{uri}: {body}");
+        }
+        // The approval is refused and the request is not closed as failed:
+        // it can be approved once the process is restarted.
+        let id = proposed["id"].as_str().expect("id");
+        let (status, body) = send(
+            &state,
+            "POST",
+            &format!("/v1/change-requests/{id}/approve"),
+            Some("admin-2"),
+            Some(json!({ "change_digest": proposed["change_digest"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        let (_, stored) = send(
+            &state,
+            "GET",
+            &format!("/v1/change-requests/{id}"),
+            Some("admin-1"),
+            None,
+        )
+        .await;
+        assert_eq!(stored["status"], "pending", "{stored}");
+
+        // Decisions do not need the runtime lock and are still made.
+        let (status, body) =
+            send(&state, "POST", "/v1/evaluate", None, Some(evaluate_body())).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["returned_decision"], "PASS");
+    }
 }

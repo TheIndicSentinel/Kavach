@@ -199,15 +199,21 @@ impl OidcVerifier {
                     .map_err(|e| format!("read JWKS {}: {e}", path.display()))?;
                 serde_json::from_str(&text).map_err(|e| format!("parse JWKS: {e}"))
             }
-            (JwksSource::Url(url), Some(client)) => client
-                .get(url)
-                .send()
-                .await
-                .and_then(reqwest::Response::error_for_status)
-                .map_err(|e| format!("fetch JWKS {url}: {e}"))?
-                .json::<JwkSet>()
-                .await
-                .map_err(|e| format!("parse JWKS {url}: {e}")),
+            // The URL is named by scheme, host and port only, and the reqwest
+            // error drops its copy: these errors reach stderr and the log, and
+            // the rest of the URL can carry a credential.
+            (JwksSource::Url(url), Some(client)) => {
+                let shown = crate::hardening::shown_endpoint(url);
+                client
+                    .get(url)
+                    .send()
+                    .await
+                    .and_then(reqwest::Response::error_for_status)
+                    .map_err(|e| format!("fetch JWKS {shown}: {}", e.without_url()))?
+                    .json::<JwkSet>()
+                    .await
+                    .map_err(|e| format!("parse JWKS {shown}: {}", e.without_url()))
+            }
             (JwksSource::Url(_), None) => Err("JWKS URL client missing".into()),
         }
     }
@@ -265,8 +271,10 @@ impl OidcVerifier {
         }
     }
 
-    /// Verifies a bearer token and extracts the principal and groups.
-    pub fn verify(&self, token: &str) -> Result<VerifiedToken, OidcError> {
+    /// The checked header algorithm and the decoded key a token names: the
+    /// header is UTF-8 JSON, the algorithm is allowed, the `kid` is known and
+    /// its JWK allows the algorithm. Shared by access and ID tokens.
+    fn signing_key(&self, token: &str) -> Result<(Algorithm, Arc<DecodingKey>), OidcError> {
         // RFC 7515 §4: the whole header is UTF-8 JSON, an object. Checked
         // before the library, which would skip invalid bytes in members it
         // does not know.
@@ -283,28 +291,64 @@ impl OidcVerifier {
             return Err(OidcError::Algorithm(header.alg));
         }
         let kid = header.kid.ok_or(OidcError::MissingKid)?;
-        let key = {
-            let keys = self
-                .keys
-                .read()
-                .map_err(|_| OidcError::Invalid("jwks lock poisoned".into()))?;
-            let entry = keys
-                .get(&kid)
-                .ok_or_else(|| OidcError::UnknownKid(kid.clone()))?;
-            if let Some(alg) = entry.algorithm {
-                if !key_allows(alg, header.alg) {
-                    return Err(OidcError::KeyAlgorithmMismatch);
-                }
+        let keys = self
+            .keys
+            .read()
+            .map_err(|_| OidcError::Invalid("jwks lock poisoned".into()))?;
+        let entry = keys
+            .get(&kid)
+            .ok_or_else(|| OidcError::UnknownKid(kid.clone()))?;
+        if let Some(alg) = entry.algorithm {
+            if !key_allows(alg, header.alg) {
+                return Err(OidcError::KeyAlgorithmMismatch);
             }
-            Arc::clone(
-                entry
-                    .key
-                    .as_ref()
-                    .map_err(|e| OidcError::Invalid(e.clone()))?,
-            )
-        };
+        }
+        let key = Arc::clone(
+            entry
+                .key
+                .as_ref()
+                .map_err(|e| OidcError::Invalid(e.clone()))?,
+        );
+        Ok((header.alg, key))
+    }
 
-        let mut validation = Validation::new(header.alg);
+    /// Verifies an OpenID Connect ID token for the console login (ADR-018):
+    /// the same issuer and keys as access tokens, `aud` = the console's
+    /// client id (and `azp`, when present or when `aud` names several
+    /// clients), and `nonce` = the one sent with the login. Nothing of the
+    /// token is returned: the console identity comes from the access token,
+    /// which is then verified with [`Self::verify`].
+    pub fn verify_id_token(
+        &self,
+        token: &str,
+        client_id: &str,
+        nonce: &str,
+    ) -> Result<(), OidcError> {
+        let (alg, key) = self.signing_key(token)?;
+        let mut validation = Validation::new(alg);
+        validation.leeway = self.config.leeway_seconds;
+        validation.validate_nbf = true;
+        validation.set_issuer(&[self.config.issuer.as_str()]);
+        validation.set_audience(&[client_id]);
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
+        let claims = decode::<Map<String, Value>>(token, &key, &validation)
+            .map_err(|e| OidcError::Invalid(e.to_string()))?
+            .claims;
+        if claims.get("nonce").and_then(Value::as_str) != Some(nonce) {
+            return Err(OidcError::Claim("nonce".into(), "does not match".into()));
+        }
+        let several = matches!(claims.get("aud"), Some(Value::Array(a)) if a.len() > 1);
+        match claims.get("azp") {
+            Some(Value::String(azp)) if azp == client_id => Ok(()),
+            None if !several => Ok(()),
+            _ => Err(OidcError::Claim("azp".into(), "is not this client".into())),
+        }
+    }
+
+    /// Verifies a bearer token and extracts the principal and groups.
+    pub fn verify(&self, token: &str) -> Result<VerifiedToken, OidcError> {
+        let (alg, key) = self.signing_key(token)?;
+        let mut validation = Validation::new(alg);
         validation.leeway = self.config.leeway_seconds;
         validation.validate_nbf = true;
         validation.set_issuer(&[self.config.issuer.as_str()]);

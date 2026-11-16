@@ -15,8 +15,9 @@
 //! - every provider endpoint is HTTPS (no exception for loopback or an
 //!   "isolated" network: the process cannot verify isolation), and carries no
 //!   userinfo, query or fragment;
-//! - the TLS private key, the HSM PIN file and the subject-pseudonym key are
-//!   readable by their owner only, and the platform can say so;
+//! - the TLS private key, the HSM PIN file, the subject-pseudonym key and
+//!   the console client secret are readable by their owner only, and the
+//!   platform can say so;
 //! - `POST /v1/dev/clock` is not mounted (see `crate::http`).
 //!
 //! A refusal prints **names and the scheme, host and port of an endpoint**,
@@ -72,6 +73,11 @@ impl Violation {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
+            Self::Relaxed(Relaxation::InsecureDev) => format!(
+                "the relaxation `{}` is on (it also allows the console's pasted-token sign-in \
+                 when console login is not configured)",
+                Relaxation::InsecureDev.as_str()
+            ),
             Self::Relaxed(r) => format!("the relaxation `{}` is on", r.as_str()),
             Self::PlainListener => {
                 "the API listeners are plain HTTP; set --tls-cert and --tls-key".into()
@@ -107,6 +113,13 @@ pub fn origin_of(endpoint: &str) -> Option<String> {
         Some(port) => format!("{}://{host}:{port}", url.scheme()),
         None => format!("{}://{host}", url.scheme()),
     })
+}
+
+/// How an error or log line names an endpoint: [`origin_of`], or
+/// `(unparseable)`. Never the userinfo, path, query or fragment, any of
+/// which can carry a credential.
+pub(crate) fn shown_endpoint(endpoint: &str) -> String {
+    origin_of(endpoint).unwrap_or_else(|| "(unparseable)".into())
 }
 
 #[cfg(unix)]
@@ -163,6 +176,22 @@ pub fn violations(config: &ApiConfig, built: &[Relaxation]) -> Vec<Violation> {
                 }
             }
         }
+    }
+    out
+}
+
+/// The console client secret file (ADR-018) is readable by its owner only.
+#[must_use]
+pub fn console_login_violations(
+    login: Option<&crate::console_login::ConsoleLoginSettings>,
+) -> Vec<Violation> {
+    let mut out = Vec::new();
+    if let Some(login) = login {
+        check_secret_file(
+            "--console-client-secret-file",
+            &login.client_secret_file,
+            &mut out,
+        );
     }
     out
 }

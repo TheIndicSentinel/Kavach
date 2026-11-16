@@ -7,7 +7,7 @@ on:
     branches: [main, master]
 
 # A newer push to the same PR makes the older run pointless: cancel it
-# (Actions minutes are the limit on a private repository).
+# Pushes to main queue instead, so no run there is cut short.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -99,17 +99,25 @@ jobs:
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Every operation in docs/openapi.yaml is called from console/src, or
+      # listed with a reason in console/api-coverage-exempt.txt; a stale
+      # exemption fails too. Python standard library only, so it runs first.
+      - name: Console API path coverage
+        run: |
+          python3 -I -m unittest discover -s scripts -p 'test_console_path_coverage.py' -v
+          python3 -I scripts/console_path_coverage.py --list
+
       - name: Install Rust (pinned)
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master (2026-10-01)
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (2026-10-01)
         with:
           toolchain: "1.98.0"
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
           cache: npm
@@ -127,6 +135,41 @@ jobs:
           npm run lint
           npm test
           npm run check:api
+
+      # Browser checks (console/e2e): axe (WCAG 2.2 AA tags) on every page and
+      # action state, keyboard-only flows, and kavach-api's own CSP enforced on
+      # the built console. Every API call is stubbed; nothing leaves the runner
+      # but the Chromium download. Specs read crates/ files, so this needs the
+      # full checkout.
+      - name: Install Playwright Chromium
+        working-directory: console
+        run: npx playwright install --with-deps chromium
+
+      - name: Console browser checks
+        working-directory: console
+        run: npm run test:e2e
+
+      # The real sign-in round trip (ADR-018): kavach-api with console/dist
+      # embedded (built above) and the OIDC test double, both on 127.0.0.1,
+      # memory stores, no database. Nothing is stubbed; no network beyond
+      # loopback. Specs: console/e2e/*.roundtrip.ts.
+      - name: Build kavach-api and the OIDC test double
+        run: cargo build -p kavach-api --bin kavach-api --example oidc_double
+
+      - name: Console sign-in round trip
+        working-directory: console
+        run: npm run test:roundtrip
+
+      # The console against a real, seeded stack (playwright.real.config.ts):
+      # a dev bundle, the OIDC double, the mock provider, and kavach-api in
+      # full and --agent-only modes; every page and action, signed in as an
+      # admin, a change approver and a viewer. Loopback only, memory stores.
+      - name: Build the real-stack binaries
+        run: cargo build -p kavach-devkit --bin kavach-dev -p kavach-mock-provider --bin kavach-mock-provider
+
+      - name: Console on a real stack
+        working-directory: console
+        run: npm run test:real
 
       # Production npm dependency licence allowlist (PRD NFR-1). OFL-1.1 covers the
       # @fontsource fonts; MPL-2.0 covers build-time CSS tooling (lightningcss) that is
@@ -192,12 +235,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust (pinned)
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master (2026-10-01)
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (2026-10-01)
         with:
           toolchain: "1.98.0"
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Install cargo-audit
         run: cargo install cargo-audit --locked --version 0.22.2
@@ -214,12 +257,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust (pinned)
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master (2026-10-01)
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (2026-10-01)
         with:
           toolchain: "1.98.0"
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Install cargo-deny
         run: cargo install cargo-deny --locked --version 0.20.2
@@ -236,7 +279,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
@@ -254,7 +297,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
 
@@ -291,12 +334,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust (pinned)
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master (2026-10-01)
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (2026-10-01)
         with:
           toolchain: "1.98.0"
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       # Pinned cvc5 1.3.1 non-GPL static build (BSD-3-Clause), SHA-256 verified.
       - name: Install cvc5
@@ -321,12 +364,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install Rust (pinned)
-        uses: dtolnay/rust-toolchain@7e38f4b43b4db5c8dd498af069a4f6196df1d067 # master (2026-10-01)
+        uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (2026-10-01)
         with:
           toolchain: "1.98.0"
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
 
       - name: Build probe
         run: cargo build --locked --release -p kavach-clocksync --bin kavach-clocksync

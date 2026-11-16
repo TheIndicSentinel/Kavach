@@ -6,6 +6,9 @@
 //!   and the same stop again is idempotent. Reinstating is a change request
 //!   (`reinstate_agent`) another principal approves.
 //! - `GET /v1/agents/{agent_id}`: the agent's state (`read_agent_state`).
+//! - `GET /v1/agents?state=&limit=&cursor=`: the tenant's agents (those a
+//!   passport names) with their states, by agent id, a page at a time
+//!   (`read_agent_state`).
 //!
 //! The agent id must be one a passport names, exactly: a typo is a 404, not
 //! a row nobody reads. Every attempt is audited, refused ones too, and
@@ -428,5 +431,197 @@ pub async fn get_agent(
             "unavailable",
             "the agent state store is unavailable",
         ),
+    }
+}
+
+/// Agents a page holds by default, and at most.
+const DEFAULT_PAGE: u32 = 50;
+const MAX_PAGE: u32 = 200;
+/// Agent ids per batch read of their states while a page is picked.
+const STATE_BATCH: usize = 500;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListQuery {
+    state: Option<String>,
+    limit: Option<u32>,
+    cursor: Option<String>,
+}
+
+/// A page's size: `limit` clamped to 1..=200, 50 when absent.
+fn page_size(limit: Option<u32>) -> usize {
+    limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE) as usize
+}
+
+/// From `agents` (agent id and state, in agent-id order), those in `wanted`
+/// (every one for `None`) up to `room` of them, and whether one that is
+/// wanted was left out for lack of room.
+fn pick<'a>(
+    agents: &[(&'a str, AgentState)],
+    wanted: Option<AgentState>,
+    room: usize,
+) -> (Vec<&'a str>, bool) {
+    let mut matching = agents
+        .iter()
+        .filter(|(_, state)| wanted.is_none_or(|w| w == *state))
+        .map(|(id, _)| *id);
+    let picked: Vec<&str> = matching.by_ref().take(room).collect();
+    (picked, matching.next().is_some())
+}
+
+/// `GET /v1/agents`: the tenant's agents and their states, by agent id.
+/// `next_cursor` is the last agent id of the page when more may follow.
+pub async fn list_agents(
+    State(state): State<Arc<AppState>>,
+    credentials: Credentials,
+    query: Result<axum::extract::Query<ListQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    if let Err(err) = authorize_credentials(&state, &credentials, KavachAction::ReadAgentState) {
+        return err.into_response();
+    }
+    let Ok(axum::extract::Query(query)) = query else {
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "the query takes state, limit (an integer) and cursor",
+        );
+    };
+    let wanted = match query.state.as_deref() {
+        None => None,
+        Some(name) => match AgentState::parse(name) {
+            Some(s) => Some(s),
+            None => {
+                return refuse(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "state must be active, restricted, quarantined or revoked",
+                )
+            }
+        },
+    };
+    if let Some(cursor) = query.cursor.as_deref() {
+        if !valid_agent_id(cursor) {
+            return refuse(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "cursor must be an agent id from a previous page",
+            );
+        }
+    }
+    let Some(dp) = state.dataplane() else {
+        return refuse(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "agent surfaces are not configured",
+        );
+    };
+    let size = page_size(query.limit);
+    let core = dp.core();
+    let tenant = core.tenant_id();
+    let after: Vec<String> = dp
+        .agent_ids()
+        .filter(|id| query.cursor.as_deref().is_none_or(|c| *id > c))
+        .map(str::to_string)
+        .collect();
+
+    let unavailable = || {
+        refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "the agent state store is unavailable",
+        )
+    };
+    let mut items = Vec::with_capacity(size);
+    // The last agent id the page considered, when more may follow it.
+    let mut next_cursor: Option<&str> = None;
+    for batch in after.chunks(STATE_BATCH) {
+        // A batch read picks the page; each picked agent's row is then read
+        // whole. One that changed state in between is left out when the
+        // page is filtered by state: it no longer matches.
+        let Ok(states) = core.store().states(tenant, batch).await else {
+            return unavailable();
+        };
+        let mut agents: Vec<(&str, AgentState)> = Vec::with_capacity(batch.len());
+        for id in batch {
+            // The store answers for every id asked; one missing is a store
+            // fault, never shown as "active".
+            let Some(state) = states.get(id) else {
+                return unavailable();
+            };
+            agents.push((id.as_str(), *state));
+        }
+        let (picked, left_over) = pick(&agents, wanted, size - items.len());
+        let last_picked = picked.last().copied();
+        for id in picked {
+            let Ok(row) = core.store().current(tenant, id).await else {
+                return unavailable();
+            };
+            let now = row.as_ref().map_or(AgentState::Active, |r| r.state);
+            if wanted.is_none_or(|w| w == now) {
+                items.push(row_json(id, row.as_ref()));
+            }
+        }
+        // Stop at a full page, or where agents that match were left over
+        // (the next page starts after the last one picked, so none is
+        // skipped even if one picked dropped out).
+        if left_over || items.len() == size {
+            let rest_unread = after.last() != batch.last();
+            if left_over || rest_unread {
+                next_cursor = last_picked;
+            }
+            break;
+        }
+    }
+    Json(json!({ "items": items, "next_cursor": next_cursor })).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_page_holds_50_by_default_and_never_more_than_200() {
+        assert_eq!(page_size(None), 50);
+        assert_eq!(page_size(Some(0)), 1);
+        assert_eq!(page_size(Some(7)), 7);
+        assert_eq!(page_size(Some(200)), 200);
+        assert_eq!(page_size(Some(201)), 200);
+        assert_eq!(page_size(Some(u32::MAX)), 200);
+    }
+
+    #[test]
+    fn picking_keeps_order_filters_by_state_and_says_when_more_match() {
+        let ids: Vec<String> = (0..250).map(|n| format!("agent-{n:03}")).collect();
+        let agents: Vec<(&str, AgentState)> = ids
+            .iter()
+            .enumerate()
+            .map(|(n, id)| {
+                let state = if n % 5 == 0 {
+                    AgentState::Quarantined
+                } else {
+                    AgentState::Active
+                };
+                (id.as_str(), state)
+            })
+            .collect();
+
+        let (page, more) = pick(&agents, None, page_size(Some(1000)));
+        assert_eq!(page.len(), 200);
+        assert!(more);
+        assert_eq!(page[0], "agent-000");
+        assert_eq!(page[199], "agent-199");
+
+        let (page, more) = pick(&agents, Some(AgentState::Quarantined), 200);
+        assert_eq!(page.len(), 50);
+        assert!(!more, "every quarantined agent fits");
+        assert!(page.iter().all(|id| id.ends_with('0') || id.ends_with('5')));
+
+        let (page, more) = pick(&agents, Some(AgentState::Quarantined), 50);
+        assert_eq!(page.len(), 50);
+        assert!(!more, "exactly full: nothing left over");
+
+        let (page, more) = pick(&agents, Some(AgentState::Revoked), 200);
+        assert!(page.is_empty());
+        assert!(!more);
     }
 }

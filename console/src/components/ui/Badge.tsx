@@ -11,8 +11,8 @@ type BadgeProps = {
 const variants: Record<BadgeVariant, string> = {
   default: "bg-stone-100 text-stone-700 border-stone-200",
   active: "bg-peacock-600/10 text-peacock-700 border-peacock-600/20",
-  muted: "bg-stone-100 text-muted border-stone-200",
-  warning: "bg-saffron-100 text-saffron-600 border-saffron-400/30",
+  muted: "bg-stone-100 text-stone-600 border-stone-200",
+  warning: "bg-saffron-100 text-amber-800 border-saffron-400/30",
 };
 
 export function Badge({

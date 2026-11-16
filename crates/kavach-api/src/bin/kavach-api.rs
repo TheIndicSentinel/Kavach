@@ -1,3 +1,4 @@
+use kavach_api::console_login::{ConsoleLogin, ConsoleLoginSettings, IdpEndpoints};
 use kavach_api::signing::{HsmConfig, HsmRole};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -336,6 +337,122 @@ impl OidcArgs {
     }
 }
 
+/// Console sign-in (ADR-018): the API as a confidential OIDC client with
+/// PKCE, an `HttpOnly` session cookie for the browser. Off unless
+/// `--console-client-id` is set; needs operator OIDC.
+#[derive(clap::Args)]
+#[allow(clippy::struct_field_names)] // field names become the `--console-*` flags
+struct ConsoleLoginArgs {
+    /// Client id registered for the console at the identity provider (must
+    /// differ from the operator and agent audiences).
+    #[arg(long, env = "KAVACH_CONSOLE_CLIENT_ID")]
+    console_client_id: Option<String>,
+
+    /// File holding the console client secret (one line; owner-only under
+    /// --require-hardening).
+    #[arg(long, env = "KAVACH_CONSOLE_CLIENT_SECRET_FILE")]
+    console_client_secret_file: Option<PathBuf>,
+
+    /// The exact redirect URI registered at the IdP: https://<host>/auth/callback
+    /// (http://localhost only with --insecure-dev).
+    #[arg(long, env = "KAVACH_CONSOLE_REDIRECT_URI")]
+    console_redirect_uri: Option<String>,
+
+    /// Authorization endpoint. With --console-token-endpoint, replaces discovery
+    /// (otherwise read once from {issuer}/.well-known/openid-configuration).
+    #[arg(long, env = "KAVACH_CONSOLE_AUTHORIZATION_ENDPOINT")]
+    console_authorization_endpoint: Option<String>,
+
+    /// Token endpoint (with --console-authorization-endpoint).
+    #[arg(long, env = "KAVACH_CONSOLE_TOKEN_ENDPOINT")]
+    console_token_endpoint: Option<String>,
+
+    /// RFC 7009 revocation endpoint: logout revokes the refresh token there.
+    #[arg(long, env = "KAVACH_CONSOLE_REVOCATION_ENDPOINT")]
+    console_revocation_endpoint: Option<String>,
+
+    /// End-session endpoint, used only with --console-idp-logout.
+    #[arg(long, env = "KAVACH_CONSOLE_END_SESSION_ENDPOINT")]
+    console_end_session_endpoint: Option<String>,
+
+    /// Scopes asked for (space-separated; must include openid; never offline_access).
+    #[arg(long, env = "KAVACH_CONSOLE_SCOPE", default_value = kavach_api::console_login::DEFAULT_SCOPE)]
+    console_scope: String,
+
+    /// Minutes without a request before a session ends (5-60).
+    #[arg(long, env = "KAVACH_CONSOLE_SESSION_IDLE_MINUTES",
+          default_value_t = kavach_api::console_login::DEFAULT_IDLE_MINUTES)]
+    console_session_idle_minutes: u64,
+
+    /// Minutes after sign-in when a session ends whatever happens (at most 720,
+    /// at least the idle limit). A refresh never extends it.
+    #[arg(long, env = "KAVACH_CONSOLE_SESSION_ABSOLUTE_MINUTES",
+          default_value_t = kavach_api::console_login::DEFAULT_ABSOLUTE_MINUTES)]
+    console_session_absolute_minutes: u64,
+
+    /// Logout also returns the IdP end-session URL (signs out of the IdP).
+    #[arg(long, env = "KAVACH_CONSOLE_IDP_LOGOUT")]
+    console_idp_logout: bool,
+
+    /// Most live console sessions (1-10000). A full table refuses new sign-ins.
+    #[arg(long, env = "KAVACH_CONSOLE_MAX_SESSIONS",
+          default_value_t = kavach_api::console_login::DEFAULT_MAX_SESSIONS)]
+    console_max_sessions: usize,
+}
+
+impl ConsoleLoginArgs {
+    fn into_settings(self) -> Result<Option<ConsoleLoginSettings>, String> {
+        let endpoints = match (
+            self.console_authorization_endpoint,
+            self.console_token_endpoint,
+        ) {
+            (Some(authorization), Some(token)) => Some(IdpEndpoints {
+                authorization,
+                token,
+                revocation: self.console_revocation_endpoint,
+                end_session: self.console_end_session_endpoint,
+            }),
+            (None, None)
+                if self.console_revocation_endpoint.is_none()
+                    && self.console_end_session_endpoint.is_none() =>
+            {
+                None
+            }
+            _ => {
+                return Err(
+                    "console login endpoints: set both --console-authorization-endpoint \
+                            and --console-token-endpoint (with the optional revocation and \
+                            end-session endpoints), or none of them to use discovery"
+                        .into(),
+                )
+            }
+        };
+        match (
+            self.console_client_id,
+            self.console_client_secret_file,
+            self.console_redirect_uri,
+        ) {
+            (None, None, None) if endpoints.is_none() => Ok(None),
+            (Some(client_id), Some(secret_file), Some(redirect_uri)) => {
+                Ok(Some(ConsoleLoginSettings {
+                    endpoints,
+                    scope: self.console_scope,
+                    idle_minutes: self.console_session_idle_minutes,
+                    absolute_minutes: self.console_session_absolute_minutes,
+                    idp_logout: self.console_idp_logout,
+                    max_sessions: self.console_max_sessions,
+                    ..ConsoleLoginSettings::new(&client_id, secret_file, &redirect_uri)
+                }))
+            }
+            _ => Err(
+                "console login needs --console-client-id, --console-client-secret-file \
+                      and --console-redirect-uri"
+                    .into(),
+            ),
+        }
+    }
+}
+
 #[derive(Parser)]
 #[allow(clippy::struct_excessive_bools)] // independent command-line switches
 #[command(name = "kavach-api", about = "Kavach sync evaluate HTTP + gRPC API")]
@@ -372,6 +489,9 @@ struct Cli {
 
     #[command(flatten)]
     agents: AgentArgs,
+
+    #[command(flatten)]
+    console_login: ConsoleLoginArgs,
 
     #[arg(long, value_enum, default_value = "memory")]
     evidence_store: EvidenceStoreArg,
@@ -469,7 +589,8 @@ struct Cli {
 }
 
 impl Cli {
-    fn into_config(self) -> Result<ApiConfig, String> {
+    fn into_config(self) -> Result<(ApiConfig, Option<ConsoleLoginSettings>), String> {
+        let console_login = self.console_login.into_settings()?;
         let evidence_store = match self.evidence_store {
             EvidenceStoreArg::Memory => EvidenceStoreKind::Memory,
             EvidenceStoreArg::Postgres => {
@@ -528,7 +649,10 @@ impl Cli {
         };
         validate_principal_sources(&config)?;
         validate_hmac_secret(config.hmac_secret.as_deref())?;
-        Ok(config)
+        if let Some(login) = &console_login {
+            kavach_api::console_login::validate(login, &config)?;
+        }
+        Ok((config, console_login))
     }
 }
 
@@ -543,24 +667,45 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let agent_listen = cli.agents.agent_listen;
     let grace = std::time::Duration::from_secs(cli.agents.shutdown_grace_seconds);
     let agent_only = cli.agents.agent_only;
-    let config = cli
+    let (config, console_login) = cli
         .into_config()
         .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
+    let hardening_violations = |built: &[kavach_api::relaxations::Relaxation]| {
+        let mut violations = kavach_api::hardening::violations(&config, built);
+        violations.extend(kavach_api::hardening::console_login_violations(
+            console_login.as_ref(),
+        ));
+        violations
+    };
     if config.require_hardening {
         // Before anything is built, migrated or written.
-        refuse_unless_hardened(&kavach_api::hardening::violations(&config, &[]));
+        refuse_unless_hardened(&hardening_violations(&[]));
     }
-    let state = Arc::new(AppState::from_config(&config).await?);
+    let mut state = AppState::from_config(&config).await?;
+    if let Some(settings) = &console_login {
+        let login = ConsoleLogin::start(settings, &config)
+            .await
+            .map_err(|msg| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg))?;
+        tracing::info!(
+            origin = %login.origin(),
+            "console sign-in enabled (ADR-018): HttpOnly session cookie, tokens kept server-side"
+        );
+        state = state.with_console_login(Arc::new(login));
+    }
+    let state = Arc::new(state);
     if config.require_hardening {
         // What only the build knows (a relaxation of the agent surfaces).
         let built = state
             .dataplane()
             .map(|dp| dp.relaxations().to_vec())
             .unwrap_or_default();
-        refuse_unless_hardened(&kavach_api::hardening::violations(&config, &built));
+        refuse_unless_hardened(&hardening_violations(&built));
     }
     kavach_api::revocation_audit::start(&state);
-    let pack_sha256 = state.runtime().pack_sha256.unwrap_or_else(|| "none".into());
+    let pack_sha256 = state
+        .runtime()?
+        .pack_sha256
+        .unwrap_or_else(|| "none".into());
     let http_app = router(state.clone());
     let sor_app = state
         .dataplane()

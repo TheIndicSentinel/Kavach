@@ -375,6 +375,7 @@ impl Stack {
             provider_hosts: vec!["mock-provider".into()],
             database_hosts: vec!["postgres".into()],
             token_hours: 24,
+            issuer: kavach_devkit::ISSUER.into(),
         })
         .await?;
         let at = bench_time();
