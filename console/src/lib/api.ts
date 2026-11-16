@@ -107,6 +107,17 @@ export class ApiError extends Error {
     this.requestId = requestId;
     this.detail = detail ?? message;
   }
+
+  /**
+   * kavach-api did not answer: the request never completed (status 0), or a
+   * 5xx came back without a `request_id`. Every problem kavach-api sends
+   * carries one, so such a 5xx came from something in front of it, such as
+   * the Vite dev proxy with no API behind it. A 4xx without one is left
+   * alone: something answered, and its status says what.
+   */
+  get unreachable(): boolean {
+    return !this.requestId && (this.status === 0 || this.status >= 500);
+  }
 }
 
 /**
