@@ -36,6 +36,9 @@ use kavach_ports::agent_state::{
 use kavach_ports::chain_record::{
     AgentStateDraft, AgentStateRecord, RevocationDraft, RevocationRecord,
 };
+use kavach_ports::outcome_resolution::{
+    outcome_ref, sign_resolution, ResolutionDraft, ResolutionSource, ResolutionState,
+};
 use kavach_ports::{ErrorClass, PortError, StoredRevocation, TimeSource, TrustedNow};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -508,6 +511,45 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         self.store
             .outcome(&self.config.tenant_id, credential_id)
             .await
+    }
+
+    /// Records an operator's one-person "delivered" attestation for an
+    /// unknown outcome. The caller must authenticate and authorize the
+    /// human, and provide only the digest of the reference; this method
+    /// never accepts or stores the reference itself. It cannot resend or
+    /// release the contact reservation.
+    pub async fn attest_delivered(
+        &self,
+        credential_id: &str,
+        reason: &str,
+        reference_digest: &str,
+        resolved_by: &str,
+    ) -> Result<bool, PortError> {
+        let outcome = self
+            .outcome(credential_id)
+            .await?
+            .ok_or_else(|| PortError::rejected("outcome resolution: no outcome is recorded"))?;
+        if outcome.outcome != Outcome::Unknown {
+            return Err(PortError::rejected(
+                "outcome resolution: only an unknown outcome is resolved",
+            ));
+        }
+        let record = sign_resolution(
+            ResolutionDraft {
+                tenant_id: self.config.tenant_id.clone(),
+                credential_id: credential_id.to_string(),
+                outcome_ref: outcome_ref(&outcome),
+                state: ResolutionState::ConfirmedDelivered,
+                source: ResolutionSource::OperatorAttested,
+                reason: reason.to_string(),
+                evidence_digest: Some(reference_digest.to_string()),
+                resolved_by: Some(resolved_by.to_string()),
+                approved_by: None,
+            },
+            self.clock.now().utc,
+            self.signer.as_ref(),
+        )?;
+        self.store.record_resolution(record).await
     }
 
     /// The tenant this core decides for.
