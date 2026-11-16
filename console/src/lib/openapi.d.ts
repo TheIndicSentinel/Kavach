@@ -902,7 +902,7 @@ export interface components {
             governed: boolean;
         };
         /** @enum {string} */
-        ChangeKind: "activate_pack" | "rollback_pack" | "update_model" | "update_retention" | "erase_evidence" | "apply_retention" | "activate_model" | "reinstate_agent";
+        ChangeKind: "activate_pack" | "rollback_pack" | "update_model" | "update_retention" | "erase_evidence" | "apply_retention" | "activate_model" | "reinstate_agent" | "grant_role" | "revoke_role";
         /** @enum {string} */
         ChangeStatus: "pending" | "applied" | "failed" | "rejected" | "cancelled" | "expired";
         /** @enum {string} */
@@ -996,7 +996,12 @@ export interface components {
          *     governance_mode?}`; `activate_model` `{model_id, version,
          *     allow_downgrade?}`; `update_retention` `{evidence_retention_days}`;
          *     `erase_evidence` `{evidence_id}`; `reinstate_agent` `{agent_id, to: active |
-         *     restricted, reason_code?, note?}` (never from `revoked`). Unknown keys are refused.
+         *     restricted, reason_code?, note?}` (never from `revoked`); `grant_role`
+         *     `{role, subject: {kind: principal | group, issuer, value}}`; `revoke_role`
+         *     `{binding_id}`. A role change is refused (403) when it names the caller or a group
+         *     in their token, and when it touches `superadmin` for anyone but a superadmin; it is
+         *     a conflict (409) for a duplicate active binding or the tenant's last active person
+         *     binding of `superadmin` or `user_admin` (ADR-019 §4). Unknown keys are refused.
          */
         ChangeProposal: {
             kind: components["schemas"]["ChangeKind"];

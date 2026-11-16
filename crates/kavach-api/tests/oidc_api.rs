@@ -530,3 +530,283 @@ async fn only_a_decision_no_other_policy_allows_is_flagged_superadmin() {
     assert_eq!(status, StatusCode::OK, "{applied}");
     assert!(flag(&s, "update_retention", id).await);
 }
+
+// ---- ADR-019 §4: roles change only through approved change requests ----
+
+fn person_subject(sub: &str) -> Value {
+    json!({ "kind": "principal", "issuer": ISSUER, "value": sub })
+}
+
+fn grant_params(role: &str, subject: Value) -> Value {
+    let mut params = json!({ "role": role });
+    params["subject"] = subject;
+    params
+}
+
+/// The active binding of `role` held by person `sub`.
+async fn binding_of(s: &AppState, role: &str, sub: &str) -> Option<String> {
+    s.roles()
+        .list_bindings(s.tenant_id(), false)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|b| b.role.as_str() == role && b.subject.value == sub)
+        .map(|b| b.id)
+}
+
+async fn status_of(app: &axum::Router, creds: &common::Creds, request: &Value) -> Value {
+    let id = request["id"].as_str().unwrap();
+    let (status, body) = common::call(
+        app,
+        "GET",
+        &format!("/v1/change-requests/{id}"),
+        creds,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    body["status"].clone()
+}
+
+#[tokio::test]
+async fn a_granted_role_decides_only_after_a_second_person_approves() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    let app = router(s.clone());
+    let root_a = vec![bearer(&token("root-a", &[]))];
+    let root_b = vec![bearer(&token("root-b", &[]))];
+    let op = [bearer(&token("op-1", &[]))];
+
+    let (status, request) = common::propose(
+        &app,
+        &root_a,
+        "grant_role",
+        grant_params("operator", person_subject("op-1")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    assert_eq!(get(&s, "/v1/runtime", &op).await, StatusCode::FORBIDDEN);
+    assert_eq!(binding_of(&s, "operator", "op-1").await, None);
+    // The proposer cannot approve their own grant.
+    assert_eq!(
+        common::approve(&app, &root_a, &request).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(get(&s, "/v1/runtime", &op).await, StatusCode::FORBIDDEN);
+
+    let (status, applied) = common::approve(&app, &root_b, &request).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    assert_eq!(applied["outcome"]["role"], "operator");
+    assert_eq!(
+        applied["outcome"]["binding_id"].as_str(),
+        binding_of(&s, "operator", "op-1").await.as_deref()
+    );
+    assert_eq!(get(&s, "/v1/runtime", &op).await, StatusCode::OK);
+
+    // The same grant again is a conflict at proposal.
+    let (status, body) = common::propose(
+        &app,
+        &root_a,
+        "grant_role",
+        grant_params("operator", person_subject("op-1")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // A revoke stops the role on the next request, again only once approved.
+    let binding = binding_of(&s, "operator", "op-1").await.unwrap();
+    let (status, request) = common::propose(
+        &app,
+        &root_b,
+        "revoke_role",
+        json!({ "binding_id": binding }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    assert_eq!(get(&s, "/v1/runtime", &op).await, StatusCode::OK);
+    let (status, applied) = common::approve(&app, &root_a, &request).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    assert_eq!(applied["outcome"]["ended"], true);
+    assert_eq!(get(&s, "/v1/runtime", &op).await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_user_admin_cannot_grant_approve_or_revoke_superadmin() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    let app = router(s.clone());
+    let root_a = vec![bearer(&token("root-a", &[]))];
+    let root_b = vec![bearer(&token("root-b", &[]))];
+    for who in ["ua-1", "ua-2"] {
+        assert_eq!(
+            common::apply_change(
+                &app,
+                "grant_role",
+                grant_params("user_admin", person_subject(who)),
+                &root_a,
+                &root_b,
+            )
+            .await,
+            StatusCode::OK
+        );
+    }
+    let ua_1 = vec![bearer(&token("ua-1", &[]))];
+    let ua_2 = vec![bearer(&token("ua-2", &[]))];
+
+    // Proposing superadmin: refused.
+    let (status, body) = common::propose(
+        &app,
+        &ua_1,
+        "grant_role",
+        grant_params("superadmin", person_subject("someone")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    // Approving a superadmin grant a superadmin proposed: refused, and the
+    // request stays pending for a superadmin.
+    let (status, request) = common::propose(
+        &app,
+        &root_a,
+        "grant_role",
+        grant_params("superadmin", person_subject("root-c")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    assert_eq!(
+        common::approve(&app, &ua_1, &request).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(status_of(&app, &root_a, &request).await, "pending");
+    // Revoking a superadmin: refused.
+    let root_b_binding = binding_of(&s, "superadmin", "root-b").await.unwrap();
+    let (status, body) = common::propose(
+        &app,
+        &ua_1,
+        "revoke_role",
+        json!({ "binding_id": root_b_binding }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // Any other role: allowed, with a second user admin approving.
+    assert_eq!(
+        common::apply_change(
+            &app,
+            "grant_role",
+            grant_params("approver", person_subject("ap-1")),
+            &ua_1,
+            &ua_2,
+        )
+        .await,
+        StatusCode::OK
+    );
+    // The superadmin request is still approvable by a superadmin.
+    let (status, applied) = common::approve(&app, &root_b, &request).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+}
+
+#[tokio::test]
+async fn nobody_grants_a_role_to_themselves_or_their_group() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    let app = router(s.clone());
+    let root_a = vec![bearer(&token("root-a", &["ops"]))];
+    let root_b = vec![bearer(&token("root-b", &[]))];
+
+    // The proposer, by person and by a group in their token.
+    let (status, body) = common::propose(
+        &app,
+        &root_a,
+        "grant_role",
+        grant_params("operator", person_subject("root-a")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    let group = json!({ "kind": "group", "issuer": ISSUER, "value": "ops" });
+    let (status, body) =
+        common::propose(&app, &root_a, "grant_role", grant_params("operator", group)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // The approver: refused, and the request stays pending for someone else.
+    let (status, request) = common::propose(
+        &app,
+        &root_a,
+        "grant_role",
+        grant_params("auditor", person_subject("root-b")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    let (status, body) = common::approve(&app, &root_b, &request).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(status_of(&app, &root_a, &request).await, "pending");
+    assert_eq!(binding_of(&s, "auditor", "root-b").await, None);
+
+    // A subject from another issuer, or with control characters, is refused.
+    let foreign = json!({ "kind": "principal", "issuer": "https://evil.test", "value": "x" });
+    let (status, body) = common::propose(
+        &app,
+        &root_a,
+        "grant_role",
+        grant_params("operator", foreign),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, body) = common::propose(
+        &app,
+        &root_a,
+        "grant_role",
+        grant_params("operator", person_subject("a\u{7}b")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+#[tokio::test]
+async fn the_last_person_superadmin_cannot_be_revoked() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    let app = router(s.clone());
+    let root_a = vec![bearer(&token("root-a", &[]))];
+    let root_b = vec![bearer(&token("root-b", &[]))];
+    let a = binding_of(&s, "superadmin", "root-a").await.unwrap();
+    let b = binding_of(&s, "superadmin", "root-b").await.unwrap();
+
+    // Two pending revokes, one for each: the second to be approved fails.
+    let (status, first) =
+        common::propose(&app, &root_a, "revoke_role", json!({ "binding_id": b })).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    let (status, second) =
+        common::propose(&app, &root_b, "revoke_role", json!({ "binding_id": a })).await;
+    assert_eq!(status, StatusCode::CREATED, "{second}");
+    let (status, applied) = common::approve(&app, &root_b, &first).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    let (status, body) = common::approve(&app, &root_a, &second).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(
+        binding_of(&s, "superadmin", "root-a").await,
+        Some(a.clone())
+    );
+
+    // And a new revoke of the last one is refused at proposal.
+    let (status, body) =
+        common::propose(&app, &root_a, "revoke_role", json!({ "binding_id": a })).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    // An unknown binding is not found, for someone allowed to revoke.
+    let (status, _) = common::propose(
+        &app,
+        &root_a,
+        "revoke_role",
+        json!({ "binding_id": "rb_missing" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // And for someone who is not, the answer does not say whether it exists.
+    let nobody = vec![bearer(&token("nobody", &[]))];
+    let (status, _) =
+        common::propose(&app, &nobody, "revoke_role", json!({ "binding_id": a })).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = common::propose(
+        &app,
+        &nobody,
+        "revoke_role",
+        json!({ "binding_id": "rb_missing" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

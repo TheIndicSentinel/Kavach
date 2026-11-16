@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::admin::{AuditInsert, MemoryAdminStore, ModelState, RuntimePointers};
 use crate::retention::{MemoryRetentionStore, TombstoneReason};
+use crate::roles::{BindingSubject, MemoryRoleStore, Role, RoleBinding};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -30,10 +31,14 @@ pub enum ChangeKind {
     /// out against the agent evidence store, not the admin store, so its
     /// apply is idempotent on the change request's id.
     ReinstateAgent,
+    /// Bind an operator role to a person or IdP group (ADR-019 §4).
+    GrantRole,
+    /// End an active role binding (ADR-019 §4).
+    RevokeRole,
 }
 
 impl ChangeKind {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::ActivatePack,
         Self::RollbackPack,
         Self::UpdateModel,
@@ -42,6 +47,8 @@ impl ChangeKind {
         Self::ApplyRetention,
         Self::ActivateModel,
         Self::ReinstateAgent,
+        Self::GrantRole,
+        Self::RevokeRole,
     ];
 
     #[must_use]
@@ -55,6 +62,8 @@ impl ChangeKind {
             Self::ApplyRetention => "apply_retention",
             Self::ActivateModel => "activate_model",
             Self::ReinstateAgent => "reinstate_agent",
+            Self::GrantRole => "grant_role",
+            Self::RevokeRole => "revoke_role",
         }
     }
 
@@ -150,6 +159,31 @@ pub enum GovernanceEffect {
         cutoff: DateTime<Utc>,
         evidence_ids: Vec<String>,
     },
+    /// Writes an active binding, granted by the request being approved.
+    /// Refused, under the tenant's bindings lock, when the same binding is
+    /// already active.
+    GrantRole {
+        binding_id: String,
+        tenant_id: String,
+        role: Role,
+        subject: BindingSubject,
+    },
+    /// Ends an active binding, by the request being approved. Refused, under
+    /// the tenant's bindings lock, when the binding is no longer active or
+    /// is the tenant's last active person binding of a guarded role.
+    EndRoleBinding {
+        tenant_id: String,
+        binding_id: String,
+    },
+}
+
+/// The request an effect is applied for.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Applying<'a> {
+    pub request_id: &'a str,
+    pub proposer: &'a str,
+    pub approver: &'a str,
+    pub now: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone)]
@@ -262,15 +296,23 @@ pub struct MemoryChangeStore {
     requests: Mutex<Vec<ChangeRequest>>,
     admin: Arc<MemoryAdminStore>,
     retention: Arc<MemoryRetentionStore>,
+    roles: Arc<MemoryRoleStore>,
 }
 
 impl MemoryChangeStore {
+    /// `roles` is the role store the stack's lookups read
+    /// ([`crate::RoleBackend::memory_with`]).
     #[must_use]
-    pub fn new(admin: Arc<MemoryAdminStore>, retention: Arc<MemoryRetentionStore>) -> Self {
+    pub fn new(
+        admin: Arc<MemoryAdminStore>,
+        retention: Arc<MemoryRetentionStore>,
+        roles: Arc<MemoryRoleStore>,
+    ) -> Self {
         Self {
             requests: Mutex::new(Vec::new()),
             admin,
             retention,
+            roles,
         }
     }
 
@@ -396,8 +438,14 @@ impl MemoryChangeStore {
             });
         }
 
+        let applying = Applying {
+            request_id: &request.id,
+            proposer: &request.proposer,
+            approver: &commit.approver,
+            now: commit.now,
+        };
         for effect in &commit.effects {
-            self.apply_effect(effect, &request.proposer, &commit.approver)?;
+            self.apply_effect(effect, applying)?;
         }
         let close = CloseRequest {
             request_id: request.id.clone(),
@@ -415,9 +463,11 @@ impl MemoryChangeStore {
     fn apply_effect(
         &self,
         effect: &GovernanceEffect,
-        proposer: &str,
-        approver: &str,
+        applying: Applying<'_>,
     ) -> Result<(), ChangeStoreError> {
+        let Applying {
+            proposer, approver, ..
+        } = applying;
         match effect {
             GovernanceEffect::None => {}
             GovernanceEffect::SetPointers(pointers) => {
@@ -448,6 +498,26 @@ impl MemoryChangeStore {
                         .map_err(io)?;
                 }
             }
+            GovernanceEffect::GrantRole {
+                binding_id,
+                tenant_id,
+                role,
+                subject,
+            } => {
+                self.roles
+                    .insert(granted_binding(
+                        binding_id, tenant_id, *role, subject, &applying,
+                    ))
+                    .map_err(io)?;
+            }
+            GovernanceEffect::EndRoleBinding {
+                tenant_id,
+                binding_id,
+            } => {
+                self.roles
+                    .end(tenant_id, binding_id, applying.request_id, applying.now)
+                    .map_err(io)?;
+            }
         }
         Ok(())
     }
@@ -470,6 +540,21 @@ impl MemoryChangeStore {
             }
             GovernanceEffect::Tombstone { evidence_id, .. } => vec![evidence_id],
             GovernanceEffect::TombstoneSet { evidence_ids, .. } => evidence_ids.iter().collect(),
+            GovernanceEffect::GrantRole {
+                tenant_id,
+                role,
+                subject,
+                ..
+            } => {
+                return self
+                    .roles
+                    .check_grant(tenant_id, *role, subject)
+                    .map_err(io)
+            }
+            GovernanceEffect::EndRoleBinding {
+                tenant_id,
+                binding_id,
+            } => return self.roles.check_end(tenant_id, binding_id).map_err(io),
             _ => return Ok(None),
         };
         for id in ids {
@@ -478,6 +563,27 @@ impl MemoryChangeStore {
             }
         }
         Ok(None)
+    }
+}
+
+/// The binding a `GrantRole` effect writes: granted by the request being
+/// approved, at the approval's time.
+pub(crate) fn granted_binding(
+    binding_id: &str,
+    tenant_id: &str,
+    role: Role,
+    subject: &BindingSubject,
+    applying: &Applying<'_>,
+) -> RoleBinding {
+    RoleBinding {
+        id: binding_id.to_string(),
+        tenant_id: tenant_id.to_string(),
+        role,
+        subject: subject.clone(),
+        granted_by_change_request: Some(applying.request_id.to_string()),
+        granted_at: applying.now,
+        ended_by_change_request: None,
+        ended_at: None,
     }
 }
 

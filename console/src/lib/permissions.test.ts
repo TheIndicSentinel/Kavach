@@ -154,6 +154,9 @@ describe("mayProbably and roleHint", () => {
     [["admins", "change-approvers"], approveAction("reinstate_agent"), true],
     [[], "evaluate", false],
     [["no-such-group"], "evaluate", false],
+    // Role changes are not in the group table: the control shows, the server decides.
+    [["viewers"], proposeAction("grant_role"), true],
+    [[], approveAction("revoke_role"), true],
   ])("groups %j: %s is %s", (groups, action, allowed) => {
     expect(mayProbably(viewer(groups), action)).toBe(allowed);
   });
