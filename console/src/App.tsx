@@ -22,6 +22,7 @@ import ReconciliationPage from "./pages/ReconciliationPage";
 import RetentionPage from "./pages/RetentionPage";
 import SettingsPage from "./pages/SettingsPage";
 import SignInPage from "./pages/SignInPage";
+import UsersPage from "./pages/UsersPage";
 import { startSession } from "./lib/session";
 
 export default function App() {
@@ -54,6 +55,7 @@ export default function App() {
           <Route path="audit" element={<AuditPage />} />
           <Route path="incidents" element={<IncidentsPage />} />
           <Route path="retention" element={<RetentionPage />} />
+          <Route path="users" element={<UsersPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="*" element={<NotFoundPage />} />
         </Route>

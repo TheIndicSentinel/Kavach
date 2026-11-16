@@ -122,7 +122,8 @@ test.describe("login mode", () => {
   });
 
   test("a 401 ends the session: /signin says so, and Back shows no signed-in data", async ({ page, api }) => {
-    const server = await loginMode(page, api, true);
+    // An admin, whose groups may read agents, so the Agents link shows.
+    const server = await loginMode(page, api, true, body.approverSession);
     await page.goto("/overview");
     await expect(page.getByText("credit-risk").filter({ visible: true }).first()).toBeVisible();
 
@@ -174,7 +175,7 @@ test.describe("login mode", () => {
   });
 });
 
-test.describe("login mode: role hints from the session's groups", () => {
+test.describe("login mode: role hints from the session's groups and GET /v1/me", () => {
   const agent = body.quarantined;
   const approve = (page: Page) => page.getByRole("button", { name: "Approve and apply" });
   const reject = (page: Page) => page.getByRole("button", { name: "Reject" });
@@ -188,10 +189,10 @@ test.describe("login mode: role hints from the session's groups", () => {
     await page.goto(`/agents/${agent.agent_id}`);
     await expect(page.getByRole("status").filter({ hasText: `Agent ${agent.agent_id} is quarantined.` })).toBeVisible();
     await expect(
-      page.getByText("Your groups (viewers) don't include one that may stop agents."),
+      page.getByText("Your roles (none) and groups (viewers) don't include one that may stop agents."),
     ).toBeVisible();
     await expect(
-      page.getByText("Your groups (viewers) don't include one that may propose reinstating an agent."),
+      page.getByText("Your roles (none) and groups (viewers) don't include one that may propose reinstating an agent."),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Request reinstatement" })).toHaveCount(0);
@@ -205,7 +206,7 @@ test.describe("login mode: role hints from the session's groups", () => {
     await loginMode(page, api, true, body.viewerSession);
     await page.goto("/changes");
     await expect(
-      page.getByText("Your groups (viewers) don't include one that may approve or reject this change."),
+      page.getByText("Your roles (none) and groups (viewers) don't include one that may approve or reject this change."),
     ).toBeVisible();
     await expect(approve(page)).toHaveCount(0);
     await expect(reject(page)).toHaveCount(0);
@@ -219,12 +220,12 @@ test.describe("login mode: role hints from the session's groups", () => {
     await page.goto(`/agents/${agent.agent_id}`);
     await expect(page.getByRole("button", { name: "Revoke", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Request reinstatement" })).toBeVisible();
-    await expect(page.getByText(/Your groups \(/)).toHaveCount(0);
+    await expect(page.getByText(/don't include one that may/)).toHaveCount(0);
 
     await page.getByRole("link", { name: "Change requests" }).first().click();
     await expect(approve(page)).toBeVisible();
     await expect(reject(page)).toBeVisible();
-    await expect(page.getByText(/Your groups \(/)).toHaveCount(0);
+    await expect(page.getByText(/don't include one that may/)).toHaveCount(0);
     await expectNoViolations(page);
   });
 });

@@ -84,8 +84,12 @@ Paths are under `src/components/`.
 
 `src/lib/permissions.ts` copies which Cedar group may do which console action
 from `crates/kavach-auth/policies/kavach.cedar`; `permissions.test.ts` reads
-that file and fails when the two disagree. A page takes a viewer,
-`{ principal, groups }`:
+that file and fails when the two disagree; it also copies which ADR-019
+role may do which action, and the test checks that table against the role
+policies in the same file. A page takes a viewer,
+`{ principal, groups, roles }`. The roles are `GET /v1/me`'s, read once per
+sign-in and kept in memory (`src/lib/me.ts`); until it answers they are
+unknown, and an action that only a role grants stays shown.
 
 - **Groups unknown** (`null`: the development fallback, the moment before
   `GET /auth/session` answers, and a server with no Cedar policy loaded):
@@ -97,9 +101,15 @@ that file and fails when the two disagree. A page takes a viewer,
 - **Groups known and allowed:** the control shows, with no hint.
 - **Groups known and lacking the action:** the control is not rendered. One
   `RoleHint` line takes its place, in muted text with an `Info` icon:
-  "Your groups (…) don't include one that may <action>. The server decides;
-  ask an admin if you need this." Never word it as if the console were the
-  control.
+  "Your roles (…) and groups (…) don't include one that may <action>. The
+  server decides; ask an admin if you need this." (While the roles are
+  unknown: "Your groups (…) don't include one …".) Never word it as if the
+  console were the control.
+- **The sidebar** leaves out a page whose read the viewer's known roles and
+  groups lack (`src/lib/pageAccess.ts`). A hint, not a gate: the page still
+  opens by its address and shows the server's 403.
+- **Superadmin banner.** While `GET /v1/me` names `superadmin`, every page
+  shows "Acting as superadmin" under the top bar.
 
 The change-request proposer rule still applies on top (the proposer gets
 cancel only; anyone else approve and reject).
@@ -258,6 +268,7 @@ The routes in `src/App.tsx`. "Credit" pages are left out on an agent-only server
 | `/incidents` | `IncidentsPage` | Governance | `fetchIncidents` | yes |
 | `/retention` | `RetentionPage` | Governance | `fetchRetentionSettings`, `fetchTombstones`, `proposeChange` | yes |
 | `/decision-events` | `DecisionEventsPage` | Governance | `fetchDecisionEvent` | yes |
+| `/users` | `UsersPage` | Access ("Users & roles") | `fetchPrincipals`, `fetchRoleBindings`, `fetchAccessReview`, `fetchAccessReviewCsv` (on a click only: every export is audited), `proposeChange` | no |
 | `/signin` | `SignInPage` | outside the shell | none directly (`startSession` in `App.tsx` reads `GET /auth/config` on load); links to `/auth/login` | no |
 
 Any other path shows `NotFoundPage` (404). `/signin` and the `/auth/*` calls (`src/lib/session.ts`) are the ADR-018 sign-in (#248, #250).

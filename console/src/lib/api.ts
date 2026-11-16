@@ -149,13 +149,13 @@ function problemOf(payload: unknown): { text?: string; requestId?: string } {
  * cross-site page cannot add it without a CORS preflight, which the API
  * does not grant). In login mode a 401 means the session ended.
  */
-export async function request<T>(
+async function send(
   path: string,
-  init: { method?: "GET" | "POST"; body?: unknown } = {},
-): Promise<T> {
+  init: { method?: "GET" | "POST"; body?: unknown; accept?: string } = {},
+): Promise<{ response: Response; payload: unknown }> {
   const method = init.method ?? "GET";
   const headers: Record<string, string> = {
-    Accept: "application/json",
+    Accept: init.accept ?? "application/json",
     "X-Kavach-Console": "1",
     ...authHeaders(),
   };
@@ -187,10 +187,25 @@ export async function request<T>(
       message,
     );
   }
+  return { response, payload };
+}
+
+/** {@link send}, for a JSON answer. */
+export async function request<T>(
+  path: string,
+  init: { method?: "GET" | "POST"; body?: unknown } = {},
+): Promise<T> {
+  const { response, payload } = await send(path, init);
   if (payload === undefined) {
-    throw new ApiError(`${method} ${path} returned no JSON body`, response.status);
+    throw new ApiError(`${init.method ?? "GET"} ${path} returned no JSON body`, response.status);
   }
   return payload as T;
+}
+
+/** {@link send}, for a text answer of type `accept` (a GET). */
+export async function requestText(path: string, accept: string): Promise<string> {
+  const { response } = await send(path, { accept });
+  return response.text();
 }
 
 export function fetchHealth(): Promise<{ status: string }> {
@@ -460,3 +475,63 @@ export function reconcileClosedRecords(body: ClosedRecordsRequest): Promise<Clos
 export function fetchDecisionEvent(evidenceId: string): Promise<DecisionEventLookup> {
   return request(`/v1/decision-events/${encodeURIComponent(evidenceId)}`);
 }
+
+// --- Users & roles (ADR-019) ------------------------------------------------
+
+export type RoleName = Schemas["RoleName"];
+
+/** `GET /v1/me`: who the caller is and the roles bound to them now. Decides nothing. */
+export type Me = Schemas["Me"];
+
+export type Principal = Schemas["Principal"];
+
+export type PrincipalPage = Schemas["PrincipalPage"];
+
+export type RoleBinding = Schemas["RoleBinding"];
+
+export type BindingSubject = Schemas["BindingSubject"];
+
+export type AccessReview = Schemas["AccessReview"];
+
+export type AccessReviewRow = Schemas["AccessReviewRow"];
+
+export type PrincipalQuery = NonNullable<operations["listPrincipals"]["parameters"]["query"]>;
+
+export function fetchMe(): Promise<Me> {
+  return request("/v1/me");
+}
+
+export function principalsPath(query: PrincipalQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.q) params.set("q", query.q);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor) params.set("cursor", query.cursor);
+  const search = params.toString();
+  return search ? `/v1/principals?${search}` : "/v1/principals";
+}
+
+/** The principals directory, a page at a time (`read_principals`). */
+export function fetchPrincipals(query: PrincipalQuery = {}): Promise<PrincipalPage> {
+  return request(principalsPath(query));
+}
+
+/** Active role bindings; with `includeEnded`, ended ones too (`read_principals`). */
+export async function fetchRoleBindings(includeEnded = false): Promise<RoleBinding[]> {
+  const list: Schemas["RoleBindingList"] = includeEnded
+    ? await request("/v1/role-bindings?include=ended")
+    : await request("/v1/role-bindings");
+  return list.items;
+}
+
+/** The access review as JSON. The server audits every export, this one included. */
+export function fetchAccessReview(): Promise<AccessReview> {
+  return request("/v1/access-review?format=json");
+}
+
+/** The access review as CSV text (formula-safe on the server). Audited like the JSON. */
+export function fetchAccessReviewCsv(): Promise<string> {
+  return requestText("/v1/access-review?format=csv", "text/csv");
+}
+
+/** `grant_role` params (docs/openapi.yaml ChangeProposal). */
+export type GrantRoleProposal = { role: RoleName; subject: BindingSubject };

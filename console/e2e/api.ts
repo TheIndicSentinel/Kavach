@@ -31,6 +31,11 @@ export const defaultStubs: Stubs = {
   "GET /v1/agents": ok(body.agentPage),
   "GET /v1/agents/agent:collections-bot": ok(body.neverChanged),
   "POST /v1/agents/agent:collections-bot/quarantine": ok(body.quarantineApplied),
+  // ADR-019: no role bound, so the groups decide what shows; e2e/users.e2e.ts sets the roles.
+  "GET /v1/me": ok(body.meNoRoles),
+  "GET /v1/principals": ok(body.principalPage),
+  "GET /v1/role-bindings": ok(body.roleBindings),
+  "GET /v1/access-review": ok(body.accessReview),
   // No console login, --insecure-dev: the development fallback, as before login existed.
   // e2e/login.e2e.ts sets the other modes.
   "GET /auth/config": ok(body.authConfigDev),
