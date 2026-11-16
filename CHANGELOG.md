@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **ADR-017 R3a unknown-outcome demo.** `kavach demo` now runs the built-in mock-provider scenario with a lost response and provider error, verifies both signed resolutions against provider ground truth, and checks the provider inbox for no resend. ADR-017 records the simulator/demo point as complete; real-provider mapping remains gated by ADR-015.
 - **ADR-017 R3b delivered-attestation core.** The authorization core can append a signed one-person `confirmed_delivered` operator resolution from a reason code, reference digest, and source-qualified identity; repeats are idempotent and the caller never provides the reference itself.
 - **ADR-017 R3b delivered-attestation change request.** The `operator` role can propose a digest-bound request and complete it themselves; the API stores and audits only the reference digest, and approval binds to the unknown outcome and its existing resolution history.
 - **ADR-017 R3b not-delivered attestation.** A second operator identity must approve the frozen request; both source-qualified identities and only the reference digest enter the signed resolution/audit. The integration test confirms it cannot resend or release contact slots.
