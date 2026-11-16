@@ -279,6 +279,7 @@ async fn cedar_test_state() -> Arc<AppState> {
     let (pack, model) = fixture_paths();
     let (policy_path, entities_path) = cedar_fixture_paths();
     let config = ApiConfig {
+        require_hardening: false,
         pack_path: pack,
         model_path: model,
         hmac_secret: None,
@@ -521,7 +522,7 @@ async fn change_request_needs_a_distinct_approver_and_the_shown_digest() {
     assert_eq!(request["status"], "pending");
     assert_eq!(request["binding"]["pointer_version"], 0);
     assert_eq!(
-        state.runtime().pack_id,
+        state.runtime().unwrap().pack_id,
         "finance-v0",
         "proposal changes nothing"
     );
@@ -543,8 +544,8 @@ async fn change_request_needs_a_distinct_approver_and_the_shown_digest() {
     assert_eq!(status, StatusCode::OK, "{applied}");
     assert_eq!(applied["status"], "applied");
     assert_eq!(applied["decided_by"], "admin-2");
-    assert_eq!(state.runtime().pack_id, "finance-v1");
-    assert_eq!(state.runtime().pointer_version, 1);
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v1");
+    assert_eq!(state.runtime().unwrap().pointer_version, 1);
 
     // A retry by the same approver returns the applied request; anyone else
     // gets a conflict.
@@ -622,7 +623,7 @@ async fn approval_fails_when_the_runtime_moved_since_proposal() {
     .await;
     assert_eq!(stored["status"], "failed");
     assert_eq!(
-        state.runtime().governance_mode,
+        state.runtime().unwrap().governance_mode,
         kavach_domain::GovernanceMode::Shadow
     );
     let _ = std::fs::remove_dir_all(root);
@@ -632,6 +633,7 @@ async fn approval_fails_when_the_runtime_moved_since_proposal() {
 async fn change_requests_can_be_cancelled_rejected_and_expire() {
     let (pack, model) = fixture_paths();
     let mut config = ApiConfig {
+        require_hardening: false,
         pack_path: pack,
         model_path: model,
         hmac_secret: None,
@@ -1032,26 +1034,106 @@ async fn erase_evidence_tombstones_memory_chain_row() {
         .is_some_and(|rows| rows.iter().any(|row| row["evidence_id"] == evidence_id)));
 }
 
-#[cfg(console_embedded)]
-#[tokio::test]
-async fn console_serves_index_html() {
+async fn console_get(path: &str) -> (StatusCode, axum::http::HeaderMap, String) {
     let (pack, model) = fixture_paths();
     let state = Arc::new(
         AppState::from_paths_for_tests(&pack, &model, None)
             .await
             .expect("state"),
     );
-    let app = router(state);
-
-    let response = app
-        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+    let response = router(state)
+        .oneshot(Request::builder().uri(path).body(Body::empty()).unwrap())
         .await
         .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
+    let status = response.status();
+    let headers = response.headers().clone();
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let html = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(html.contains("Kavach"));
+    (
+        status,
+        headers,
+        String::from_utf8_lossy(&bytes).into_owned(),
+    )
+}
+
+fn assert_console_headers(path: &str, headers: &axum::http::HeaderMap, cache: &str) {
+    assert_eq!(
+        headers["content-security-policy"],
+        kavach_api::console::CONTENT_SECURITY_POLICY,
+        "{path}"
+    );
+    assert_eq!(headers["x-content-type-options"], "nosniff", "{path}");
+    assert_eq!(headers["referrer-policy"], "no-referrer", "{path}");
+    assert_eq!(headers["cache-control"], cache, "{path}");
+}
+
+/// The console page, at `/` and at a single-page route: the built console
+/// when this binary has one, else the plain "not built" page. Never blank,
+/// and always with the security headers and no-store.
+#[tokio::test]
+async fn console_page_is_never_blank_and_carries_the_security_headers() {
+    for path in ["/", "/index.html", "/agents/a-1"] {
+        let (status, headers, body) = console_get(path).await;
+        assert_console_headers(path, &headers, "no-store");
+        #[cfg(console_embedded)]
+        {
+            assert_eq!(status, StatusCode::OK, "{path}");
+            assert!(body.contains("Kavach"), "{path}: {body}");
+            // A real build: the page loads its hashed script.
+            assert!(body.contains("src=\"/assets/"), "{path}: {body}");
+        }
+        #[cfg(not(console_embedded))]
+        {
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path}");
+            assert!(headers["content-type"]
+                .to_str()
+                .unwrap()
+                .starts_with("text/plain"));
+            assert_eq!(body, kavach_api::console::NOT_BUILT, "{path}");
+        }
+    }
+}
+
+/// Unknown API paths and missing files are problems, never the console page.
+#[tokio::test]
+async fn api_paths_and_missing_assets_are_not_the_console_page() {
+    for path in [
+        "/v1/no-such-route",
+        "/v1",
+        "/assets/no-such-file.js",
+        "/nope.css",
+    ] {
+        let (status, headers, body) = console_get(path).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{path}: {body}");
+        assert_eq!(
+            headers["content-type"],
+            kavach_api::problem::CONTENT_TYPE,
+            "{path}"
+        );
+        assert!(!body.contains("<html"), "{path}: {body}");
+    }
+}
+
+/// Hashed assets are cached for good; everything else is not.
+#[cfg(console_embedded)]
+#[tokio::test]
+async fn console_assets_are_cached_and_carry_the_security_headers() {
+    let (_, _, index) = console_get("/").await;
+    let script = kavach_api::console_build::referenced_assets(&index)
+        .into_iter()
+        .find(|asset| std::path::Path::new(asset).extension() == Some("js".as_ref()))
+        .expect("the page loads a script");
+    let path = format!("/{script}");
+    let (status, headers, _) = console_get(&path).await;
+    assert_eq!(status, StatusCode::OK, "{path}");
+    assert_console_headers(&path, &headers, "public, max-age=31536000, immutable");
+    assert!(headers["content-type"]
+        .to_str()
+        .unwrap()
+        .starts_with("application/javascript"));
+
+    let (status, headers, _) = console_get("/favicon.svg").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_console_headers("/favicon.svg", &headers, "no-cache");
 }
 
 /// Copies the finance pack/model into a temp registry with a second pack
@@ -1087,7 +1169,7 @@ async fn runtime_exposes_pack_sha256() {
         .expect("state");
     let expected = kavach_policy::pack_digest(&std::fs::read(&pack).unwrap());
     assert_eq!(
-        state.runtime().pack_sha256.as_deref(),
+        state.runtime().unwrap().pack_sha256.as_deref(),
         Some(expected.as_str())
     );
 }
@@ -1108,7 +1190,7 @@ async fn rollback_refuses_tampered_previous_pack() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(state.runtime().pack_id, "finance-v1");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v1");
 
     // Tamper with the previous pack file after it was pinned at activation.
     let original = std::fs::read_to_string(&v0_path).unwrap();
@@ -1116,7 +1198,7 @@ async fn rollback_refuses_tampered_previous_pack() {
     let status = apply_as_admins(&router(state.clone()), "rollback_pack", json!({})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(
-        state.runtime().pack_id,
+        state.runtime().unwrap().pack_id,
         "finance-v1",
         "runtime must not change"
     );
@@ -1140,7 +1222,7 @@ async fn rollback_refuses_tampered_previous_pack() {
     std::fs::write(&v0_path, original).unwrap();
     let status = apply_as_admins(&router(state.clone()), "rollback_pack", json!({})).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(state.runtime().pack_id, "finance-v0");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v0");
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1200,6 +1282,7 @@ async fn signed_packs_required_when_signers_configured() {
     write_signers(&signers_path, &public, &["pack", "model"]);
 
     let config = ApiConfig {
+        require_hardening: false,
         pack_path: v0_path.clone(),
         model_path: model_path.clone(),
         hmac_secret: None,
@@ -1261,7 +1344,7 @@ async fn signed_packs_required_when_signers_configured() {
     )
     .await;
     assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(state.runtime().pack_id, "finance-v0");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v0");
 
     // Signed v1: activation succeeds.
     write_signature(&provider, &v1_path).await;
@@ -1272,7 +1355,7 @@ async fn signed_packs_required_when_signers_configured() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(state.runtime().pack_id, "finance-v1");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v1");
 
     let _ = std::fs::remove_dir_all(root);
 }
@@ -1476,6 +1559,6 @@ async fn ungoverned_models_and_pack_mismatch_are_visible() {
         approve(&app, &as_principal("admin-2"), &request).await.0,
         StatusCode::OK
     );
-    assert_eq!(state.runtime().model_version, "1.1.0");
+    assert_eq!(state.runtime().unwrap().model_version, "1.1.0");
     let _ = std::fs::remove_dir_all(root);
 }

@@ -104,6 +104,7 @@ fn api_config(project: &Project, clock: Option<Arc<DevClock>>) -> ApiConfig {
         None => EvidenceStoreKind::Memory,
     };
     ApiConfig {
+        require_hardening: false,
         pack_path: project.bundle().join(PACK_FILE),
         model_path: project.bundle().join(MODEL_FILE),
         hmac_secret: None,

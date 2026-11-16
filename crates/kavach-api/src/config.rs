@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)] // independent startup switches, not a state
 pub struct ApiConfig {
     pub pack_path: PathBuf,
     pub model_path: PathBuf,
@@ -37,6 +38,9 @@ pub struct ApiConfig {
     pub database_tls: kavach_storage::DatabaseTls,
     /// Connections in the runtime Postgres pool.
     pub database_pool_size: u32,
+    /// `--require-hardening`: the start was checked against
+    /// `crate::hardening`, and the development routes are not mounted.
+    pub require_hardening: bool,
     /// Agent surfaces (`/v1/authorize`, `/v1/sor/events`; ADR-007, H5a-5).
     pub dataplane: Option<crate::dataplane::DataplaneConfig>,
 }

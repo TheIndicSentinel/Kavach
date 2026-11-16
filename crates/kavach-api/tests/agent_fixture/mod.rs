@@ -351,6 +351,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
 pub fn config(store: EvidenceStoreKind, insecure_dev: bool, rate: u32) -> ApiConfig {
     let (dataplane, operator) = files(rate);
     ApiConfig {
+        require_hardening: false,
         pack_path: repo("packs/finance/v0.yaml"),
         model_path: repo("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,

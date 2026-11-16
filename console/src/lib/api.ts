@@ -1,12 +1,59 @@
+import type { components, operations, paths } from "./openapi";
+import type { AuthMode } from "./session";
+
+/** Every type the API sends or accepts, generated from docs/openapi.yaml. */
+type Schemas = components["schemas"];
+
+/** The JSON body of an operation's 200 response. */
+type Ok<Op extends keyof operations> = operations[Op]["responses"] extends {
+  200: { content: { "application/json": infer Body } };
+}
+  ? Body
+  : never;
+
 const PRINCIPAL_KEY = "kavach.principal";
 const TOKEN_KEY = "kavach.accessToken";
 
-/** OIDC access token from the bank IdP (ADR-008). Kept in sessionStorage only. */
-export function getAccessToken(): string {
-  return sessionStorage.getItem(TOKEN_KEY) ?? "";
+/**
+ * How requests authenticate, set once per page load from `GET /auth/config`
+ * (`src/lib/session.ts`). Until then, and in every mode but `dev_token`, no
+ * credential header is sent and nothing is read from or written to storage.
+ */
+let authMode: AuthMode | null = null;
+
+/** Called on a 401 in login mode: the session ended. */
+let onUnauthorized: (() => void) | null = null;
+
+/**
+ * Sets the mode. Entering login mode removes the development credentials
+ * from sessionStorage: in login mode the session cookie is the only
+ * credential, and they are never written again.
+ */
+export function setAuthMode(mode: AuthMode | null): void {
+  authMode = mode;
+  if (mode === "login") {
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(PRINCIPAL_KEY);
+  }
 }
 
+export function setUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
+const devFallback = () => authMode === "dev_token";
+
+/**
+ * Development fallback only (no console login, server in --insecure-dev): a
+ * pasted OIDC access token, kept in sessionStorage. Empty in any other mode.
+ */
+export function getAccessToken(): string {
+  return devFallback() ? (sessionStorage.getItem(TOKEN_KEY) ?? "") : "";
+}
+
+/** Writes only in the development fallback; does nothing in any other mode. */
 export function setAccessToken(value: string): void {
+  if (!devFallback()) return;
   if (value.trim()) {
     sessionStorage.setItem(TOKEN_KEY, value.trim());
   } else {
@@ -14,11 +61,14 @@ export function setAccessToken(value: string): void {
   }
 }
 
+/** Development fallback only: the principal ID sent as `X-Kavach-Principal`. */
 export function getPrincipal(): string {
-  return sessionStorage.getItem(PRINCIPAL_KEY) ?? "";
+  return devFallback() ? (sessionStorage.getItem(PRINCIPAL_KEY) ?? "") : "";
 }
 
+/** Writes only in the development fallback; does nothing in any other mode. */
 export function setPrincipal(value: string): void {
+  if (!devFallback()) return;
   if (value.trim()) {
     sessionStorage.setItem(PRINCIPAL_KEY, value.trim());
   } else {
@@ -27,10 +77,14 @@ export function setPrincipal(value: string): void {
 }
 
 /**
- * Bearer token when configured; otherwise the self-asserted principal header,
- * which the API accepts only in --insecure-dev (development).
+ * The credential headers. In the development fallback: the pasted token as
+ * `Authorization: Bearer`, or else the self-asserted principal header, which
+ * the API accepts only in --insecure-dev. In any other mode none: in login
+ * mode the HttpOnly session cookie goes with the request, and the API refuses
+ * a cookie together with either header.
  */
 function authHeaders(): Record<string, string> {
+  if (!devFallback()) return {};
   const token = getAccessToken();
   if (token) {
     return { Authorization: `Bearer ${token}` };
@@ -41,19 +95,25 @@ function authHeaders(): Record<string, string> {
 
 export class ApiError extends Error {
   readonly status: number;
+  /** The server's `request_id`, to quote when reporting a refusal. */
+  readonly requestId?: string;
+  /** The refusal without the request id appended (the problem `detail`, or the status). */
+  readonly detail: string;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, requestId?: string, detail?: string) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.requestId = requestId;
+    this.detail = detail ?? message;
   }
 }
 
 /**
- * A refusal's text: the RFC 9457 `detail` (or the `error` member older
+ * The text of a refusal: the RFC 9457 `detail` (or the `error` member older
  * servers sent), with the `request_id` to quote when reporting it.
  */
-function problemDetail(payload: unknown): string | undefined {
+function problemOf(payload: unknown): { text?: string; requestId?: string } {
   const body = payload as
     | { detail?: unknown; error?: unknown; request_id?: unknown }
     | null;
@@ -63,136 +123,91 @@ function problemDetail(payload: unknown): string | undefined {
       : typeof body?.error === "string"
         ? body.error
         : undefined;
-  if (text === undefined) return undefined;
-  return typeof body?.request_id === "string"
-    ? `${text} (request ${body.request_id})`
-    : text;
+  const requestId =
+    typeof body?.request_id === "string" ? body.request_id : undefined;
+  return { text, requestId };
 }
 
-export async function fetchHealth(): Promise<{ status: string }> {
-  const response = await fetch("/health", { headers: authHeaders() });
-  if (!response.ok) {
-    throw new ApiError(`Health check failed (${response.status})`, response.status);
+/**
+ * The one way the console calls the API. The status is checked before the
+ * body is read, so an error page from a proxy (a 502 or 504 in HTML) is
+ * reported by its status, never as a JSON parse error.
+ *
+ * Every request carries `X-Kavach-Console: 1` and same-origin credentials:
+ * the API refuses a cookie-authenticated request without that header (a
+ * cross-site page cannot add it without a CORS preflight, which the API
+ * does not grant). In login mode a 401 means the session ended.
+ */
+export async function request<T>(
+  path: string,
+  init: { method?: "GET" | "POST"; body?: unknown } = {},
+): Promise<T> {
+  const method = init.method ?? "GET";
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "X-Kavach-Console": "1",
+    ...authHeaders(),
+  };
+  if (init.body !== undefined) headers["Content-Type"] = "application/json";
+
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers,
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError("The API could not be reached", 0);
   }
-  return response.json() as Promise<{ status: string }>;
-}
 
-export type EvaluateResponse = {
-  returned_decision: string;
-  policy_decision: string;
-  evidence_id?: string;
-  reason_codes: string[];
-  policy_hits: string[];
-};
+  const isJson = (response.headers.get("Content-Type") ?? "").includes("json");
+  const payload: unknown = isJson ? await response.json().catch(() => undefined) : undefined;
 
-export async function evaluateRequest(
-  body: unknown,
-): Promise<EvaluateResponse> {
-  const response = await fetch("/v1/evaluate", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-    },
-    body: JSON.stringify(body),
-  });
-  const payload = await response.json();
   if (!response.ok) {
-    const message =
-      problemDetail(payload) ?? `Evaluate failed (${response.status})`;
-    throw new ApiError(message, response.status);
+    if (response.status === 401 && authMode === "login") onUnauthorized?.();
+    const { text, requestId } = problemOf(payload);
+    const message = text ?? `${method} ${path} failed (${response.status} ${response.statusText})`.trim();
+    throw new ApiError(
+      requestId ? `${message} (request ${requestId})` : message,
+      response.status,
+      requestId,
+      message,
+    );
   }
-  return payload as EvaluateResponse;
-}
-
-export type RuntimeInfo = {
-  pack_id: string;
-  pack_version: string;
-  model_id: string;
-  model_version: string;
-  sector: string;
-  governance_mode: string;
-  pack_path: string;
-  model_path: string;
-  pack_sha256?: string | null;
-  model_sha256?: string | null;
-  pointer_version?: number;
-  stored_pointer_version?: number;
-  pointer_drift?: boolean;
-  /** The active model names a different pack than the one running (ADR-010). */
-  model_pack_mismatch?: boolean;
-};
-
-export type PackSummary = {
-  id: string;
-  version: string;
-  sector: string;
-  jurisdiction: string;
-  effective_from: string;
-  rule_count: number;
-  source_path: string;
-  active: boolean;
-};
-
-export type PolicyPack = {
-  id: string;
-  version: string;
-  sector: string;
-  jurisdiction: string;
-  effective_from: string;
-  description?: string;
-  rules: Array<{
-    id: string;
-    expression: string;
-    decision: string;
-    reason_code: string;
-    severity?: string;
-    control_mappings?: string[];
-  }>;
-  control_mappings?: Record<string, string>;
-};
-
-export type ModelSummary = {
-  model_id: string;
-  version: string;
-  sector: string;
-  status: string;
-  risk_tier: string;
-  governance_mode: string;
-  origin: string;
-  pack_id: string;
-  owner: string;
-  source_path: string;
-  active: boolean;
-  /** False: no governed state yet; activate it with an activate_model change. */
-  governed: boolean;
-};
-
-export type ModelRecord = {
-  model_id: string;
-  version: string;
-  sector: string;
-  owner: string;
-  risk_tier: string;
-  origin: string;
-  governance_mode: string;
-  input_schema: Record<string, unknown>;
-  human_review_hold_policy?: string;
-  status: string;
-  pack_id: string;
-  purpose: string;
-  governed?: boolean;
-};
-
-async function governanceFetch<T>(path: string): Promise<T> {
-  const response = await fetch(path, { headers: authHeaders() });
-  const payload = await response.json();
-  if (!response.ok) {
-    const message =
-      problemDetail(payload) ?? `Request failed (${response.status})`;
-    throw new ApiError(message, response.status);
+  if (payload === undefined) {
+    throw new ApiError(`${method} ${path} returned no JSON body`, response.status);
   }
   return payload as T;
+}
+
+export function fetchHealth(): Promise<{ status: string }> {
+  return request("/health");
+}
+
+export type EvaluateResponse = Schemas["EvaluateResponse"];
+
+export function evaluateRequest(body: unknown): Promise<EvaluateResponse> {
+  return request("/v1/evaluate", { method: "POST", body });
+}
+
+/** A guarantee this process runs with relaxed (docs/BYPASS_INVENTORY.md section 1). */
+export type Relaxation = Schemas["RuntimeView"]["relaxations"][number];
+
+/** `GET /v1/runtime`. */
+export type RuntimeInfo = Schemas["RuntimeView"];
+
+export type PackSummary = Schemas["PackSummary"];
+
+export type PolicyPack = Schemas["PolicyPack"];
+
+export type ModelSummary = Schemas["ModelSummary"];
+
+export type ModelRecord = Schemas["ModelDetail"];
+
+function governanceFetch<T>(path: string): Promise<T> {
+  return request(path);
 }
 
 export function fetchRuntime(): Promise<RuntimeInfo> {
@@ -215,50 +230,19 @@ export function fetchModel(modelId: string): Promise<ModelRecord> {
   return governanceFetch(`/v1/models/${encodeURIComponent(modelId)}`);
 }
 
-export type AuditEntry = {
-  id: number;
-  action: string;
-  resource_type: string;
-  resource_id: string;
-  actor_principal: string;
-  approver_principal: string;
-  payload: Record<string, unknown>;
-  created_at: string;
-};
+export type AuditEntry = Schemas["AuditEntry"];
 
 export function fetchAuditLog(limit = 50): Promise<AuditEntry[]> {
   return governanceFetch(`/v1/admin/audit?limit=${limit}`);
 }
 
-export type IncidentRecord = {
-  id: number;
-  correlation_id: string;
-  model_id: string;
-  reason: string;
-  recorded_at: string;
-};
+export type IncidentRecord = Schemas["IncidentRecord"];
 
 export function fetchIncidents(limit = 50): Promise<IncidentRecord[]> {
   return governanceFetch(`/v1/admin/incidents?limit=${limit}`);
 }
 
-export type BatchJob = {
-  job_id: string;
-  status: string;
-  input_path: string;
-  output_path?: string | null;
-  model_id: string;
-  governance_mode: string;
-  total_rows: number;
-  processed_rows: number;
-  succeeded_rows: number;
-  failed_rows: number;
-  skipped_rows: number;
-  error_summary?: string | null;
-  created_at: string;
-  started_at?: string | null;
-  completed_at?: string | null;
-};
+export type BatchJob = Schemas["BatchJobRecord"];
 
 export function fetchBatchJobs(limit = 50): Promise<BatchJob[]> {
   return governanceFetch(`/v1/admin/batch-jobs?limit=${limit}`);
@@ -268,20 +252,9 @@ export function fetchBatchJob(jobId: string): Promise<BatchJob> {
   return governanceFetch(`/v1/admin/batch-jobs/${encodeURIComponent(jobId)}`);
 }
 
-export interface RetentionSettings {
-  evidence_retention_days: number;
-  updated_at: string;
-  updated_by?: string | null;
-  approved_by?: string | null;
-}
+export type RetentionSettings = Schemas["RetentionSettings"];
 
-export interface TombstoneRecord {
-  evidence_id: string;
-  reason: string;
-  actor_principal: string;
-  approver_principal: string;
-  tombstoned_at: string;
-}
+export type TombstoneRecord = Schemas["TombstoneRecord"];
 
 export interface RetentionApplyReport {
   tombstoned_count: number;
@@ -296,53 +269,15 @@ export function fetchTombstones(limit = 50): Promise<TombstoneRecord[]> {
   return governanceFetch(`/v1/admin/tombstones?limit=${limit}`);
 }
 
-export type ChangeKind =
-  | "activate_pack"
-  | "rollback_pack"
-  | "update_model"
-  | "update_retention"
-  | "erase_evidence"
-  | "apply_retention"
-  | "activate_model";
+export type ChangeKind = Schemas["ChangeKind"];
 
-export type ChangeStatus =
-  | "pending"
-  | "applied"
-  | "failed"
-  | "rejected"
-  | "cancelled"
-  | "expired";
+export type ChangeStatus = Schemas["ChangeStatus"];
 
 /** A maker-checker change request (ADR-009). */
-export interface ChangeRequest {
-  id: string;
-  kind: ChangeKind;
-  params: Record<string, unknown>;
-  binding: Record<string, unknown>;
-  change_digest: string;
-  reason?: string | null;
-  proposer: string;
-  status: ChangeStatus;
-  decided_by?: string | null;
-  outcome?: Record<string, unknown> | null;
-  created_at: string;
-  expires_at: string;
-  decided_at?: string | null;
-}
+export type ChangeRequest = Schemas["ChangeRequest"];
 
-async function changeFetch<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", ...authHeaders() },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const payload = await response.json();
-  if (!response.ok) {
-    const message =
-      problemDetail(payload) ?? `Request failed (${response.status})`;
-    throw new ApiError(message, response.status);
-  }
-  return payload as T;
+function changeFetch<T>(path: string, body?: unknown): Promise<T> {
+  return request(path, { method: "POST", body });
 }
 
 /** Proposes a governance change; a different principal must approve it. */
@@ -378,4 +313,139 @@ export function rejectChange(id: string, reason?: string): Promise<ChangeRequest
 
 export function cancelChange(id: string): Promise<ChangeRequest> {
   return changeFetch(`/v1/change-requests/${encodeURIComponent(id)}/cancel`);
+}
+
+export type AgentStateName = Schemas["AgentStateName"];
+
+/** An agent's state and the last change to it (ADR-013). */
+export type AgentStateView = Schemas["AgentStateView"];
+
+/** One page of `GET /v1/agents`. */
+export type AgentStatePage = Schemas["AgentStatePage"];
+
+/** The query `GET /v1/agents` accepts: `state`, `limit` and `cursor`. */
+export type AgentListQuery = NonNullable<operations["listAgents"]["parameters"]["query"]>;
+
+/** `GET /v1/agent-decisions/{record_id}`: the signed record and its outcome, if any. */
+export type AgentDecisionLookup = Ok<"getAgentDecision">;
+
+/** `GET /v1/agent-revocations/{system}/{event_id}`: the signed revocation record. */
+export type RevocationLookup = Ok<"getRevocationRecord">;
+
+/** The path of one page of agents; only the members that are set go in the query. */
+export function agentsPath(query: AgentListQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.state) params.set("state", query.state);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor) params.set("cursor", query.cursor);
+  const search = params.toString();
+  return search ? `/v1/agents?${search}` : "/v1/agents";
+}
+
+export function fetchAgents(query: AgentListQuery = {}): Promise<AgentStatePage> {
+  return request(agentsPath(query));
+}
+
+export function fetchAgent(agentId: string): Promise<AgentStateView> {
+  return request(`/v1/agents/${encodeURIComponent(agentId)}`);
+}
+
+/** Audited and rate limited by the API: call it once per lookup the operator asks for. */
+export function fetchAgentDecision(recordId: string): Promise<AgentDecisionLookup> {
+  return request(`/v1/agent-decisions/${encodeURIComponent(recordId)}`);
+}
+
+/** Audited and rate limited by the API: call it once per lookup the operator asks for. */
+export function fetchRevocationRecord(system: string, eventId: string): Promise<RevocationLookup> {
+  return request(
+    `/v1/agent-revocations/${encodeURIComponent(system)}/${encodeURIComponent(eventId)}`,
+  );
+}
+
+/** Why an agent's state was changed, from the spec's closed set. */
+export type AgentReasonCode = Schemas["AgentReasonCode"];
+
+/** The body of a restrict, quarantine or revoke. */
+export type StopAgentRequest = Schemas["StopAgentRequest"];
+
+/** What a restrict, quarantine or revoke returns: the state now, and what was done. */
+export type AgentStopResult = Schemas["AgentStopResult"];
+
+/**
+ * `restrict`, `quarantine` or `revoke`: the last segment of every
+ * `/v1/agents/{agent_id}/<action>` path in the spec, so a path added or
+ * renamed there changes this type.
+ */
+export type StopAction = Extract<keyof paths, `/v1/agents/{agent_id}/${string}`> extends
+  `/v1/agents/{agent_id}/${infer Action}`
+  ? Action
+  : never;
+
+/** The path of a stop: the agent id is encoded, the action is one the spec names. */
+export function stopAgentPath(agentId: string, action: StopAction): string {
+  return `/v1/agents/${encodeURIComponent(agentId)}/${action}`;
+}
+
+/** One principal with `stop_agent`; the API decides whether this caller may. */
+export function stopAgent(
+  agentId: string,
+  action: StopAction,
+  body: StopAgentRequest,
+): Promise<AgentStopResult> {
+  return request(stopAgentPath(agentId, action), { method: "POST", body });
+}
+
+/** What a reinstatement may bring an agent back to (never `revoked`, never past `active`). */
+export type ReinstateTo = Extract<AgentStateName, "active" | "restricted">;
+
+/**
+ * The `params` of a `reinstate_agent` change request. The spec gives them
+ * only in `ChangeProposal`'s description (`{agent_id, to: active |
+ * restricted, reason_code?, note?}`): `params` itself is an open object, so
+ * no generated type names these members (noted on #218).
+ */
+export type ReinstateAgentParams = {
+  agent_id: AgentStateView["agent_id"];
+  to: ReinstateTo;
+  reason_code?: AgentReasonCode;
+  note?: StopAgentRequest["note"];
+};
+
+/** `POST /v1/change-requests` for a reinstatement: the generated proposal with typed params. */
+export type ReinstateProposal = Omit<Schemas["ChangeProposal"], "kind" | "params"> & {
+  kind: Extract<ChangeKind, "reinstate_agent">;
+  params: ReinstateAgentParams;
+};
+
+/**
+ * Proposes bringing an agent back. Nothing changes until a different
+ * principal approves the change request (ADR-013 §3, ADR-009).
+ */
+export function proposeReinstatement(proposal: ReinstateProposal): Promise<ChangeRequest> {
+  return changeFetch("/v1/change-requests", proposal);
+}
+
+/** The lender's closed loans, as `POST /v1/reconciliation/closed-records` takes them. */
+export type ClosedRecordsRequest = Schemas["ClosedRecordsRequest"];
+
+/** What a closed-records reconciliation found. */
+export type ClosedRecordsResult = Schemas["ClosedRecordsResult"];
+
+/** One live mandate the reconciliation found for a closed loan. */
+export type ClosedRecordFinding = ClosedRecordsResult["findings"][number];
+
+/** How an allowed agent call ended (ADR-005 §12). */
+export type Outcome = Schemas["Outcome"];
+
+/** `GET /v1/decision-events/{evidence_id}`: one evaluate decision event. */
+export type DecisionEventLookup = Ok<"getDecisionEvent">;
+
+/** Rate limited and audited by the API (counts, never references). Reports only; revokes nothing. */
+export function reconcileClosedRecords(body: ClosedRecordsRequest): Promise<ClosedRecordsResult> {
+  return request("/v1/reconciliation/closed-records", { method: "POST", body });
+}
+
+/** Audited and rate limited by the API: call it once per lookup the operator asks for. */
+export function fetchDecisionEvent(evidenceId: string): Promise<DecisionEventLookup> {
+  return request(`/v1/decision-events/${encodeURIComponent(evidenceId)}`);
 }

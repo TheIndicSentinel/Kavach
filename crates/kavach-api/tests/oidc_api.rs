@@ -78,6 +78,7 @@ async fn state_with(insecure_dev: bool) -> Arc<AppState> {
     let jwks = dir.join(format!("jwks-{}.json", rand_suffix()));
     std::fs::write(&jwks, jwks_json().to_string()).unwrap();
     let config = ApiConfig {
+        require_hardening: false,
         pack_path: repo("packs/finance/v0.yaml"),
         model_path: repo("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,
@@ -294,6 +295,7 @@ fn cedar_without_an_authenticated_source_is_refused() {
         entities_path: "e".into(),
     };
     let mut config = ApiConfig {
+        require_hardening: false,
         pack_path: "p".into(),
         model_path: "m".into(),
         hmac_secret: None,
@@ -361,17 +363,24 @@ fn relaxation(state: &Arc<AppState>, name: &str) -> i64 {
 }
 
 /// Production mode (OIDC, Cedar, no `--insecure-dev`): nothing is relaxed, and
-/// the process says so in `/v1/runtime` and in every relaxation series.
+/// the process says so in `/v1/runtime` and in every relaxation series. These
+/// tests build on the in-memory evidence store, so `memory_evidence_store` is
+/// the one relaxation that is (truthfully) reported.
 #[tokio::test]
 async fn a_production_start_shows_no_relaxation() {
     let s = state().await;
     let t = token("sso-user-7", &["viewers"]);
     let runtime = get_json(&s, "/v1/runtime", &[bearer(&t)]).await;
     assert_eq!(runtime["insecure_dev"], false, "{runtime}");
-    assert_eq!(runtime["relaxations"], json!([]), "{runtime}");
+    assert_eq!(
+        runtime["relaxations"],
+        json!(["memory_evidence_store"]),
+        "{runtime}"
+    );
     assert_eq!(series(&s, "kavach_insecure_dev"), 0);
     for name in kavach_api::relaxations::Relaxation::ALL {
-        assert_eq!(relaxation(&s, name.as_str()), 0, "{}", name.as_str());
+        let expected = i64::from(name.as_str() == "memory_evidence_store");
+        assert_eq!(relaxation(&s, name.as_str()), expected, "{}", name.as_str());
     }
 }
 
@@ -389,7 +398,7 @@ async fn insecure_dev_shows_in_runtime_and_metrics() {
     assert_eq!(runtime["insecure_dev"], true, "{runtime}");
     assert_eq!(
         runtime["relaxations"],
-        json!(["insecure_dev", "principal_header"]),
+        json!(["insecure_dev", "principal_header", "memory_evidence_store"]),
         "{runtime}"
     );
     assert_eq!(series(&s, "kavach_insecure_dev"), 1);
@@ -417,7 +426,12 @@ async fn access_control_off_shows_too() {
     let runtime = get_json(&s, "/v1/runtime", &[]).await;
     assert_eq!(
         runtime["relaxations"],
-        json!(["insecure_dev", "access_control_none", "principal_header"]),
+        json!([
+            "insecure_dev",
+            "access_control_none",
+            "principal_header",
+            "memory_evidence_store"
+        ]),
         "{runtime}"
     );
     assert_eq!(relaxation(&s, "access_control_none"), 1);

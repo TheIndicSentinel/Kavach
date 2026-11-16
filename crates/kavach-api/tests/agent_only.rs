@@ -101,6 +101,50 @@ async fn agent_only_serves_the_agent_path_and_none_of_the_credit_track() {
     assert!(body.contains("agent-only"), "{body}");
 }
 
+/// `GET /v1/runtime` says whether the credit track is served, so the console
+/// can leave its pages out; it is false on a normal stack.
+#[tokio::test]
+async fn the_runtime_says_whether_the_credit_track_is_served() {
+    for agent_only in [true, false] {
+        let gw = world(agent_only).await;
+        let (status, body) = operator(&gw, "GET", "/v1/runtime", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let view: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(view["agent_only"], agent_only, "{body}");
+    }
+}
+
+/// The console is served in agent-only mode too (the built console, or the
+/// plain "not built" page), with its security headers; the credit-track
+/// API paths above stay problems, not the console page.
+#[tokio::test]
+async fn agent_only_serves_the_console() {
+    let gw = world(true).await;
+    let response = kavach_api::router(gw.state.clone())
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let headers = response.headers().clone();
+    assert_eq!(
+        headers["content-security-policy"],
+        kavach_api::console::CONTENT_SECURITY_POLICY
+    );
+    assert_eq!(headers["cache-control"], "no-store");
+    #[cfg(console_embedded)]
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8_lossy(&bytes);
+    #[cfg(console_embedded)]
+    assert!(body.contains("src=\"/assets/"), "{body}");
+    #[cfg(not(console_embedded))]
+    assert_eq!(body, kavach_api::console::NOT_BUILT);
+
+    for path in CREDIT_TRACK_GETS {
+        let (_, body) = operator(&gw, "GET", path, None).await;
+        assert!(!body.contains("<html"), "{path}: {body}");
+    }
+}
+
 #[tokio::test]
 async fn the_same_requests_are_served_without_agent_only() {
     let gw = world(false).await;

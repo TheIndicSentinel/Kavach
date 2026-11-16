@@ -48,6 +48,7 @@ fn registry() -> PathBuf {
 
 fn config(root: &Path, database_url: &str, pack: &str, bootstrap_pack: bool) -> ApiConfig {
     ApiConfig {
+        require_hardening: false,
         pack_path: root.join("packs/finance").join(pack),
         model_path: root.join("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,
@@ -115,7 +116,7 @@ async fn governed_pointer_survives_restarts_and_pins_bytes() {
     drop(state);
     assert!(start(&root, &url, "v0.yaml").await.is_err());
     let state = start(&root, &url, "v1.yaml").await.expect("restart on v1");
-    assert_eq!(state.runtime().pack_id, "finance-v1");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v1");
 
     // Rollback returns the pointer to v0.
     assert_eq!(
@@ -126,7 +127,7 @@ async fn governed_pointer_survives_restarts_and_pins_bytes() {
     let state = start(&root, &url, "v0.yaml")
         .await
         .expect("restart after rollback");
-    assert_eq!(state.runtime().pack_id, "finance-v0");
+    assert_eq!(state.runtime().unwrap().pack_id, "finance-v0");
     drop(state);
 
     // Changed bytes on the governed path are refused, unless the audited
@@ -413,7 +414,7 @@ async fn governed_mode_survives_restart_and_reaches_evidence() {
     let root = registry();
     let state = start(&root, &url, "v0.yaml").await.expect("start");
     assert_eq!(
-        state.runtime().governance_mode,
+        state.runtime().unwrap().governance_mode,
         kavach_domain::GovernanceMode::Shadow
     );
     promote_to_enforce(&state).await;
@@ -422,7 +423,7 @@ async fn governed_mode_survives_restart_and_reaches_evidence() {
     // The YAML still says shadow; the governed state wins after restart.
     let state = start(&root, &url, "v0.yaml").await.expect("restart");
     assert_eq!(
-        state.runtime().governance_mode,
+        state.runtime().unwrap().governance_mode,
         kavach_domain::GovernanceMode::Enforce
     );
     let response = evaluate_once(&state, "h3b-evidence-mode").await;
@@ -489,7 +490,7 @@ async fn edited_model_file_is_refused_and_bootstrap_keeps_governed_state() {
     config.bootstrap_model = true;
     let state = start_with(&config).await.expect("bootstrap");
     assert_eq!(
-        state.runtime().governance_mode,
+        state.runtime().unwrap().governance_mode,
         kavach_domain::GovernanceMode::Enforce
     );
     assert!(audit_actions(&state)
@@ -539,7 +540,7 @@ async fn baseline_refused_when_approved_history_diverges_from_yaml() {
     config.bootstrap_model = true;
     let state = start_with(&config).await.expect("restore");
     assert_eq!(
-        state.runtime().governance_mode,
+        state.runtime().unwrap().governance_mode,
         kavach_domain::GovernanceMode::Enforce
     );
     assert!(audit_actions(&state)
@@ -598,9 +599,9 @@ async fn activate_model_switches_versions_and_guards_downgrades() {
         approve(&app, &as_principal("admin-2"), &request).await.0,
         StatusCode::OK
     );
-    assert_eq!(state.runtime().model_version, "1.1.0");
+    assert_eq!(state.runtime().unwrap().model_version, "1.1.0");
     assert_eq!(
-        state.runtime().governance_mode,
+        state.runtime().unwrap().governance_mode,
         kavach_domain::GovernanceMode::Enforce
     );
 

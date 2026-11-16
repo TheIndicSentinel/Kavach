@@ -25,9 +25,9 @@ use kavach_ports::TimeSource;
 use kavach_ports_testkit::agent_evidence::{request, revocation_draft, TestSigner};
 use kavach_ports_testkit::FakeClock;
 use kavach_storage::testing::isolated_database_urls;
-use kavach_storage::{MemoryAgentEvidenceStore, StoragePool};
+use kavach_storage::{MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, StoragePool};
 use proptest::prelude::*;
-use proptest::test_runner::{Config, TestCaseError, TestRunner};
+use proptest::test_runner::{Config, RngSeed, TestCaseError, TestRunner};
 
 static CASES: AtomicU32 = AtomicU32::new(0);
 
@@ -283,6 +283,35 @@ impl<S: AgentEvidenceStore> Run<S> {
                 "{tenant} summary {:?}",
                 class(self.store.resolution_summary(&tenant).await)
             );
+            // The work list of the F7 recovery: allows with no outcome. The
+            // windows are narrow because one `Advance` is at most 15 minutes
+            // and a run is short: a window of an hour would
+            // never exclude anything and would not test the lower bound. The
+            // edges are whole minutes from `now`, so they land on decision
+            // times (both bounds are strict). A limit cuts the last list short.
+            let now = self.clock.now().utc;
+            for (name, after, before, limit) in [
+                (
+                    "all",
+                    chrono::DateTime::UNIX_EPOCH,
+                    now - Duration::minutes(5),
+                    1000,
+                ),
+                ("recent", now - Duration::minutes(3), now, 1000),
+                (
+                    "band",
+                    now - Duration::minutes(8),
+                    now - Duration::minutes(3),
+                    1000,
+                ),
+                ("cut", chrono::DateTime::UNIX_EPOCH, now, 2),
+            ] {
+                let _ = writeln!(
+                    seen,
+                    "{tenant} stuck {name} {:?}",
+                    class(self.store.stuck_allows(&tenant, after, before, limit).await)
+                );
+            }
         }
         for (tenant, record) in &self.allows {
             let credential = record.payload.credential_id.as_deref().unwrap();
@@ -326,9 +355,33 @@ fn the_memory_store_and_postgres_agree_on_every_observable() {
     };
     let postgres = pool.agent_evidence_store();
 
+    // Two runs of 40 cases. The first has a fixed seed, so its sequences are
+    // the same on every machine and the coverage floor below is checked
+    // against them alone: it holds or fails on every run, never by chance
+    // (with a random seed, some runs never repeated a resolution and the
+    // floor failed). The second has a random seed, so each run still tries
+    // sequences no earlier run did; the stores must agree on those too.
+    // A proptest upgrade that changes how sequences are generated can move
+    // the fixed run's tallies; if the floor then fails, pick a new seed.
+    run_cases(&runtime, &postgres, RngSeed::Fixed(FLOOR_SEED));
+    check_coverage_floor();
+    run_cases(&runtime, &postgres, RngSeed::Random);
+}
+
+/// The seed of the run the coverage floor is checked against.
+const FLOOR_SEED: u64 = 1;
+
+/// Forty random sequences, each run against both stores, compared after
+/// every step.
+fn run_cases(
+    runtime: &tokio::runtime::Runtime,
+    postgres: &PostgresAgentEvidenceStore,
+    rng_seed: RngSeed,
+) {
     let mut runner = TestRunner::new(Config {
         cases: 40,
         failure_persistence: None,
+        rng_seed,
         ..Config::default()
     });
     runner
@@ -356,7 +409,10 @@ fn the_memory_store_and_postgres_agree_on_every_observable() {
             })
         })
         .unwrap_or_else(|e| panic!("{e}"));
+}
 
+/// The fixed-seed sequences got somewhere.
+fn check_coverage_floor() {
     // The sequences got somewhere: allows, replays, conflicts, outcomes both
     // recorded and refused, resolutions kept, repeated and refused, and
     // revocations all happened, and the stores agreed about each.

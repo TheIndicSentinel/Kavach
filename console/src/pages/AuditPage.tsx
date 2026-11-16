@@ -1,37 +1,27 @@
-import { useEffect, useState } from "react";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { DataTable } from "../components/ui/DataTable";
 import { PageHeader } from "../components/ui/PageHeader";
+import { ResourceState, listSummary } from "../components/ui/ResourceState";
 import { Skeleton } from "../components/ui/Skeleton";
+import { useResource, type Resource } from "../hooks/useResource";
 import { fetchAuditLog, type AuditEntry } from "../lib/api";
 import { formatDateTime } from "../lib/format";
 
-export default function AuditPage() {
-  const [entries, setEntries] = useState<AuditEntry[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+type AuditPageProps = {
+  /** For tests: the read of GET /v1/admin/audit, in place of the API's answer. */
+  resource?: Resource<AuditEntry[]>;
+};
 
-  useEffect(() => {
-    let cancelled = false;
-    fetchAuditLog()
-      .then((data) => {
-        if (!cancelled) setEntries(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load audit log");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+export default function AuditPage({ resource: given }: AuditPageProps) {
+  const { resource: read, retry } = useResource(fetchAuditLog);
+  const resource = given ?? read;
 
   return (
     <section>
       <PageHeader
         title="Admin audit"
         hindi="प्रशासनिक ऑडिट"
-        subtitle="Dual-control governance mutations — pack activate, rollback, and model promotion."
+        subtitle="Approved governance changes: who proposed each one and who approved it."
       />
 
       <Card>
@@ -42,10 +32,14 @@ export default function AuditPage() {
           </CardDescription>
         </CardHeader>
 
-        {error && <p className="mb-4 text-sm text-decision-block">{error}</p>}
-        {entries === null && !error && <Skeleton className="h-24 w-full" />}
-
-        {entries && (
+        <ResourceState
+          resource={resource}
+          loading="Loading the audit log…"
+          summary={(entries) => listSummary(entries.length, "entry", "entries")}
+          onRetry={retry}
+          skeleton={<Skeleton className="h-24 w-full" />}
+        >
+          {(entries) => (
           <DataTable
             rows={entries}
             rowKey={(row) => String(row.id)}
@@ -74,7 +68,8 @@ export default function AuditPage() {
               },
             ]}
           />
-        )}
+          )}
+        </ResourceState>
       </Card>
     </section>
   );

@@ -141,7 +141,7 @@ The MVP is a **fully local, reproducible, free/open-source reference implementat
 | `/v1/authorize` and the gateway | Authenticated caller (Keycloak token), per-tool schema validation, reference-only fields, detectors, rate limits, fuzzed parsers, trusted server time only |
 | Approvals console | WebAuthn step-up, action-hash binding, single-use credentials, dual control for critical packs, full admin audit |
 | Pack / policy upload and activation | Signed packs, dual control (existing), Cedar analysis before activation, rollback |
-| Reference agent LLM input (borrower replies, tool output) | Treated as untrusted and taints the task; **model output never gains authority** |
+| Reference agent LLM input (borrower replies, tool output) | **Model output never gains authority** (built: authority comes only from mandates, and a raw identifier in a reference-only parameter is a recorded `BLOCK`). **Taint tracking is not built:** untrusted input does not taint the task yet. The gateway always sends `task_tainted: false`, so the FR-5 rule for a tainted task and a critical action never fires. Planned for M3; see [ACCEPTANCE.md](ACCEPTANCE.md), scenario 2 |
 
 **Misuse surface:** the same machinery could make harassment more "efficient" if packs were misconfigured. Mitigations: recovery-pack limits cannot be loosened by a single admin (dual control); every override is recorded as evidence; public documentation states the product's purpose as constraining authority, not scaling contact.
 

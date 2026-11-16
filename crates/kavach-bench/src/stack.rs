@@ -172,6 +172,7 @@ fn api_config(
     };
     let keys = kavach.join("keys");
     ApiConfig {
+        require_hardening: false,
         pack_path: repo.join("packs/finance/v0.yaml"),
         model_path: repo.join("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,
@@ -374,6 +375,7 @@ impl Stack {
             provider_hosts: vec!["mock-provider".into()],
             database_hosts: vec!["postgres".into()],
             token_hours: 24,
+            issuer: kavach_devkit::ISSUER.into(),
         })
         .await?;
         let at = bench_time();

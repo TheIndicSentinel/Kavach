@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Badge } from "../components/ui/Badge";
 import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
+import { ProblemAlert } from "../components/ui/ProblemAlert";
+import { RoleHint } from "../components/ui/RoleHint";
 import { Skeleton } from "../components/ui/Skeleton";
+import type { Resource } from "../hooks/useResource";
 import {
   approveChange,
   cancelChange,
@@ -13,6 +16,8 @@ import {
   type ChangeRequest,
   type ChangeStatus,
 } from "../lib/api";
+import { changeRequestAnchor } from "../lib/agentActions";
+import { changeRequestButtons, useViewer, type Viewer } from "../lib/changeRequests";
 import { formatDateTime } from "../lib/format";
 
 const KIND_LABELS: Record<ChangeKind, string> = {
@@ -23,6 +28,7 @@ const KIND_LABELS: Record<ChangeKind, string> = {
   erase_evidence: "Erase evidence (DPDP)",
   apply_retention: "Run retention",
   activate_model: "Activate model version",
+  reinstate_agent: "Reinstate agent",
 };
 
 function statusVariant(status: ChangeStatus): "active" | "warning" | "muted" | "default" {
@@ -39,8 +45,14 @@ function statusVariant(status: ChangeStatus): "active" | "warning" | "muted" | "
   }
 }
 
-function Details({ label, value }: { label: string; value: Record<string, unknown> }) {
-  const entries = Object.entries(value);
+/** A JSON value the spec leaves open (`params`, `binding`, `outcome`). */
+function Details({ label, value }: { label: string; value: unknown }) {
+  const entries =
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? Object.entries(value)
+      : value === null || value === undefined
+        ? []
+        : [["value", value] as const];
   if (entries.length === 0) return null;
   return (
     <div>
@@ -59,46 +71,129 @@ function Details({ label, value }: { label: string; value: Record<string, unknow
   );
 }
 
-export default function ChangeRequestsPage() {
+type RequestButtonsProps = {
+  request: ChangeRequest;
+  viewer: Viewer;
+  busy: boolean;
+  onAct: (action: (request: ChangeRequest) => Promise<ChangeRequest>, done: string) => void;
+};
+
+/**
+ * Approve, reject and cancel, less the ones the API is known to refuse this
+ * principal (the proposer rule) or its groups are known to lack (a hint line
+ * takes their place; the server still decides).
+ */
+export function RequestButtons({ request, viewer, busy, onAct }: RequestButtonsProps) {
+  const { actions, note, hint } = changeRequestButtons(request, viewer);
+  if (actions.length === 0 && !note && !hint) return null;
+  // aria-disabled, not disabled, while a request is in flight: a disabled
+  // button would drop keyboard focus to the page body. `act` ignores a press.
+  const press = (action: (request: ChangeRequest) => Promise<ChangeRequest>, done: string) => () => {
+    if (!busy) onAct(action, done);
+  };
+  const busyClass = "aria-disabled:cursor-not-allowed aria-disabled:opacity-50";
+  return (
+    <div className="space-y-2">
+      {note && <p className="text-sm text-muted">{note}</p>}
+      {hint && <RoleHint>{hint}</RoleHint>}
+      {actions.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {actions.includes("approve") && (
+            <Button aria-disabled={busy} className={busyClass} onClick={press(approveChange, "approved")}>
+              Approve and apply
+            </Button>
+          )}
+          {actions.includes("reject") && (
+            <Button
+              variant="ghost"
+              aria-disabled={busy}
+              className={busyClass}
+              onClick={press((r) => rejectChange(r.id), "rejected")}
+            >
+              Reject
+            </Button>
+          )}
+          {actions.includes("cancel") && (
+            <Button
+              variant="ghost"
+              aria-disabled={busy}
+              className={busyClass}
+              onClick={press((r) => cancelChange(r.id), "cancelled")}
+            >
+              Cancel (proposer)
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+type ChangeRequestsPageProps = {
+  /** For tests: the list's read, in place of the API's answer. */
+  resource?: Resource<ChangeRequest[]>;
+};
+
+export default function ChangeRequestsPage({ resource: given }: ChangeRequestsPageProps = {}) {
+  const viewer = useViewer();
   const [filter, setFilter] = useState<ChangeStatus | undefined>("pending");
   const [requests, setRequests] = useState<ChangeRequest[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<unknown>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Focus lands on the result: the buttons that started it may be gone.
+  const result = useRef<HTMLDivElement>(null);
 
-  const reload = () => {
-    setError(null);
+  // State is set only when the request settles, never synchronously here.
+  const reload = useCallback(() => {
     fetchChangeRequests(filter)
-      .then(setRequests)
+      .then((next) => {
+        setError(null);
+        setRequests(next);
+      })
       .catch((err: unknown) => {
-        setError(err instanceof Error ? err.message : "Failed to load change requests");
+        setError(err);
       });
-  };
+  }, [filter]);
 
   useEffect(() => {
-    setRequests(null);
     reload();
-  }, [filter]);
+  }, [reload]);
+
+  const showFilter = (next: ChangeStatus | undefined) => {
+    setRequests(null);
+    setError(null);
+    setFilter(next);
+  };
 
   async function act(
     request: ChangeRequest,
     action: (request: ChangeRequest) => Promise<ChangeRequest>,
     done: string,
   ) {
+    if (busyId !== null) return;
     setBusyId(request.id);
     setError(null);
     setMessage(null);
     try {
       const updated = await action(request);
       setMessage(`${KIND_LABELS[updated.kind]}: ${done} (${updated.status}).`);
+      result.current?.focus();
       reload();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Action failed");
+      // The request stays pending, so its buttons, and focus, stay put.
+      setError(err);
       reload();
     } finally {
       setBusyId(null);
     }
   }
+
+  // The list is not refetched through useResource: after a refused action
+  // the request stays on screen, with its buttons and focus.
+  const listed = given ? (given.phase === "ok" ? given.data : null) : requests;
+  const shownError = given?.phase === "error" ? given.error : error;
+  const loading = listed === null && !shownError;
 
   return (
     <section>
@@ -111,14 +206,14 @@ export default function ChangeRequestsPage() {
             <Button
               size="sm"
               variant={filter === "pending" ? "secondary" : "ghost"}
-              onClick={() => setFilter("pending")}
+              onClick={() => showFilter("pending")}
             >
               Pending
             </Button>
             <Button
               size="sm"
               variant={filter === undefined ? "secondary" : "ghost"}
-              onClick={() => setFilter(undefined)}
+              onClick={() => showFilter(undefined)}
             >
               All
             </Button>
@@ -126,17 +221,32 @@ export default function ChangeRequestsPage() {
         }
       />
 
-      {error && <p className="mb-4 text-sm text-decision-block">{error}</p>}
-      {message && <p className="mb-4 text-sm text-decision-pass">{message}</p>}
+      <ProblemAlert error={shownError} className="mb-4 empty:mb-0" />
+      <div
+        ref={result}
+        tabIndex={-1}
+        role="status"
+        aria-live="polite"
+        className="mb-4 text-sm font-medium text-ink empty:mb-0"
+      >
+        {message ?? (loading ? "Loading change requests…" : "")}
+      </div>
 
-      {requests === null && !error && <Skeleton className="h-32 w-full" />}
-      {requests !== null && requests.length === 0 && (
-        <p className="text-sm text-muted">No change requests.</p>
+      {loading && <Skeleton className="h-32 w-full" />}
+      {listed === null && shownError !== null && (
+        <Button variant="ghost" size="sm" onClick={reload}>
+          Try again
+        </Button>
+      )}
+      {listed !== null && listed.length === 0 && (
+        <p className="text-sm text-muted">
+          {filter === "pending" ? "No pending change requests." : "No change requests."}
+        </p>
       )}
 
       <div className="space-y-4">
-        {(requests ?? []).map((request) => (
-          <Card key={request.id}>
+        {(listed ?? []).map((request) => (
+          <Card key={request.id} id={changeRequestAnchor(request.id)}>
             <CardHeader>
               <div className="flex flex-wrap items-center gap-3">
                 <CardTitle>{KIND_LABELS[request.kind]}</CardTitle>
@@ -158,36 +268,18 @@ export default function ChangeRequestsPage() {
                 <Details label="Change" value={request.params} />
                 <Details label="Bound to (must still hold at approval)" value={request.binding} />
               </div>
-              {request.outcome && request.status !== "applied" && (
+              {request.outcome != null && request.status !== "applied" && (
                 <Details label="Outcome" value={request.outcome} />
               )}
               <p className="break-all font-mono text-xs text-muted">
                 digest {request.change_digest}
               </p>
-              {request.status === "pending" && (
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    disabled={busyId === request.id}
-                    onClick={() => act(request, approveChange, "approved")}
-                  >
-                    Approve and apply
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={busyId === request.id}
-                    onClick={() => act(request, (r) => rejectChange(r.id), "rejected")}
-                  >
-                    Reject
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={busyId === request.id}
-                    onClick={() => act(request, (r) => cancelChange(r.id), "cancelled")}
-                  >
-                    Cancel (proposer)
-                  </Button>
-                </div>
-              )}
+              <RequestButtons
+                request={request}
+                viewer={viewer}
+                busy={busyId === request.id}
+                onAct={(action, done) => act(request, action, done)}
+              />
             </div>
           </Card>
         ))}

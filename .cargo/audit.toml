@@ -1,4 +1,10 @@
 [advisories]
 # sqlx lockfile retains optional mysql driver metadata; build graph is postgres-only.
-ignore = ["RUSTSEC-2023-0071"]
+#
+# RUSTSEC-2026-0459 (libsqlite3-sys): not compiled: lockfile only, via
+# sqlx-sqlite (optional dependency of sqlx 0.8.6, no feature enables it;
+# check: cargo tree -e features -i sqlx-sqlite prints nothing). Cannot be
+# updated: sqlx-sqlite 0.8.6 requires libsqlite3-sys 0.30. Review by
+# 2027-02-14, or when sqlx is upgraded.
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]
 informational_warnings = ["unmaintained"]

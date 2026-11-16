@@ -1,9 +1,13 @@
 import { NavLink } from "react-router-dom";
 import {
+  Bot,
   Boxes,
   ClipboardList,
   FileSearch,
   ClipboardCheck,
+  FileKey,
+  FileCheck,
+  ListChecks,
   Layers,
   LayoutDashboard,
   ScrollText,
@@ -13,11 +17,18 @@ import {
 } from "lucide-react";
 import { KavachLogo } from "../brand/KavachLogo";
 import { cn } from "../../lib/cn";
+import { isCreditTrackPath } from "../../lib/creditTrack";
 
 const primaryNav = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard },
   { to: "/evaluate", label: "Evaluate", icon: FileSearch },
   { to: "/settings", label: "Settings", icon: Settings },
+] as const;
+
+const agentNav = [
+  { to: "/agents", label: "Agents", icon: Bot },
+  { to: "/agent-evidence", label: "Agent evidence", icon: FileKey },
+  { to: "/reconciliation", label: "Closed loans", icon: ListChecks },
 ] as const;
 
 const governanceNav = [
@@ -28,14 +39,18 @@ const governanceNav = [
   { to: "/audit", label: "Audit", icon: ClipboardList },
   { to: "/incidents", label: "Incidents", icon: TriangleAlert },
   { to: "/retention", label: "Retention", icon: ShieldOff },
+  { to: "/decision-events", label: "Decision events", icon: FileCheck },
 ] as const;
 
 type SidebarProps = {
   open: boolean;
   onNavigate: () => void;
+  /** The server runs --agent-only: leave out the credit track's pages. `null`: not known yet, show all. */
+  agentOnly?: boolean | null;
 };
 
-export function Sidebar({ open, onNavigate }: SidebarProps) {
+export function Sidebar({ open, onNavigate, agentOnly = null }: SidebarProps) {
+  const served = (item: { to: string }) => agentOnly !== true || !isCreditTrackPath(item.to);
   return (
     <aside
       className={cn(
@@ -47,12 +62,14 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
       <div className="border-b border-white/10 px-5 py-5">
         <KavachLogo />
         <p className="mt-3 text-xs leading-relaxed text-stone-400">
-          On-prem AI governance for regulated credit decisions.
+          {agentOnly === true
+            ? "Authorization and runtime control for AI agents."
+            : "Authorization and runtime control for AI agents and credit decisions."}
         </p>
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-4" aria-label="Main navigation">
-        {primaryNav.map((item) => (
+        {primaryNav.filter(served).map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -72,10 +89,34 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
         ))}
 
         <div className="pt-6">
-          <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-500">
+          <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-400">
+            Agents
+          </p>
+          {agentNav.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              onClick={onNavigate}
+              className={({ isActive }) =>
+                cn(
+                  "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
+                  isActive
+                    ? "bg-white/10 text-white"
+                    : "text-stone-300 hover:bg-white/5 hover:text-white",
+                )
+              }
+            >
+              <item.icon className="h-4 w-4 shrink-0 opacity-80" aria-hidden />
+              {item.label}
+            </NavLink>
+          ))}
+        </div>
+
+        <div className="pt-6">
+          <p className="px-3 pb-2 text-[0.65rem] font-semibold uppercase tracking-widest text-stone-400">
             Governance
           </p>
-          {governanceNav.map((item) => (
+          {governanceNav.filter(served).map((item) => (
             <NavLink
               key={item.to}
               to={item.to}
@@ -98,7 +139,6 @@ export function Sidebar({ open, onNavigate }: SidebarProps) {
 
       <footer className="border-t border-white/10 px-5 py-4 text-xs text-stone-500">
         <p className="font-medium text-stone-400">कवच · Shield</p>
-        <p className="mt-1">DPDP-aware · RBI-aligned posture</p>
       </footer>
     </aside>
   );
