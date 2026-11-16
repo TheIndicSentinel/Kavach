@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionGate } from "../components/layout/SessionGate";
+import { ApiError } from "../lib/api";
 import { setSessionStateForTest, type SessionState } from "../lib/session";
 import { byRole, text } from "../test/markup";
 import SignInPage from "./SignInPage";
@@ -106,6 +107,16 @@ describe("settings unreadable", () => {
     expect(html).not.toContain("<input");
     expect(html).not.toContain('href="/auth/login"');
     expect(text(html)).toContain("Try again");
+  });
+
+  it("when /auth/config gets a 5xx with no request_id, says the API is not reachable", () => {
+    // What the owner saw: the Vite dev proxy with no kavach-api behind it.
+    const error = new ApiError("GET /auth/config failed (500)", 500);
+    const [alert] = byRole(signIn({ status: "unavailable", error }), "alert");
+    expect(alert).toContain(
+      "The Kavach API is not reachable. Start it with scripts/demo.sh (or check that kavach-api runs on :8080).",
+    );
+    expect(alert).not.toContain("failed (500)");
   });
 });
 
