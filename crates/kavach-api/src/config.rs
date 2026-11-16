@@ -43,6 +43,68 @@ pub struct ApiConfig {
     pub require_hardening: bool,
     /// Agent surfaces (`/v1/authorize`, `/v1/sor/events`; ADR-007, H5a-5).
     pub dataplane: Option<crate::dataplane::DataplaneConfig>,
+    /// Operator roles (ADR-019).
+    pub roles: RolesConfig,
+}
+
+/// Operator roles (ADR-019): the tenant this process serves, and the
+/// one-time superadmin bootstrap.
+#[derive(Debug, Clone)]
+pub struct RolesConfig {
+    /// `KAVACH_TENANT_ID` (ADR-014 Tier 1: one tenant per process).
+    pub tenant_id: String,
+    /// `--bootstrap-superadmins`: empty, or exactly two different people.
+    pub bootstrap_superadmins: Vec<kavach_storage::BindingSubject>,
+}
+
+impl Default for RolesConfig {
+    fn default() -> Self {
+        Self {
+            tenant_id: "default".into(),
+            bootstrap_superadmins: Vec::new(),
+        }
+    }
+}
+
+/// Parses `--bootstrap-superadmins` (`<iss>#<sub>,<iss>#<sub>`). Each entry
+/// must name the configured OIDC issuer (an issuer has no `#`, so the first
+/// `#` separates it from the subject), and the two must be different people.
+/// Anything else is a startup error.
+pub fn parse_bootstrap_superadmins(
+    value: &str,
+    oidc_issuer: Option<&str>,
+) -> Result<Vec<kavach_storage::BindingSubject>, String> {
+    let usage = "--bootstrap-superadmins needs exactly two different people as \
+                 '<issuer>#<subject>,<issuer>#<subject>' (ADR-019 §5)";
+    let Some(issuer) = oidc_issuer else {
+        return Err(format!(
+            "{usage}; it needs operator OIDC (--oidc-issuer), since a superadmin is an OIDC person"
+        ));
+    };
+    let subjects = value
+        .split(',')
+        .map(|entry| {
+            let entry = entry.trim();
+            let (iss, sub) = entry
+                .split_once('#')
+                .filter(|(iss, sub)| !iss.is_empty() && !sub.is_empty())
+                .ok_or_else(|| usage.to_string())?;
+            if iss != issuer {
+                return Err(format!(
+                    "{usage}; an entry names issuer {iss:?}, not the configured --oidc-issuer"
+                ));
+            }
+            Ok(kavach_storage::BindingSubject {
+                kind: kavach_storage::SubjectKind::Principal,
+                issuer: iss.to_string(),
+                value: sub.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if subjects.len() != 2 || subjects[0] == subjects[1] {
+        return Err(usage.into());
+    }
+    Ok(subjects)
 }
 
 /// The shortest `--hmac-secret` accepted, in bytes: the output size of
@@ -206,6 +268,32 @@ mod tests {
         // Bytes, not characters: 16 two-byte characters are 32 bytes.
         assert!(validate_hmac_secret(Some(&"é".repeat(16))).is_ok());
         assert!(validate_hmac_secret(Some(&"é".repeat(15))).is_err());
+    }
+
+    #[test]
+    fn the_bootstrap_setting_takes_two_different_oidc_people() {
+        let iss = "https://idp.example/realms/k";
+        let ok = parse_bootstrap_superadmins(
+            &format!("{iss}#alice, {iss}#bob#2"),
+            Some(iss),
+        )
+        .expect("two people");
+        assert_eq!(ok[0].value, "alice");
+        assert_eq!(ok[1].value, "bob#2", "a subject may contain '#'");
+        for bad in [
+            format!("{iss}#alice"),
+            format!("{iss}#alice,{iss}#alice"),
+            format!("{iss}#a,{iss}#b,{iss}#c"),
+            format!("{iss}#alice,https://other.example#bob"),
+            format!("{iss}#alice,bob"),
+            format!("{iss}#alice,{iss}#"),
+            String::new(),
+        ] {
+            assert!(parse_bootstrap_superadmins(&bad, Some(iss)).is_err(), "{bad}");
+        }
+        let err = parse_bootstrap_superadmins(&format!("{iss}#a,{iss}#b"), None)
+            .expect_err("no OIDC");
+        assert!(err.contains("--oidc-issuer"), "{err}");
     }
 
     #[test]

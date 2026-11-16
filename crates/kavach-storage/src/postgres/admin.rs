@@ -21,7 +21,7 @@ impl PostgresAdminStore {
             "INSERT INTO admin_audit_log \
                 (action, resource_type, resource_id, actor_principal, approver_principal, payload) \
             VALUES ($1, $2, $3, $4, $5, $6) \
-            RETURNING id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at",
+            RETURNING id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at, acting_as_superadmin",
         )
         .bind(&insert.action)
         .bind(&insert.resource_type)
@@ -65,7 +65,7 @@ impl PostgresAdminStore {
 
     pub async fn list_audit(&self, limit: i64) -> Result<Vec<AuditEntry>, AdminStoreError> {
         let rows = sqlx::query_as::<_, AuditRow>(
-            "SELECT id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at \
+            "SELECT id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at, acting_as_superadmin \
             FROM admin_audit_log ORDER BY created_at DESC LIMIT $1",
         )
         .bind(limit)
@@ -178,7 +178,7 @@ impl PostgresAdminStore {
     ) -> Result<Option<AuditEntry>, AdminStoreError> {
         let row = sqlx::query_as::<_, AuditRow>(
             "SELECT id, action, resource_type, resource_id, actor_principal, approver_principal, \
-                payload, created_at \
+                payload, created_at, acting_as_superadmin \
             FROM admin_audit_log WHERE action = $1 AND resource_id = $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(action)
@@ -309,6 +309,7 @@ struct AuditRow {
     approver_principal: String,
     payload: serde_json::Value,
     created_at: DateTime<Utc>,
+    acting_as_superadmin: Option<bool>,
 }
 
 impl AuditRow {
@@ -322,6 +323,7 @@ impl AuditRow {
             approver_principal: self.approver_principal,
             payload: self.payload,
             created_at: self.created_at,
+            acting_as_superadmin: self.acting_as_superadmin.unwrap_or(false),
         }
     }
 }

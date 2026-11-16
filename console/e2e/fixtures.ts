@@ -112,6 +112,7 @@ export const auditEntry: Schemas["AuditEntry"] = {
   approver_principal: "approver-1",
   payload: {},
   created_at: "2026-11-14T10:00:00Z",
+  acting_as_superadmin: false,
 };
 
 export const incident: Schemas["IncidentRecord"] = {

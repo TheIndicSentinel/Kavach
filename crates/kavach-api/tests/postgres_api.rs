@@ -65,6 +65,7 @@ fn config(root: &Path, database_url: &str, pack: &str, bootstrap_pack: bool) -> 
         insecure_dev: true,
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
+        roles: kavach_api::RolesConfig::default(),
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
@@ -671,4 +672,61 @@ async fn api_runs_as_the_least_privilege_runtime_role() {
     let mut restart = config.clone();
     restart.pack_path = root.join("packs/finance/v1.yaml");
     start_with(&restart).await.expect("restart as runtime");
+}
+
+// ---- ADR-019: superadmin bootstrap ----
+
+fn people(iss: &str, subs: [&str; 2]) -> Vec<kavach_storage::BindingSubject> {
+    subs.iter()
+        .map(|sub| kavach_storage::BindingSubject {
+            kind: kavach_storage::SubjectKind::Principal,
+            issuer: iss.into(),
+            value: (*sub).into(),
+        })
+        .collect()
+}
+
+/// The bootstrap runs at startup as the least-privilege runtime role, once:
+/// a restart with other people named writes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_superadmin_bootstrap_applies_once_at_startup() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let root = registry();
+    let iss = "https://idp.example";
+    let mut config = config(&root, &runtime, "v0.yaml", false);
+    config.migration_database_url = Some(owner);
+    config.roles.tenant_id = "bank-a".into();
+    config.roles.bootstrap_superadmins = people(iss, ["alice", "bob"]);
+    let state = start_with(&config).await.expect("bootstrap as runtime");
+
+    let bindings = state.roles().list_bindings("bank-a", true).await.unwrap();
+    let subjects: Vec<&str> = bindings.iter().map(|b| b.subject.value.as_str()).collect();
+    assert_eq!(subjects.len(), 2);
+    assert!(subjects.contains(&"alice") && subjects.contains(&"bob"));
+    let flagged: Vec<_> = state
+        .admin()
+        .list_audit(50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.action == kavach_storage::BOOTSTRAP_AUDIT_ACTION)
+        .collect();
+    assert_eq!(flagged.len(), 2);
+    assert!(flagged.iter().all(|e| e.acting_as_superadmin));
+    drop(state);
+
+    let mut restart = config.clone();
+    restart.roles.bootstrap_superadmins = people(iss, ["carol", "dave"]);
+    let state = start_with(&restart).await.expect("restart");
+    let bindings = state.roles().list_bindings("bank-a", true).await.unwrap();
+    assert_eq!(bindings.len(), 2, "a second bootstrap writes nothing");
+    assert!(state
+        .roles()
+        .roles_for("bank-a", iss, "carol", &[])
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(state.tenant_id(), "bank-a");
 }

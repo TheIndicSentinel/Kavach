@@ -638,6 +638,13 @@ struct Cli {
         value_parser = clap::value_parser!(u64).range(limits::MAX_IN_FLIGHT_REQUESTS)
     )]
     max_in_flight_requests: u64,
+
+    /// ADR-019: the first two superadmins, '<issuer>#<subject>,<issuer>#<subject>'
+    /// (two different people of --oidc-issuer). Applied at startup only
+    /// while the tenant has no active superadmin; afterwards ignored with a
+    /// warning.
+    #[arg(long, env = "KAVACH_BOOTSTRAP_SUPERADMINS")]
+    bootstrap_superadmins: Option<String>,
 }
 
 impl Cli {
@@ -702,6 +709,16 @@ impl Cli {
             self.cedar_entities,
         )?;
         let oidc = self.oidc.into_config()?;
+        let roles = kavach_api::RolesConfig {
+            tenant_id: self.agents.tenant_id.clone(),
+            bootstrap_superadmins: match self.bootstrap_superadmins.as_deref() {
+                None => Vec::new(),
+                Some(value) => kavach_api::config::parse_bootstrap_superadmins(
+                    value,
+                    oidc.as_ref().map(|o| o.issuer.as_str()),
+                )?,
+            },
+        };
         let dataplane = self.agents.into_config(oidc.as_ref())?;
 
         let tls = match (self.tls_cert, self.tls_key) {
@@ -736,6 +753,7 @@ impl Cli {
             database_pool_size: self.database_pool_size,
             dataplane,
             require_hardening: self.require_hardening,
+            roles,
         };
         validate_principal_sources(&config)?;
         validate_hmac_secret(config.hmac_secret.as_deref())?;
