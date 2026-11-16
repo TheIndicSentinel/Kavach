@@ -1,4 +1,5 @@
-// The fixture every round-trip spec uses (playwright.roundtrip.config.ts).
+// The fixture every round-trip and real-stack spec uses
+// (playwright.roundtrip.config.ts, playwright.real.config.ts).
 // Nothing is stubbed and no header is injected: the pages, their CSP and the
 // cookies are what kavach-api sends. For every page in the test's browser
 // context (every tab), the guard fails the test on:
@@ -6,6 +7,8 @@
 // - a console document served without the server's CSP;
 // - any request to an origin other than the console's. The one exception is a
 //   top-level navigation to the identity provider (the sign-in redirect).
+// The console's origin is the project's baseURL; the identity provider's is
+// the `idpOrigin` option (the round-trip double's unless a config sets it).
 import { expect, test as base } from "@playwright/test";
 import { serverCsp } from "./page";
 import { CONSOLE_ORIGIN, IDP_ORIGIN } from "./roundtripStack";
@@ -25,9 +28,11 @@ export type StackGuard = {
   withoutCsp: string[];
 };
 
-export const test = base.extend<{ guard: StackGuard }>({
+export const test = base.extend<{ guard: StackGuard; idpOrigin: string }>({
+  idpOrigin: [IDP_ORIGIN, { option: true }],
   guard: [
-    async ({ context }, provide) => {
+    async ({ context, baseURL, idpOrigin }, provide) => {
+      const consoleOrigin = new URL(baseURL ?? CONSOLE_ORIGIN).origin;
       const guard: StackGuard = {
         violations: [],
         otherOrigins: [],
@@ -51,8 +56,8 @@ export const test = base.extend<{ guard: StackGuard }>({
         const url = new URL(request.url());
         // A data: image (img-src allows it) is not a request to any origin.
         if (url.protocol === "data:") return;
-        if (url.origin === CONSOLE_ORIGIN) return;
-        if (url.origin === IDP_ORIGIN && request.isNavigationRequest() && !request.frame().parentFrame()) {
+        if (url.origin === consoleOrigin) return;
+        if (url.origin === idpOrigin && request.isNavigationRequest() && !request.frame().parentFrame()) {
           guard.idpNavigations += 1;
           return;
         }
@@ -62,7 +67,7 @@ export const test = base.extend<{ guard: StackGuard }>({
       context.on("response", (response) => {
         if (response.request().resourceType() !== "document" || response.status() !== 200) return;
         const url = new URL(response.url());
-        if (url.origin !== CONSOLE_ORIGIN) return;
+        if (url.origin !== consoleOrigin) return;
         guard.consoleDocuments += 1;
         if (response.headers()["content-security-policy"] !== SERVER_CSP) guard.withoutCsp.push(url.pathname);
       });

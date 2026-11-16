@@ -1130,6 +1130,50 @@ async fn the_proposer_cannot_approve_their_own_change_through_a_second_session()
     assert_eq!(status, StatusCode::OK, "{body}");
 }
 
+/// The browser at the IdP with the double's user cookie naming `sub`.
+async fn authorize_named(authorization_url: &str, sub: &str) -> reqwest::Response {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(authorization_url)
+        .header("cookie", format!("{}={sub}", oidc_double::USER_COOKIE))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn the_double_signs_in_the_user_its_cookie_names_and_refuses_an_unknown_one() {
+    // The Playwright checks against a live stack pick who signs in this way.
+    let h = harness(|_| {}).await;
+    let viewer = user("live-viewer", &["viewers"]);
+    h.idp
+        .set(|b| b.users = HashMap::from([(viewer.sub.clone(), viewer.clone())]));
+
+    let (cookie, url) = begin(&h).await;
+    let response = authorize_named(&url, "live-viewer").await;
+    assert_eq!(response.status().as_u16(), 303);
+    let back = query_of(response.headers()["location"].to_str().unwrap());
+    let reply = callback(
+        &h,
+        Some(&cookie),
+        &[("code", &back["code"]), ("state", &back["state"])],
+    )
+    .await;
+    let session_cookie = cookie_value(&reply.set_cookie(SESSION_COOKIE).expect("a session"));
+    let reply = session(&h, &session_cookie).await;
+    assert_eq!(reply.json()["principal"], "live-viewer", "{}", reply.text());
+
+    let (_, url) = begin(&h).await;
+    let response = authorize_named(&url, "nobody-configured").await;
+    assert_eq!(response.status().as_u16(), 400);
+
+    // No cookie: the configured user, as before.
+    let cookie = sign_in(&h).await;
+    assert_eq!(session(&h, &cookie).await.json()["principal"], "ops-1");
+}
+
 #[tokio::test]
 async fn a_session_and_a_cli_token_of_one_person_are_one_identity() {
     let person = user("ops-1", &["admins", "change-approvers"]);
