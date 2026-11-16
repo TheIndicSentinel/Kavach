@@ -162,6 +162,7 @@ fn a_secret_file_open_to_group_or_others_is_refused() {
         pin_file: pin.clone(),
         roles: BTreeSet::from([HsmRole::Evidence]),
         max_sessions: 2,
+        call_timeout: kavach_keys_pkcs11::DEFAULT_CALL_TIMEOUT,
     });
     assert_eq!(violations(&api, &[]), vec![]);
     set_mode(&pin, 0o644);

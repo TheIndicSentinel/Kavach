@@ -138,6 +138,7 @@ pub fn hsm_config(module: PathBuf, run: &str) -> (kavach_api::ApiConfig, PublicK
         pin_file: pin_file(),
         roles: HsmRole::ALL.into_iter().collect::<BTreeSet<_>>(),
         max_sessions: 4,
+        call_timeout: kavach_keys_pkcs11::DEFAULT_CALL_TIMEOUT,
     });
     (api, credential)
 }

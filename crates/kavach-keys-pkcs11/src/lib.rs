@@ -19,12 +19,19 @@
 //!   runs on the blocking pool; the synchronous [`EvidenceSigner`] (called
 //!   inside the evidence commit) uses `block_in_place` on a multi-threaded
 //!   runtime.
+//! - **Every call after startup has a deadline**
+//!   ([`Pkcs11KeyProvider::with_call_timeout`], default
+//!   [`DEFAULT_CALL_TIMEOUT`]): a sign or health check that has not answered
+//!   by then fails closed (`Unavailable`) and the caller stops waiting. The
+//!   call itself cannot be cancelled: it keeps its thread and its session
+//!   until the token answers.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use cryptoki::context::{CInitializeArgs, CInitializeFlags, Pkcs11};
 use cryptoki::error::{Error as CkError, RvError};
@@ -44,6 +51,10 @@ const ED25519_OID: &[u8] = &[0x06, 0x03, 0x2B, 0x65, 0x70];
 const ED25519_NAME: &[u8] = b"\x13\x0cedwards25519";
 /// Signed and verified once per key at startup.
 const PROBE: &[u8] = b"kavach pkcs11 key provider: startup probe";
+
+/// How long a sign or health call may wait for the token before it fails
+/// closed, unless [`Pkcs11KeyProvider::with_call_timeout`] says otherwise.
+pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// What to open. The PIN comes from a file the operator protects (K2), never
 /// from the command line or the environment.
@@ -99,18 +110,81 @@ struct Inner {
 #[derive(Clone)]
 pub struct Pkcs11KeyProvider {
     inner: Arc<Inner>,
+    call_timeout: Duration,
 }
 
 impl fmt::Debug for Pkcs11KeyProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Pkcs11KeyProvider")
             .field("key_ids", &self.inner.key_ids)
+            .field("call_timeout", &self.call_timeout)
             .finish_non_exhaustive()
     }
 }
 
 fn unavailable(what: &str, err: impl fmt::Display) -> PortError {
     PortError::unavailable(format!("HSM: {what}: {err}"))
+}
+
+fn timed_out(what: &str, deadline: Duration) -> PortError {
+    PortError::unavailable(format!(
+        "HSM: {what}: no answer within {} ms",
+        deadline.as_millis()
+    ))
+}
+
+/// Runs a blocking HSM call on another thread and waits at most `deadline`
+/// for it. On expiry the caller gets `Unavailable`; the call keeps its
+/// thread until the token answers, and its result is dropped.
+fn blocking_with_deadline<T: Send + 'static>(
+    what: &str,
+    deadline: Duration,
+    call: impl FnOnce() -> Result<T, PortError> + Send + 'static,
+) -> Result<T, PortError> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    let job = move || {
+        // The receiver is gone once the caller stopped waiting.
+        let _ = tx.send(call());
+    };
+    let runtime = tokio::runtime::Handle::try_current().ok();
+    match &runtime {
+        Some(handle) => {
+            handle.spawn_blocking(job);
+        }
+        None => {
+            std::thread::Builder::new()
+                .name("kavach-hsm-call".into())
+                .spawn(job)
+                .map_err(|e| unavailable(what, e))?;
+        }
+    }
+    let wait = || rx.recv_timeout(deadline);
+    let answer = match runtime {
+        Some(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+            tokio::task::block_in_place(wait)
+        }
+        _ => wait(),
+    };
+    match answer {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => Err(timed_out(what, deadline)),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(unavailable(what, "the call ended without an answer"))
+        }
+    }
+}
+
+/// The async form of [`blocking_with_deadline`]: the call runs on the
+/// blocking pool and the caller stops waiting after `deadline`.
+async fn spawn_with_deadline<T: Send + 'static>(
+    what: &str,
+    deadline: Duration,
+    call: impl FnOnce() -> Result<T, PortError> + Send + 'static,
+) -> Result<T, PortError> {
+    match tokio::time::timeout(deadline, tokio::task::spawn_blocking(call)).await {
+        Ok(joined) => joined.map_err(|e| unavailable(what, e))?,
+        Err(_) => Err(timed_out(what, deadline)),
+    }
 }
 
 /// Errors after which a fresh session (and fresh object handles) may work.
@@ -409,6 +483,24 @@ impl Inner {
             Err(e) => Err(unavailable("sign", e)),
         }
     }
+
+    /// Checks a session on the calling thread (it blocks on the HSM).
+    fn health_blocking(&self) -> Result<(), PortError> {
+        let check = || -> Result<(), CkError> {
+            let session = self.checkout()?;
+            session.get_session_info()?;
+            self.checkin(session);
+            Ok(())
+        };
+        match check() {
+            Ok(()) => Ok(()),
+            Err(e) if is_reconnectable(&e) => {
+                self.reconnect()?;
+                check().map_err(|e| unavailable("health after reconnecting", e))
+            }
+            Err(e) => Err(unavailable("health", e)),
+        }
+    }
 }
 
 fn eddsa() -> Mechanism<'static> {
@@ -475,7 +567,23 @@ impl Pkcs11KeyProvider {
         inner.load_keys()?;
         Ok(Self {
             inner: Arc::new(inner),
+            call_timeout: DEFAULT_CALL_TIMEOUT,
         })
+    }
+
+    /// Sets how long each later sign or health call may wait for the token
+    /// (startup in [`Self::open`] has no deadline). Clones made afterwards,
+    /// and signers from [`Self::evidence_signer`], use it too.
+    #[must_use]
+    pub fn with_call_timeout(mut self, timeout: Duration) -> Self {
+        self.call_timeout = timeout;
+        self
+    }
+
+    /// How long a sign or health call may wait for the token.
+    #[must_use]
+    pub fn call_timeout(&self) -> Duration {
+        self.call_timeout
     }
 
     /// The loaded keys' public halves.
@@ -490,23 +598,11 @@ impl Pkcs11KeyProvider {
             .collect())
     }
 
-    /// Whether the HSM answers now; reconnects once if it went away. For
-    /// `/v1/runtime` (K2).
+    /// Whether the HSM answers now, within the call timeout; reconnects
+    /// once if it went away. For `/v1/runtime` (K2).
     pub fn health(&self) -> Result<(), PortError> {
-        let check = || -> Result<(), CkError> {
-            let session = self.inner.checkout()?;
-            session.get_session_info()?;
-            self.inner.checkin(session);
-            Ok(())
-        };
-        match check() {
-            Ok(()) => Ok(()),
-            Err(e) if is_reconnectable(&e) => {
-                self.inner.reconnect()?;
-                check().map_err(|e| unavailable("health after reconnecting", e))
-            }
-            Err(e) => Err(unavailable("health", e)),
-        }
+        let inner = Arc::clone(&self.inner);
+        blocking_with_deadline("health", self.call_timeout, move || inner.health_blocking())
     }
 
     /// A synchronous signer for evidence records and checkpoints.
@@ -526,11 +622,13 @@ impl KeyProvider for Pkcs11KeyProvider {
         message: &[u8],
     ) -> impl Future<Output = Result<Vec<u8>, PortError>> + Send {
         let inner = Arc::clone(&self.inner);
+        let deadline = self.call_timeout;
         let (kid, message) = (kid.to_string(), message.to_vec());
         async move {
-            tokio::task::spawn_blocking(move || inner.sign_blocking(&kid, &message))
-                .await
-                .map_err(|e| unavailable("signing task", e))?
+            spawn_with_deadline("sign", deadline, move || {
+                inner.sign_blocking(&kid, &message)
+            })
+            .await
         }
     }
 
@@ -549,9 +647,10 @@ impl KeyProvider for Pkcs11KeyProvider {
     }
 }
 
-/// [`EvidenceSigner`] over an HSM key. Signing blocks on the HSM; on a
-/// multi-threaded runtime it tells the runtime first (`block_in_place`), so
-/// other tasks move off this worker meanwhile.
+/// [`EvidenceSigner`] over an HSM key. Signing blocks on the HSM, for at
+/// most the provider's call timeout; on a multi-threaded runtime it tells
+/// the runtime first (`block_in_place`), so other tasks move off this worker
+/// meanwhile.
 #[derive(Clone)]
 pub struct Pkcs11EvidenceSigner {
     provider: Pkcs11KeyProvider,
@@ -572,13 +671,11 @@ impl EvidenceSigner for Pkcs11EvidenceSigner {
     }
 
     fn sign(&self, message: &[u8]) -> Result<Vec<u8>, PortError> {
-        let run = || self.provider.inner.sign_blocking(&self.kid, message);
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) if handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
-                tokio::task::block_in_place(run)
-            }
-            _ => run(),
-        }
+        let inner = Arc::clone(&self.provider.inner);
+        let (kid, message) = (self.kid.clone(), message.to_vec());
+        blocking_with_deadline("sign", self.provider.call_timeout, move || {
+            inner.sign_blocking(&kid, &message)
+        })
     }
 }
 
@@ -639,6 +736,92 @@ mod tests {
         std::fs::write(&path, "  \n").unwrap();
         assert!(read_pin_file(&path).is_err(), "empty");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A token that never answers: the call blocks until the test lets go.
+    fn hung_token() -> (
+        mpsc::Sender<()>,
+        impl FnOnce() -> Result<u8, PortError> + Send,
+    ) {
+        let (release, hold) = mpsc::channel::<()>();
+        (release, move || {
+            let _ = hold.recv();
+            Ok(7)
+        })
+    }
+
+    /// Runs `check` on its own thread and fails the test (instead of hanging
+    /// it) if `check` has not returned within `limit`.
+    fn finishes_within<T: Send + 'static>(
+        limit: Duration,
+        check: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(check());
+        });
+        rx.recv_timeout(limit)
+            .expect("the HSM call did not give up at its deadline")
+    }
+
+    #[test]
+    fn a_hung_synchronous_call_fails_closed_at_its_deadline() {
+        let (release, call) = hung_token();
+        let deadline = Duration::from_millis(200);
+        let started = std::time::Instant::now();
+        let result = finishes_within(Duration::from_secs(5), move || {
+            blocking_with_deadline("sign", deadline, call)
+        });
+        let err = result.expect_err("a hung token must not produce a signature");
+        assert_eq!(err.class, kavach_ports::ErrorClass::Unavailable, "{err:?}");
+        assert!(err.message.contains("no answer within 200 ms"), "{err:?}");
+        assert!(started.elapsed() >= deadline);
+        drop(release);
+    }
+
+    #[test]
+    fn a_hung_call_inside_the_runtime_fails_closed_at_its_deadline() {
+        let result = finishes_within(Duration::from_secs(5), || {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(2)
+                .enable_all()
+                .build()
+                .unwrap();
+            let (release, call) = hung_token();
+            let (release2, call2) = hung_token();
+            let out = runtime.block_on(async move {
+                let deadline = Duration::from_millis(200);
+                let asynchronous = spawn_with_deadline("sign", deadline, call).await;
+                // The synchronous signer, as the evidence commit calls it.
+                let synchronous =
+                    tokio::spawn(async move { blocking_with_deadline("sign", deadline, call2) })
+                        .await
+                        .unwrap();
+                (asynchronous, synchronous)
+            });
+            drop((release, release2));
+            runtime.shutdown_background();
+            out
+        });
+        for err in [result.0.unwrap_err(), result.1.unwrap_err()] {
+            assert_eq!(err.class, kavach_ports::ErrorClass::Unavailable, "{err:?}");
+        }
+    }
+
+    #[test]
+    fn a_call_that_answers_in_time_returns_its_result() {
+        let deadline = Duration::from_secs(5);
+        assert_eq!(
+            blocking_with_deadline("sign", deadline, || Ok(3)).unwrap(),
+            3
+        );
+        let failed = blocking_with_deadline::<u8>("sign", deadline, || {
+            Err(PortError::unavailable("token removed"))
+        });
+        assert!(failed.unwrap_err().message.contains("token removed"));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let answered = runtime.block_on(spawn_with_deadline("sign", deadline, || Ok(4)));
+        assert_eq!(answered.unwrap(), 4);
     }
 
     #[test]

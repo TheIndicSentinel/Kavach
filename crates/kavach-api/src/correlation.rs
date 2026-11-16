@@ -20,7 +20,7 @@ use tracing::Instrument;
 pub const REQUEST_ID_HEADER: &str = "x-request-id";
 
 /// The id for this request: the caller's if well-formed, else a new UUID.
-fn request_id(req: &Request) -> String {
+pub(crate) fn request_id(req: &Request) -> String {
     req.headers()
         .get(REQUEST_ID_HEADER)
         .and_then(|v| v.to_str().ok())
@@ -42,6 +42,20 @@ pub async fn unmatched(req: Request, response: Response) -> Response {
     let (id, span) = begin(&req);
     drop(req);
     finish(&id, &span, Instant::now(), response).await
+}
+
+/// Correlates a response the listener gave without routing the request
+/// (over the in-flight cap, or out of time): `reason` stands in for the
+/// route in the log line.
+pub(crate) async fn refused(
+    id: &str,
+    method: &axum::http::Method,
+    reason: &'static str,
+    started: Instant,
+    response: Response,
+) -> Response {
+    let span = tracing::info_span!("request", request_id = %id, method = %method, route = %reason);
+    finish(id, &span, started, response).await
 }
 
 fn begin(req: &Request) -> (String, tracing::Span) {

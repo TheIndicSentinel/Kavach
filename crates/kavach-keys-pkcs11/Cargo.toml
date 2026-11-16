@@ -10,7 +10,7 @@ authors.workspace = true
 kavach-ports = { workspace = true }
 cryptoki.workspace = true
 ed25519-dalek = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["time"] }
 tracing.workspace = true
 
 [dev-dependencies]
