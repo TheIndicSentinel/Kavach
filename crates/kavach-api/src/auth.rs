@@ -382,7 +382,7 @@ impl SeenThrottle {
 /// `last_seen_at` on (ADR-019 §4). The directory informs the access review
 /// and never an authorization decision, so a failed write is logged and the
 /// request goes on.
-async fn record_seen(state: &AppState, principal: &AuthenticatedPrincipal) {
+pub(crate) async fn record_seen(state: &AppState, principal: &AuthenticatedPrincipal) {
     let (PrincipalSource::Jwt, Some(issuer), Some(subject)) = (
         principal.source,
         principal.issuer.as_deref(),

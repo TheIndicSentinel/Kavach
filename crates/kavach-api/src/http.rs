@@ -78,7 +78,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/v1/agents/{agent_id}/quarantine",
             post(crate::agents::quarantine),
         )
-        .route("/v1/agents/{agent_id}/revoke", post(crate::agents::revoke));
+        .route("/v1/agents/{agent_id}/revoke", post(crate::agents::revoke))
+        .route("/v1/me", get(crate::roles_api::me))
+        .route("/v1/principals", get(crate::roles_api::list_principals))
+        .route(
+            "/v1/role-bindings",
+            get(crate::roles_api::list_role_bindings),
+        )
+        .route("/v1/access-review", get(crate::roles_api::access_review));
     // The development clock endpoint is not mounted at all under
     // `--require-hardening` (it answers 404), not merely refused.
     let router = if state.require_hardening() {

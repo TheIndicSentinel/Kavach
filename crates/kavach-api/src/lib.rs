@@ -37,6 +37,7 @@ pub mod relaxations;
 pub mod retention;
 pub mod revocation_audit;
 pub mod revocation_evidence;
+pub mod roles_api;
 pub mod shutdown;
 pub mod signing;
 pub mod state;

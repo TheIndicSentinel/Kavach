@@ -55,13 +55,22 @@ pub struct RolesConfig {
     pub tenant_id: String,
     /// `--bootstrap-superadmins`: empty, or exactly two different people.
     pub bootstrap_superadmins: Vec<kavach_storage::BindingSubject>,
+    /// `--access-review-stale-days`: the access review marks a person
+    /// stale when they were last seen longer ago than this, or never.
+    pub access_review_stale_days: u32,
 }
+
+/// The default of `--access-review-stale-days`.
+pub const DEFAULT_ACCESS_REVIEW_STALE_DAYS: u32 = 90;
+/// The longest `--access-review-stale-days` accepted (ten years).
+pub const MAX_ACCESS_REVIEW_STALE_DAYS: u32 = 3650;
 
 impl Default for RolesConfig {
     fn default() -> Self {
         Self {
             tenant_id: "default".into(),
             bootstrap_superadmins: Vec::new(),
+            access_review_stale_days: DEFAULT_ACCESS_REVIEW_STALE_DAYS,
         }
     }
 }

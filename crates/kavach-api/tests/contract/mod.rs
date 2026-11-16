@@ -165,12 +165,17 @@ fn check_content(shown: &str, response: &'static Value, content_type: &str, body
         assert!(body.is_empty(), "{shown}: the spec documents no body");
         return;
     };
-    let media = content.get(content_type).unwrap_or_else(|| {
-        panic!(
-            "{shown}: content type {content_type:?} is not documented ({:?})",
-            content.keys().collect::<Vec<_>>()
-        )
-    });
+    // A parameter (`; charset=utf-8`) does not change the documented type.
+    let essence = content_type.split(';').next().unwrap_or_default().trim();
+    let media = content
+        .get(content_type)
+        .or_else(|| content.get(essence))
+        .unwrap_or_else(|| {
+            panic!(
+                "{shown}: content type {content_type:?} is not documented ({:?})",
+                content.keys().collect::<Vec<_>>()
+            )
+        });
     if !(content_type.ends_with("json")) {
         return;
     }
