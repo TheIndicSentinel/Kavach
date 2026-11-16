@@ -6,6 +6,15 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **ADR-019, operator roles and role management (accepted, design only).** It defines:
+  - seven roles (`superadmin`, `user_admin`, `policy_admin`, `approver`, `operator`, `auditor`, `viewer`) with a role-to-action matrix;
+  - per-tenant bindings to an OIDC subject or an IdP group, which Cedar receives alongside the token's groups;
+  - grants and revokes as maker-checker change requests (`grant_role`, `revoke_role`), with no self-grant and no revoking the last `superadmin` or `user_admin`;
+  - a two-person, one-time `superadmin` bootstrap, with superadmin-only decisions flagged in the audit;
+  - a principals directory that stores issuer, subject and display name only;
+  - an access-review export in CSV and JSON.
+
+  Sign-in stays with the IdP and Kavach stores no passwords. The `admins`, `change-approvers`, `operators` and `viewers` groups keep exactly their current permissions, as aliases. SCIM is out of scope. Nothing is implemented yet: [docs/ADR-019-operator-roles.md](docs/ADR-019-operator-roles.md).
 - **A CI check that the console calls every API operation, or says why not.** `scripts/console_path_coverage.py` (Python standard library only) reads every method and path in `docs/openapi.yaml` and fails unless `console/src` calls it with that method (tests, test fixtures and the generated `openapi.d.ts` are not read) or `console/api-coverage-exempt.txt` lists it with a reason. An exemption for an operation the spec no longer has, or one the console now calls, fails too. Exempt today: `GET /metrics`, `POST /v1/dev/clock`, the agent listener (`/v1/authorize`, `/v1/tools/{tool}`), the system-of-record listener (`/v1/sor/events`), `GET /v1/change-requests/{id}` and `GET /auth/callback` (the IdP redirects the browser there). It runs, with its own unit tests, first in the "Format, Clippy, Test" job.
 - **The console on an agent-only server.** `GET /v1/runtime` now reports `agent_only` (additive; true when the process runs with `--agent-only`). The console reads it once per page load. On an agent-only server the sidebar leaves out the credit-track pages (Evaluate, Policies, Models, Batch jobs, Incidents, Retention, Decision events), their paths show "Not served on this server" without calling the API, and Overview drops the model, jurisdiction and credit capability cards. Until the server answers, every page shows, and the API still answers a route it does not serve with 404. INSTALL.md no longer says agent-only mode has no console (it was served in both modes). Overview's health card now describes itself as this API server's liveness.
 - **An OIDC test double** (`crates/kavach-api/tests/support/oidc_double.rs`) for the console sign-in tests, also runnable for local development and browser tests: `cargo run -p kavach-api --example oidc_double -- --client-secret-file <file> --jwks-out <file>`. It listens on loopback only, accepts any redirect URI, prints the `kavach-api` flags to use (never the secret) and needs `--insecure-dev` on the API side. Test tooling, not an identity provider.
