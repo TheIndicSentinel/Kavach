@@ -278,11 +278,14 @@ impl MemoryRoleStore {
     ) -> Result<(), RoleStoreError> {
         let display_name = truncate_display_name(display_name);
         let mut inner = self.inner.lock().map_err(poisoned)?;
-        let key = (tenant_id.to_string(), issuer.to_string(), subject.to_string());
+        let key = (
+            tenant_id.to_string(),
+            issuer.to_string(),
+            subject.to_string(),
+        );
         match inner.principals.get_mut(&key) {
             Some(p) => {
-                if now - p.last_seen_at >= LAST_SEEN_GRANULARITY || p.display_name != display_name
-                {
+                if now - p.last_seen_at >= LAST_SEEN_GRANULARITY || p.display_name != display_name {
                     p.last_seen_at = p.last_seen_at.max(now);
                     p.display_name = display_name;
                 }
@@ -493,9 +496,23 @@ mod tests {
         };
         {
             let mut inner = roles.inner.lock().unwrap();
-            inner.bindings.push(new_binding("t1", Role::Approver, person("alice"), None, now));
-            inner.bindings.push(new_binding("t1", Role::Auditor, group, None, now));
-            inner.bindings.push(new_binding("t2", Role::Superadmin, person("alice"), None, now));
+            inner.bindings.push(new_binding(
+                "t1",
+                Role::Approver,
+                person("alice"),
+                None,
+                now,
+            ));
+            inner
+                .bindings
+                .push(new_binding("t1", Role::Auditor, group, None, now));
+            inner.bindings.push(new_binding(
+                "t2",
+                Role::Superadmin,
+                person("alice"),
+                None,
+                now,
+            ));
             let mut ended = new_binding("t1", Role::Operator, person("alice"), None, now);
             ended.ended_at = Some(now);
             inner.bindings.push(ended);
@@ -504,7 +521,10 @@ mod tests {
             .roles_for("t1", "https://idp.example", "alice", &["audit-team".into()])
             .await
             .unwrap();
-        assert_eq!(got.into_iter().collect::<Vec<_>>(), vec![Role::Approver, Role::Auditor]);
+        assert_eq!(
+            got.into_iter().collect::<Vec<_>>(),
+            vec![Role::Approver, Role::Auditor]
+        );
         assert!(backend
             .roles_for("t1", "https://other.example", "alice", &[])
             .await

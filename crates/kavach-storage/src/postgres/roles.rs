@@ -6,9 +6,9 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::roles::{
-    bootstrap_audit, check_bootstrap_subjects, new_binding, truncate_display_name,
-    BindingSubject, BootstrapOutcome, PrincipalRecord, Role, RoleBinding, RoleStoreError,
-    SubjectKind, LAST_SEEN_GRANULARITY,
+    bootstrap_audit, check_bootstrap_subjects, new_binding, truncate_display_name, BindingSubject,
+    BootstrapOutcome, PrincipalRecord, Role, RoleBinding, RoleStoreError, SubjectKind,
+    LAST_SEEN_GRANULARITY,
 };
 
 #[derive(Clone)]
@@ -40,8 +40,9 @@ struct BindingRow {
 
 impl BindingRow {
     fn into_binding(self) -> Result<RoleBinding, RoleStoreError> {
-        let kind = SubjectKind::parse(&self.subject_kind)
-            .ok_or_else(|| RoleStoreError::Corrupt(format!("subject kind {:?}", self.subject_kind)))?;
+        let kind = SubjectKind::parse(&self.subject_kind).ok_or_else(|| {
+            RoleStoreError::Corrupt(format!("subject kind {:?}", self.subject_kind))
+        })?;
         Ok(RoleBinding {
             id: self.id,
             tenant_id: self.tenant_id,
