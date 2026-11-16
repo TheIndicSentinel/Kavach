@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use chrono::NaiveDate;
 use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
-    OutcomeRecord, UnresolvedOutcome,
+    OutcomeRecord, UnknownOutcomeReview, UnresolvedOutcome,
 };
 use kavach_ports::agent_state::{
     AgentChangeCursor, AgentState, AgentStateChange, AgentStateStore, Recording, StoredAgentChange,
@@ -144,6 +144,17 @@ impl<S: AgentEvidenceStore> AgentEvidenceStore for FaultyStore<S> {
         limit: u32,
     ) -> Result<Vec<UnresolvedOutcome>, PortError> {
         self.inner.unresolved_outcomes(tenant_id, limit).await
+    }
+
+    async fn unknown_outcome_reviews(
+        &self,
+        tenant_id: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<UnknownOutcomeReview>, PortError> {
+        self.inner
+            .unknown_outcome_reviews(tenant_id, after, limit)
+            .await
     }
 
     async fn stuck_allows(

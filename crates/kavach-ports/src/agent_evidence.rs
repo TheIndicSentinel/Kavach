@@ -468,6 +468,14 @@ pub struct UnresolvedOutcome {
     pub action: String,
 }
 
+/// An unknown outcome and its complete ADR-017 history for operator review.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnknownOutcomeReview {
+    pub outcome: OutcomeRecord,
+    pub action: String,
+    pub resolutions: Vec<crate::outcome_resolution::ResolutionRecord>,
+}
+
 /// Agent evidence persistence (ADR-005 §6 phase 1).
 ///
 /// `commit` is one transaction: lock the partition head, then (allow only,
@@ -532,6 +540,16 @@ pub trait AgentEvidenceStore: Send + Sync {
         tenant_id: &str,
         limit: u32,
     ) -> impl Future<Output = Result<Vec<UnresolvedOutcome>, PortError>> + Send;
+
+    /// All unknown outcomes for operator review, regardless of whether their
+    /// history is unresolved, ambiguous, conflicted, or confirmed. Ordered by
+    /// credential id; `after` is the last credential id on the prior page.
+    fn unknown_outcome_reviews(
+        &self,
+        tenant_id: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<UnknownOutcomeReview>, PortError>> + Send;
 
     /// Allowed decisions of the tenant that have a credential and **no
     /// outcome row**, decided after `decided_after` and before
