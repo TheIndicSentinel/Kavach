@@ -48,6 +48,16 @@ namespace Kavach {
     resource: [System],
   };
 
+  action attest_outcome_not_delivered appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
+  action resolve_outcome_conflict appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
   action set_dev_clock appliesTo {
     principal: [User],
     resource: [System],

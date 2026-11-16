@@ -896,6 +896,273 @@ async fn a_delivered_attestation_is_a_digest_only_one_person_change_request() {
     assert!(!serde_json::to_string(&audit).unwrap().contains(reference));
 }
 
+#[tokio::test]
+async fn a_not_delivered_attestation_requires_a_distinct_operator() {
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+    use http_body_util::BodyExt;
+    use kavach_api::{AccessControlKind, EvidenceStoreKind};
+    use tower::ServiceExt;
+
+    let mut api = agent_fixture::config(EvidenceStoreKind::Memory, true, 50);
+    api.access_control = AccessControlKind::None;
+    let gw = gateway_on(api, Some(ERROR_NUMBER), true).await;
+    let (_, sent) = gw.remind("attest-not-delivered-1").await;
+    assert_eq!(sent["outcome"], "unknown");
+    let core = gw.state.dataplane().unwrap().core();
+    let reviews = core
+        .store()
+        .unknown_outcome_reviews("default", None, 10)
+        .await
+        .unwrap();
+    let credential = reviews[0].outcome.credential_id.clone();
+    let app = contract::router(gw.state.clone());
+    let send = |method: Method, uri: String, body: Value, bearer: String| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {bearer}"))
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+    let (status, proposed) = send(
+        Method::POST,
+        "/v1/change-requests".into(),
+        json!({
+            "kind": "attest_outcome_not_delivered",
+            "params": {
+                "credential_id": credential,
+                "reason_code": "receipt_reviewed",
+                "reference": "provider case R3b",
+            }
+        }),
+        operator_token(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{proposed}");
+    let proposed: Value = serde_json::from_str(&proposed).unwrap();
+    assert_eq!(proposed["status"], "pending");
+    assert!(!proposed.to_string().contains("provider case R3b"));
+    let id = proposed["id"].as_str().unwrap();
+    let digest = proposed["change_digest"].as_str().unwrap();
+
+    let (status, same_person) = send(
+        Method::POST,
+        format!("/v1/change-requests/{id}/approve"),
+        json!({ "change_digest": digest }),
+        operator_token(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{same_person}");
+
+    let other_operator = token("kavach-api", json!({ "sub": "ops-2" }));
+    let (status, applied) = send(
+        Method::POST,
+        format!("/v1/change-requests/{id}/approve"),
+        json!({ "change_digest": digest }),
+        other_operator,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    let applied: Value = serde_json::from_str(&applied).unwrap();
+    assert_eq!(applied["status"], "applied");
+
+    let rows = core
+        .store()
+        .resolutions("default", &credential)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].state.as_str(), "confirmed_not_delivered");
+    assert_eq!(
+        rows[0].resolved_by.as_deref(),
+        Some("oidc:https://idp.test/realms/kavach#ops-1")
+    );
+    assert_eq!(
+        rows[0].approved_by.as_deref(),
+        Some("oidc:https://idp.test/realms/kavach#ops-2")
+    );
+    assert!(gw.provider.inbox().is_empty());
+    let (_, replay) = gw.remind("attest-not-delivered-1").await;
+    assert_eq!(replay["replayed"], true);
+    assert!(gw.provider.inbox().is_empty(), "attestation cannot resend");
+    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    assert!(!serde_json::to_string(&audit)
+        .unwrap()
+        .contains("provider case R3b"));
+}
+
+#[tokio::test]
+async fn a_conflict_closure_requires_two_operators_and_names_the_governing_state() {
+    use axum::body::Body;
+    use axum::http::{Method, Request};
+    use http_body_util::BodyExt;
+    use kavach_api::{AccessControlKind, EvidenceStoreKind};
+    use kavach_ports::outcome_resolution::{
+        governing, Governing, ResolutionSource, ResolutionState,
+    };
+    use sha2::Digest;
+    use tower::ServiceExt;
+
+    let mut api = agent_fixture::config(EvidenceStoreKind::Memory, true, 50);
+    api.access_control = AccessControlKind::None;
+    let gw = gateway_on(api, Some(ERROR_NUMBER), true).await;
+    let (_, sent) = gw.remind("conflict-closure-1").await;
+    assert_eq!(sent["outcome"], "unknown");
+    let core = gw.state.dataplane().unwrap().core();
+    let reviews = core
+        .store()
+        .unknown_outcome_reviews("default", None, 10)
+        .await
+        .unwrap();
+    let credential = reviews[0].outcome.credential_id.clone();
+    assert!(
+        core.resolve_outcome_conflict(
+            &credential,
+            ResolutionState::ConfirmedDelivered,
+            "premature_closure",
+            &"12".repeat(32),
+            "oidc:https://idp.test/realms/kavach#ops-1",
+            "oidc:https://idp.test/realms/kavach#ops-2",
+        )
+        .await
+        .is_err(),
+        "an unresolved outcome is not eligible for conflict closure"
+    );
+    assert!(core
+        .attest_delivered(
+            &credential,
+            "receipt_a",
+            &"cd".repeat(32),
+            "oidc:https://idp.test/realms/kavach#ops-1",
+        )
+        .await
+        .unwrap());
+    assert!(core
+        .attest_not_delivered(
+            &credential,
+            "receipt_b",
+            &"ef".repeat(32),
+            "oidc:https://idp.test/realms/kavach#ops-2",
+            "oidc:https://idp.test/realms/kavach#ops-3",
+        )
+        .await
+        .unwrap());
+    let rows = core
+        .store()
+        .resolutions("default", &credential)
+        .await
+        .unwrap();
+    assert_eq!(governing(&rows), Governing::Conflicted);
+
+    let app = contract::router(gw.state.clone());
+    let send = |method: Method, uri: String, body: Value, bearer: String| {
+        let app = app.clone();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {bearer}"))
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+    let reference = "joint review record 77";
+    let (status, proposed) = send(
+        Method::POST,
+        "/v1/change-requests".into(),
+        json!({
+            "kind": "resolve_outcome_conflict",
+            "params": {
+                "credential_id": credential,
+                "resolution_state": "confirmed_not_delivered",
+                "reason_code": "joint_review",
+                "reference": reference,
+            }
+        }),
+        operator_token(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{proposed}");
+    let proposed: Value = serde_json::from_str(&proposed).unwrap();
+    assert!(!proposed.to_string().contains(reference));
+    let id = proposed["id"].as_str().unwrap();
+    let digest = proposed["change_digest"].as_str().unwrap();
+    let (status, same_person) = send(
+        Method::POST,
+        format!("/v1/change-requests/{id}/approve"),
+        json!({ "change_digest": digest }),
+        operator_token(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{same_person}");
+    let other = token("kavach-api", json!({ "sub": "ops-4" }));
+    let (status, applied) = send(
+        Method::POST,
+        format!("/v1/change-requests/{id}/approve"),
+        json!({ "change_digest": digest }),
+        other,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+
+    let rows = core
+        .store()
+        .resolutions("default", &credential)
+        .await
+        .unwrap();
+    assert_eq!(
+        governing(&rows),
+        Governing::Confirmed {
+            state: ResolutionState::ConfirmedNotDelivered,
+            source: ResolutionSource::ConflictResolution,
+        }
+    );
+    let closure = rows
+        .iter()
+        .find(|row| row.source == ResolutionSource::ConflictResolution)
+        .unwrap();
+    assert_eq!(
+        closure.resolved_by.as_deref(),
+        Some("oidc:https://idp.test/realms/kavach#ops-1")
+    );
+    assert_eq!(
+        closure.approved_by.as_deref(),
+        Some("oidc:https://idp.test/realms/kavach#ops-4")
+    );
+    assert_eq!(
+        closure.evidence_digest.as_deref(),
+        Some(format!("{:x}", sha2::Sha256::digest(reference.as_bytes())).as_str())
+    );
+    assert!(gw.provider.inbox().is_empty());
+    let (_, replay) = gw.remind("conflict-closure-1").await;
+    assert_eq!(replay["replayed"], true);
+    assert!(gw.provider.inbox().is_empty());
+    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    assert!(!serde_json::to_string(&audit).unwrap().contains(reference));
+}
+
 /// One stack serves one tenant: a validly signed payment for the same loan
 /// but another tenant is refused before it is acted on, and the mandate
 /// still works. A revocation's evidence record is read like an agent

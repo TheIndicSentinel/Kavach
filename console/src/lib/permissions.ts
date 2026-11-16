@@ -28,6 +28,8 @@ const CHANGE_KINDS_RECORD: Record<ChangeKind, true> = {
   grant_role: true,
   revoke_role: true,
   attest_outcome_delivered: true,
+  attest_outcome_not_delivered: true,
+  resolve_outcome_conflict: true,
 };
 
 export const CHANGE_KINDS = Object.keys(CHANGE_KINDS_RECORD) as ChangeKind[];
@@ -38,14 +40,22 @@ export const CHANGE_KINDS = Object.keys(CHANGE_KINDS_RECORD) as ChangeKind[];
  * table leaves to the server).
  */
 const ROLE_CHANGE_KINDS: readonly ChangeKind[] = ["grant_role", "revoke_role"];
-const ONE_PERSON_KINDS: readonly ChangeKind[] = ["attest_outcome_delivered"];
+const DIRECT_ACTION_KINDS = [
+  "attest_outcome_delivered",
+  "attest_outcome_not_delivered",
+  "resolve_outcome_conflict",
+] as const;
+type DirectActionKind = (typeof DIRECT_ACTION_KINDS)[number];
+
+const isDirectActionKind = (kind: ChangeKind): kind is DirectActionKind =>
+  DIRECT_ACTION_KINDS.includes(kind as DirectActionKind);
 
 /** The governance change kinds: every kind but the role changes. */
 const GOVERNANCE_KINDS = CHANGE_KINDS.filter(
-  (kind) => !ROLE_CHANGE_KINDS.includes(kind) && !ONE_PERSON_KINDS.includes(kind),
+  (kind) => !ROLE_CHANGE_KINDS.includes(kind) && !isDirectActionKind(kind),
 );
 
-type MakerCheckerKind = Exclude<ChangeKind, "attest_outcome_delivered">;
+type MakerCheckerKind = Exclude<ChangeKind, (typeof DIRECT_ACTION_KINDS)[number]>;
 
 /** The reads behind the console's pages (one per page; ROLE_PAGES in Sidebar). */
 export const READ_ACTIONS = [
@@ -74,12 +84,12 @@ export type CedarAction =
   | "stop_agent"
   | `propose_${MakerCheckerKind}`
   | `approve_${MakerCheckerKind}`
-  | "attest_outcome_delivered";
+  | DirectActionKind;
 
 export const proposeAction = (kind: ChangeKind): CedarAction =>
-  kind === "attest_outcome_delivered" ? kind : `propose_${kind}`;
+  isDirectActionKind(kind) ? kind : `propose_${kind}`;
 export const approveAction = (kind: ChangeKind): CedarAction =>
-  kind === "attest_outcome_delivered" ? kind : `approve_${kind}`;
+  isDirectActionKind(kind) ? kind : `approve_${kind}`;
 
 /**
  * Group to the Cedar actions it is permitted (the alias groups, ADR-019 §1).
@@ -118,9 +128,11 @@ export const COVERED_ACTIONS: readonly CedarAction[] = [
   "evaluate",
   "reconcile_closed_records",
   "stop_agent",
-  ...CHANGE_KINDS.filter((kind) => !ONE_PERSON_KINDS.includes(kind)).map(proposeAction),
-  ...CHANGE_KINDS.filter((kind) => !ONE_PERSON_KINDS.includes(kind)).map(approveAction),
+  ...CHANGE_KINDS.filter((kind) => !isDirectActionKind(kind)).map(proposeAction),
+  ...CHANGE_KINDS.filter((kind) => !isDirectActionKind(kind)).map(approveAction),
   "attest_outcome_delivered",
+  "attest_outcome_not_delivered",
+  "resolve_outcome_conflict",
 ];
 
 /** The seven ADR-019 roles; the Record makes a role added to the spec a type error here. */
@@ -181,6 +193,8 @@ export const ROLE_ACTIONS: Record<RoleName, readonly CedarAction[]> = {
     "stop_agent",
     "reconcile_closed_records",
     "attest_outcome_delivered",
+    "attest_outcome_not_delivered",
+    "resolve_outcome_conflict",
   ],
   auditor: [
     "read_health",

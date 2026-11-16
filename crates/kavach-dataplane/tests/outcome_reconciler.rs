@@ -479,8 +479,6 @@ async fn a_pass_puts_a_bounded_number_of_questions() {
 #[tokio::test]
 async fn learning_that_nothing_was_delivered_does_not_free_a_contact_slot() {
     let w = world();
-    let provider = Provider::default();
-    let mut polls = PollState::default();
     let mandate = w.mandate_for("B-9382").await;
     // The window allows three contacts a day; use all three, each unknown.
     let mut credentials = Vec::new();
@@ -495,11 +493,18 @@ async fn learning_that_nothing_was_delivered_does_not_free_a_contact_slot() {
         .unwrap();
     assert_eq!(blocked.decision, Decision::Block, "the cap is used up");
 
-    w.advance(Duration::seconds(31));
-    provider.says(Some(ProviderStatus::NotDelivered));
-    let report = w.pass(&provider, &mut polls).await;
-    assert_eq!(report.confirmed_not_delivered, 3, "{report:?}");
     for credential in &credentials {
+        assert!(w
+            .core
+            .attest_not_delivered(
+                credential,
+                "receipt_reviewed",
+                &"cd".repeat(32),
+                "oidc:https://idp#operator-1",
+                "oidc:https://idp#operator-2",
+            )
+            .await
+            .unwrap());
         assert!(matches!(
             governing(&w.resolutions(credential).await),
             Governing::Confirmed {

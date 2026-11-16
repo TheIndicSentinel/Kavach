@@ -552,6 +552,96 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         self.store.record_resolution(record).await
     }
 
+    /// Records a two-person operator attestation that an unknown contact was
+    /// not delivered. Identity distinctness is checked by the signed
+    /// resolution form; authentication and change-request approval are the
+    /// API's responsibility.
+    pub async fn attest_not_delivered(
+        &self,
+        credential_id: &str,
+        reason: &str,
+        reference_digest: &str,
+        resolved_by: &str,
+        approved_by: &str,
+    ) -> Result<bool, PortError> {
+        let outcome = self
+            .outcome(credential_id)
+            .await?
+            .ok_or_else(|| PortError::rejected("outcome resolution: no outcome is recorded"))?;
+        if outcome.outcome != Outcome::Unknown {
+            return Err(PortError::rejected(
+                "outcome resolution: only an unknown outcome is resolved",
+            ));
+        }
+        let record = sign_resolution(
+            ResolutionDraft {
+                tenant_id: self.config.tenant_id.clone(),
+                credential_id: credential_id.to_string(),
+                outcome_ref: outcome_ref(&outcome),
+                state: ResolutionState::ConfirmedNotDelivered,
+                source: ResolutionSource::OperatorAttested,
+                reason: reason.to_string(),
+                evidence_digest: Some(reference_digest.to_string()),
+                resolved_by: Some(resolved_by.to_string()),
+                approved_by: Some(approved_by.to_string()),
+            },
+            self.clock.now().utc,
+            self.signer.as_ref(),
+        )?;
+        self.store.record_resolution(record).await
+    }
+
+    /// Records the two-person closure of a conflict in an unknown outcome's
+    /// resolution history. Conflict-state validation is performed by the
+    /// change-request path against its frozen binding; this signing method
+    /// enforces the resolution form and never changes the send reservation.
+    pub async fn resolve_outcome_conflict(
+        &self,
+        credential_id: &str,
+        state: ResolutionState,
+        reason: &str,
+        reference_digest: &str,
+        resolved_by: &str,
+        approved_by: &str,
+    ) -> Result<bool, PortError> {
+        let outcome = self
+            .outcome(credential_id)
+            .await?
+            .ok_or_else(|| PortError::rejected("outcome resolution: no outcome is recorded"))?;
+        if outcome.outcome != Outcome::Unknown {
+            return Err(PortError::rejected(
+                "outcome resolution: only an unknown outcome is resolved",
+            ));
+        }
+        let current = self
+            .store
+            .resolutions(&self.config.tenant_id, credential_id)
+            .await?;
+        if kavach_ports::outcome_resolution::governing(&current)
+            != kavach_ports::outcome_resolution::Governing::Conflicted
+        {
+            return Err(PortError::rejected(
+                "outcome resolution: only a conflicted outcome can be closed",
+            ));
+        }
+        let record = sign_resolution(
+            ResolutionDraft {
+                tenant_id: self.config.tenant_id.clone(),
+                credential_id: credential_id.to_string(),
+                outcome_ref: outcome_ref(&outcome),
+                state,
+                source: ResolutionSource::ConflictResolution,
+                reason: reason.to_string(),
+                evidence_digest: Some(reference_digest.to_string()),
+                resolved_by: Some(resolved_by.to_string()),
+                approved_by: Some(approved_by.to_string()),
+            },
+            self.clock.now().utc,
+            self.signer.as_ref(),
+        )?;
+        self.store.record_resolution(record).await
+    }
+
     /// The tenant this core decides for.
     pub fn tenant_id(&self) -> &str {
         &self.config.tenant_id

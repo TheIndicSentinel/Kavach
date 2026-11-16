@@ -118,6 +118,16 @@ describe("changeRequestButtons: the proposer rule", () => {
     expect(buttons.actions).toEqual(["reject"]);
   });
 
+  it("keeps conflict closure on the two-person maker-checker path", () => {
+    const closure = { ...pending, kind: "resolve_outcome_conflict" as const };
+    expect(
+      changeRequestButtons(closure, { principal: "operator-1", groups: null }).actions,
+    ).toEqual(["cancel"]);
+    expect(
+      changeRequestButtons(closure, { principal: "operator-2", groups: null }).actions,
+    ).toEqual(["approve", "reject"]);
+  });
+
   it("offers the proposer cancel only, and says why approve is missing", () => {
     const buttons = changeRequestButtons(pending, { principal: "operator-1", groups: null });
     expect(buttons.actions).toEqual(["cancel"]);

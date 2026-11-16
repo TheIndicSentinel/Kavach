@@ -1002,7 +1002,7 @@ export interface components {
             governed: boolean;
         };
         /** @enum {string} */
-        ChangeKind: "activate_pack" | "rollback_pack" | "update_model" | "update_retention" | "erase_evidence" | "apply_retention" | "activate_model" | "reinstate_agent" | "grant_role" | "revoke_role" | "attest_outcome_delivered";
+        ChangeKind: "activate_pack" | "rollback_pack" | "update_model" | "update_retention" | "erase_evidence" | "apply_retention" | "activate_model" | "reinstate_agent" | "grant_role" | "revoke_role" | "attest_outcome_delivered" | "attest_outcome_not_delivered" | "resolve_outcome_conflict";
         /** @enum {string} */
         ChangeStatus: "pending" | "applied" | "failed" | "rejected" | "cancelled" | "expired";
         /** @enum {string} */
@@ -1170,9 +1170,14 @@ export interface components {
          *     `erase_evidence` `{evidence_id}`; `reinstate_agent` `{agent_id, to: active |
          *     restricted, reason_code?, note?}` (never from `revoked`); `grant_role`
          *     `{role, subject: {kind: principal | group, issuer, value}}`; `revoke_role`
-         *     `{binding_id}`; `attest_outcome_delivered` `{credential_id, reason_code, reference}`.
-         *     The delivered-attestation reference is digested before it is stored or audited, and
-         *     the proposer completes this one-person request. A role change is refused (403) when it names the caller or a group
+         *     `{binding_id}`; `attest_outcome_delivered` and `attest_outcome_not_delivered`
+         *     `{credential_id, reason_code, reference}`; `resolve_outcome_conflict`
+         *     `{credential_id, resolution_state, reason_code, reference}`. References are digested before they are
+         *     stored or audited. The proposer completes a delivered attestation; a different
+         *     authenticated human approves a not-delivered attestation or conflict closure.
+         *     Conflict closure also requires `resolution_state` (`confirmed_delivered` or
+         *     `confirmed_not_delivered`) naming the state to govern. A role change is refused
+         *     (403) when it names the caller or a group
          *     in their token, and when it touches `superadmin` for anyone but a superadmin; it is
          *     a conflict (409) for a duplicate active binding or the tenant's last active person
          *     binding of `superadmin` or `user_admin` (ADR-019 §4). Unknown keys are refused.
