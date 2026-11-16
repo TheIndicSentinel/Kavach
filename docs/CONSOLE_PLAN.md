@@ -1,20 +1,21 @@
 # Console plan: matching the UI to the backend
 
-Status: accepted direction, 2026-11-14. Revised 2026-11-15: steps UI-0 to UI-4 are built, every operator API operation is called by the console or listed with a reason, and the open decisions are closed. Owner priority: this track goes before the rest of the hardening roadmap (Phase 1 resumes from 1.2 when the owner says so).
+Status: accepted direction, 2026-11-14. Revised 2026-11-15: steps UI-0 to UI-4 are built, every operator API operation is called by the console or listed with a reason, and the open decisions are closed. Revised 2026-11-16: the console runs on a real, seeded stack in CI (#253), and every page has the same loading, empty, error and 404 states (#254). Owner priority: this track goes before the rest of the hardening roadmap (Phase 1 resumes from 1.2 when the owner says so).
 
 This document records what the console does, which backend operations it uses, and what is still missing. The console's visual rules and components are in [console/DESIGN.md](../console/DESIGN.md); this file is about scope and order.
 
-## 1. Where the console stands (read on 2026-11-15)
+## 1. Where the console stands (read on 2026-11-16)
 
-Facts, from the code at `4fefaf8` plus the ADR-018 sign-in (#248 backend, #250 console), so it describes the console with sign-in:
+Facts, from the code at `4fefaf8` plus the ADR-018 sign-in (#248 backend, #250 console), the real-stack suite (#253) and the page states (#254):
 
 - **Stack.** React 19, TypeScript (strict), Vite 7, React Router 7, Tailwind CSS 4, Lucide icons. At `4fefaf8`: 65 source files, about 6,900 lines, without tests and the generated `openapi.d.ts`. Fonts are self-hosted. No component library.
 - **It is wired for both tracks.** Every API call is in `console/src/lib/api.ts` (and, with sign-in, the `/auth/*` calls in `console/src/lib/session.ts`). Section 2 lists each operation and the page that calls it. There are 18 routes in the app shell, plus `/signin` outside it.
 - **Types come from the spec.** `npm run gen:api` (openapi-typescript) generates `src/lib/openapi.d.ts` from `docs/openapi.yaml`; `npm run check:api` fails when the committed file differs (#222). `api.ts` hand-types only `ReinstateAgentParams`, because `ChangeProposal.params` is untyped in the spec (issue #218).
 - **Error handling.** `request()` checks the status before parsing. A problem body becomes an `ApiError` with status, `detail` and `request_id`; a non-JSON error (a proxy's 502) shows its status (#220).
+- **Page states.** Every page that reads the API lays its read out the same way (`useResource`, `ResourceState`): a skeleton and a `role=status` line while loading, the empty message, a `ProblemAlert` with the HTTP status, `request_id` and 401/403 guidance, Try again, and on detail pages a 404 headline that names the record. An unknown path shows a 404 page. Vitest renders every governance page in each state; `e2e/narrow.e2e.ts` opens every page at 375px (#254). The rules are in [console/DESIGN.md](../console/DESIGN.md), "Page states".
 - **Served in agent-only mode.** `kavach-api --agent-only` serves the console (#224). `GET /v1/runtime` reports `agent_only`, and the console then leaves the credit-track pages out of the navigation and shows "Not served on this server" on their paths (#244).
 - **Only a real build is embedded.** `crates/kavach-api/build.rs` embeds `console/dist` only when its `index.html` loads a script from `/assets/` and every asset it names exists; otherwise `/` answers "console not built" (404) (#224).
-- **Tests, lint and accessibility in CI.** The "Format, Clippy, Test" job builds the console and runs typecheck, ESLint (with `jsx-a11y` and `react-hooks`), Vitest (16 test files at `4fefaf8`), `check:api`, the Playwright suite against a stubbed API in Chromium with axe (WCAG 2.2 AA tags) on every page and state, keyboard flows and a CSP check (#222, #239, #241), the production licence check, and the API path check in section 2. With sign-in (#248, #250) it adds stubbed sign-in specs and a real round trip against `kavach-api` and an OIDC test double.
+- **Tests, lint and accessibility in CI.** The "Format, Clippy, Test" job builds the console and runs typecheck, ESLint (with `jsx-a11y` and `react-hooks`), Vitest (16 test files at `4fefaf8`), `check:api`, the Playwright suite against a stubbed API in Chromium with axe (WCAG 2.2 AA tags) on every page and state, keyboard flows and a CSP check (#222, #239, #241), the production licence check, and the API path check in section 2. With sign-in (#248, #250) it adds stubbed sign-in specs and a real round trip against `kavach-api` and an OIDC test double. With #253 it runs every page and action against a real, seeded stack: a `kavach-dev` bundle, the OIDC double, the mock provider, and `kavach-api` full and `--agent-only`, with memory stores (`npm run test:real`).
 - **Authentication (ADR-018 option C).** `kavach-api` is a backend-for-frontend: `GET /auth/login` starts an authorization code flow with PKCE, the IdP tokens stay in server memory, and the browser holds only an HttpOnly `__Host-kavach_session` cookie. `GET /auth/config` picks one of three modes on load. With login configured, `/signin` offers a plain link to `/auth/login`, and pages render only with a live `GET /auth/session`; every request sends `X-Kavach-Console: 1` with same-origin credentials and never `Authorization` or `X-Kavach-Principal`. Without login, and only when the server runs with `--insecure-dev`, the pasted-token field stays as a labelled development fallback (`sessionStorage`); otherwise the console says login is not configured and offers no field.
 - **Role-aware views.** `src/lib/permissions.ts` copies the Cedar policy's group-to-action map, and a test fails when it and `kavach.cedar` disagree. With the session's groups known, a control the groups lack is replaced by a `RoleHint`; with groups unknown every control shows. The API stays the gate (#239, #241).
 - **Security headers.** Every console response carries a strict Content-Security-Policy (`default-src 'self'`, no inline script or style, `frame-ancestors 'none'`, `base-uri 'none'`, `form-action 'self'`), `nosniff` and `Referrer-Policy: no-referrer` (#224). API responses get their own headers in #237 (roadmap 1.3), which the sign-in work builds on.
@@ -77,8 +78,11 @@ The credit-track pages keep working and get no new features. On an `--agent-only
 - **Three change kinds** (`rollback_pack`, `erase_evidence`, `activate_model`) are listed, approved, rejected and cancelled in the console, but proposed only through the API.
 - Done since 2026-11-14: the agent list endpoint (#227) and the console on agent-only servers (#224, #244).
 
-Other known gaps, from issue #218 and the sign-in work: no 404 page (an unknown console path goes to Overview); console sessions live in one `kavach-api` process (a restart signs everyone out, and replicas do not share them); the browser suites run in Chromium only, and Firefox and WebKit are not covered, the sign-in round trip included.
+Other known gaps, from issue #218 and the sign-in work:
 
+- Console sessions live in one `kavach-api` process: a restart signs everyone out, and replicas do not share them.
+- The browser suites run in Chromium only. Firefox and WebKit are not covered, the sign-in round trip included.
+- The real-stack suite uses memory stores and the OIDC test double, not Postgres or a real IdP.
 ## 3. Standards the console is held to
 
 - **Accessibility:** WCAG 2.2 level AA. Keyboard reachable, visible focus, a skip link, labelled controls, status messages announced (`role="status"`/`aria-live`), no colour-only meaning (decision and state badges carry text). axe runs on every page and state in CI.
@@ -119,10 +123,11 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - Decision events (credit) by evidence id, with `kavach-evidence verify --file` for the exported chain and `kavach why --export` for one event. Agent records get `kavach-evidence verify-bundle`, `kavach why --bundle` (decisions only) and the independent Python verifier. The console runs none of these; it shows them to copy.
 - Waiting: unknown outcomes and resolutions (ADR-017), once the read endpoints exist (section 2).
 
-### UI-4: hardening and polish — done (#239, #241, #244, ADR-018 sign-in)
+### UI-4: hardening and polish — done (#239, #241, #244, ADR-018 sign-in, #253, #254)
 
 - Role-aware views: a control the viewer's known groups lack is replaced by a role hint (the API stays the gate).
-- Console tests and lint in CI, axe on every page, keyboard and CSP checks; the sign-in round trip against `kavach-api` and an OIDC test double.
+- Console tests and lint in CI, axe on every page, keyboard and CSP checks; the sign-in round trip against `kavach-api` and an OIDC test double; every page and action on a real, seeded stack (#253).
+- The same loading, empty, error, 401/403 and 404 states on every page, a 404 page, and every page checked at 375px (#254).
 - OIDC authorization code with PKCE in place of the pasted token, per [ADR-018](ADR-018-console-login-and-token-storage.md) option C.
 - The API path check (section 2).
 
