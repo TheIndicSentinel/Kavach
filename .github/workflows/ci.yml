@@ -152,6 +152,17 @@ jobs:
         working-directory: console
         run: npm run test:roundtrip
 
+      # The console against a real, seeded stack (playwright.real.config.ts):
+      # a dev bundle, the OIDC double, the mock provider, and kavach-api in
+      # full and --agent-only modes; every page and action, signed in as an
+      # admin, a change approver and a viewer. Loopback only, memory stores.
+      - name: Build the real-stack binaries
+        run: cargo build -p kavach-devkit --bin kavach-dev -p kavach-mock-provider --bin kavach-mock-provider
+
+      - name: Console on a real stack
+        working-directory: console
+        run: npm run test:real
+
       # Production npm dependency licence allowlist (PRD NFR-1). OFL-1.1 covers the
       # @fontsource fonts; MPL-2.0 covers build-time CSS tooling (lightningcss) that is
       # not included in the built console bundle.

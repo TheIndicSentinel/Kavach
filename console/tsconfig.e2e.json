@@ -12,5 +12,5 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true
   },
-  "include": ["e2e", "playwright.config.ts", "playwright.roundtrip.config.ts"]
+  "include": ["e2e", "playwright.config.ts", "playwright.roundtrip.config.ts", "playwright.real.config.ts"]
 }

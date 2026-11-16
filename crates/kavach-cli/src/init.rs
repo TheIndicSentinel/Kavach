@@ -81,6 +81,7 @@ pub async fn create(root: &Path, world: &kavach_devkit::World) -> Result<Created
             provider_hosts: vec!["localhost".into(), "127.0.0.1".into()],
             database_hosts: vec!["localhost".into(), "127.0.0.1".into()],
             token_hours: TOKEN_HOURS,
+            issuer: kavach_devkit::ISSUER.into(),
         },
         world,
     )
