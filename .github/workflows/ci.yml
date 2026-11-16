@@ -141,6 +141,17 @@ jobs:
         working-directory: console
         run: npm run test:e2e
 
+      # The real sign-in round trip (ADR-018): kavach-api with console/dist
+      # embedded (built above) and the OIDC test double, both on 127.0.0.1,
+      # memory stores, no database. Nothing is stubbed; no network beyond
+      # loopback. Specs: console/e2e/*.roundtrip.ts.
+      - name: Build kavach-api and the OIDC test double
+        run: cargo build -p kavach-api --bin kavach-api --example oidc_double
+
+      - name: Console sign-in round trip
+        working-directory: console
+        run: npm run test:roundtrip
+
       # Production npm dependency licence allowlist (PRD NFR-1). OFL-1.1 covers the
       # @fontsource fonts; MPL-2.0 covers build-time CSS tooling (lightningcss) that is
       # not included in the built console bundle.

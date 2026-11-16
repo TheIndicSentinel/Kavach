@@ -58,8 +58,17 @@ export const test = apiTest.extend<{ csp: CspGuard }>({
           await route.fallback(); // the API stub answers, or refuses another origin
           return;
         }
-        const response = await route.fetch();
-        await route.fulfill({ response, headers: { ...response.headers(), ...SERVER_HEADERS } });
+        try {
+          const response = await route.fetch();
+          await route.fulfill({ response, headers: { ...response.headers(), ...SERVER_HEADERS } });
+        } catch (error) {
+          // A navigation that starts while a file of the previous document is
+          // still loading disposes that fetch. The document it was for is gone,
+          // so there is nothing left to guard: drop the request. Anything else
+          // still fails the test.
+          if (!/has been disposed/.test(String(error))) throw error;
+          await route.abort().catch(() => undefined);
+        }
       });
 
       await provide(guard);
