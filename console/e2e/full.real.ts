@@ -3,29 +3,12 @@
 // e2e/real-users.json. The tests share one server and run in order: the
 // stops and change requests of one are the state the next one reads.
 import type { Page } from "@playwright/test";
-import { open, signInAs, signOut } from "./real";
+import { open, PAGES, signInAs, signOut } from "./real";
 import { REVOKING_EVENT, SEEDED, seededRecords } from "./realSetup";
 import { ADMIN, AGENT, APPROVER, FULL, OTHER_AGENT, VIEWER } from "./realStack";
 import { expect, test } from "./stack";
 
 test.describe.configure({ mode: "serial" });
-
-const PAGES: [string, string][] = [
-  ["/overview", "Overview"],
-  ["/evaluate", "Evaluate"],
-  ["/agents", "Agents"],
-  ["/agent-evidence", "Agent evidence"],
-  ["/reconciliation", "Closed loans"],
-  ["/decision-events", "Decision events"],
-  ["/policies", "Policies"],
-  ["/models", "Models"],
-  ["/batch", "Batch jobs"],
-  ["/changes", "Change requests"],
-  ["/audit", "Admin audit"],
-  ["/incidents", "Incidents"],
-  ["/retention", "Retention & erasure"],
-  ["/settings", "Settings"],
-];
 
 const status = (page: Page, text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
 
