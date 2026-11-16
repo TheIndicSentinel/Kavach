@@ -450,6 +450,39 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /v1/unknown-outcomes:
+    get:
+      operationId: listUnknownOutcomes
+      tags: [evidence]
+      summary: A page of unknown outcomes and their ADR-017 governing state (admins; audited).
+      description: >-
+        Tenant scoped to the authenticated server configuration. Includes unresolved,
+        ambiguous, conflicted and confirmed histories. This is a read-only review; it never
+        resends a provider request or releases a contact slot. Reads require read_evidence,
+        are rate limited, and are audited before data is returned.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" }
+      responses:
+        "200":
+          description: Credential-id ordered page and the next cursor, if another page exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UnknownOutcomeReviewPage" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /v1/agent-revocations/{system}/{event_id}:
     get:
       operationId: getRevocationRecord
@@ -2258,6 +2291,37 @@ components:
         ts: { $ref: "#/components/schemas/DateTime" }
         key_id: { type: string }
         sig: { type: string }
+
+    UnknownOutcomeReviewPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/UnknownOutcomeReviewItem" }
+        next_cursor:
+          oneOf:
+            - { type: string }
+            - { type: "null" }
+
+    UnknownOutcomeReviewItem:
+      type: object
+      additionalProperties: false
+      required: [outcome, action, resolutions, governing_state, governing_source]
+      properties:
+        outcome: { $ref: "#/components/schemas/OutcomeRecord" }
+        action: { type: string }
+        resolutions:
+          type: array
+          items: { $ref: "#/components/schemas/OutcomeResolutionRecord" }
+        governing_state:
+          type: string
+          enum: [unresolved, ambiguous, conflicted, confirmed_delivered, confirmed_not_delivered]
+        governing_source:
+          oneOf:
+            - { type: string, enum: [provider_status, operator_attested, conflict_resolution] }
+            - { type: "null" }
 
     GatewayReply:
       type: object

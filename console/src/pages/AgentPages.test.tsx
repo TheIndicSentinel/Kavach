@@ -4,7 +4,7 @@
 import { describe, expect, it } from "vitest";
 import type { Resource } from "../hooks/useResource";
 import type { AgentDecisionLookup, AgentStateView, RevocationLookup } from "../lib/api";
-import { decisionLookup, neverChanged, revocationLookup } from "../test/fixtures";
+import { decisionLookup, neverChanged, revocationLookup, unknownOutcomeReview } from "../test/fixtures";
 import { byRole, render, renderAt, text } from "../test/markup";
 import {
   badGateway,
@@ -191,6 +191,16 @@ describe("AgentEvidencePage states", () => {
     expect(byRole(rev, "status")[1]).toBe(
       `Found the revocation for event ${revocationLookup.record.event_id} from ${revocationLookup.record.source_system}.`,
     );
+  });
+
+  it("renders an on-demand review page with conflicted state and history", () => {
+    const html = render(<AgentEvidencePage viewer={{ principal: null, groups: ["admins"] }} review={ok(unknownOutcomeReview)} />);
+    expect(text(html)).toContain("Unknown outcome review");
+    expect(text(html)).toContain("cred-review-1");
+    expect(text(html)).toContain("Conflicted");
+    expect(text(html)).toContain("provider_status");
+    expect(text(html)).toContain("Load more unknown outcomes");
+    expect(byRole(html, "status")).toContain("1 unknown outcome loaded; more are available");
   });
 
   it("404: says no such record exists, with the server's detail and request_id", () => {

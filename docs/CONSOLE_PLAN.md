@@ -51,6 +51,7 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `POST /v1/agents/{agent_id}/quarantine` | `stop_agent` | Agent detail | done (UI-2 #233) |
 | `POST /v1/agents/{agent_id}/revoke` | `stop_agent` | Agent detail | done (UI-2 #233) |
 | `GET /v1/agent-decisions/{record_id}` | `read_evidence` (rate limited, audited) | Agent evidence: signed decision/outcome and ADR-017 resolution history | done (UI-1 #232; ADR-017 first UI-3 slice) |
+| `GET /v1/unknown-outcomes?limit=&cursor=` | `read_evidence` (rate limited, audited) | Agent evidence: on-demand unknown-outcome review by governing state | done (ADR-017 third UI-3 slice; console fourth slice) |
 | `GET /v1/agent-revocations/{system}/{event_id}` | `read_evidence` (rate limited, audited) | Agent evidence | done (UI-1 #232) |
 | `POST /v1/reconciliation/closed-records` | `reconcile_closed_records` (rate limited, audited; revokes nothing) | Closed loans (`/reconciliation`) | done (UI-3 #234) |
 | `GET /v1/decision-events/{evidence_id}` | `read_evidence` | Decision events | done (UI-3 #234) |
@@ -76,7 +77,7 @@ The credit-track pages keep working and get no new features. On an `--agent-only
 
 ### Backend gaps the console still has
 
-- **ADR-017 unknown outcomes and resolutions:** the agent-decision lookup returns and displays full resolution history (first UI-3 slice). The memory and Postgres stores now expose a tenant-scoped, cursor-paged read of every unknown outcome and its resolution history (second slice); the API endpoint and console list remain the next slice.
+- **ADR-017 unknown outcomes and resolutions:** the agent-decision lookup returns and displays full resolution history (first UI-3 slice). Memory and Postgres stores expose all unknown outcomes and history (second slice), the API provides a paged audited read with governing state (third slice), and the Agent Evidence page now provides the on-demand list (fourth slice). R3b write operations remain pending.
 - **Reinstatement parameters are untyped** in the spec (`ChangeProposal.params`), so `ReinstateAgentParams` is the one hand-written request type.
 - **One change request by id.** `GET /v1/change-requests/{id}` exists but the console does not use it: after proposing a reinstatement it links to the list. A detail view would use it and drop the exemption.
 - **Three change kinds** (`rollback_pack`, `erase_evidence`, `activate_model`) are listed, approved, rejected and cancelled in the console, but proposed only through the API.
@@ -127,7 +128,9 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - Decision events (credit) by evidence id, with `kavach-evidence verify --file` for the exported chain and `kavach why --export` for one event. Agent records get `kavach-evidence verify-bundle`, `kavach why --bundle` (decisions only) and the independent Python verifier. The console runs none of these; it shows them to copy.
 - **Done (first ADR-017 slice):** an agent-decision evidence lookup returns all signed resolutions for an unknown outcome, oldest first, through the existing audited and rate-limited `read_evidence` path. The page renders the append-only history.
 - **Done (second slice):** both evidence stores expose a tenant-scoped, cursor-paged read of every unknown outcome and its complete resolution history. It includes unresolved, ambiguous, conflicted and confirmed histories; the reconciler's narrower queue remains unchanged.
-- **Waiting:** the audited API endpoint and console list using this store read, then the remaining R3b operator attestation and two-person conflict-closure workflow from [ADR-017](ADR-017-unknown-outcome-reconciliation.md). These are separate slices; the reads do not enable either action.
+- **Done (third slice):** `GET /v1/unknown-outcomes` returns the paged store read with the governing state and source. It uses `read_evidence`, the evidence-read rate limit and an audit record; it does not resend or release a contact slot.
+- **Done (fourth slice):** Agent Evidence has a click-to-load, cursor-paged list showing each unknown outcome's governing state and complete resolution history, with loading, empty, error, retry and role-hint states. The read does not enable a write action.
+- **Waiting:** the remaining R3b operator attestation and two-person conflict-closure workflow from [ADR-017](ADR-017-unknown-outcome-reconciliation.md), including its API change-request safeguards and attacks. The console remains read-only for these outcomes until that phase is complete.
 
 ### UI-4: hardening and polish — done (#239, #241, #244, ADR-018 sign-in, #253, #254)
 

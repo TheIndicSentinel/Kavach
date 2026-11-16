@@ -287,6 +287,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/unknown-outcomes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A page of unknown outcomes and their ADR-017 governing state (admins; audited).
+         * @description Tenant scoped to the authenticated server configuration. Includes unresolved, ambiguous, conflicted and confirmed histories. This is a read-only review; it never resends a provider request or releases a contact slot. Reads require read_evidence, are rate limited, and are audited before data is returned.
+         */
+        get: operations["listUnknownOutcomes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agent-revocations/{system}/{event_id}": {
         parameters: {
             query?: never;
@@ -1364,6 +1384,18 @@ export interface components {
             key_id: string;
             sig: string;
         };
+        UnknownOutcomeReviewPage: {
+            items: components["schemas"]["UnknownOutcomeReviewItem"][];
+            next_cursor: string | null;
+        };
+        UnknownOutcomeReviewItem: {
+            outcome: components["schemas"]["OutcomeRecord"];
+            action: string;
+            resolutions: components["schemas"]["OutcomeResolutionRecord"][];
+            /** @enum {string} */
+            governing_state: "unresolved" | "ambiguous" | "conflicted" | "confirmed_delivered" | "confirmed_not_delivered";
+            governing_source: ("provider_status" | "operator_attested" | "conflict_resolution") | null;
+        };
         /** @description An allowlist of fields; never a destination or credential. */
         GatewayReply: {
             decision: components["schemas"]["Decision"];
@@ -2022,6 +2054,36 @@ export interface operations {
                         outcome: components["schemas"]["OutcomeRecord"] | null;
                         resolutions: components["schemas"]["OutcomeResolutionRecord"][];
                     };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listUnknownOutcomes: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credential-id ordered page and the next cursor, if another page exists. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnknownOutcomeReviewPage"];
                 };
             };
             400: components["responses"]["BadRequest"];

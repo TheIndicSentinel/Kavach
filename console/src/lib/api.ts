@@ -340,6 +340,10 @@ export type AgentListQuery = NonNullable<operations["listAgents"]["parameters"][
 /** `GET /v1/agent-decisions/{record_id}`: the signed record and its outcome, if any. */
 export type AgentDecisionLookup = Ok<"getAgentDecision">;
 
+/** One page of unknown outcomes and ADR-017 history. */
+export type UnknownOutcomeReviewPage = Ok<"listUnknownOutcomes">;
+export type UnknownOutcomeReviewQuery = NonNullable<operations["listUnknownOutcomes"]["parameters"]["query"]>;
+
 /** `GET /v1/agent-revocations/{system}/{event_id}`: the signed revocation record. */
 export type RevocationLookup = Ok<"getRevocationRecord">;
 
@@ -364,6 +368,21 @@ export function fetchAgent(agentId: string): Promise<AgentStateView> {
 /** Audited and rate limited by the API: call it once per lookup the operator asks for. */
 export function fetchAgentDecision(recordId: string): Promise<AgentDecisionLookup> {
   return request(`/v1/agent-decisions/${encodeURIComponent(recordId)}`);
+}
+
+export function unknownOutcomeReviewsPath(query: UnknownOutcomeReviewQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor) params.set("cursor", query.cursor);
+  const search = params.toString();
+  return search ? `/v1/unknown-outcomes?${search}` : "/v1/unknown-outcomes";
+}
+
+/** Audited and rate limited by the API; loads only when the operator asks. */
+export function fetchUnknownOutcomeReviews(
+  query: UnknownOutcomeReviewQuery = {},
+): Promise<UnknownOutcomeReviewPage> {
+  return request(unknownOutcomeReviewsPath(query));
 }
 
 /** Audited and rate limited by the API: call it once per lookup the operator asks for. */

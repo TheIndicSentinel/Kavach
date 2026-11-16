@@ -12,13 +12,14 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use kavach_auth::KavachAction;
 use kavach_ports::agent_evidence::AgentEvidenceStore;
 use kavach_storage::AuditInsert;
+use serde::Deserialize;
 use serde_json::json;
 
 use crate::auth::{authorize_credentials, resolve_credentials, Credentials};
@@ -203,6 +204,92 @@ pub async fn read_agent_decision(
     };
     Json(json!({ "record": record, "outcome": outcome, "resolutions": resolutions }))
         .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UnknownOutcomeQuery {
+    limit: Option<u32>,
+    cursor: Option<String>,
+}
+
+/// `GET /v1/unknown-outcomes`: a tenant-scoped, audited review page. Unlike
+/// the reconciler's work queue, this includes every governing state.
+pub async fn list_unknown_outcomes(
+    State(state): State<Arc<AppState>>,
+    credentials: Credentials,
+    Query(query): Query<UnknownOutcomeQuery>,
+) -> Response {
+    const DEFAULT_PAGE: u32 = 50;
+    const MAX_PAGE: u32 = 100;
+    let limit = query.limit.unwrap_or(DEFAULT_PAGE);
+    let cursor_ok = query.cursor.as_deref().is_none_or(valid_event_part);
+    let reader = match admit(
+        &state,
+        &credentials,
+        (1..=MAX_PAGE).contains(&limit) && cursor_ok,
+        "limit must be 1-100 and cursor must be a bounded credential id",
+    )
+    .await
+    {
+        Ok(reader) => reader,
+        Err(refused) => return *refused,
+    };
+    let Some(dp) = state.dataplane() else {
+        return refuse(StatusCode::NOT_FOUND, "agent surfaces are not configured");
+    };
+    let core = dp.core();
+    let mut rows = match core
+        .store()
+        .unknown_outcome_reviews(core.tenant_id(), query.cursor.as_deref(), limit + 1)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(_) => {
+            return refuse(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "evidence store unavailable",
+            )
+        }
+    };
+    let has_more = rows.len() > limit as usize;
+    rows.truncate(limit as usize);
+    let next_cursor = has_more
+        .then(|| rows.last().map(|row| row.outcome.credential_id.clone()))
+        .flatten();
+    let items: Vec<_> = rows
+        .into_iter()
+        .map(|row| {
+            use kavach_ports::outcome_resolution::Governing;
+            let (governing_state, governing_source) =
+                match kavach_ports::outcome_resolution::governing(&row.resolutions) {
+                    Governing::Unresolved => ("unresolved", None),
+                    Governing::Ambiguous => ("ambiguous", None),
+                    Governing::Conflicted => ("conflicted", None),
+                    Governing::Confirmed { state, source } => {
+                        (state.as_str(), Some(source.as_str()))
+                    }
+                };
+            json!({
+                "outcome": row.outcome,
+                "action": row.action,
+                "resolutions": row.resolutions,
+                "governing_state": governing_state,
+                "governing_source": governing_source,
+            })
+        })
+        .collect();
+    if let Err(refused) = audit(
+        &state,
+        "unknown_outcomes",
+        core.tenant_id(),
+        reader,
+        !items.is_empty(),
+    )
+    .await
+    {
+        return *refused;
+    }
+    Json(json!({ "items": items, "next_cursor": next_cursor })).into_response()
 }
 
 /// A system-of-record name or event id: what the SoR listener accepts in

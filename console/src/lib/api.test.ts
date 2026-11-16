@@ -7,6 +7,7 @@ import {
   fetchAgents,
   fetchAccessReviewCsv,
   fetchRevocationRecord,
+  fetchUnknownOutcomeReviews,
   proposeReinstatement,
   request,
   setAuthMode,
@@ -152,6 +153,12 @@ describe("agent calls", () => {
     const seen = capture({ items: [], next_cursor: null });
     await fetchAgents();
     expect(seen.mock.calls[0][0]).toBe("/v1/agents");
+  });
+
+  it("loads the on-demand unknown-outcome page with its cursor", async () => {
+    const seen = capture({ items: [], next_cursor: null });
+    await fetchUnknownOutcomeReviews({ limit: 50, cursor: "cred-7" });
+    expect(seen.mock.calls[0][0]).toBe("/v1/unknown-outcomes?limit=50&cursor=cred-7");
   });
 
   it("encodes ids in the path, never in a query string", async () => {

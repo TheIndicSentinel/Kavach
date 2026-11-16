@@ -710,6 +710,62 @@ async fn evidence_reads_are_admin_only_audited_and_hold_no_secrets() {
     assert_eq!(reads.len(), 2, "refused requests read nothing: {reads:?}");
 }
 
+#[tokio::test]
+async fn unknown_outcome_review_is_admin_only_paged_and_audited() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    let gw = gateway(Some(ERROR_NUMBER), true).await;
+    let (_, created) = gw.remind("review-list").await;
+    assert_eq!(created["outcome"], "unknown");
+    let app = contract::router(gw.state.clone());
+    let read = |path: &'static str, token: Option<String>| {
+        let app = app.clone();
+        async move {
+            let mut request = Request::get(path);
+            if let Some(token) = token {
+                request = request.header("authorization", format!("Bearer {token}"));
+            }
+            let response = app
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let status = response.status();
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            (status, String::from_utf8_lossy(&body).into_owned())
+        }
+    };
+
+    let (status, body) = read("/v1/unknown-outcomes?limit=1", Some(operator_token())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let doc: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(doc["items"].as_array().unwrap().len(), 1);
+    assert_eq!(doc["items"][0]["outcome"]["outcome"], "unknown");
+    assert_eq!(doc["items"][0]["governing_state"], "unresolved");
+    assert_eq!(doc["items"][0]["resolutions"], json!([]));
+    assert!(doc["next_cursor"].is_null());
+    assert_eq!(
+        read("/v1/unknown-outcomes", None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        read("/v1/unknown-outcomes?limit=101", Some(operator_token()))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+
+    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    assert!(audit.iter().any(|entry| {
+        entry.action == "read_evidence"
+            && entry.resource_type == "unknown_outcomes"
+            && entry.resource_id == "default"
+            && entry.payload["found"] == true
+    }));
+}
+
 /// One stack serves one tenant: a validly signed payment for the same loan
 /// but another tenant is refused before it is acted on, and the mandate
 /// still works. A revocation's evidence record is read like an agent
