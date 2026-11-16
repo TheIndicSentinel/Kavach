@@ -277,7 +277,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** One agent decision record and its outcome (admins; audited). */
+        /** One agent decision record, outcome, and ADR-017 resolution history (admins; audited). */
         get: operations["getAgentDecision"];
         put?: never;
         post?: never;
@@ -1348,6 +1348,22 @@ export interface components {
             key_id: string;
             sig: string;
         };
+        OutcomeResolutionRecord: {
+            tenant_id: string;
+            credential_id: string;
+            outcome_ref: string;
+            /** @enum {string} */
+            state: "confirmed_delivered" | "confirmed_not_delivered" | "ambiguous";
+            /** @enum {string} */
+            source: "provider_status" | "operator_attested" | "conflict_resolution" | "reconciler";
+            reason: string;
+            evidence_digest?: string;
+            resolved_by?: string;
+            approved_by?: string;
+            ts: components["schemas"]["DateTime"];
+            key_id: string;
+            sig: string;
+        };
         /** @description An allowlist of fields; never a destination or credential. */
         GatewayReply: {
             decision: components["schemas"]["Decision"];
@@ -1995,7 +2011,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The signed record and, if any, its signed outcome. */
+            /** @description The signed record, its outcome, and every signed ADR-017 resolution (oldest first). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2004,6 +2020,7 @@ export interface operations {
                     "application/json": {
                         record: components["schemas"]["AgentDecisionRecord"];
                         outcome: components["schemas"]["OutcomeRecord"] | null;
+                        resolutions: components["schemas"]["OutcomeResolutionRecord"][];
                     };
                 };
             };

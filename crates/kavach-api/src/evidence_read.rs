@@ -185,7 +185,24 @@ pub async fn read_agent_decision(
         Some(credential) => core.outcome(credential).await.ok().flatten(),
         None => None,
     };
-    Json(json!({ "record": record, "outcome": outcome })).into_response()
+    let resolutions = match (record.payload.credential_id.as_deref(), outcome.as_ref()) {
+        (Some(credential), Some(outcome))
+            if outcome.outcome == kavach_ports::agent_evidence::Outcome::Unknown =>
+        {
+            match core.store().resolutions(core.tenant_id(), credential).await {
+                Ok(rows) => rows,
+                Err(_) => {
+                    return refuse(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "evidence store unavailable",
+                    )
+                }
+            }
+        }
+        _ => Vec::new(),
+    };
+    Json(json!({ "record": record, "outcome": outcome, "resolutions": resolutions }))
+        .into_response()
 }
 
 /// A system-of-record name or event id: what the SoR listener accepts in

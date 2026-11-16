@@ -70,6 +70,7 @@ export const decisionLookup: AgentDecisionLookup = {
     sig: "sig42",
   },
   outcome: null,
+  resolutions: [],
 };
 
 export const revocationLookup: RevocationLookup = {

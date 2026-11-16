@@ -50,7 +50,7 @@ function RawRecord({ value }: { value: unknown }) {
 }
 
 export function DecisionRecordView({ result }: { result: AgentDecisionLookup }) {
-  const { record, outcome } = result;
+  const { record, outcome, resolutions } = result;
   return (
     <div className="space-y-6">
       <section aria-labelledby="decision-record-heading">
@@ -110,6 +110,37 @@ export function DecisionRecordView({ result }: { result: AgentDecisionLookup }) 
           </>
         ) : (
           <p className="text-sm text-muted">{outcomeText(null)}</p>
+        )}
+      </section>
+
+      <section aria-labelledby="outcome-resolutions-heading">
+        <h3 id="outcome-resolutions-heading" className="mb-3 text-sm font-semibold text-ink">
+          Unknown outcome resolution history
+        </h3>
+        {resolutions.length ? (
+          <ol className="space-y-4">
+            {resolutions.map((resolution, index) => (
+              <li key={`${resolution.ts}-${resolution.source}-${resolution.state}`}>
+                <h4 className="mb-2 text-sm font-medium text-ink">Resolution {index + 1}</h4>
+                <FieldList
+                  fields={[
+                    ["State", resolution.state],
+                    ["Source", resolution.source],
+                    ["Reason code", resolution.reason],
+                    ["Resolved by", resolution.resolved_by ? mono(resolution.resolved_by) : null],
+                    ["Approved by", resolution.approved_by ? mono(resolution.approved_by) : null],
+                    ["Evidence digest", resolution.evidence_digest ? mono(resolution.evidence_digest) : null],
+                    ["Outcome reference", mono(resolution.outcome_ref)],
+                    ["Recorded at", timestamp(resolution.ts)],
+                    ["Key id", mono(resolution.key_id)],
+                  ]}
+                />
+                <RawRecord value={resolution} />
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="text-sm text-muted">No ADR-017 resolution has been recorded for this outcome.</p>
         )}
       </section>
 

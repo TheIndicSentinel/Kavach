@@ -415,7 +415,7 @@ paths:
     get:
       operationId: getAgentDecision
       tags: [evidence]
-      summary: One agent decision record and its outcome (admins; audited).
+      summary: One agent decision record, outcome, and ADR-017 resolution history (admins; audited).
       parameters:
         - name: record_id
           in: path
@@ -426,19 +426,22 @@ paths:
             pattern: "^adr:[A-Za-z0-9._-]+:[0-9]{1,9}:[0-9]{1,19}$"
       responses:
         "200":
-          description: The signed record and, if any, its signed outcome.
+          description: The signed record, its outcome, and every signed ADR-017 resolution (oldest first).
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: false
-                required: [record, outcome]
+                required: [record, outcome, resolutions]
                 properties:
                   record: { $ref: "#/components/schemas/AgentDecisionRecord" }
                   outcome:
                     oneOf:
                       - { $ref: "#/components/schemas/OutcomeRecord" }
                       - { type: "null" }
+                  resolutions:
+                    type: array
+                    items: { $ref: "#/components/schemas/OutcomeResolutionRecord" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -2234,6 +2237,24 @@ components:
         record_hash: { type: string }
         outcome: { $ref: "#/components/schemas/Outcome" }
         reason: { type: string }
+        ts: { $ref: "#/components/schemas/DateTime" }
+        key_id: { type: string }
+        sig: { type: string }
+
+    OutcomeResolutionRecord:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, credential_id, outcome_ref, state, source, reason, ts, key_id, sig]
+      properties:
+        tenant_id: { type: string }
+        credential_id: { type: string }
+        outcome_ref: { type: string, pattern: "^[0-9a-f]{64}$" }
+        state: { type: string, enum: [confirmed_delivered, confirmed_not_delivered, ambiguous] }
+        source: { type: string, enum: [provider_status, operator_attested, conflict_resolution, reconciler] }
+        reason: { type: string, pattern: "^[a-z0-9_]{1,64}$" }
+        evidence_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+        resolved_by: { type: string }
+        approved_by: { type: string }
         ts: { $ref: "#/components/schemas/DateTime" }
         key_id: { type: string }
         sig: { type: string }

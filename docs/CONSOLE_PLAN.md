@@ -50,7 +50,7 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `POST /v1/agents/{agent_id}/restrict` | `stop_agent` | Agent detail | done (UI-2 #233) |
 | `POST /v1/agents/{agent_id}/quarantine` | `stop_agent` | Agent detail | done (UI-2 #233) |
 | `POST /v1/agents/{agent_id}/revoke` | `stop_agent` | Agent detail | done (UI-2 #233) |
-| `GET /v1/agent-decisions/{record_id}` | `read_evidence` (rate limited, audited) | Agent evidence | done (UI-1 #232) |
+| `GET /v1/agent-decisions/{record_id}` | `read_evidence` (rate limited, audited) | Agent evidence: signed decision/outcome and ADR-017 resolution history | done (UI-1 #232; ADR-017 first UI-3 slice) |
 | `GET /v1/agent-revocations/{system}/{event_id}` | `read_evidence` (rate limited, audited) | Agent evidence | done (UI-1 #232) |
 | `POST /v1/reconciliation/closed-records` | `reconcile_closed_records` (rate limited, audited; revokes nothing) | Closed loans (`/reconciliation`) | done (UI-3 #234) |
 | `GET /v1/decision-events/{evidence_id}` | `read_evidence` | Decision events | done (UI-3 #234) |
@@ -76,7 +76,7 @@ The credit-track pages keep working and get no new features. On an `--agent-only
 
 ### Backend gaps the console still has
 
-- **ADR-017 unknown outcomes and resolutions** have no read endpoint, and the agent-decision lookup carries no resolution. The console shows neither until one exists.
+- **ADR-017 unknown outcomes and resolutions:** the agent-decision lookup now returns and displays the full resolution history for an unknown outcome (first UI-3 slice). A tenant-scoped list of unknown outcomes and their governing states is still pending; see the next UI-3 slice.
 - **Reinstatement parameters are untyped** in the spec (`ChangeProposal.params`), so `ReinstateAgentParams` is the one hand-written request type.
 - **One change request by id.** `GET /v1/change-requests/{id}` exists but the console does not use it: after proposing a reinstatement it links to the list. A detail view would use it and drop the exemption.
 - **Three change kinds** (`rollback_pack`, `erase_evidence`, `activate_model`) are listed, approved, rejected and cancelled in the console, but proposed only through the API.
@@ -121,11 +121,12 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - The result: `applied`, `record` (`written`, `pending`, `unchanged`), and for revoke the mandates revoked and not revoked, with "repeat the revoke to finish" when the second list is not empty.
 - Reinstate: propose a `reinstate_agent` change request (`to: active | restricted`), never from `revoked`.
 
-### UI-3: evidence and reconciliation — done (#234), one item waiting
+### UI-3: evidence and reconciliation — base done (#234), ADR-017 work in progress
 
 - Closed-records reconciliation (Closed loans): upload or paste the lender's list, show findings, state plainly that the call revokes nothing.
 - Decision events (credit) by evidence id, with `kavach-evidence verify --file` for the exported chain and `kavach why --export` for one event. Agent records get `kavach-evidence verify-bundle`, `kavach why --bundle` (decisions only) and the independent Python verifier. The console runs none of these; it shows them to copy.
-- Waiting: unknown outcomes and resolutions (ADR-017), once the read endpoints exist (section 2).
+- **Done (first ADR-017 slice):** an agent-decision evidence lookup returns all signed resolutions for an unknown outcome, oldest first, through the existing audited and rate-limited `read_evidence` path. The page renders the append-only history.
+- **Waiting:** a tenant-scoped unknown-outcomes list with governing state and resolution summary, then the remaining R3b operator attestation and two-person conflict-closure workflow from [ADR-017](ADR-017-unknown-outcome-reconciliation.md). These are separate slices; this lookup does not enable either action.
 
 ### UI-4: hardening and polish — done (#239, #241, #244, ADR-018 sign-in, #253, #254)
 

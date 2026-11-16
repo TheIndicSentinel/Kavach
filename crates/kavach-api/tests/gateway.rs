@@ -644,6 +644,7 @@ async fn evidence_reads_are_admin_only_audited_and_hold_no_secrets() {
         doc["outcome"].is_object(),
         "the allow's outcome is included"
     );
+    assert_eq!(doc["resolutions"], json!([]));
     for secret in [
         "+91",
         "910000000001",
