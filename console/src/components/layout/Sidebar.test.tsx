@@ -37,6 +37,8 @@ describe("Sidebar", () => {
     for (const agentOnly of [false, null]) {
       const shown = nav(agentOnly);
       for (const label of [...CREDIT_LABELS, ...BOTH_TRACKS]) expect(shown).toContain(label);
+      // The README's tagline: no "regulated" claim the code does not back.
+      expect(shown).toContain("Authorization and runtime control for AI agents and credit decisions.");
     }
   });
 });

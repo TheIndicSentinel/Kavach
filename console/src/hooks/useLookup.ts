@@ -10,10 +10,11 @@ export type Lookup<T> =
 /**
  * One call at a time, started only by a submit: the evidence calls are
  * audited and rate limited, so nothing fetches on its own or per keystroke.
- * A newer call replaces an older one's result.
+ * A newer call replaces an older one's result. `initial` is for tests: a
+ * page renders in that phase without calling anything.
  */
-export function useLookup<T>() {
-  const [lookup, setLookup] = useState<Lookup<T>>({ phase: "idle" });
+export function useLookup<T>(initial: Lookup<T> = { phase: "idle" }) {
+  const [lookup, setLookup] = useState<Lookup<T>>(initial);
   const latest = useRef(0);
 
   function run(what: string, call: () => Promise<T>) {

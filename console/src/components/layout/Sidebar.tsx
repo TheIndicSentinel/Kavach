@@ -64,7 +64,7 @@ export function Sidebar({ open, onNavigate, agentOnly = null }: SidebarProps) {
         <p className="mt-3 text-xs leading-relaxed text-stone-400">
           {agentOnly === true
             ? "Authorization and runtime control for AI agents."
-            : "On-prem AI governance for regulated credit decisions."}
+            : "Authorization and runtime control for AI agents and credit decisions."}
         </p>
       </div>
 

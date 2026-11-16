@@ -1,11 +1,10 @@
-import { useEffect, useReducer, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useReducer, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { useNavigate } from "react-router-dom";
 import { AgentTable, agentPath } from "../components/agents/AgentViews";
 import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
-import { ProblemAlert } from "../components/ui/ProblemAlert";
-import { Skeleton } from "../components/ui/Skeleton";
+import { ResourceState } from "../components/ui/ResourceState";
 import { TextField } from "../components/ui/TextField";
 import {
   AGENT_STATES,
@@ -18,9 +17,8 @@ import {
   idProblem,
   initialAgentPaging,
 } from "../lib/agents";
-import { agentsPath, fetchAgents, type AgentStateName, type AgentStatePage } from "../lib/api";
-
-type Loaded = { key: string; page?: AgentStatePage; error?: unknown };
+import { useResource, type Resource } from "../hooks/useResource";
+import { fetchAgents, type AgentStateName, type AgentStatePage } from "../lib/api";
 
 function isAgentState(value: string): value is AgentStateName {
   return (AGENT_STATES as readonly string[]).includes(value);
@@ -95,39 +93,18 @@ function AgentLookup() {
   );
 }
 
-export default function AgentsPage() {
+type AgentsPageProps = {
+  /** For tests: the first page's read, in place of the API's answer. */
+  resource?: Resource<AgentStatePage>;
+};
+
+export default function AgentsPage({ resource: given }: AgentsPageProps = {}) {
   const [paging, dispatch] = useReducer(agentPagingReducer, initialAgentPaging);
-  const [attempt, setAttempt] = useState(0);
-  const [loaded, setLoaded] = useState<Loaded | null>(null);
-  const key = `${agentsPath(agentListQuery(paging))}#${attempt}`;
-
-  // State is set only when the request settles, never synchronously here.
-  useEffect(() => {
-    let cancelled = false;
-    const query = agentListQuery(paging);
-    const settledKey = `${agentsPath(query)}#${attempt}`;
-    fetchAgents(query)
-      .then((page) => {
-        if (!cancelled) setLoaded({ key: settledKey, page });
-      })
-      .catch((error: unknown) => {
-        if (!cancelled) setLoaded({ key: settledKey, error });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [paging, attempt]);
-
-  const current = loaded?.key === key ? loaded : null;
-  const page = current?.page;
-  const more = page?.next_cursor != null;
+  const load = useCallback(() => fetchAgents(agentListQuery(paging)), [paging]);
+  const { resource: read, retry } = useResource(load);
+  const resource = given ?? read;
+  const page = resource.phase === "ok" ? resource.data : undefined;
   const pageNo = paging.cursors.length + 1;
-
-  const status = !current
-    ? "Loading agents…"
-    : page
-      ? agentPageSummary(paging, page.items.length, more)
-      : "";
 
   return (
     <section>
@@ -168,27 +145,19 @@ export default function AgentsPage() {
           </div>
         </CardHeader>
 
-        <ProblemAlert error={current?.error ?? null} className="mb-4 empty:mb-0" />
-        <p role="status" aria-live="polite" className="mb-4 text-sm text-muted empty:mb-0">
-          {status}
-        </p>
-
-        {!current && (
-          <div className="space-y-2">
-            <Skeleton className="h-10 w-full" />
-            <Skeleton className="h-10 w-full" />
-          </div>
-        )}
-
-        {current?.error !== undefined && (
-          <Button variant="ghost" size="sm" onClick={() => setAttempt((n) => n + 1)}>
-            Try again
-          </Button>
-        )}
-
-        {page && (
-          <AgentTable agents={page.items} emptyMessage={agentPageEmptyMessage(paging, more)} />
-        )}
+        <ResourceState
+          resource={resource}
+          loading="Loading agents…"
+          summary={(data) => agentPageSummary(paging, data.items.length, data.next_cursor != null)}
+          onRetry={retry}
+        >
+          {(data) => (
+            <AgentTable
+              agents={data.items}
+              emptyMessage={agentPageEmptyMessage(paging, data.next_cursor != null)}
+            />
+          )}
+        </ResourceState>
 
         {/* aria-disabled, not disabled: a button that disables itself mid-load
             would drop keyboard focus to the page body. */}

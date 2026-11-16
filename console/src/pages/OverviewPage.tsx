@@ -7,11 +7,11 @@ import {
 import { Link } from "react-router-dom";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
+import { ResourceState } from "../components/ui/ResourceState";
 import { Skeleton } from "../components/ui/Skeleton";
 import { StatusIndicator } from "../components/ui/StatusIndicator";
-import { useHealth } from "../hooks/useHealth";
-import { useRuntime } from "../hooks/useRuntime";
-import type { RuntimeInfo } from "../lib/api";
+import { useResource, type Resource } from "../hooks/useResource";
+import { fetchHealth, fetchRuntime, type RuntimeInfo } from "../lib/api";
 
 const capabilities = [
   {
@@ -22,14 +22,22 @@ const capabilities = [
   },
   {
     icon: Database,
-    title: "Evidence chain",
-    description: "Hash-linked audit trail with input digest only — no raw PII.",
+    title: "Agent evidence",
+    description:
+      "Agent decision and revocation records are signed and hash-chained; a verifier checks them offline against the keys you list.",
     creditTrack: false,
+  },
+  {
+    icon: Database,
+    title: "Decision events",
+    description:
+      "Each credit decision is a hash-chained event, not signed, that keeps a digest of the input rather than the input.",
+    creditTrack: true,
   },
   {
     icon: ShieldCheck,
     title: "Operator access control",
-    description: "Cedar policies decide each operator action; the caller is named by a bearer token.",
+    description: "Cedar policies decide each operator action for the principal the API authenticated.",
     creditTrack: false,
   },
   {
@@ -41,11 +49,20 @@ const capabilities = [
   },
 ] as const;
 
-export default function OverviewPage() {
-  const health = useHealth();
-  const runtime = useRuntime();
+type OverviewPageProps = {
+  /** For tests: the reads of GET /health and GET /v1/runtime, in place of the API's answers. */
+  health?: Resource<{ status: string }>;
+  runtime?: Resource<RuntimeInfo>;
+};
+
+export default function OverviewPage({ health: givenHealth, runtime: givenRuntime }: OverviewPageProps) {
+  const healthRead = useResource(fetchHealth);
+  const runtimeRead = useResource(fetchRuntime);
+  const health = givenHealth ?? healthRead.resource;
+  const runtime = givenRuntime ?? runtimeRead.resource;
+  const info = runtime.phase === "ok" ? runtime.data : undefined;
   // --agent-only: the credit track (models, packs, evaluate, batch) is not served.
-  const agentOnly = runtime.kind === "ok" && runtime.data.agent_only;
+  const agentOnly = info?.agent_only === true;
 
   return (
     <section>
@@ -59,17 +76,17 @@ export default function OverviewPage() {
         }
       />
 
-      {runtime.kind === "ok" && !agentOnly && runtime.data.model_pack_mismatch && (
+      {info && !agentOnly && info.model_pack_mismatch && (
         <div
           role="alert"
           className="mb-6 rounded-lg border border-saffron-400/40 bg-saffron-100/40 px-4 py-3 text-sm text-ink"
         >
           The active model record names a different policy pack than the one running (
-          <span className="font-mono">{runtime.data.pack_id}</span>). Evidence records the pack
+          <span className="font-mono">{info.pack_id}</span>). Evidence records the pack
           actually used; activate a matching pack or model version to resolve this.
         </div>
       )}
-      {runtime.kind === "ok" && runtime.data.pointer_drift && (
+      {info?.pointer_drift && (
         <div
           role="alert"
           className="mb-6 rounded-lg border border-saffron-400/40 bg-saffron-100/40 px-4 py-3 text-sm text-ink"
@@ -85,20 +102,16 @@ export default function OverviewPage() {
             <CardTitle>API health</CardTitle>
             <CardDescription>Liveness of this API server (GET /health)</CardDescription>
           </CardHeader>
-          {health.kind === "loading" && <Skeleton className="h-8 w-32" />}
-          {health.kind === "ok" && (
-            <StatusIndicator status="ok" label={health.status.toUpperCase()} />
-          )}
-          {health.kind === "error" && (
-            <div className="space-y-2">
-              <StatusIndicator status="error" label="Unavailable" />
-              <p className="text-sm text-muted">{health.message}</p>
-              {health.status === 401 || health.status === 403 ? (
-                <p className="text-sm text-muted">
-                  Set an access token in Settings.
-                </p>
-              ) : null}
-            </div>
+          <ResourceState
+            resource={health}
+            loading="Checking API health…"
+            onRetry={healthRead.retry}
+            skeleton={<Skeleton className="h-8 w-32" />}
+          >
+            {(data) => <StatusIndicator status="ok" label={data.status.toUpperCase()} />}
+          </ResourceState>
+          {health.phase === "error" && (
+            <StatusIndicator status="error" label="Unavailable" className="mt-2" />
           )}
         </Card>
 
@@ -109,65 +122,75 @@ export default function OverviewPage() {
               <CardTitle>Active model</CardTitle>
               <CardDescription>Pinned model record; status and mode are governed</CardDescription>
             </CardHeader>
-            {runtime.kind === "loading" && <Skeleton className="h-20 w-full" />}
-            {runtime.kind === "error" && (
-              <p className="text-sm text-muted">{runtime.message}</p>
-            )}
-            {runtime.kind === "ok" && (
+            <ResourceState
+              resource={runtime}
+              loading="Loading the runtime…"
+              onRetry={runtimeRead.retry}
+              skeleton={<Skeleton className="h-20 w-full" />}
+            >
+              {(data) => (
               <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
                 <dt className="text-muted">Model</dt>
                 <dd>
                   <Link
-                    to={`/models/${runtime.data.model_id}`}
+                    to={`/models/${data.model_id}`}
                     className="font-medium text-kavach-700 hover:text-saffron-600"
                   >
-                    {runtime.data.model_id}
+                    {data.model_id}
                   </Link>
                 </dd>
                 <dt className="text-muted">Version</dt>
-                <dd className="font-medium text-ink">{runtime.data.model_version}</dd>
+                <dd className="font-medium text-ink">{data.model_version}</dd>
                 <dt className="text-muted">Pack</dt>
                 <dd>
                   <Link
-                    to={`/policies/${runtime.data.pack_id}`}
+                    to={`/policies/${data.pack_id}`}
                     className="font-medium text-peacock-700 hover:underline"
                   >
-                    {runtime.data.pack_id}
+                    {data.pack_id}
                   </Link>
                 </dd>
                 <dt className="text-muted">Mode</dt>
                 <dd>
                   <span className="rounded-md bg-peacock-600/10 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-peacock-700">
-                    {runtime.data.governance_mode}
+                    {data.governance_mode}
                   </span>
                 </dd>
               </dl>
-            )}
+              )}
+            </ResourceState>
           </Card>
 
           <Card className="md:col-span-2 xl:col-span-1">
             <CardHeader>
-              <CardTitle>Jurisdiction</CardTitle>
+              <CardTitle>Policy pack</CardTitle>
               <CardDescription>
-                {runtime.kind === "ok"
-                  ? `${runtime.data.sector} sector · India`
-                  : "Finance sector · India"}
+                {info ? `${info.sector} sector` : "The pack this server evaluates credit with"}
               </CardDescription>
             </CardHeader>
-            <p className="text-sm leading-relaxed text-muted">
-              Policy pack{" "}
-              <code className="rounded bg-stone-100 px-1.5 py-0.5 text-xs text-ink">
-                {runtime.kind === "ok" ? runtime.data.pack_id : "finance-v0"}
-              </code>{" "}
-              sets the rules for credit evaluations (consent presence, DTI thresholds,
-              human-review gates). Each evidence record names the pack that decided it.
-            </p>
+            {runtime.phase === "loading" && <Skeleton className="h-16 w-full" />}
+            {runtime.phase === "error" && (
+              <p className="text-sm text-muted">Not known until GET /v1/runtime answers.</p>
+            )}
+            {info && (
+              <p className="text-sm leading-relaxed text-muted">
+                Pack{" "}
+                <Link
+                  to={`/policies/${info.pack_id}`}
+                  className="rounded bg-stone-100 px-1.5 py-0.5 font-mono text-xs text-ink hover:text-saffron-600"
+                >
+                  {info.pack_id}
+                </Link>{" "}
+                sets the rules for credit evaluations; its page lists them and its jurisdiction.
+                Each decision event names the pack and version that decided it.
+              </p>
+            )}
           </Card>
           </>
         )}
       </div>
 
-      {runtime.kind === "ok" && <PosturePanel runtime={runtime.data} />}
+      {info && <PosturePanel runtime={info} />}
 
       <div className="mt-8">
         <h2 className="mb-4 text-sm font-semibold uppercase tracking-widest text-muted">
