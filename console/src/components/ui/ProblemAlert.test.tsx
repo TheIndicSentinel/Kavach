@@ -2,7 +2,7 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "../../lib/api";
 import { byRole, render } from "../../test/markup";
-import { ProblemAlert } from "./ProblemAlert";
+import { ProblemAlert, unreachableMessage } from "./ProblemAlert";
 
 describe("ProblemAlert", () => {
   it("shows the problem detail, the status and the request_id in role=alert", () => {
@@ -18,20 +18,46 @@ describe("ProblemAlert", () => {
     expect(alert).toContain("request_id req-404");
   });
 
-  it("says when no request_id came back, and shows the status of a non-problem body", () => {
-    const error = new ApiError("GET /v1/agents failed (502 Bad Gateway)", 502);
-    const [alert] = byRole(render(<ProblemAlert error={error} />), "alert");
-    expect(alert).toContain("502 Bad Gateway");
-    expect(alert).toContain("no request_id was returned");
+  it("a 5xx with no request_id says the API is not reachable, and keeps the status", () => {
+    // The Vite dev proxy answers 500 or 502 when nothing listens on :8080.
+    for (const status of [500, 502, 503, 504]) {
+      const error = new ApiError(`GET /auth/config failed (${status})`, status);
+      const [alert] = byRole(render(<ProblemAlert error={error} />), "alert");
+      expect(alert).toBe(`${unreachableMessage(true)} HTTP ${status} · no request_id was returned`);
+      expect(alert).toContain("Start it with scripts/demo.sh");
+      expect(alert).not.toContain("failed (");
+    }
   });
 
-  it("omits the status of an unreachable API", () => {
+  it("a request that never completed says the API is not reachable, with no status", () => {
     const [alert] = byRole(
       render(<ProblemAlert error={new ApiError("The API could not be reached", 0)} />),
       "alert",
     );
-    expect(alert).toContain("The API could not be reached");
+    expect(alert).toBe(`${unreachableMessage(true)} no request_id was returned`);
     expect(alert).not.toContain("HTTP 0");
+  });
+
+  it("a 5xx that carries a request_id came from kavach-api and shows its detail", () => {
+    const error = new ApiError("x", 503, "req-503", "storage unavailable");
+    const [alert] = byRole(render(<ProblemAlert error={error} />), "alert");
+    expect(alert).toBe("storage unavailable HTTP 503 · request_id req-503");
+  });
+
+  it("a 4xx with no request_id keeps its own text: something answered", () => {
+    const error = new ApiError("GET /v1/agents failed (404 Not Found)", 404);
+    const [alert] = byRole(render(<ProblemAlert error={error} />), "alert");
+    expect(alert).toContain("404 Not Found");
+    expect(alert).not.toContain("not reachable");
+    expect(alert).toContain("no request_id was returned");
+  });
+
+  it("names scripts/demo.sh only in a development build", () => {
+    expect(unreachableMessage(true)).toBe(
+      "The Kavach API is not reachable. Start it with scripts/demo.sh (or check that kavach-api runs on :8080).",
+    );
+    expect(unreachableMessage(false)).toContain("The Kavach API is not reachable.");
+    expect(unreachableMessage(false)).not.toContain("demo.sh");
   });
 
   it("a 401 says to sign in again or set a token, with a link to Settings", () => {

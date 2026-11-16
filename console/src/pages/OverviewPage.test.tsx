@@ -62,7 +62,7 @@ describe("OverviewPage states", () => {
   it("health error, a non-JSON 502: Unavailable, the status, and no request_id", () => {
     const html = render(<OverviewPage health={failed(badGateway("/health"))} runtime={ok(runtime)} />);
     const [alert] = byRole(html, "alert");
-    expect(alert).toContain("502 Bad Gateway");
+    expect(alert).toContain("The Kavach API is not reachable");
     expect(alert).toContain("no request_id was returned");
     expect(text(html)).toContain("Unavailable");
   });
