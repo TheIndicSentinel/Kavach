@@ -3,15 +3,22 @@ import { useResource, type Resource } from "../hooks/useResource";
 import {
   fetchPrincipals,
   fetchRoleBindings,
+  proposeChange,
   type Principal,
   type PrincipalPage,
   type RoleBinding,
+  type RoleName,
 } from "../lib/api";
 import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
+import { Dialog } from "../components/ui/Dialog";
 import { PageHeader } from "../components/ui/PageHeader";
+import { ProblemAlert } from "../components/ui/ProblemAlert";
 import { ResourceState } from "../components/ui/ResourceState";
+import { RoleHint } from "../components/ui/RoleHint";
 import { TextField } from "../components/ui/TextField";
+import { roleHint, proposeAction, mayProbably } from "../lib/permissions";
+import { useViewer } from "../lib/changeRequests";
 
 const PAGE_SIZE = 50;
 const QUERY_LIMIT = 512;
@@ -45,7 +52,18 @@ function seenAt(value: string): string {
   return Number.isNaN(date.valueOf()) ? "Unknown" : date.toLocaleString();
 }
 
-function PrincipalRows({ principals }: { principals: readonly Principal[] }) {
+export function roleGrantParams(role: RoleName, principal: Principal) {
+  return {
+    role,
+    subject: { kind: "principal" as const, issuer: principal.issuer, value: principal.subject },
+  };
+}
+
+function PrincipalRows({ principals, onGrant, canGrant }: {
+  principals: readonly Principal[];
+  onGrant: (principal: Principal) => void;
+  canGrant: boolean;
+}) {
   if (principals.length === 0) {
     return <p className="py-6 text-sm text-muted">No people match this directory view.</p>;
   }
@@ -58,6 +76,7 @@ function PrincipalRows({ principals }: { principals: readonly Principal[] }) {
             <th scope="col" className="px-3 py-3 font-semibold">Identity provider</th>
             <th scope="col" className="px-3 py-3 font-semibold">First seen</th>
             <th scope="col" className="px-3 py-3 font-semibold">Last seen</th>
+            {canGrant && <th scope="col" className="px-3 py-3 font-semibold">Actions</th>}
           </tr>
         </thead>
         <tbody>
@@ -70,6 +89,13 @@ function PrincipalRows({ principals }: { principals: readonly Principal[] }) {
               <td className="break-all px-3 py-3 text-muted">{principal.issuer}</td>
               <td className="px-3 py-3 text-muted">{seenAt(principal.first_seen_at)}</td>
               <td className="px-3 py-3 text-muted">{seenAt(principal.last_seen_at)}</td>
+              {canGrant && (
+                <td className="px-3 py-3">
+                  <Button variant="secondary" size="sm" aria-label={`Grant role to ${principal.display_name || principal.subject}`} onClick={() => onGrant(principal)}>
+                    Grant role
+                  </Button>
+                </td>
+              )}
             </tr>
           ))}
         </tbody>
@@ -119,6 +145,15 @@ type UsersPageProps = {
 };
 
 export default function UsersPage({ resource: given, bindingsResource: givenBindings }: UsersPageProps = {}) {
+  const viewer = useViewer();
+  const grantAction = proposeAction("grant_role");
+  const canGrant = mayProbably(viewer, grantAction);
+  const grantHint = roleHint(viewer, grantAction, "grant roles");
+  const [grantTarget, setGrantTarget] = useState<Principal | null>(null);
+  const [grantRole, setGrantRole] = useState<RoleName>("viewer");
+  const [grantBusy, setGrantBusy] = useState(false);
+  const [grantError, setGrantError] = useState<unknown>(null);
+  const [grantNotice, setGrantNotice] = useState("");
   const [searchText, setSearchText] = useState("");
   const [query, setQuery] = useState("");
   const [cursors, setCursors] = useState<string[]>([]);
@@ -139,6 +174,22 @@ export default function UsersPage({ resource: given, bindingsResource: givenBind
     setCursors([]);
   }
 
+  async function submitGrant(event: FormEvent) {
+    event.preventDefault();
+    if (!grantTarget || grantBusy) return;
+    setGrantBusy(true);
+    setGrantError(null);
+    try {
+      const request = await proposeChange("grant_role", roleGrantParams(grantRole, grantTarget));
+      setGrantTarget(null);
+      setGrantNotice(`Role grant proposal ${request.id} is pending. The role takes effect only after a different authorized person approves it.`);
+    } catch (error) {
+      setGrantError(error);
+    } finally {
+      setGrantBusy(false);
+    }
+  }
+
   return (
     <section>
       <PageHeader
@@ -154,6 +205,9 @@ export default function UsersPage({ resource: given, bindingsResource: givenBind
             Search by display name or subject. Results are ordered by identity provider and subject, up to {PAGE_SIZE} per page.
           </CardDescription>
         </CardHeader>
+
+        {grantHint && <RoleHint>{grantHint}</RoleHint>}
+        {grantNotice && <p role="status" className="mb-4 text-sm text-ink">{grantNotice}</p>}
 
         <form onSubmit={submitSearch} className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-end">
           <TextField
@@ -174,9 +228,10 @@ export default function UsersPage({ resource: given, bindingsResource: givenBind
           onRetry={retry}
         >
           {(data) => (
-            <PrincipalRows
-              principals={data.items}
-            />
+            <PrincipalRows principals={data.items} canGrant={canGrant} onGrant={(principal) => {
+              setGrantTarget(principal);
+              setGrantError(null);
+            }} />
           )}
         </ResourceState>
 
@@ -200,6 +255,33 @@ export default function UsersPage({ resource: given, bindingsResource: givenBind
           <span className="text-sm text-muted">Page {cursors.length + 1}</span>
         </nav>
       </Card>
+
+      {grantTarget && (
+        <Dialog
+          titleId="grant-role-title"
+          title={`Propose a role for ${grantTarget.display_name || grantTarget.subject}`}
+          descriptionId="grant-role-description"
+          onCancel={() => { if (!grantBusy) setGrantTarget(null); }}
+          busy={grantBusy}
+        >
+          <p id="grant-role-description" className="mb-4 text-sm text-muted">
+            This submits a maker-checker request. It does not grant access unless a different authorized person approves it.
+          </p>
+          <form onSubmit={submitGrant} className="space-y-4">
+            <label htmlFor="grant-role" className="block text-sm font-medium text-ink">Role</label>
+            <select id="grant-role" value={grantRole} onChange={(event) => setGrantRole(event.target.value as RoleName)} className="w-full rounded-lg border border-border bg-white px-3 py-2 text-sm text-ink">
+              {(["viewer", "auditor", "operator", "approver", "policy_admin", "user_admin", "superadmin"] satisfies RoleName[]).map((role) => (
+                <option key={role} value={role}>{role}</option>
+              ))}
+            </select>
+            <ProblemAlert error={grantError} />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="ghost" aria-disabled={grantBusy} onClick={() => { if (!grantBusy) setGrantTarget(null); }}>Cancel</Button>
+              <Button type="submit" aria-disabled={grantBusy}>{grantBusy ? "Submitting…" : "Propose grant"}</Button>
+            </div>
+          </form>
+        </Dialog>
+      )}
 
       <Card className="mt-6">
         <CardHeader>

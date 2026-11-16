@@ -140,7 +140,8 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - **Done:** `/v1/me` is read once for the current caller and held in memory; known groups and roles inform sidebar visibility, and superadmins see the persistent banner.
 - **Done:** `/users` shows the searchable, cursor-paged people directory. Its read is covered by loading, empty, error, and accessibility tests.
 - **Done:** `/users` lists active role bindings separately from the people directory, with its own loading, empty and error states.
-- **Next slices:** add maker-checker grant and revoke proposals; add the click-to-load, audited access review and CSV download. Each remains a hint or proposal in the console; the API decides and applies changes only after approval.
+- **Done:** `/users` lets an authorized operator propose a role grant for a directory principal. It submits a maker-checker request; the UI states that the pending request grants no access. The API remains authoritative.
+- **Next slices:** add maker-checker revoke proposals; add the click-to-load, audited access review and CSV download. Each remains a hint or proposal in the console; the API decides and applies changes only after approval.
 
 ## 5. Decisions (closed)
 

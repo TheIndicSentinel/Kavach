@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PrincipalPage, RoleBinding } from "../lib/api";
 import { byRole, render, text } from "../test/markup";
 import { badGateway, failed, forbidden, loading, ok } from "../test/states";
-import UsersPage from "./UsersPage";
+import UsersPage, { roleGrantParams } from "./UsersPage";
 
 const principal: PrincipalPage["items"][number] = {
   issuer: "https://idp.example.test",
@@ -23,6 +23,13 @@ const binding: RoleBinding = {
 };
 
 describe("UsersPage directory", () => {
+  it("builds a grant proposal for the exact principal identity", () => {
+    expect(roleGrantParams("auditor", principal)).toEqual({
+      role: "auditor",
+      subject: { kind: "principal", issuer: principal.issuer, value: principal.subject },
+    });
+  });
+
   it("announces loading while principals are being read", () => {
     const html = render(<UsersPage resource={loading} bindingsResource={ok([])} />);
     expect(byRole(html, "status")).toEqual(["Loading people…", "0 active bindings."]);
