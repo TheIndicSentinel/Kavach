@@ -104,7 +104,7 @@ describe("AgentsPage states", () => {
 
   it("a non-JSON 502: the status, and that no request_id came back", () => {
     const [alert] = byRole(render(<AgentsPage resource={failed(badGateway("/v1/agents"))} />), "alert");
-    expect(alert).toContain("502 Bad Gateway");
+    expect(alert).toContain("The Kavach API is not reachable");
     expect(alert).toContain("no request_id was returned");
   });
 
@@ -159,7 +159,7 @@ describe("AgentDetailPage states", () => {
     expect(byRole(html, "alert")).toEqual(["storage unavailable HTTP 500 · request_id req-500"]);
     expect(text(html)).toContain("Try again");
     const [alert] = byRole(at(failed(badGateway("/v1/agents/agent:x"))), "alert");
-    expect(alert).toContain("502 Bad Gateway");
+    expect(alert).toContain("The Kavach API is not reachable");
     expect(alert).toContain("no request_id was returned");
   });
 

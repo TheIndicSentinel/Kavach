@@ -79,6 +79,25 @@ describe("request", () => {
     expect(err.requestId).toBeUndefined();
     expect(err.message).toContain("502");
     expect(err.message).not.toMatch(/JSON|Unexpected token/);
+    expect(err.unreachable).toBe(true);
+  });
+
+  it("an empty 500 from the dev proxy is unreachable; a problem 5xx with a request_id is not", async () => {
+    respond(500, "", "text/plain");
+    expect((await failure("/auth/config")).unreachable).toBe(true);
+    respond(
+      503,
+      JSON.stringify({ title: "Unavailable", status: 503, detail: "storage unavailable", request_id: "req-503" }),
+      "application/problem+json",
+    );
+    const fromApi = await failure("/v1/runtime");
+    expect(fromApi.requestId).toBe("req-503");
+    expect(fromApi.unreachable).toBe(false);
+  });
+
+  it("a 4xx without a request_id is not unreachable: something answered", async () => {
+    respond(404, "<html>Not Found</html>", "text/html");
+    expect((await failure("/v1/runtime")).unreachable).toBe(false);
   });
 
   it("reports a network failure as unreachable, with status 0", async () => {
@@ -91,6 +110,7 @@ describe("request", () => {
     const err = await failure("/v1/runtime");
     expect(err.status).toBe(0);
     expect(err.message).toBe("The API could not be reached");
+    expect(err.unreachable).toBe(true);
   });
 
   it("sends the bearer token and never the principal header when a token is set (development fallback)", async () => {

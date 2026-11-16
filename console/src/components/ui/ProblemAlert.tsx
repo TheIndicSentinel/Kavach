@@ -14,9 +14,22 @@ type ProblemAlertProps = {
 };
 
 /**
+ * What to say when kavach-api did not answer ({@link ApiError.unreachable}).
+ * A development build (the Vite dev server) names the demo script. A built
+ * console is served by kavach-api itself, so a proxy in front of it is the
+ * likelier cause there.
+ */
+export function unreachableMessage(dev: boolean): string {
+  return dev
+    ? "The Kavach API is not reachable. Start it with scripts/demo.sh (or check that kavach-api runs on :8080)."
+    : "The Kavach API is not reachable. Check that kavach-api is running and that any proxy in front of it can reach it.";
+}
+
+/**
  * A refusal or failure: the problem `detail` (or the HTTP status when the body
  * was not a problem) and the `request_id` to quote when reporting it. A 401
  * says how to sign in again, a 403 that the server refused this principal.
+ * When kavach-api did not answer at all, it says that instead of a status.
  * The region is always rendered so assistive technology announces what fills it.
  */
 export function ProblemAlert({ error, notFound, className }: ProblemAlertProps) {
@@ -24,13 +37,15 @@ export function ProblemAlert({ error, notFound, className }: ProblemAlertProps) 
   const missing = api?.status === 404 && notFound ? notFound : null;
   const text = missing
     ? missing
-    : api
-      ? api.detail
-      : error instanceof Error
-        ? error.message
-        : error
-          ? "Something went wrong."
-          : null;
+    : api?.unreachable
+      ? unreachableMessage(import.meta.env.DEV)
+      : api
+        ? api.detail
+        : error instanceof Error
+          ? error.message
+          : error
+            ? "Something went wrong."
+            : null;
 
   return (
     <div role="alert" className={className}>
