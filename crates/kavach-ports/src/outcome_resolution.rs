@@ -496,6 +496,19 @@ pub fn summarise<'a>(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use ed25519_dalek::{Signer, SigningKey};
+
+    struct TestSigner(SigningKey);
+
+    impl EvidenceSigner for TestSigner {
+        fn key_id(&self) -> &'static str {
+            "resolution-test"
+        }
+
+        fn sign(&self, message: &[u8]) -> Result<Vec<u8>, PortError> {
+            Ok(self.0.sign(message).to_bytes().to_vec())
+        }
+    }
 
     fn row(state: ResolutionState, source: ResolutionSource) -> ResolutionRecord {
         ResolutionRecord {
@@ -734,5 +747,43 @@ mod tests {
         let mut literal = base;
         literal.approved_by = Some("none".into());
         assert_ne!(resolution_message(&none), resolution_message(&literal));
+    }
+
+    #[test]
+    fn a_resolution_signature_cannot_be_forged_or_reused_after_editing() {
+        let signer = TestSigner(SigningKey::from_bytes(&[7; 32]));
+        let draft = ResolutionDraft {
+            tenant_id: "tenant-a".into(),
+            credential_id: "credential-a".into(),
+            outcome_ref: "ab".repeat(32),
+            state: Delivered,
+            source: OperatorAttested,
+            reason: "provider_receipt_reviewed".into(),
+            evidence_digest: Some("cd".repeat(32)),
+            resolved_by: Some("oidc:https://issuer#operator".into()),
+            approved_by: None,
+        };
+        let signed = sign_resolution(
+            draft,
+            Utc.with_ymd_and_hms(2026, 11, 16, 0, 0, 0).unwrap(),
+            &signer,
+        )
+        .unwrap();
+        let keys = std::collections::BTreeMap::from([(
+            "resolution-test".into(),
+            crate::keys::PublicKey {
+                kid: "resolution-test".into(),
+                algorithm: crate::KeyAlgorithm::Ed25519,
+                bytes: signer.0.verifying_key().to_bytes(),
+            },
+        )]);
+        assert!(resolution_verifies(&signed, &keys));
+
+        let mut forged = signed.clone();
+        forged.state = Not;
+        assert!(!resolution_verifies(&forged, &keys));
+        forged = signed;
+        forged.sig.replace_range(0..2, "00");
+        assert!(!resolution_verifies(&forged, &keys));
     }
 }

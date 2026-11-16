@@ -14,7 +14,7 @@
 | API principals / Cedar policies and entities | Integrity | `crates/kavach-auth/policies/` |
 | Service credentials (mTLS, HMAC) | Confidentiality | Operator secrets |
 | Task Mandates and system-of-record issuer keys | Integrity, authenticity | ADR-004, ADR-014: **Enforced** (agent authorization core; the issuer-key row is **Conditional** until its Postgres contract has an Actions log) |
-| Per-request resource credentials minted by the broker | Confidentiality | ADR-006/007: **Enforced** for the broker, **Reference** for the mock provider that accepts them. A real provider's own API token held by the gateway: **Planned** (ADR-015 provider mode, still Proposed) |
+| Per-request resource credentials minted by the broker | Confidentiality | ADR-006/007: **Enforced** for the broker, **Reference** for the mock provider that accepts them. A real provider's own API token held by the gateway: **Planned** (ADR-015 provider mode is accepted; its sandbox provider/channel and template mapping remain open) |
 | Credential exfiltration by the provider path (H5b) | Gateway HTTP client follows no redirects and ignores proxy environment variables; credentials go only to configured endpoints; HTTPS expected outside an isolated backend network | **Mitigated** |
 | Resource credentials (H5b) | Confidentiality and integrity: bearer secrets carrying the destination | Signed then encrypted to the provider (JWE ECDH-ES/X25519, A256GCM): opaque outside the provider; never logged or returned to agents; 15 s life; dedicated signing key, separation checked at startup |
 | Reference vault (capability ref → real value) | Confidentiality | ADR-004 §7: **Reference** (the fixture resolver); a production resolver adapter must pass the same conformance suite |
