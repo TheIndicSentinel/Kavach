@@ -72,7 +72,8 @@ pub async fn propose(
             "this kind of change request is not available in agent-only mode".into(),
         ));
     }
-    let proposer = authorized_principal(&state, &credentials, propose_action(proposal.kind))?;
+    let proposer =
+        authorized_principal(&state, &credentials, propose_action(proposal.kind)).await?;
     let request = state.propose_change(&proposer, proposal).await?;
     Ok((StatusCode::CREATED, Json(request)))
 }
@@ -93,7 +94,7 @@ pub async fn list(
     credentials: Credentials,
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<ChangeRequest>>, ApiError> {
-    authorized_principal(&state, &credentials, KavachAction::ReadChangeRequests)?;
+    authorized_principal(&state, &credentials, KavachAction::ReadChangeRequests).await?;
     let status = match query.status.as_deref() {
         None => None,
         Some(value) => Some(
@@ -116,7 +117,7 @@ pub async fn get(
     credentials: Credentials,
     Path(id): Path<String>,
 ) -> Result<Json<ChangeRequest>, ApiError> {
-    authorized_principal(&state, &credentials, KavachAction::ReadChangeRequests)?;
+    authorized_principal(&state, &credentials, KavachAction::ReadChangeRequests).await?;
     let request = state
         .changes()
         .get(&id)
@@ -148,7 +149,7 @@ pub async fn approve(
     Json(body): Json<ApproveBody>,
 ) -> Result<Json<ChangeRequest>, ApiError> {
     let kind = kind_of(&state, &id).await?;
-    let approver = authorized_principal(&state, &credentials, approve_action(kind))?;
+    let approver = authorized_principal(&state, &credentials, approve_action(kind)).await?;
     Ok(Json(
         state
             .approve_change(&approver, &id, &body.change_digest)
@@ -169,7 +170,7 @@ pub async fn reject(
     body: Option<Json<RejectBody>>,
 ) -> Result<Json<ChangeRequest>, ApiError> {
     let kind = kind_of(&state, &id).await?;
-    let checker = authorized_principal(&state, &credentials, approve_action(kind))?;
+    let checker = authorized_principal(&state, &credentials, approve_action(kind)).await?;
     let reason = body.and_then(|Json(body)| body.reason);
     Ok(Json(state.reject_change(&checker, &id, reason).await?))
 }
@@ -180,6 +181,6 @@ pub async fn cancel(
     Path(id): Path<String>,
 ) -> Result<Json<ChangeRequest>, ApiError> {
     let kind = kind_of(&state, &id).await?;
-    let proposer = authorized_principal(&state, &credentials, propose_action(kind))?;
+    let proposer = authorized_principal(&state, &credentials, propose_action(kind)).await?;
     Ok(Json(state.cancel_change(&proposer, &id).await?))
 }

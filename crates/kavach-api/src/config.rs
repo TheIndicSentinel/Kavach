@@ -273,11 +273,8 @@ mod tests {
     #[test]
     fn the_bootstrap_setting_takes_two_different_oidc_people() {
         let iss = "https://idp.example/realms/k";
-        let ok = parse_bootstrap_superadmins(
-            &format!("{iss}#alice, {iss}#bob#2"),
-            Some(iss),
-        )
-        .expect("two people");
+        let ok = parse_bootstrap_superadmins(&format!("{iss}#alice, {iss}#bob#2"), Some(iss))
+            .expect("two people");
         assert_eq!(ok[0].value, "alice");
         assert_eq!(ok[1].value, "bob#2", "a subject may contain '#'");
         for bad in [
@@ -289,10 +286,13 @@ mod tests {
             format!("{iss}#alice,{iss}#"),
             String::new(),
         ] {
-            assert!(parse_bootstrap_superadmins(&bad, Some(iss)).is_err(), "{bad}");
+            assert!(
+                parse_bootstrap_superadmins(&bad, Some(iss)).is_err(),
+                "{bad}"
+            );
         }
-        let err = parse_bootstrap_superadmins(&format!("{iss}#a,{iss}#b"), None)
-            .expect_err("no OIDC");
+        let err =
+            parse_bootstrap_superadmins(&format!("{iss}#a,{iss}#b"), None).expect_err("no OIDC");
         assert!(err.contains("--oidc-issuer"), "{err}");
     }
 

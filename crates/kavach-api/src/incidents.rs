@@ -27,7 +27,7 @@ pub async fn list_incidents(
     credentials: Credentials,
     Query(query): Query<IncidentQuery>,
 ) -> Result<Json<Vec<IncidentRecord>>, ApiError> {
-    authorize_credentials(&state, &credentials, KavachAction::ReadIncidents)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadIncidents).await?;
     let limit = query.limit.clamp(1, 200);
     let records = state
         .incidents()

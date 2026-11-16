@@ -73,6 +73,10 @@ async fn state() -> Arc<AppState> {
 }
 
 async fn state_with(insecure_dev: bool) -> Arc<AppState> {
+    state_with_roles(insecure_dev, kavach_api::RolesConfig::default()).await
+}
+
+async fn state_with_roles(insecure_dev: bool, roles: kavach_api::RolesConfig) -> Arc<AppState> {
     let dir = std::env::temp_dir().join(format!("kavach-oidc-{}-{}", std::process::id(), now()));
     std::fs::create_dir_all(&dir).unwrap();
     let jwks = dir.join(format!("jwks-{}.json", rand_suffix()));
@@ -103,7 +107,7 @@ async fn state_with(insecure_dev: bool) -> Arc<AppState> {
         insecure_dev,
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
-        roles: kavach_api::RolesConfig::default(),
+        roles,
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
@@ -437,4 +441,92 @@ async fn access_control_off_shows_too() {
         "{runtime}"
     );
     assert_eq!(relaxation(&s, "access_control_none"), 1);
+}
+
+// ---- ADR-019: bound roles decide; superadmin-only decisions are flagged ----
+
+/// A stack whose two bootstrap superadmins are the OIDC subjects `subs`.
+async fn with_superadmins(subs: [&str; 2]) -> Arc<AppState> {
+    let people = subs
+        .iter()
+        .map(|sub| kavach_storage::BindingSubject {
+            kind: kavach_storage::SubjectKind::Principal,
+            issuer: ISSUER.into(),
+            value: (*sub).into(),
+        })
+        .collect();
+    state_with_roles(
+        false,
+        kavach_api::RolesConfig {
+            bootstrap_superadmins: people,
+            ..kavach_api::RolesConfig::default()
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_role_bound_to_the_person_decides_without_any_group() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    assert_eq!(
+        get(&s, "/v1/runtime", &[bearer(&token("root-a", &[]))]).await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&s, "/v1/runtime", &[bearer(&token("nobody", &[]))]).await,
+        StatusCode::FORBIDDEN
+    );
+    // A token group named like a role is only a group.
+    assert_eq!(
+        get(
+            &s,
+            "/v1/runtime",
+            &[bearer(&token("nobody", &["superadmin"]))]
+        )
+        .await,
+        StatusCode::FORBIDDEN
+    );
+}
+
+/// The flag on the audit row of `action` about change request `id`.
+async fn flag(s: &AppState, action: &str, id: &str) -> bool {
+    let entries = s.admin().list_audit(200).await.unwrap();
+    let entry = entries
+        .iter()
+        .find(|e| {
+            e.action == action
+                && (e.resource_id == id || e.payload["change_request_id"] == json!(id))
+        })
+        .unwrap_or_else(|| panic!("no {action} row for {id}"));
+    entry.acting_as_superadmin
+}
+
+#[tokio::test]
+async fn only_a_decision_no_other_policy_allows_is_flagged_superadmin() {
+    let s = with_superadmins(["root-a", "root-b"]).await;
+    let app = router(s.clone());
+    let root_a = vec![bearer(&token("root-a", &[]))];
+    let root_b_approver = vec![bearer(&token("root-b", &["change-approvers"]))];
+
+    // Proposed on the superadmin role alone: flagged. Approved by someone the
+    // change-approvers group also allows: not flagged.
+    let params = json!({ "evidence_retention_days": 30 });
+    let (status, request) = common::propose(&app, &root_a, "update_retention", params).await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    let id = request["id"].as_str().unwrap();
+    assert!(flag(&s, "change_request_proposed", id).await);
+    let (status, applied) = common::approve(&app, &root_b_approver, &request).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    assert!(!flag(&s, "update_retention", id).await);
+
+    // And the other way round.
+    let admin = vec![bearer(&token("sso-admin-1", &["admins"]))];
+    let params = json!({ "evidence_retention_days": 31 });
+    let (status, request) = common::propose(&app, &admin, "update_retention", params).await;
+    assert_eq!(status, StatusCode::CREATED, "{request}");
+    let id = request["id"].as_str().unwrap();
+    assert!(!flag(&s, "change_request_proposed", id).await);
+    let (status, applied) = common::approve(&app, &root_a, &request).await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    assert!(flag(&s, "update_retention", id).await);
 }

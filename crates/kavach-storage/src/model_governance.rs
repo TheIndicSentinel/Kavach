@@ -78,6 +78,7 @@ fn describe(status: ModelStatus, mode: GovernanceMode) -> String {
 
 fn audit(action: &str, model_id: &str, payload: serde_json::Value) -> AuditInsert {
     AuditInsert {
+        acting_as_superadmin: false,
         action: action.into(),
         resource_type: "model_record".into(),
         resource_id: model_id.into(),

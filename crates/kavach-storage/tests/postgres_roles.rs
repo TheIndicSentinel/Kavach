@@ -21,6 +21,7 @@ async fn runtime_role_cannot_alter_evidence_or_governance_history() {
     let admin = pool.admin_store();
     admin
         .append_audit(AuditInsert {
+            acting_as_superadmin: false,
             action: "probe".into(),
             resource_type: "test".into(),
             resource_id: "r".into(),

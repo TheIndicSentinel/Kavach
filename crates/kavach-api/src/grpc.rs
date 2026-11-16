@@ -83,6 +83,7 @@ impl EvaluateService for GrpcEvaluateService {
             peer.as_ref(),
             KavachAction::Evaluate,
         )
+        .await
         .map_err(|e| status_from_api(&e))?;
         let domain_request =
             proto_to_domain(request.into_inner()).map_err(|e| status_from_api(&e))?;

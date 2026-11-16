@@ -31,6 +31,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::auth::{authorize_credentials, resolve_credentials, Credentials};
+use crate::error::ApiError;
 use crate::state::AppState;
 use crate::strict_json::StrictJson;
 
@@ -58,10 +59,14 @@ pub struct StopBody {
     note: String,
 }
 
-async fn audit(state: &AppState, action: &str, agent: &str, actor: String, payload: Value) {
+/// `superadmin`: the stop was allowed only by a superadmin policy
+/// (ADR-019 §7); false for a refused attempt, which nothing allowed.
+async fn audit(state: &AppState, action: &str, agent: &str, actor: (String, bool), payload: Value) {
+    let (actor, superadmin) = actor;
     let result = state
         .admin()
         .append_audit(AuditInsert {
+            acting_as_superadmin: superadmin,
             action: action.into(),
             resource_type: "agent".into(),
             resource_id: agent.into(),
@@ -105,6 +110,8 @@ struct Admitted<'a> {
     dp: &'a crate::dataplane::Dataplane,
     tenant: String,
     who: String,
+    /// Allowed only by a superadmin policy (ADR-019 §7).
+    superadmin: bool,
     from: AgentState,
     current: Option<kavach_ports::agent_state::StoredAgentState>,
 }
@@ -133,7 +140,7 @@ async fn refused_attempt(
     if let (Some(from), Value::Object(map)) = (from, &mut payload) {
         map.insert("from".into(), json!(from.as_str()));
     }
-    audit(state, "stop_agent_refused", agent_id, who, payload).await;
+    audit(state, "stop_agent_refused", agent_id, (who, false), payload).await;
     refuse(refusal.status, refusal.result, refusal.detail)
 }
 
@@ -141,6 +148,11 @@ const FORBIDDEN: Refusal = Refusal {
     result: "forbidden",
     status: StatusCode::FORBIDDEN,
     detail: "forbidden",
+};
+const ROLES_UNAVAILABLE: Refusal = Refusal {
+    result: "unavailable",
+    status: StatusCode::SERVICE_UNAVAILABLE,
+    detail: "role bindings could not be read",
 };
 const RATE_LIMITED: Refusal = Refusal {
     result: "rate_limited",
@@ -178,10 +190,19 @@ async fn admit<'a>(
     to: AgentState,
 ) -> Result<Admitted<'a>, Box<Response>> {
     let who = actor(state, credentials);
-    if let Err(err) = authorize_credentials(state, credentials, KavachAction::StopAgent) {
-        let _ = refused_attempt(state, (agent_id, to, who), None, FORBIDDEN).await;
-        return Err(Box::new(err.into_response()));
-    }
+    let decision = match authorize_credentials(state, credentials, KavachAction::StopAgent).await {
+        Ok(decision) => decision,
+        Err(err) => {
+            // A bindings read failure is not a refusal of this principal.
+            let refusal = if matches!(err, ApiError::Unavailable(_)) {
+                ROLES_UNAVAILABLE
+            } else {
+                FORBIDDEN
+            };
+            let _ = refused_attempt(state, (agent_id, to, who), None, refusal).await;
+            return Err(Box::new(err.into_response()));
+        }
+    };
     if !valid_agent_id(agent_id) {
         return Err(Box::new(refuse(
             StatusCode::BAD_REQUEST,
@@ -227,6 +248,7 @@ async fn admit<'a>(
         dp,
         tenant,
         who,
+        superadmin: decision.acting_as_superadmin,
         from,
         current,
     })
@@ -280,6 +302,7 @@ async fn stop(
         dp,
         tenant,
         who,
+        superadmin,
         from,
         current,
     } = admitted;
@@ -342,7 +365,7 @@ async fn stop(
         &state,
         "stop_agent",
         &agent_id,
-        who,
+        (who, superadmin),
         json!({
             "from": from.as_str(),
             "to": to.as_str(),
@@ -399,7 +422,9 @@ pub async fn get_agent(
     credentials: Credentials,
     Path(agent_id): Path<String>,
 ) -> Response {
-    if let Err(err) = authorize_credentials(&state, &credentials, KavachAction::ReadAgentState) {
+    if let Err(err) =
+        authorize_credentials(&state, &credentials, KavachAction::ReadAgentState).await
+    {
         return err.into_response();
     }
     if !valid_agent_id(&agent_id) {
@@ -476,7 +501,9 @@ pub async fn list_agents(
     credentials: Credentials,
     query: Result<axum::extract::Query<ListQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Response {
-    if let Err(err) = authorize_credentials(&state, &credentials, KavachAction::ReadAgentState) {
+    if let Err(err) =
+        authorize_credentials(&state, &credentials, KavachAction::ReadAgentState).await
+    {
         return err.into_response();
     }
     let Ok(axum::extract::Query(query)) = query else {

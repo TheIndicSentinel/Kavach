@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use super::{precheck_model, AppState, EVALUATE_LOCK};
-use crate::auth::{AuthenticatedPrincipal, PrincipalSource};
+use crate::auth::{Authorized, PrincipalSource};
 use crate::error::ApiError;
 use crate::governance::RuntimeResponse;
 use crate::registry::pack_source_path;
@@ -228,7 +228,7 @@ fn store_error(err: ChangeStoreError) -> ApiError {
 impl AppState {
     pub async fn propose_change(
         &self,
-        proposer: &AuthenticatedPrincipal,
+        proposer: &Authorized,
         proposal: ChangeProposal,
     ) -> Result<ChangeRequest, ApiError> {
         let reason = validate_reason(proposal.reason)?;
@@ -264,6 +264,7 @@ impl AppState {
         };
         request.change_digest = change_digest(&request)?;
         let audit = AuditInsert {
+            acting_as_superadmin: proposer.acting_as_superadmin,
             action: "change_request_proposed".into(),
             resource_type: "change_request".into(),
             resource_id: request.id.clone(),
@@ -287,7 +288,7 @@ impl AppState {
     /// after success returns the applied request.
     pub async fn approve_change(
         &self,
-        approver: &AuthenticatedPrincipal,
+        approver: &Authorized,
         id: &str,
         echoed_digest: &str,
     ) -> Result<ChangeRequest, ApiError> {
@@ -368,7 +369,7 @@ impl AppState {
     async fn commit(
         &self,
         request: &ChangeRequest,
-        approver: &AuthenticatedPrincipal,
+        approver: &Authorized,
         approver_key: &str,
         prepared: Prepared,
         now: DateTime<Utc>,
@@ -403,6 +404,7 @@ impl AppState {
             expected_pointer_version: prepared.expected_version,
             effects: prepared.effects,
             audit: AuditInsert {
+                acting_as_superadmin: approver.acting_as_superadmin,
                 action: request.kind.as_str().into(),
                 resource_type: prepared.resource_type.into(),
                 resource_id: prepared.resource_id,
@@ -430,7 +432,7 @@ impl AppState {
     /// Rejects a pending request (a checker other than the proposer).
     pub async fn reject_change(
         &self,
-        checker: &AuthenticatedPrincipal,
+        checker: &Authorized,
         id: &str,
         reason: Option<String>,
     ) -> Result<ChangeRequest, ApiError> {
@@ -454,7 +456,7 @@ impl AppState {
     /// Cancels a pending request (its proposer only).
     pub async fn cancel_change(
         &self,
-        proposer: &AuthenticatedPrincipal,
+        proposer: &Authorized,
         id: &str,
     ) -> Result<ChangeRequest, ApiError> {
         let _guard = self.governance_lock.lock().await;
@@ -472,7 +474,7 @@ impl AppState {
         &self,
         request: &ChangeRequest,
         status: ChangeStatus,
-        by: &AuthenticatedPrincipal,
+        by: &Authorized,
         reason: &str,
     ) -> Result<ChangeRequest, ApiError> {
         let action = format!("change_request_{}", status.as_str());
@@ -483,7 +485,10 @@ impl AppState {
                 by: by.id.clone(),
                 by_key: by.identity_key(),
                 outcome: json!({ "reason": reason }),
-                audit: kavach_storage::decision_audit(request, &action, &by.id, Some(reason)),
+                audit: AuditInsert {
+                    acting_as_superadmin: by.acting_as_superadmin,
+                    ..kavach_storage::decision_audit(request, &action, &by.id, Some(reason))
+                },
                 now: Utc::now(),
             })
             .await

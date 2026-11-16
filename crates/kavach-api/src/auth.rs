@@ -11,13 +11,21 @@
 //!
 //! Sending `X-Kavach-Principal` together with a token or a certificate
 //! principal is rejected.
+//!
+//! Cedar also receives the operator roles bound to the principal (ADR-019),
+//! read per request with no cache. If they cannot be read the request is
+//! refused with 503: it is never decided on the token's groups alone.
 
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::ops::Deref;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::HeaderMap;
-use kavach_auth::KavachAction;
+use kavach_auth::{KavachAction, OperatorRequest};
 use tonic::metadata::MetadataMap;
 
 use crate::error::ApiError;
@@ -26,6 +34,11 @@ use crate::oidc::OidcError;
 use crate::state::AppState;
 
 const PRINCIPAL_HEADER: &str = "x-kavach-principal";
+
+/// The issuer under which an `--insecure-dev` header principal can be bound
+/// (ADR-019 §3). It is no OIDC issuer, so a binding made on a dev stack is
+/// valid nowhere else.
+pub const DEV_HEADER_ISSUER: &str = "dev:x-kavach-principal";
 
 /// How the principal was established.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +59,8 @@ pub struct AuthenticatedPrincipal {
     pub source: PrincipalSource,
     /// Token issuer, for source-qualified identity (JWT principals only).
     pub issuer: Option<String>,
+    /// The token's `sub`, which person bindings name (JWT principals only).
+    pub subject: Option<String>,
 }
 
 impl AuthenticatedPrincipal {
@@ -106,6 +121,7 @@ fn verify_token(state: &AppState, token: &str) -> Result<AuthenticatedPrincipal,
             groups: token_claims.groups,
             source: PrincipalSource::Jwt,
             issuer: Some(verifier.issuer().to_string()),
+            subject: token_claims.subject,
         }),
         Err(OidcError::UnknownKid(_)) => {
             verifier.request_refresh();
@@ -140,12 +156,14 @@ pub fn resolve_principal(
             groups: vec![],
             source: PrincipalSource::MtlsSan,
             issuer: None,
+            subject: None,
         }),
         (None, None, Some(principal)) if state.insecure_dev() => Ok(AuthenticatedPrincipal {
             id: principal.to_string(),
             groups: vec![],
             source: PrincipalSource::InsecureHeader,
             issuer: None,
+            subject: None,
         }),
         _ => Err(ApiError::Unauthorized),
     }
@@ -171,28 +189,51 @@ pub fn resolve_credentials(
     )
 }
 
-pub fn authorize_credentials(
+/// What an allowed request carries into its audit row.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Decision {
+    /// Only a superadmin policy allowed the request (ADR-019 §7).
+    pub acting_as_superadmin: bool,
+}
+
+/// A principal Cedar allowed to take an action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Authorized {
+    pub principal: AuthenticatedPrincipal,
+    /// Only a superadmin policy allowed the request (ADR-019 §7).
+    pub acting_as_superadmin: bool,
+}
+
+impl Deref for Authorized {
+    type Target = AuthenticatedPrincipal;
+
+    fn deref(&self) -> &AuthenticatedPrincipal {
+        &self.principal
+    }
+}
+
+pub async fn authorize_credentials(
     state: &AppState,
     credentials: &Credentials,
     action: KavachAction,
-) -> Result<(), ApiError> {
+) -> Result<Decision, ApiError> {
     if state.access_control().is_none() {
-        return Ok(());
+        return Ok(Decision::default());
     }
     let principal = resolve_credentials(state, credentials)?;
-    authorize_principal(state, &principal, action)
+    authorize_principal(state, &principal, action).await
 }
 
 /// gRPC: token from `authorization` metadata, certificate from the TLS
 /// connection (`Request::peer_certs`).
-pub fn authorize_metadata(
+pub async fn authorize_metadata(
     state: &AppState,
     md: &MetadataMap,
     peer: Option<&PeerCertificate>,
     action: KavachAction,
-) -> Result<(), ApiError> {
+) -> Result<Decision, ApiError> {
     if state.access_control().is_none() {
-        return Ok(());
+        return Ok(Decision::default());
     }
     let principal = resolve_principal(
         state,
@@ -200,35 +241,192 @@ pub fn authorize_metadata(
         metadata(md, PRINCIPAL_HEADER),
         peer,
     )?;
-    authorize_principal(state, &principal, action)
+    authorize_principal(state, &principal, action).await
 }
 
 /// Resolves and authorizes the caller, returning the principal. Change
 /// requests need the identity even when access control is off (development).
-pub fn authorized_principal(
+pub async fn authorized_principal(
     state: &AppState,
     credentials: &Credentials,
     action: KavachAction,
-) -> Result<AuthenticatedPrincipal, ApiError> {
+) -> Result<Authorized, ApiError> {
     let principal = resolve_credentials(state, credentials)?;
-    authorize_principal(state, &principal, action)?;
-    Ok(principal)
+    let decision = authorize_principal(state, &principal, action).await?;
+    Ok(Authorized {
+        principal,
+        acting_as_superadmin: decision.acting_as_superadmin,
+    })
 }
 
-fn authorize_principal(
+/// Where a principal's bindings live: `(issuer, subject)`, or `None` for a
+/// principal no binding can name (a certificate workload).
+fn binding_identity(principal: &AuthenticatedPrincipal) -> Option<(&str, Option<&str>)> {
+    match principal.source {
+        PrincipalSource::Jwt => Some((
+            principal.issuer.as_deref().unwrap_or_default(),
+            principal.subject.as_deref(),
+        )),
+        PrincipalSource::InsecureHeader => Some((DEV_HEADER_ISSUER, Some(principal.id.as_str()))),
+        PrincipalSource::MtlsSan => None,
+    }
+}
+
+/// The operator roles bound to the principal, read now (ADR-019 §3). A read
+/// failure is a 503, never an empty set.
+pub async fn bound_roles(
+    state: &AppState,
+    principal: &AuthenticatedPrincipal,
+) -> Result<Vec<&'static str>, ApiError> {
+    let Some((issuer, subject)) = binding_identity(principal) else {
+        return Ok(Vec::new());
+    };
+    let roles = state
+        .roles()
+        .roles_for(state.tenant_id(), issuer, subject, &principal.groups)
+        .await
+        .map_err(|e| {
+            // The store error names no principal.
+            tracing::error!(error = %e, "role bindings could not be read; request refused");
+            ApiError::Unavailable("role bindings could not be read".into())
+        })?;
+    Ok(roles
+        .into_iter()
+        .map(kavach_storage::Role::as_str)
+        .collect())
+}
+
+async fn authorize_principal(
     state: &AppState,
     principal: &AuthenticatedPrincipal,
     action: KavachAction,
-) -> Result<(), ApiError> {
+) -> Result<Decision, ApiError> {
     let Some(auth) = state.access_control() else {
-        return Ok(());
+        return Ok(Decision::default());
     };
-    let allowed = auth
-        .authorize_with_groups(&principal.id, &principal.groups, action)
+    let roles = bound_roles(state, principal).await?;
+    record_seen(state, principal).await;
+    let decision = auth
+        .decide(&OperatorRequest {
+            principal_id: &principal.id,
+            groups: &principal.groups,
+            roles: &roles,
+            action,
+            role_change: None,
+        })
         .map_err(|e| ApiError::Internal(format!("cedar authorize: {e}")))?;
-    if allowed {
-        Ok(())
+    if decision.allowed {
+        Ok(Decision {
+            acting_as_superadmin: decision.superadmin_only,
+        })
     } else {
         Err(ApiError::Forbidden)
+    }
+}
+
+/// How often this process rewrites one person's directory row. The store
+/// moves `last_seen_at` at most hourly anyway; this spares the round trip.
+const SEEN_INTERVAL: Duration = Duration::from_secs(15 * 60);
+/// Entries kept before the throttle forgets everyone (a bound on memory, not
+/// on correctness: forgetting only costs a write).
+const SEEN_MAX_ENTRIES: usize = 10_000;
+
+/// Remembers when this process last wrote each person's directory row.
+#[derive(Debug, Default)]
+pub struct SeenThrottle(Mutex<HashMap<(String, String), Instant>>);
+
+impl SeenThrottle {
+    /// True when the row is due for a write; marks it written.
+    fn due(&self, issuer: &str, subject: &str, now: Instant) -> bool {
+        let Ok(mut seen) = self.0.lock() else {
+            return true;
+        };
+        let key = (issuer.to_string(), subject.to_string());
+        if seen
+            .get(&key)
+            .is_some_and(|at| now.duration_since(*at) < SEEN_INTERVAL)
+        {
+            return false;
+        }
+        if seen.len() >= SEEN_MAX_ENTRIES {
+            seen.clear();
+        }
+        seen.insert(key, now);
+        true
+    }
+}
+
+/// Adds an OIDC person to the principals directory, or moves their
+/// `last_seen_at` on (ADR-019 §4). The directory informs the access review
+/// and never an authorization decision, so a failed write is logged and the
+/// request goes on.
+async fn record_seen(state: &AppState, principal: &AuthenticatedPrincipal) {
+    let (PrincipalSource::Jwt, Some(issuer), Some(subject)) = (
+        principal.source,
+        principal.issuer.as_deref(),
+        principal.subject.as_deref(),
+    ) else {
+        return;
+    };
+    if !state.seen().due(issuer, subject, Instant::now()) {
+        return;
+    }
+    if let Err(e) = state
+        .roles()
+        .record_principal_seen(
+            state.tenant_id(),
+            issuer,
+            subject,
+            &principal.id,
+            chrono::Utc::now(),
+        )
+        .await
+    {
+        tracing::warn!(error = %e, "principals directory not updated");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_seen_throttle_writes_once_per_interval_per_person() {
+        let throttle = SeenThrottle::default();
+        let t0 = Instant::now();
+        assert!(throttle.due("iss", "alice", t0));
+        assert!(!throttle.due("iss", "alice", t0 + Duration::from_secs(60)));
+        assert!(
+            throttle.due("iss", "bob", t0),
+            "another person is not throttled"
+        );
+        assert!(
+            throttle.due("other-iss", "alice", t0),
+            "nor the same subject at another issuer"
+        );
+        assert!(throttle.due("iss", "alice", t0 + SEEN_INTERVAL));
+    }
+
+    fn principal(source: PrincipalSource) -> AuthenticatedPrincipal {
+        AuthenticatedPrincipal {
+            id: "alice".into(),
+            groups: vec![],
+            source,
+            issuer: (source == PrincipalSource::Jwt).then(|| "https://idp.example".into()),
+            subject: (source == PrincipalSource::Jwt).then(|| "sub-alice".into()),
+        }
+    }
+
+    #[test]
+    fn a_dev_header_principal_binds_under_the_dev_source_and_a_certificate_not_at_all() {
+        assert_eq!(
+            binding_identity(&principal(PrincipalSource::Jwt)),
+            Some(("https://idp.example", Some("sub-alice")))
+        );
+        assert_eq!(
+            binding_identity(&principal(PrincipalSource::InsecureHeader)),
+            Some((DEV_HEADER_ISSUER, Some("alice")))
+        );
+        assert_eq!(binding_identity(&principal(PrincipalSource::MtlsSan)), None);
     }
 }

@@ -19,8 +19,9 @@ impl PostgresAdminStore {
     pub async fn append_audit(&self, insert: AuditInsert) -> Result<AuditEntry, AdminStoreError> {
         let row = sqlx::query_as::<_, AuditRow>(
             "INSERT INTO admin_audit_log \
-                (action, resource_type, resource_id, actor_principal, approver_principal, payload) \
-            VALUES ($1, $2, $3, $4, $5, $6) \
+                (action, resource_type, resource_id, actor_principal, approver_principal, payload, \
+                 acting_as_superadmin) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7) \
             RETURNING id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at, acting_as_superadmin",
         )
         .bind(&insert.action)
@@ -29,6 +30,7 @@ impl PostgresAdminStore {
         .bind(&insert.actor_principal)
         .bind(&insert.approver_principal)
         .bind(insert.payload)
+        .bind(insert.acting_as_superadmin)
         .fetch_one(&self.pool)
         .await
         .map_err(|err| AdminStoreError::Io(err.to_string()))?;
@@ -46,8 +48,8 @@ impl PostgresAdminStore {
         let result = sqlx::query(
             "INSERT INTO admin_audit_log \
                 (action, resource_type, resource_id, actor_principal, approver_principal, \
-                 payload, idempotency_key) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7) \
+                 payload, idempotency_key, acting_as_superadmin) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
             ON CONFLICT (idempotency_key) DO NOTHING",
         )
         .bind(&insert.action)
@@ -57,6 +59,7 @@ impl PostgresAdminStore {
         .bind(&insert.approver_principal)
         .bind(insert.payload)
         .bind(key)
+        .bind(insert.acting_as_superadmin)
         .execute(&self.pool)
         .await
         .map_err(|err| AdminStoreError::Io(err.to_string()))?;
@@ -284,8 +287,9 @@ pub(crate) async fn insert_audit<'e>(
 ) -> Result<(), AdminStoreError> {
     sqlx::query(
         "INSERT INTO admin_audit_log \
-            (action, resource_type, resource_id, actor_principal, approver_principal, payload) \
-        VALUES ($1, $2, $3, $4, $5, $6)",
+            (action, resource_type, resource_id, actor_principal, approver_principal, payload, \
+             acting_as_superadmin) \
+        VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&insert.action)
     .bind(&insert.resource_type)
@@ -293,6 +297,7 @@ pub(crate) async fn insert_audit<'e>(
     .bind(&insert.actor_principal)
     .bind(&insert.approver_principal)
     .bind(&insert.payload)
+    .bind(insert.acting_as_superadmin)
     .execute(executor)
     .await
     .map_err(|err| AdminStoreError::Io(err.to_string()))?;

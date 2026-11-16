@@ -490,6 +490,7 @@ pub fn decision_audit(
     reason: Option<&str>,
 ) -> AuditInsert {
     AuditInsert {
+        acting_as_superadmin: false,
         action: action.into(),
         resource_type: "change_request".into(),
         resource_id: request.id.clone(),

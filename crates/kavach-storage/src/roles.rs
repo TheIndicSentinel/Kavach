@@ -162,6 +162,7 @@ pub const BOOTSTRAP_ACTOR: &str = "kavach-api --bootstrap-superadmins";
 
 pub(crate) fn bootstrap_audit(binding: &RoleBinding) -> AuditInsert {
     AuditInsert {
+        acting_as_superadmin: true,
         action: BOOTSTRAP_AUDIT_ACTION.into(),
         resource_type: ROLE_BINDING_RESOURCE.into(),
         resource_id: binding.id.clone(),
@@ -236,7 +237,7 @@ impl MemoryRoleStore {
         &self,
         tenant_id: &str,
         issuer: &str,
-        subject: &str,
+        subject: Option<&str>,
         groups: &[String],
     ) -> Result<BTreeSet<Role>, RoleStoreError> {
         let inner = self.inner.lock().map_err(poisoned)?;
@@ -245,7 +246,7 @@ impl MemoryRoleStore {
             .iter()
             .filter(|b| b.is_active() && b.tenant_id == tenant_id && b.subject.issuer == issuer)
             .filter(|b| match b.subject.kind {
-                SubjectKind::Principal => b.subject.value == subject,
+                SubjectKind::Principal => Some(b.subject.value.as_str()) == subject,
                 SubjectKind::Group => groups.contains(&b.subject.value),
             })
             .map(|b| b.role)
@@ -278,11 +279,14 @@ impl MemoryRoleStore {
     ) -> Result<(), RoleStoreError> {
         let display_name = truncate_display_name(display_name);
         let mut inner = self.inner.lock().map_err(poisoned)?;
-        let key = (tenant_id.to_string(), issuer.to_string(), subject.to_string());
+        let key = (
+            tenant_id.to_string(),
+            issuer.to_string(),
+            subject.to_string(),
+        );
         match inner.principals.get_mut(&key) {
             Some(p) => {
-                if now - p.last_seen_at >= LAST_SEEN_GRANULARITY || p.display_name != display_name
-                {
+                if now - p.last_seen_at >= LAST_SEEN_GRANULARITY || p.display_name != display_name {
                     p.last_seen_at = p.last_seen_at.max(now);
                     p.display_name = display_name;
                 }
@@ -338,7 +342,7 @@ impl MemoryRoleStore {
             .collect();
         for binding in &written {
             admin
-                .append_audit_flagged(bootstrap_audit(binding), true)
+                .append_audit(bootstrap_audit(binding))
                 .map_err(|e| RoleStoreError::Io(e.to_string()))?;
         }
         inner.bindings.extend(written.iter().cloned());
@@ -366,13 +370,14 @@ impl RoleBackend {
     }
 
     /// The roles bound, in `tenant_id`, to the person `(issuer, subject)` or
-    /// to any of `groups` under that issuer. Fails, never returns fewer
-    /// roles, when a stored row cannot be read.
+    /// to any of `groups` under that issuer. With no subject (a token without
+    /// `sub`) only group bindings match. Fails, never returns fewer roles,
+    /// when a stored row cannot be read.
     pub async fn roles_for(
         &self,
         tenant_id: &str,
         issuer: &str,
-        subject: &str,
+        subject: Option<&str>,
         groups: &[String],
     ) -> Result<BTreeSet<Role>, RoleStoreError> {
         match self {
@@ -493,20 +498,42 @@ mod tests {
         };
         {
             let mut inner = roles.inner.lock().unwrap();
-            inner.bindings.push(new_binding("t1", Role::Approver, person("alice"), None, now));
-            inner.bindings.push(new_binding("t1", Role::Auditor, group, None, now));
-            inner.bindings.push(new_binding("t2", Role::Superadmin, person("alice"), None, now));
+            inner.bindings.push(new_binding(
+                "t1",
+                Role::Approver,
+                person("alice"),
+                None,
+                now,
+            ));
+            inner
+                .bindings
+                .push(new_binding("t1", Role::Auditor, group, None, now));
+            inner.bindings.push(new_binding(
+                "t2",
+                Role::Superadmin,
+                person("alice"),
+                None,
+                now,
+            ));
             let mut ended = new_binding("t1", Role::Operator, person("alice"), None, now);
             ended.ended_at = Some(now);
             inner.bindings.push(ended);
         }
         let got = backend
-            .roles_for("t1", "https://idp.example", "alice", &["audit-team".into()])
+            .roles_for(
+                "t1",
+                "https://idp.example",
+                Some("alice"),
+                &["audit-team".into()],
+            )
             .await
             .unwrap();
-        assert_eq!(got.into_iter().collect::<Vec<_>>(), vec![Role::Approver, Role::Auditor]);
+        assert_eq!(
+            got.into_iter().collect::<Vec<_>>(),
+            vec![Role::Approver, Role::Auditor]
+        );
         assert!(backend
-            .roles_for("t1", "https://other.example", "alice", &[])
+            .roles_for("t1", "https://other.example", Some("alice"), &[])
             .await
             .unwrap()
             .is_empty());

@@ -75,7 +75,7 @@ pub async fn runtime(
     State(state): State<Arc<AppState>>,
     credentials: Credentials,
 ) -> Result<Json<RuntimeView>, ApiError> {
-    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance).await?;
     let runtime = state.runtime()?;
     let stored_pointer_version = state
         .admin()
@@ -111,7 +111,7 @@ pub async fn list_policy_packs(
     State(state): State<Arc<AppState>>,
     credentials: Credentials,
 ) -> Result<Json<Vec<crate::registry::PackSummary>>, ApiError> {
-    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance).await?;
     let runtime = state.runtime()?;
     let packs = list_packs(state.packs_dir(), &runtime.pack_id, &runtime.pack_version)?;
     Ok(Json(packs))
@@ -122,7 +122,7 @@ pub async fn get_policy_pack(
     credentials: Credentials,
     Path(pack_id): Path<String>,
 ) -> Result<Json<PolicyPack>, ApiError> {
-    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance).await?;
     let pack = get_pack_by_id(state.packs_dir(), &pack_id)?;
     Ok(Json(pack))
 }
@@ -131,7 +131,7 @@ pub async fn list_model_records(
     State(state): State<Arc<AppState>>,
     credentials: Credentials,
 ) -> Result<Json<Vec<crate::registry::ModelSummary>>, ApiError> {
-    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance).await?;
     let runtime = state.runtime()?;
     let models = list_models(
         state.models_dir(),
@@ -154,7 +154,7 @@ pub async fn get_model_record(
     credentials: Credentials,
     Path(model_id): Path<String>,
 ) -> Result<Json<ModelDetail>, ApiError> {
-    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance)?;
+    authorize_credentials(&state, &credentials, KavachAction::ReadGovernance).await?;
     let states = state.model_states().await?;
     let model = get_model_by_id(state.models_dir(), &model_id)?;
     Ok(Json(ModelDetail {

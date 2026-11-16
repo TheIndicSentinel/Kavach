@@ -75,16 +75,23 @@ fn refuse(status: StatusCode, error: &str) -> Response {
     crate::problem::Problem::for_status(status, error).into_response()
 }
 
+/// Who reads, as the audit row records them.
+struct Reader {
+    id: String,
+    acting_as_superadmin: bool,
+}
+
 /// Authorises the read, checks the id and the rate limit; returns who
 /// reads. With access control off (development only) the read is still
 /// audited, as such.
-fn admit(
+async fn admit(
     state: &AppState,
     credentials: &Credentials,
     id_ok: bool,
     id_error: &str,
-) -> Result<String, Box<Response>> {
-    authorize_credentials(state, credentials, KavachAction::ReadEvidence)
+) -> Result<Reader, Box<Response>> {
+    let decision = authorize_credentials(state, credentials, KavachAction::ReadEvidence)
+        .await
         .map_err(|e| Box::new(e.into_response()))?;
     if !id_ok {
         return Err(Box::new(refuse(StatusCode::BAD_REQUEST, id_error)));
@@ -95,10 +102,13 @@ fn admit(
             "too many evidence reads",
         )));
     }
-    Ok(resolve_credentials(state, credentials).map_or_else(
-        |_| "unauthenticated (access control off)".to_string(),
-        |p| p.id,
-    ))
+    Ok(Reader {
+        id: resolve_credentials(state, credentials).map_or_else(
+            |_| "unauthenticated (access control off)".to_string(),
+            |p| p.id,
+        ),
+        acting_as_superadmin: decision.acting_as_superadmin,
+    })
 }
 
 /// Records the read; a read that cannot be audited is refused.
@@ -106,16 +116,17 @@ async fn audit(
     state: &AppState,
     resource_type: &str,
     id: &str,
-    reader: String,
+    reader: Reader,
     found: bool,
 ) -> Result<(), Box<Response>> {
     state
         .admin()
         .append_audit(AuditInsert {
+            acting_as_superadmin: reader.acting_as_superadmin,
             action: "read_evidence".into(),
             resource_type: resource_type.into(),
             resource_id: id.into(),
-            actor_principal: reader,
+            actor_principal: reader.id,
             approver_principal: String::new(),
             payload: json!({ "found": found }),
         })
@@ -140,7 +151,9 @@ pub async fn read_agent_decision(
         &credentials,
         valid_record_id(&record_id),
         "record_id must be adr:<tenant>:<partition>:<seq>",
-    ) {
+    )
+    .await
+    {
         Ok(reader) => reader,
         Err(refused) => return *refused,
     };
@@ -199,7 +212,9 @@ pub async fn read_revocation_record(
         &credentials,
         valid_event_part(&system) && valid_event_part(&event_id),
         "system and event_id must be 1-128 of A-Z a-z 0-9 . _ - :",
-    ) {
+    )
+    .await
+    {
         Ok(reader) => reader,
         Err(refused) => return *refused,
     };
@@ -250,7 +265,9 @@ pub async fn read_decision_event(
         &credentials,
         valid_evidence_id(&evidence_id),
         "evidence_id must be a lowercase UUID",
-    ) {
+    )
+    .await
+    {
         Ok(reader) => reader,
         Err(refused) => return *refused,
     };

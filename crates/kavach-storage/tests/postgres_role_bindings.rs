@@ -57,20 +57,24 @@ async fn roles_come_from_person_and_group_bindings_in_the_tenant_only() {
     bind(&pool, "rb_4", "t1", "operator", "principal", "bob").await;
 
     let roles = store
-        .roles_for("t1", ISS, "alice", &groups(&["audit-team", "other"]))
+        .roles_for("t1", ISS, Some("alice"), &groups(&["audit-team", "other"]))
         .await;
     let roles = roles_of(roles);
     assert_eq!(roles, vec![Role::Approver, Role::Auditor]);
 
     // Same subject under another issuer: nothing.
     let other = RoleBackend::Postgres(pool.role_store())
-        .roles_for("t1", "https://other.example", "alice", &[])
+        .roles_for("t1", "https://other.example", Some("alice"), &[])
         .await
         .expect("lookup");
     assert!(other.is_empty());
 
     // Tenant t2's superadmin binding does not reach t1, and vice versa.
-    let t2 = roles_of(store.roles_for("t2", ISS, "alice", &groups(&["audit-team"])).await);
+    let t2 = roles_of(
+        store
+            .roles_for("t2", ISS, Some("alice"), &groups(&["audit-team"]))
+            .await,
+    );
     assert_eq!(t2, vec![Role::Superadmin]);
 }
 
@@ -88,18 +92,24 @@ async fn an_ended_binding_gives_no_role_and_a_second_active_one_is_refused() {
     .execute(&pool.pool)
     .await
     .expect_err("one active binding per role and subject");
-    assert!(dup.to_string().contains("role_bindings_one_active"), "{dup}");
+    assert!(
+        dup.to_string().contains("role_bindings_one_active"),
+        "{dup}"
+    );
 
     sqlx::query("UPDATE role_bindings SET ended_at = now() WHERE id = 'rb_1'")
         .execute(&pool.pool)
         .await
         .expect("end binding");
-    assert!(roles_of(store.roles_for("t1", ISS, "alice", &[]).await).is_empty());
+    assert!(roles_of(store.roles_for("t1", ISS, Some("alice"), &[]).await).is_empty());
     // Once ended, the same role can be bound again.
     bind(&pool, "rb_3", "t1", "approver", "principal", "alice").await;
     let all = store.list_bindings("t1", true).await.expect("list");
     assert_eq!(all.len(), 2);
-    assert_eq!(store.list_bindings("t1", false).await.expect("list").len(), 1);
+    assert_eq!(
+        store.list_bindings("t1", false).await.expect("list").len(),
+        1
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -145,7 +155,7 @@ async fn an_unknown_stored_role_fails_the_lookup_closed() {
         .expect("drop check as owner");
     bind(&pool, "rb_1", "t1", "root", "principal", "alice").await;
     let err = RoleBackend::Postgres(pool.role_store())
-        .roles_for("t1", ISS, "alice", &[])
+        .roles_for("t1", ISS, Some("alice"), &[])
         .await
         .expect_err("unknown role is an error, not an empty set");
     assert!(err.to_string().contains("unknown"), "{err}");
@@ -171,16 +181,20 @@ async fn the_bootstrap_writes_two_flagged_superadmins_once() {
         panic!("first run writes");
     };
     assert_eq!(written.len(), 2);
-    assert!(written.iter().all(|b| b.role == Role::Superadmin
-        && b.granted_by_change_request.is_none()));
+    assert!(written
+        .iter()
+        .all(|b| b.role == Role::Superadmin && b.granted_by_change_request.is_none()));
 
     let again = store
         .bootstrap_superadmins("t1", &[person("carol"), person("dave")], now)
         .await
         .expect("second run");
     assert_eq!(again, BootstrapOutcome::AlreadyPresent);
-    assert_eq!(store.list_bindings("t1", true).await.expect("list").len(), 2);
-    assert!(roles_of(store.roles_for("t1", ISS, "carol", &[]).await).is_empty());
+    assert_eq!(
+        store.list_bindings("t1", true).await.expect("list").len(),
+        2
+    );
+    assert!(roles_of(store.roles_for("t1", ISS, Some("carol"), &[]).await).is_empty());
 
     let audit = pool.admin_store().list_audit(50).await.expect("audit");
     let rows: Vec<_> = audit
@@ -229,7 +243,10 @@ async fn concurrent_bootstraps_write_one_pair() {
     }
     assert_eq!(written, 1);
     let store = RoleBackend::Postgres(pool.role_store());
-    assert_eq!(store.list_bindings("t1", true).await.expect("list").len(), 2);
+    assert_eq!(
+        store.list_bindings("t1", true).await.expect("list").len(),
+        2
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -249,7 +266,13 @@ async fn last_seen_moves_at_most_hourly_and_names_are_capped() {
 
     // Within the hour: no write.
     store
-        .record_principal_seen("t1", ISS, "alice", &"x".repeat(300), t0 + Duration::minutes(30))
+        .record_principal_seen(
+            "t1",
+            ISS,
+            "alice",
+            &"x".repeat(300),
+            t0 + Duration::minutes(30),
+        )
         .await
         .expect("again");
     let p = seen(store.list_principals("t1").await.expect("list"));

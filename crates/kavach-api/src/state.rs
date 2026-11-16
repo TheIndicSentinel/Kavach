@@ -10,9 +10,9 @@ use kavach_evidence::MemoryChain;
 use kavach_keys::{verify_pack_file, TrustedSigners};
 use kavach_policy::{LoadedPolicyPack, PackLoader};
 use kavach_storage::{
-    check_startup_pack, AdminBackend, AuditInsert, BatchJobBackend, ChangeRequestBackend,
-    EvidenceBackend, IncidentBackend, MemoryAdminStore, MemoryChangeStore, MemoryRetentionStore,
-    BootstrapOutcome, RetentionBackend, RetentionStoreError, RoleBackend, RuntimePointers,
+    check_startup_pack, AdminBackend, AuditInsert, BatchJobBackend, BootstrapOutcome,
+    ChangeRequestBackend, EvidenceBackend, IncidentBackend, MemoryAdminStore, MemoryChangeStore,
+    MemoryRetentionStore, RetentionBackend, RetentionStoreError, RoleBackend, RuntimePointers,
     StartupPackCheck, StoragePool,
 };
 
@@ -46,6 +46,8 @@ pub struct AppState {
     change_ttl: Duration,
     /// Operator role bindings and the principals directory (ADR-019).
     roles: RoleBackend,
+    /// When each person's directory row was last written by this process.
+    seen: crate::auth::SeenThrottle,
     /// The tenant this process serves (ADR-014 Tier 1).
     tenant_id: String,
     /// Serializes change decisions in this process, so commit order and
@@ -193,6 +195,7 @@ impl AppState {
             mtls_principal_san: config.mtls_principal_san,
             nonces: crate::hmac_auth::NonceCache::default(),
             roles,
+            seen: crate::auth::SeenThrottle::default(),
             tenant_id: config.roles.tenant_id.clone(),
             changes,
             change_ttl: Duration::seconds(
@@ -331,6 +334,10 @@ impl AppState {
         &self.roles
     }
 
+    pub(crate) fn seen(&self) -> &crate::auth::SeenThrottle {
+        &self.seen
+    }
+
     /// The tenant this process serves (ADR-014 Tier 1).
     pub fn tenant_id(&self) -> &str {
         &self.tenant_id
@@ -459,6 +466,7 @@ impl AppState {
         };
         self.admin
             .append_audit(AuditInsert {
+                acting_as_superadmin: false,
                 action: format!("{operation}_refused"),
                 resource_type: "policy_pack".into(),
                 resource_id: loaded.pack.id.clone(),
@@ -490,6 +498,7 @@ impl AppState {
             // so the fail-open reload is visible to governance reviewers.
             self.admin
                 .append_audit(AuditInsert {
+                    acting_as_superadmin: false,
                     action: format!("{operation}_unpinned"),
                     resource_type: "policy_pack".into(),
                     resource_id: loaded.pack.id.clone(),
@@ -509,6 +518,7 @@ impl AppState {
         };
         self.admin
             .append_audit(AuditInsert {
+                acting_as_superadmin: false,
                 action: format!("{operation}_refused"),
                 resource_type: "policy_pack".into(),
                 resource_id: loaded.pack.id.clone(),
@@ -783,6 +793,7 @@ const STARTUP_PRINCIPAL: &str = "system:startup";
 
 fn startup_audit(action: &str, resource_id: &str, payload: serde_json::Value) -> AuditInsert {
     AuditInsert {
+        acting_as_superadmin: false,
         action: action.into(),
         resource_type: "policy_pack".into(),
         resource_id: resource_id.into(),
