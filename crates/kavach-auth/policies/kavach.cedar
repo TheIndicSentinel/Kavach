@@ -387,7 +387,8 @@ permit (
     Kavach::Action::"read_batch_jobs",
     Kavach::Action::"read_agent_state",
     Kavach::Action::"stop_agent",
-    Kavach::Action::"reconcile_closed_records"
+    Kavach::Action::"reconcile_closed_records",
+    Kavach::Action::"attest_outcome_delivered"
   ],
   resource == Kavach::System::"api"
 );

@@ -204,6 +204,8 @@ describe("roles from GET /v1/me", () => {
     [["admins"], [], proposeAction("grant_role"), false],
     [[], ["policy_admin"], proposeAction("activate_pack"), true],
     [[], ["policy_admin"], approveAction("activate_pack"), false],
+    [[], ["operator"], "attest_outcome_delivered", true],
+    [[], ["auditor"], "attest_outcome_delivered", false],
     [[], ["approver"], approveAction("reinstate_agent"), true],
     [[], ["viewer"], "read_change_requests", false],
     // A role name the console does not know grants nothing.

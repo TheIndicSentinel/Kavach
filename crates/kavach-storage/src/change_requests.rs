@@ -35,10 +35,13 @@ pub enum ChangeKind {
     GrantRole,
     /// End an active role binding (ADR-019 §4).
     RevokeRole,
+    /// One-person operator attestation that an unknown contact was delivered
+    /// (ADR-017). The proposer completes this request themselves.
+    AttestOutcomeDelivered,
 }
 
 impl ChangeKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
         Self::ActivatePack,
         Self::RollbackPack,
         Self::UpdateModel,
@@ -49,6 +52,7 @@ impl ChangeKind {
         Self::ReinstateAgent,
         Self::GrantRole,
         Self::RevokeRole,
+        Self::AttestOutcomeDelivered,
     ];
 
     #[must_use]
@@ -64,6 +68,7 @@ impl ChangeKind {
             Self::ReinstateAgent => "reinstate_agent",
             Self::GrantRole => "grant_role",
             Self::RevokeRole => "revoke_role",
+            Self::AttestOutcomeDelivered => "attest_outcome_delivered",
         }
     }
 

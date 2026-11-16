@@ -766,6 +766,136 @@ async fn unknown_outcome_review_is_admin_only_paged_and_audited() {
     }));
 }
 
+#[tokio::test]
+async fn a_delivered_attestation_is_a_digest_only_one_person_change_request() {
+    use axum::body::Body;
+    use axum::http::Request;
+    use http_body_util::BodyExt;
+    use kavach_api::auth::{AuthenticatedPrincipal, Authorized, PrincipalSource};
+    use kavach_api::{AccessControlKind, EvidenceStoreKind};
+    use sha2::Digest;
+    use tower::ServiceExt;
+
+    let mut api = agent_fixture::config(EvidenceStoreKind::Memory, true, 50);
+    // Cedar role permissions are covered by kavach-auth's role/action matrix;
+    // this API test focuses on request lifecycle and evidence/audit behavior.
+    api.access_control = AccessControlKind::None;
+    let gw = gateway_on(api, Some(HANG_NUMBER), true).await;
+    let (_, sent) = gw.remind("attest-1").await;
+    assert_eq!(sent["outcome"], "unknown");
+    let core = gw.state.dataplane().unwrap().core();
+    let reviews = core
+        .store()
+        .unknown_outcome_reviews("default", None, 10)
+        .await
+        .unwrap();
+    let credential = reviews[0].outcome.credential_id.clone();
+    let reference = "private receipt value must never persist";
+
+    let app = contract::router(gw.state.clone());
+    let send = |method: &str, uri: String, body: Value, caller: &str| {
+        let app = app.clone();
+        let method: axum::http::Method = method.parse().unwrap();
+        let caller = caller.to_string();
+        async move {
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {caller}"))
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = response.status();
+            let bytes = response.into_body().collect().await.unwrap().to_bytes();
+            (status, String::from_utf8_lossy(&bytes).into_owned())
+        }
+    };
+    let (status, proposed) = send(
+        "POST",
+        "/v1/change-requests".into(),
+        json!({
+            "kind": "attest_outcome_delivered",
+            "params": {
+                "credential_id": credential,
+                "reason_code": "receipt_reviewed",
+                "reference": reference,
+            }
+        }),
+        &operator_token(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{proposed}");
+    let proposed: Value = serde_json::from_str(&proposed).unwrap();
+    assert_eq!(proposed["status"], "pending");
+    assert!(proposed["params"].get("reference").is_none());
+    assert!(proposed["params"]["reference_digest"].is_string());
+    assert!(!proposed.to_string().contains(reference));
+
+    let id = proposed["id"].as_str().unwrap();
+    let digest = proposed["change_digest"].as_str().unwrap();
+    let certificate = Authorized {
+        principal: AuthenticatedPrincipal {
+            id: "spiffe://bank.example/operator".into(),
+            groups: vec![],
+            source: PrincipalSource::MtlsSan,
+            issuer: None,
+            subject: None,
+        },
+        acting_as_superadmin: false,
+    };
+    assert!(gw
+        .state
+        .approve_change(&certificate, id, digest)
+        .await
+        .is_err());
+    let other = token("kavach-api", json!({ "sub": "ops-2" }));
+    let (status, denied) = send(
+        "POST",
+        format!("/v1/change-requests/{id}/approve"),
+        json!({ "change_digest": digest }),
+        &other,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
+
+    let (status, applied) = send(
+        "POST",
+        format!("/v1/change-requests/{id}/approve"),
+        json!({ "change_digest": digest }),
+        &operator_token(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{applied}");
+    let applied: Value = serde_json::from_str(&applied).unwrap();
+    assert_eq!(applied["status"], "applied");
+    assert_eq!(applied["decided_by"], "ops-1");
+
+    let rows = core
+        .store()
+        .resolutions("default", &credential)
+        .await
+        .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].source.as_str(), "operator_attested");
+    assert_eq!(rows[0].state.as_str(), "confirmed_delivered");
+    assert_eq!(
+        rows[0].resolved_by.as_deref(),
+        Some("oidc:https://idp.test/realms/kavach#ops-1")
+    );
+    assert_eq!(
+        rows[0].evidence_digest.as_deref(),
+        Some(format!("{:x}", sha2::Sha256::digest(reference.as_bytes())).as_str())
+    );
+    assert_eq!(gw.provider.inbox().len(), 1, "attestation does not resend");
+    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    assert!(!serde_json::to_string(&audit).unwrap().contains(reference));
+}
+
 /// One stack serves one tenant: a validly signed payment for the same loan
 /// but another tenant is refused before it is acted on, and the mandate
 /// still works. A revocation's evidence record is read like an agent

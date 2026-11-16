@@ -78,11 +78,13 @@ pub enum KavachAction {
     ApproveGrantRole,
     ProposeRevokeRole,
     ApproveRevokeRole,
+    /// Record an operator's one-person delivered attestation (ADR-017).
+    AttestOutcomeDelivered,
 }
 
 impl KavachAction {
     /// Every action, in declaration order.
-    pub const ALL: [Self; 37] = [
+    pub const ALL: [Self; 38] = [
         Self::Evaluate,
         Self::ReadHealth,
         Self::ReadMetrics,
@@ -120,6 +122,7 @@ impl KavachAction {
         Self::ApproveGrantRole,
         Self::ProposeRevokeRole,
         Self::ApproveRevokeRole,
+        Self::AttestOutcomeDelivered,
     ];
 
     /// Whether the action changes a role binding, and so needs the role
@@ -176,6 +179,7 @@ impl KavachAction {
             Self::ApproveGrantRole => "approve_grant_role",
             Self::ProposeRevokeRole => "propose_revoke_role",
             Self::ApproveRevokeRole => "approve_revoke_role",
+            Self::AttestOutcomeDelivered => "attest_outcome_delivered",
         }
     }
 }

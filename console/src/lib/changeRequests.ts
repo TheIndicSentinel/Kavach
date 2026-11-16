@@ -112,8 +112,17 @@ export function changeRequestButtons(
   let note: string | null = null;
   if (viewer.principal !== null) {
     if (viewer.principal === request.proposer) {
-      actions = ["cancel"];
-      note = "You proposed this change: a different principal approves or rejects it.";
+      actions =
+        request.kind === "attest_outcome_delivered"
+          ? ["approve", "cancel"]
+          : ["cancel"];
+      note =
+        request.kind === "attest_outcome_delivered"
+          ? "You proposed this delivered attestation: complete it yourself or cancel it."
+          : "You proposed this change: a different principal approves or rejects it.";
+    } else if (request.kind === "attest_outcome_delivered") {
+      actions = ["reject"];
+      note = "Only the proposer may complete this delivered attestation.";
     } else {
       actions = ["approve", "reject"];
     }

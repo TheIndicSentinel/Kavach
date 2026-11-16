@@ -77,7 +77,7 @@ The credit-track pages keep working and get no new features. On an `--agent-only
 
 ### Backend gaps the console still has
 
-- **ADR-017 unknown outcomes and resolutions:** the agent-decision lookup returns and displays full resolution history (first UI-3 slice). Memory and Postgres stores expose all unknown outcomes and history (second slice), the API provides a paged audited read with governing state (third slice), and the Agent Evidence page now provides the on-demand list (fourth slice). R3b write operations remain pending.
+- **ADR-017 unknown outcomes and resolutions:** the agent-decision lookup returns and displays full resolution history (first UI-3 slice). Memory and Postgres stores expose all unknown outcomes and history (second slice), the API provides a paged audited read with governing state (third slice), and the Agent Evidence page now provides the on-demand list (fourth slice). The backend has the one-person delivered-attestation change request; not-delivered attestation, conflict closure, and remaining R3b attacks are pending. The console remains read-only for outcomes.
 - **Reinstatement parameters are untyped** in the spec (`ChangeProposal.params`), so `ReinstateAgentParams` is the one hand-written request type.
 - **One change request by id.** `GET /v1/change-requests/{id}` exists but the console does not use it: after proposing a reinstatement it links to the list. A detail view would use it and drop the exemption.
 - **Three change kinds** (`rollback_pack`, `erase_evidence`, `activate_model`) are listed, approved, rejected and cancelled in the console, but proposed only through the API.
@@ -130,7 +130,7 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - **Done (second slice):** both evidence stores expose a tenant-scoped, cursor-paged read of every unknown outcome and its complete resolution history. It includes unresolved, ambiguous, conflicted and confirmed histories; the reconciler's narrower queue remains unchanged.
 - **Done (third slice):** `GET /v1/unknown-outcomes` returns the paged store read with the governing state and source. It uses `read_evidence`, the evidence-read rate limit and an audit record; it does not resend or release a contact slot.
 - **Done (fourth slice):** Agent Evidence has a click-to-load, cursor-paged list showing each unknown outcome's governing state and complete resolution history, with loading, empty, error, retry and role-hint states. The read does not enable a write action.
-- **Separate backend work:** ADR-017 R3b operator attestation and two-person conflict closure, including API change-request safeguards and attacks, remain pending. They are not part of the approved read-only UI-3 scope; no outcome write controls are shown in the console.
+- **Separate backend work:** ADR-017 R3b has a one-person delivered-attestation change request. Not-delivered attestation, two-person conflict closure, and remaining attacks are pending. They are not part of the approved read-only UI-3 scope; no outcome write controls are shown in the console.
 
 ### UI-4: hardening and polish — done (#239, #241, #244, ADR-018 sign-in, #253, #254)
 

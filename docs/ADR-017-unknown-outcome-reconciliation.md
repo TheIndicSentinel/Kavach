@@ -54,7 +54,7 @@ A silent flip would hide exactly what an auditor needs to see, so the governing 
 
 ## Phases (each its own change, against the mock only)
 
-R1 the data, signing, store (**R1a, built**) and the verifier and bundle (**R1b, built**, bundle format 4). R2 the mock status endpoint (**R2a, built**) and the reconciler (**R2b, built**: `kavach-dataplane::outcome_reconciler`, run every 15 seconds by `kavach-api::outcome_reconciler`; questions limited to 8 per outcome with 30 s to 10 min back-off and 20 per pass; the constants are `UNKNOWN_OUTCOME_POLL_WINDOW`, `UNKNOWN_OUTCOME_AMBIGUOUS_AFTER` and friends, not settings). R3a signals and alerts (**built**); then the simulator scenarios and the demo; R3b operator attestation and the attacks, which become necessary before any real-provider work (real providers will often have no status lookup).
+R1 the data, signing, store (**R1a, built**) and the verifier and bundle (**R1b, built**, bundle format 4). R2 the mock status endpoint (**R2a, built**) and the reconciler (**R2b, built**: `kavach-dataplane::outcome_reconciler`, run every 15 seconds by `kavach-api::outcome_reconciler`; questions limited to 8 per outcome with 30 s to 10 min back-off and 20 per pass; the constants are `UNKNOWN_OUTCOME_POLL_WINDOW`, `UNKNOWN_OUTCOME_AMBIGUOUS_AFTER` and friends, not settings). R3a signals and alerts (**built**); then the simulator scenarios and the demo; R3b is in progress: the one-person delivered-attestation change request (core, API and operator-role permission) is built; the two-person not-delivered attestation, conflict closure, and remaining attacks are pending before any real-provider work (real providers will often have no status lookup).
 
 ### Amendment, R2a: how the status question is authenticated
 

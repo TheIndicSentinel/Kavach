@@ -31,6 +31,7 @@ pub fn propose_action(kind: ChangeKind) -> KavachAction {
         ChangeKind::ReinstateAgent => KavachAction::ProposeReinstateAgent,
         ChangeKind::GrantRole => KavachAction::ProposeGrantRole,
         ChangeKind::RevokeRole => KavachAction::ProposeRevokeRole,
+        ChangeKind::AttestOutcomeDelivered => KavachAction::AttestOutcomeDelivered,
     }
 }
 
@@ -47,6 +48,7 @@ pub fn approve_action(kind: ChangeKind) -> KavachAction {
         ChangeKind::ReinstateAgent => KavachAction::ApproveReinstateAgent,
         ChangeKind::GrantRole => KavachAction::ApproveGrantRole,
         ChangeKind::RevokeRole => KavachAction::ApproveRevokeRole,
+        ChangeKind::AttestOutcomeDelivered => KavachAction::AttestOutcomeDelivered,
     }
 }
 
@@ -55,7 +57,10 @@ pub fn approve_action(kind: ChangeKind) -> KavachAction {
 fn serves_agent_only(kind: ChangeKind) -> bool {
     matches!(
         kind,
-        ChangeKind::ReinstateAgent | ChangeKind::GrantRole | ChangeKind::RevokeRole
+        ChangeKind::ReinstateAgent
+            | ChangeKind::GrantRole
+            | ChangeKind::RevokeRole
+            | ChangeKind::AttestOutcomeDelivered
     )
 }
 

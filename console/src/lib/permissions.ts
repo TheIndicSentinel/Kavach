@@ -27,6 +27,7 @@ const CHANGE_KINDS_RECORD: Record<ChangeKind, true> = {
   reinstate_agent: true,
   grant_role: true,
   revoke_role: true,
+  attest_outcome_delivered: true,
 };
 
 export const CHANGE_KINDS = Object.keys(CHANGE_KINDS_RECORD) as ChangeKind[];
@@ -37,11 +38,14 @@ export const CHANGE_KINDS = Object.keys(CHANGE_KINDS_RECORD) as ChangeKind[];
  * table leaves to the server).
  */
 const ROLE_CHANGE_KINDS: readonly ChangeKind[] = ["grant_role", "revoke_role"];
+const ONE_PERSON_KINDS: readonly ChangeKind[] = ["attest_outcome_delivered"];
 
 /** The governance change kinds: every kind but the role changes. */
 const GOVERNANCE_KINDS = CHANGE_KINDS.filter(
-  (kind) => !ROLE_CHANGE_KINDS.includes(kind),
+  (kind) => !ROLE_CHANGE_KINDS.includes(kind) && !ONE_PERSON_KINDS.includes(kind),
 );
+
+type MakerCheckerKind = Exclude<ChangeKind, "attest_outcome_delivered">;
 
 /** The reads behind the console's pages (one per page; ROLE_PAGES in Sidebar). */
 export const READ_ACTIONS = [
@@ -68,11 +72,14 @@ export type CedarAction =
   | "evaluate"
   | "reconcile_closed_records"
   | "stop_agent"
-  | `propose_${ChangeKind}`
-  | `approve_${ChangeKind}`;
+  | `propose_${MakerCheckerKind}`
+  | `approve_${MakerCheckerKind}`
+  | "attest_outcome_delivered";
 
-const propose = (kind: ChangeKind): CedarAction => `propose_${kind}`;
-const approve = (kind: ChangeKind): CedarAction => `approve_${kind}`;
+export const proposeAction = (kind: ChangeKind): CedarAction =>
+  kind === "attest_outcome_delivered" ? kind : `propose_${kind}`;
+export const approveAction = (kind: ChangeKind): CedarAction =>
+  kind === "attest_outcome_delivered" ? kind : `approve_${kind}`;
 
 /**
  * Group to the Cedar actions it is permitted (the alias groups, ADR-019 §1).
@@ -96,12 +103,12 @@ export const GROUP_ACTIONS: Record<CedarGroup, readonly CedarAction[]> = {
     "evaluate",
     "reconcile_closed_records",
     "stop_agent",
-    ...GOVERNANCE_KINDS.map(propose),
+    ...GOVERNANCE_KINDS.map(proposeAction),
   ],
   "change-approvers": [
     "read_governance",
     "read_change_requests",
-    ...GOVERNANCE_KINDS.map(approve),
+    ...GOVERNANCE_KINDS.map(approveAction),
   ],
 };
 
@@ -111,8 +118,9 @@ export const COVERED_ACTIONS: readonly CedarAction[] = [
   "evaluate",
   "reconcile_closed_records",
   "stop_agent",
-  ...CHANGE_KINDS.map(propose),
-  ...CHANGE_KINDS.map(approve),
+  ...CHANGE_KINDS.filter((kind) => !ONE_PERSON_KINDS.includes(kind)).map(proposeAction),
+  ...CHANGE_KINDS.filter((kind) => !ONE_PERSON_KINDS.includes(kind)).map(approveAction),
+  "attest_outcome_delivered",
 ];
 
 /** The seven ADR-019 roles; the Record makes a role added to the spec a type error here. */
@@ -140,8 +148,8 @@ export const ROLE_ACTIONS: Record<RoleName, readonly CedarAction[]> = {
     "read_change_requests",
     "read_principals",
     "read_access_review",
-    ...ROLE_CHANGE_KINDS.map(propose),
-    ...ROLE_CHANGE_KINDS.map(approve),
+    ...ROLE_CHANGE_KINDS.map(proposeAction),
+    ...ROLE_CHANGE_KINDS.map(approveAction),
   ],
   policy_admin: [
     "read_health",
@@ -152,7 +160,7 @@ export const ROLE_ACTIONS: Record<RoleName, readonly CedarAction[]> = {
     "read_retention",
     "read_tombstones",
     "read_change_requests",
-    ...GOVERNANCE_KINDS.map(propose),
+    ...GOVERNANCE_KINDS.map(proposeAction),
   ],
   approver: [
     "read_health",
@@ -160,7 +168,7 @@ export const ROLE_ACTIONS: Record<RoleName, readonly CedarAction[]> = {
     "read_retention",
     "read_tombstones",
     "read_change_requests",
-    ...GOVERNANCE_KINDS.map(approve),
+    ...GOVERNANCE_KINDS.map(approveAction),
   ],
   operator: [
     "read_health",
@@ -172,6 +180,7 @@ export const ROLE_ACTIONS: Record<RoleName, readonly CedarAction[]> = {
     "read_agent_state",
     "stop_agent",
     "reconcile_closed_records",
+    "attest_outcome_delivered",
   ],
   auditor: [
     "read_health",
@@ -275,14 +284,4 @@ export function deniedLine(viewer: Viewer, what: string): string {
       ? `Your groups (${listed(viewer.groups)}) don't include one`
       : `Your roles (${listed(viewer.roles)}) and groups (${listed(viewer.groups)}) don't include one`;
   return `${holders} that may ${what}. The server decides; ask an admin if you need this.`;
-}
-
-/** The Cedar action that proposes (and cancels) a change of `kind`. */
-export function proposeAction(kind: ChangeKind): CedarAction {
-  return propose(kind);
-}
-
-/** The Cedar action that approves (and rejects) a change of `kind`. */
-export function approveAction(kind: ChangeKind): CedarAction {
-  return approve(kind);
 }

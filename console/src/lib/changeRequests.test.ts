@@ -97,6 +97,27 @@ describe("useViewer", () => {
 describe("changeRequestButtons: the proposer rule", () => {
   const pending = reinstateProposed; // proposed by operator-1
 
+  it("lets the proposer complete only the one-person delivered attestation", () => {
+    const delivered = { ...pending, kind: "attest_outcome_delivered" as const };
+    const buttons = changeRequestButtons(delivered, {
+      principal: "operator-1",
+      groups: null,
+      roles: ["operator"],
+    });
+    expect(buttons.actions).toEqual(["approve", "cancel"]);
+    expect(buttons.note).toMatch(/complete it yourself/);
+  });
+
+  it("does not offer another operator approval of a delivered attestation", () => {
+    const delivered = { ...pending, kind: "attest_outcome_delivered" as const };
+    const buttons = changeRequestButtons(delivered, {
+      principal: "operator-2",
+      groups: null,
+      roles: ["operator"],
+    });
+    expect(buttons.actions).toEqual(["reject"]);
+  });
+
   it("offers the proposer cancel only, and says why approve is missing", () => {
     const buttons = changeRequestButtons(pending, { principal: "operator-1", groups: null });
     expect(buttons.actions).toEqual(["cancel"]);
