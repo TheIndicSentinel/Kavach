@@ -158,8 +158,9 @@ test.describe("axe after evaluate", () => {
 });
 
 test.describe("axe on a pending reinstate_agent change request", () => {
-  // Groups are unknown in every mode today, so the browser can tell apart only
-  // the principal: none (or a token), the proposer, and another principal.
+  // In the development fallback the groups are unknown, so the browser can tell
+  // apart only the principal: none (or a token), the proposer, and another
+  // principal. Login mode, where the session names the groups, is in login.e2e.ts.
   for (const [viewer, principal, button] of [
     ["unknown viewer", null, "Approve and apply"],
     ["the proposer", "operator-1", "Cancel (proposer)"],

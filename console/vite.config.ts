@@ -18,6 +18,7 @@ export default defineConfig({
       "/health": "http://localhost:8080",
       "/metrics": "http://localhost:8080",
       "/v1": "http://localhost:8080",
+      "/auth": "http://localhost:8080",
     },
   },
 });

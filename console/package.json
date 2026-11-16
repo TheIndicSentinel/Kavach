@@ -12,6 +12,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:roundtrip": "playwright test -c playwright.roundtrip.config.ts",
     "gen:api": "openapi-typescript ../docs/openapi.yaml -o src/lib/openapi.d.ts",
     "check:api": "openapi-typescript ../docs/openapi.yaml -o src/lib/openapi.d.ts && git diff --exit-code -- src/lib/openapi.d.ts"
   },
