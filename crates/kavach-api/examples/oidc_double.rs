@@ -8,13 +8,17 @@
 //!     --jwks-out /tmp/kavach-dev/jwks.json \
 //!     [--listen 127.0.0.1:9400] [--client-id kavach-console] \
 //!     [--audience kavach-api] [--sub dev-admin] [--groups admins,operators] \
-//!     [--users users.json] [--also-trust bundle/kavach/jwks.json]
+//!     [--users users.json] [--also-trust bundle/kavach/jwks.json] [--pick]
 //! ```
 //!
 //! `--users` lists more users, `{"users": [{"sub": "...", "groups": [...]}]}`.
 //! A sign-in signs in the one whose `sub` the browser names in the
 //! `oidc_double_user` cookie at the double's origin, or the `--sub` user
 //! when it names none; a name not in the file is refused.
+//!
+//! `--pick` is for a person at a browser (`scripts/demo.sh`): each sign-in
+//! shows a page listing the `--sub` user and the `--users`, and signs in
+//! the one picked. The cookie is then not read.
 //!
 //! `--also-trust` adds another JWKS's public keys to the `--jwks-out` file,
 //! for tokens another signer minted with this double's issuer (a
@@ -54,6 +58,7 @@ struct Args {
     groups: Vec<String>,
     users: Option<PathBuf>,
     also_trust: Option<PathBuf>,
+    pick: bool,
 }
 
 fn usage(problem: &str) -> ! {
@@ -61,7 +66,7 @@ fn usage(problem: &str) -> ! {
         "oidc_double: {problem}\nusage: oidc_double --client-secret-file <path> --jwks-out <path> \
          [--listen 127.0.0.1:9400] [--client-id kavach-console] [--audience kavach-api] \
          [--sub dev-admin] [--groups admins] [--users users.json] \
-         [--also-trust jwks.json]"
+         [--also-trust jwks.json] [--pick]"
     );
     std::process::exit(2);
 }
@@ -77,9 +82,14 @@ fn parse() -> Args {
         groups: vec!["admins".into()],
         users: None,
         also_trust: None,
+        pick: false,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
+        if flag == "--pick" {
+            args.pick = true;
+            continue;
+        }
         let value = it
             .next()
             .unwrap_or_else(|| usage(&format!("{flag} needs a value")));
@@ -236,7 +246,10 @@ async fn main() {
     .await;
     let mut subs: Vec<String> = named.keys().cloned().collect();
     subs.sort();
-    double.set(|b| b.users = named);
+    double.set(|b| {
+        b.users = named;
+        b.pick = args.pick;
+    });
     let keys = published_keys(double.jwks(), args.also_trust.as_deref());
     std::fs::write(&args.jwks_out, keys.to_string()).expect("write the JWKS file");
 
@@ -254,7 +267,15 @@ async fn main() {
         jwks = args.jwks_out.display(),
         client = args.client_id,
         secret = args.client_secret_file.display(),
-        others = if subs.is_empty() {
+        others = if args.pick {
+            format!(
+                "\nEach sign-in asks who to sign in as: {}",
+                std::iter::once(args.sub.clone())
+                    .chain(subs.iter().filter(|s| **s != args.sub).cloned())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        } else if subs.is_empty() {
             String::new()
         } else {
             format!(

@@ -17,9 +17,15 @@
 //! more, the one the browser names in the [`USER_COOKIE`] cookie at the
 //! double's origin (a Playwright check sets it before it signs in). A name
 //! the double does not know is refused, never replaced by the default.
+//!
+//! With [`Behaviour::pick`] on (the example's `--pick`, for a person at a
+//! browser), `authorize` instead answers with a page that lists every user,
+//! each a link back to `authorize` with `login_as=<sub>`; the cookie is
+//! then not read.
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -64,6 +70,7 @@ pub const USER_COOKIE: &str = "oidc_double_user";
 
 /// What a test may change while the double runs.
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)] // independent test switches, not a state
 pub struct Behaviour {
     pub user: TestUser,
     /// Users a sign-in may name in the [`USER_COOKIE`] cookie, by `sub`.
@@ -83,6 +90,10 @@ pub struct Behaviour {
     pub refuse_refresh: bool,
     /// Issue a refresh token at all.
     pub issue_refresh: bool,
+    /// Ask who signs in: `authorize` without `login_as` serves a page of
+    /// links, one per user; with it, signs in that user (an unknown one is
+    /// refused). The cookie is not read.
+    pub pick: bool,
 }
 
 struct CodeGrant {
@@ -274,12 +285,22 @@ async fn authorize(
     }
     let user = {
         let b = s.behaviour.lock().unwrap();
-        match named_user(&headers) {
-            None => b.user.clone(),
-            Some(sub) => match b.users.get(&sub) {
-                Some(user) => user.clone(),
+        if b.pick {
+            let Some(sub) = q.get("login_as") else {
+                return picker(&s.url, &q, &b);
+            };
+            match known_user(&b, sub) {
+                Some(user) => user,
                 None => return oauth_error("access_denied"),
-            },
+            }
+        } else {
+            match named_user(&headers) {
+                None => b.user.clone(),
+                Some(sub) => match b.users.get(&sub) {
+                    Some(user) => user.clone(),
+                    None => return oauth_error("access_denied"),
+                },
+            }
         }
     };
     let code = s.issue();
@@ -299,6 +320,82 @@ async fn authorize(
     (
         StatusCode::SEE_OTHER,
         [(header::LOCATION, back.to_string())],
+    )
+        .into_response()
+}
+
+/// The default user or one of [`Behaviour::users`], by `sub`.
+fn known_user(b: &Behaviour, sub: &str) -> Option<TestUser> {
+    if b.user.sub == sub {
+        return Some(b.user.clone());
+    }
+    b.users.get(sub).cloned()
+}
+
+/// Escapes text for an HTML element or a double-quoted attribute.
+fn html_escape(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// The [`Behaviour::pick`] page: one link per user, back to `authorize`
+/// with the same query and `login_as=<sub>`. Static HTML, no script; an
+/// empty icon, so a browser asks the double for no `/favicon.ico`.
+fn picker(base: &str, q: &HashMap<String, String>, b: &Behaviour) -> Response {
+    let mut users: Vec<&TestUser> = b.users.values().collect();
+    if !b.users.contains_key(&b.user.sub) {
+        users.push(&b.user);
+    }
+    users.sort_by(|x, y| x.sub.cmp(&y.sub));
+    let mut pairs: Vec<(&String, &String)> = q.iter().filter(|(k, _)| *k != "login_as").collect();
+    pairs.sort();
+    let items = users.iter().fold(String::new(), |mut items, user| {
+        let mut link = reqwest::Url::parse(&format!("{base}/authorize")).expect("double URL");
+        {
+            let mut query = link.query_pairs_mut();
+            for (k, v) in &pairs {
+                query.append_pair(k, v);
+            }
+            query.append_pair("login_as", &user.sub);
+        }
+        let _ = write!(
+            items,
+            "<li><a href=\"{href}\">{sub}</a> <span>({groups})</span></li>",
+            href = html_escape(link.as_str()),
+            sub = html_escape(&user.sub),
+            groups = html_escape(&user.groups.join(", ")),
+        );
+        items
+    });
+    let page = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+         <title>Sign in as (OIDC test double)</title>\
+         <link rel=\"icon\" href=\"data:,\"></head><body>\
+         <h1>Sign in as</h1>\
+         <p>The Kavach OIDC test double, for local development only. \
+         Pick the user to sign in as.</p><ul>{items}</ul></body></html>"
+    );
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-store"),
+            (
+                header::CONTENT_SECURITY_POLICY,
+                "default-src 'none'; img-src data:; frame-ancestors 'none'",
+            ),
+        ],
+        page,
     )
         .into_response()
 }
@@ -410,6 +507,7 @@ impl OidcDouble {
                 rotate_refresh: false,
                 refuse_refresh: false,
                 issue_refresh: true,
+                pick: false,
             }),
             config,
             issuer: issuer.clone(),
