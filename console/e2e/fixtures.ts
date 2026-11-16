@@ -320,3 +320,27 @@ export const principalPageTwo: Schemas["PrincipalPage"] = {
   ],
   next_cursor: null,
 };
+
+/** Active role assignments shown beside the principal directory. */
+export const roleBindings: Schemas["RoleBindingList"] = {
+  items: [
+    {
+      id: "rb-demo-1",
+      role: "superadmin",
+      subject: { kind: "principal", issuer: "https://idp.example.test", value: "oidc-admin-2" },
+      granted_by_change_request: null,
+      granted_at: "2026-11-01T09:15:00Z",
+      ended_by_change_request: null,
+      ended_at: null,
+    },
+    {
+      id: "rb-demo-2",
+      role: "auditor",
+      subject: { kind: "principal", issuer: "https://idp.example.test", value: "oidc-auditor-5" },
+      granted_by_change_request: "cr-role-1",
+      granted_at: "2026-11-02T10:00:00Z",
+      ended_by_change_request: null,
+      ended_at: null,
+    },
+  ],
+};

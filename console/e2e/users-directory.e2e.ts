@@ -19,6 +19,8 @@ test("the directory searches by name or subject and pages by cursor", async ({ p
   const queries = recordQueries(api);
   await page.goto("/users");
   await expect(page.getByRole("row", { name: /Asha Rao/ })).toBeVisible();
+  await expect(page.getByRole("row", { name: /superadmin.*oidc-admin-2/ })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "2 active bindings." })).toBeVisible();
   expect(queries).toEqual(["|"]);
 
   await page.getByLabel("Name or subject").fill("Asha");

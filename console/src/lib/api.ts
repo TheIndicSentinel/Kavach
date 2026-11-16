@@ -461,6 +461,7 @@ export function fetchMe(): Promise<Me> {
 
 export type Principal = Schemas["Principal"];
 export type PrincipalPage = Schemas["PrincipalPage"];
+export type RoleBinding = Schemas["RoleBinding"];
 export type PrincipalQuery = NonNullable<operations["listPrincipals"]["parameters"]["query"]>;
 
 export function principalsPath(query: PrincipalQuery = {}): string {
@@ -475,6 +476,12 @@ export function principalsPath(query: PrincipalQuery = {}): string {
 /** The principals directory, a page at a time (`read_principals`). */
 export function fetchPrincipals(query: PrincipalQuery = {}): Promise<PrincipalPage> {
   return request(principalsPath(query));
+}
+
+/** Active operator-role bindings (`read_principals`). */
+export async function fetchRoleBindings(): Promise<RoleBinding[]> {
+  const list: Schemas["RoleBindingList"] = await request("/v1/role-bindings");
+  return list.items;
 }
 
 /** Rate limited and audited by the API (counts, never references). Reports only; revokes nothing. */
