@@ -81,6 +81,9 @@ pub struct HsmConfig {
     pub roles: BTreeSet<HsmRole>,
     /// Sessions kept open for reuse.
     pub max_sessions: usize,
+    /// How long one sign or health call may wait for the token before it
+    /// fails closed (`kavach_keys_pkcs11::DEFAULT_CALL_TIMEOUT` by default).
+    pub call_timeout: std::time::Duration,
 }
 
 /// A key provider backed by a key file or the HSM.
@@ -164,7 +167,8 @@ impl KeySources {
             max_sessions: hsm.max_sessions,
             require_hsm_generated: !insecure_dev,
         })
-        .map_err(|e| format!("HSM: {}", e.message))?;
+        .map_err(|e| format!("HSM: {}", e.message))?
+        .with_call_timeout(hsm.call_timeout);
         if insecure_dev {
             tracing::warn!(
                 "--insecure-dev: HSM keys are not required to have been generated in the HSM. \
