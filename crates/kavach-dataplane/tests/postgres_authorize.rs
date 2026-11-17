@@ -81,6 +81,7 @@ async fn reminders_on_postgres_as_the_runtime_role() {
         mandate_id: mandate.clone(),
         action: "send_reminder".into(),
         request_id: request_id.into(),
+        approval_id: None,
         subject_ref: SUBJECT.into(),
         channel: Some("whatsapp".into()),
         waiver_bps: None,

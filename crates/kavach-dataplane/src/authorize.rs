@@ -100,6 +100,10 @@ pub struct ToolCall {
     pub mandate_id: String,
     pub action: String,
     pub request_id: String,
+    /// D17 approval record presented by the caller; excluded from action
+    /// parameter serialization and the exact-action digest.
+    #[serde(skip)]
+    pub approval_id: Option<String>,
     pub subject_ref: String,
     pub channel: Option<String>,
     pub waiver_bps: Option<i64>,

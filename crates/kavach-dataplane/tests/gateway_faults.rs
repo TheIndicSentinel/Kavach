@@ -293,6 +293,7 @@ fn request(mandate: &str, request_id: &str) -> ToolRequest {
     ToolRequest {
         mandate_id: mandate.into(),
         request_id: request_id.into(),
+        approval_id: None,
         params: params.as_object().unwrap().clone(),
     }
 }

@@ -1838,6 +1838,9 @@ pub struct AuthorizeBody {
     pub tool: String,
     pub mandate_id: String,
     pub request_id: String,
+    /// Optional D17 approval identifier; pre-checks do not consume or apply it.
+    #[serde(default)]
+    pub approval_id: Option<String>,
     #[serde(default)]
     pub params: serde_json::Map<String, serde_json::Value>,
 }
@@ -1865,7 +1868,7 @@ pub async fn authorize(
     let StrictJson(body) = body.map_err(|_| {
         refuse(
             StatusCode::BAD_REQUEST,
-            "malformed body: expected JSON with exactly tool, mandate_id, request_id, params",
+            "malformed body: expected JSON with tool, mandate_id, request_id, optional approval_id, params",
         )
     })?;
     let call = dp
@@ -1876,6 +1879,7 @@ pub async fn authorize(
             ToolRequest {
                 mandate_id: body.mandate_id,
                 request_id: body.request_id,
+                approval_id: body.approval_id,
                 params: body.params,
             },
         )
@@ -2092,7 +2096,7 @@ pub async fn tool_call(
     // The parser's message can quote values, so it is not echoed.
     let StrictJson(request) = body.map_err(|_| {
         malformed(
-            "malformed body: expected JSON with exactly mandate_id, request_id, params".into(),
+            "malformed body: expected JSON with mandate_id, request_id, optional approval_id, params".into(),
         )
     })?;
     // The registry's own check first, for a refusal with its code; the

@@ -118,6 +118,10 @@ struct RegistryFile {
 pub struct ToolRequest {
     pub mandate_id: String,
     pub request_id: String,
+    /// Optional D17 approval record to present for exact-action authorization.
+    /// It is envelope metadata and is never included in the action digest.
+    #[serde(default)]
+    pub approval_id: Option<String>,
     #[serde(default)]
     pub params: serde_json::Map<String, Value>,
 }
@@ -343,6 +347,18 @@ impl ToolRegistry {
         }
         crate::authorize::validate_request_id(&request.request_id)
             .map_err(|e| Refusal::new(RefusalCode::InvalidEnvelope, e.message))?;
+        if request.approval_id.as_deref().is_some_and(|id| {
+            id.is_empty()
+                || id.len() > MAX_ID_BYTES
+                || !id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        }) {
+            return Err(Refusal::new(
+                RefusalCode::InvalidEnvelope,
+                "approval_id must be 1-128 URL-safe identifier bytes",
+            ));
+        }
         if let Some(unknown) = request
             .params
             .keys()
@@ -364,6 +380,7 @@ impl ToolRegistry {
             mandate_id: request.mandate_id,
             action: spec.action.clone(),
             request_id: request.request_id,
+            approval_id: request.approval_id,
             subject_ref: String::new(),
             channel: None,
             waiver_bps: None,
@@ -598,6 +615,7 @@ mod tests {
         ToolRequest {
             mandate_id: "m-1".into(),
             request_id: "r-1".into(),
+            approval_id: None,
             params,
         }
     }
@@ -658,6 +676,46 @@ mod tests {
                 (c, e, x) => panic!("{tool}: check {c:?}, extract {e:?}, expected {x:?}"),
             }
         }
+    }
+
+    #[test]
+    fn approval_id_is_validated_and_preserved_as_envelope_metadata() {
+        let r = registry();
+        let mut req = request(reminder());
+        req.approval_id = Some("approval_123-abc".into());
+        let call = r.check("send_reminder", req).expect("valid id");
+        assert_eq!(call.approval_id.as_deref(), Some("approval_123-abc"));
+        assert!(serde_json::to_value(&call)
+            .expect("serialized call")
+            .get("approval_id")
+            .is_none());
+
+        let mut req = request(reminder());
+        req.approval_id = Some("approval/invalid".into());
+        let refusal = r
+            .check("send_reminder", req)
+            .expect_err("invalid id refused");
+        assert_eq!(refusal.code, RefusalCode::InvalidEnvelope);
+    }
+
+    #[test]
+    fn serialized_tool_request_keeps_the_approval_id_optional() {
+        let legacy: ToolRequest = serde_json::from_value(json!({
+            "mandate_id": "m-1",
+            "request_id": "r-1",
+            "params": {}
+        }))
+        .expect("legacy request remains valid");
+        assert_eq!(legacy.approval_id, None);
+
+        let with_approval: ToolRequest = serde_json::from_value(json!({
+            "mandate_id": "m-1",
+            "request_id": "r-1",
+            "approval_id": "approval-1",
+            "params": {}
+        }))
+        .expect("approval request parses");
+        assert_eq!(with_approval.approval_id.as_deref(), Some("approval-1"));
     }
 
     #[test]
