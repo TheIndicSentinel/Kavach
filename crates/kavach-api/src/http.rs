@@ -61,6 +61,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(crate::console_login::begin_step_up),
         )
         .route(
+            "/auth/human-review/{record_id}",
+            get(crate::human_review::read),
+        )
+        .route(
             "/v1/agent-decisions/{record_id}",
             get(crate::evidence_read::read_agent_decision),
         )
@@ -140,7 +144,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/auth/login", get(crate::console_login::login))
         .route("/auth/callback", get(crate::console_login::callback))
         .route(
-            crate::step_up::STEP_UP_CALLBACK_PATH,
+            "/auth/step-up/callback",
             get(crate::console_login::step_up_callback),
         )
         .route("/auth/session", get(crate::console_login::session))

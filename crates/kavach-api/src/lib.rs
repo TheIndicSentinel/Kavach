@@ -23,6 +23,7 @@ pub mod grpc;
 pub mod hardening;
 pub mod hmac_auth;
 pub mod http;
+pub mod human_review;
 pub mod incidents;
 pub mod lifecycle;
 pub mod limits;
