@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **M4 exact-action binding primitive.** Added a versioned, domain-separated SHA-256 digest over tenant, authenticated agent identity, tool-registry digest, mandate, request ID, action and typed parameters. Canonical transient bytes are zeroized and extraction violations are refused. This primitive is not wired to an approval flow and cannot grant authority; M4 remains partial.
 - **M4 HUMAN_REVIEW fail-closed regression slice.** A waiver above the mandate ceiling is verified to produce a persisted `HUMAN_REVIEW` record with no allow grant. The WebAuthn step-up, action-hash-bound approval, reviewer surface and single-use credential remain pending; acceptance scenario 6 remains partial.
 - **ADR-015 local-only gateway-held adapter fixture.** The dataplane integration test now uses an explicitly local fake adapter and verifies both a simulated delivery and a lost response recorded as `unknown`. The credential-accepting forwarder is bypassed in both cases. This fixture sends no network traffic and is not shipped or enabled by the API.
 - **ADR-015 OpenBao KV v2 secret-store adapter.** Added read-only, send-time secret lookup through the existing provider-secret port. It enforces HTTPS except for loopback development, bounds responses, rejects unsafe mount/reference paths, disables redirects, and returns only the `token` field. Local fake-server tests cover the wire path and authorization header; the adapter is not wired into runtime provider dispatch.

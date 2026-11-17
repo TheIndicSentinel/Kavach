@@ -153,7 +153,7 @@ Reference hardware for PRD NFR-2: 4 CPU cores, 16 GB RAM, local PostgreSQL 16. `
 
 ## Implementation status (2026-11-17)
 
-The Cedar escalation path returns `HUMAN_REVIEW`; a 35% waiver against the 10% ceiling is recorded with no allow grant, while a within-ceiling request can pass. The first M4 regression assertion confirms the review decision is persisted and has no grant. The action-bound approval workflow is still pending: there is no WebAuthn step-up provider, approval record/store, reviewer surface, action-hash binding, or single-use approval credential yet. Acceptance scenario 6 remains partial; see [ACCEPTANCE.md](ACCEPTANCE.md).
+The Cedar escalation path returns `HUMAN_REVIEW`; a 35% waiver against the 10% ceiling is recorded with no allow grant, while a within-ceiling request can pass. The first M4 regression assertion confirms the review decision is persisted and has no grant. A versioned, domain-separated SHA-256 action-binding primitive now canonicalizes the tenant, authenticated agent identity, tool-registry digest, mandate, request ID, extracted action, and typed parameters; actions with extraction violations are refused. This primitive is not yet connected to approval creation or validation. WebAuthn step-up, an approval record/store, reviewer surface, approval-time digest verification, and a single-use approval credential remain pending. Acceptance scenario 6 remains partial; see [ACCEPTANCE.md](ACCEPTANCE.md).
 
 ## References
 

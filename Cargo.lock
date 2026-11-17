@@ -2323,6 +2323,7 @@ dependencies = [
  "sha2",
  "tokio",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
