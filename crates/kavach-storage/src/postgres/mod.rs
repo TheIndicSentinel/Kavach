@@ -12,6 +12,7 @@ mod mandates;
 mod migrate;
 mod retention;
 mod roles;
+mod step_up;
 mod tls;
 
 pub use admin::PostgresAdminStore;
@@ -31,6 +32,7 @@ pub use migrate::{
 };
 pub use retention::PostgresRetentionStore;
 pub use roles::PostgresRoleStore;
+pub use step_up::PostgresStepUpChallengeStore;
 pub use tls::{connect_options, is_weakened, DatabaseTls, DatabaseTlsError};
 
 use sqlx::PgPool;
@@ -121,5 +123,9 @@ impl StoragePool {
 
     pub fn review_approval_store(&self) -> PostgresReviewApprovalStore {
         PostgresReviewApprovalStore::new(self.pool.clone())
+    }
+
+    pub fn step_up_challenge_store(&self) -> PostgresStepUpChallengeStore {
+        PostgresStepUpChallengeStore::new(self.pool.clone())
     }
 }

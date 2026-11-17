@@ -83,6 +83,80 @@ pub struct StepUpChallenge {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Persisted server-side state for one provider step-up ceremony.
+///
+/// `state_hash` and `nonce_hash` are SHA-256 digests of high-entropy OIDC
+/// values. The raw callback state and nonce are never stored in this record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepUpChallengeState {
+    pub challenge_id: String,
+    pub state_hash: String,
+    pub nonce_hash: String,
+    pub tenant_id: String,
+    pub principal_key: String,
+    pub action_hash: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl StepUpChallengeState {
+    pub fn validate(&self, now: DateTime<Utc>) -> Result<(), PortError> {
+        if self.challenge_id.is_empty()
+            || self.challenge_id.len() > 128
+            || self.tenant_id.is_empty()
+            || self.principal_key.is_empty()
+        {
+            return Err(PortError::invalid(
+                "step-up challenge identity fields must not be empty or oversized",
+            ));
+        }
+        if !is_sha256_digest(&self.state_hash) || !is_sha256_digest(&self.nonce_hash) {
+            return Err(PortError::invalid(
+                "step-up state and nonce must be SHA-256 digests",
+            ));
+        }
+        if !is_action_hash(&self.action_hash) {
+            return Err(PortError::invalid(
+                "step-up action_hash must be a version 1 SHA-256 action digest",
+            ));
+        }
+        if self.issued_at > now || self.expires_at <= now || self.expires_at <= self.issued_at {
+            return Err(PortError::rejected(
+                "step-up challenge is not within its live time window",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Durable, one-use server-side state for OIDC step-up ceremonies.
+pub trait StepUpChallengeStore: Send + Sync {
+    fn insert(
+        &self,
+        state: StepUpChallengeState,
+    ) -> impl Future<Output = Result<(), PortError>> + Send;
+
+    /// Reads a live challenge by the digest of the OIDC callback `state`.
+    fn get_live(
+        &self,
+        state_hash: &str,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<Option<StepUpChallengeState>, PortError>> + Send;
+
+    /// Atomically consumes a live challenge once, after token verification.
+    fn consume(
+        &self,
+        state_hash: &str,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<Option<StepUpChallengeState>, PortError>> + Send;
+
+    /// Removes expired challenge state; live and recently consumed rows remain.
+    fn purge_expired(
+        &self,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<u64, PortError>> + Send;
+}
+
 /// Provider-verified, action-bound step-up result.
 ///
 /// Only the configured provider implementation may produce this result in a
@@ -194,6 +268,15 @@ impl ReviewApprovalRecord {
 
 fn is_action_hash(value: &str) -> bool {
     const PREFIX: &str = "sha256-action-v1:";
+    value.starts_with(PREFIX)
+        && value.len() == PREFIX.len() + 64
+        && value[PREFIX.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+fn is_sha256_digest(value: &str) -> bool {
+    const PREFIX: &str = "sha256:";
     value.starts_with(PREFIX)
         && value.len() == PREFIX.len() + 64
         && value[PREFIX.len()..]
