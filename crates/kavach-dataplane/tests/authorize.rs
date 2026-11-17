@@ -624,26 +624,31 @@ impl kavach_dataplane::Forwarder for CountingForwarder {
 type CapturedGatewayHeldRequest = (String, String, String, String, String);
 
 #[derive(Default)]
-struct CaptureGatewayHeld(std::sync::Mutex<Option<CapturedGatewayHeldRequest>>);
+struct LocalOnlyGatewayHeldAdapter {
+    captured: std::sync::Mutex<Option<CapturedGatewayHeldRequest>>,
+    response: std::sync::Mutex<Option<kavach_dataplane::ForwardResult>>,
+}
 
-impl kavach_dataplane::GatewayHeldForwarder for CaptureGatewayHeld {
+impl kavach_dataplane::GatewayHeldForwarder for LocalOnlyGatewayHeldAdapter {
     fn forward_gateway_held<'a>(
         &'a self,
         provider: &'a str,
         request: &'a kavach_dataplane::GatewayHeldRequest<'a>,
     ) -> kavach_dataplane::GatewayHeldForwardFuture<'a> {
         Box::pin(async move {
-            *self.0.lock().unwrap() = Some((
+            *self.captured.lock().unwrap() = Some((
                 provider.to_string(),
                 request.credential_id.to_string(),
                 request.destination.expose().to_string(),
                 request.channel.to_string(),
                 request.template_id.to_string(),
             ));
-            kavach_dataplane::ForwardResult::Responded {
-                status: 202,
-                message_id: Some("local-fake-1".into()),
-            }
+            self.response.lock().unwrap().clone().unwrap_or(
+                kavach_dataplane::ForwardResult::Responded {
+                    status: 202,
+                    message_id: Some("local-fake-1".into()),
+                },
+            )
         })
     }
 }
@@ -663,7 +668,7 @@ async fn selected_gateway_held_provider_uses_internal_broker_and_tokenless_adapt
         BTreeMap::new(),
     );
     let normal_forwarder = CountingForwarder::default();
-    let gateway_held_forwarder = CaptureGatewayHeld::default();
+    let gateway_held_forwarder = LocalOnlyGatewayHeldAdapter::default();
     let providers = BTreeSet::from(["mock-messaging".to_string()]);
     let resolver = kavach_dataplane::FixtureResolver::from_json(&format!(
         r#"{{"references":[{{"tenant_id":"{TENANT}","subject_ref":"{SUBJECT}","destinations":{{"whatsapp":"+910000000001"}}}}]}}"#
@@ -683,7 +688,7 @@ async fn selected_gateway_held_provider_uses_internal_broker_and_tokenless_adapt
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
-        "mandate_id": mandate,
+        "mandate_id": mandate.clone(),
         "request_id": "gateway-held-1",
         "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" }
     }))
@@ -701,7 +706,12 @@ async fn selected_gateway_held_provider_uses_internal_broker_and_tokenless_adapt
         0,
         "the credential-accepting forwarder is bypassed for this configured provider"
     );
-    let captured = gateway_held_forwarder.0.lock().unwrap().clone().unwrap();
+    let captured = gateway_held_forwarder
+        .captured
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
     assert!(
         !captured.1.is_empty(),
         "credential id is passed to the adapter"
@@ -719,6 +729,25 @@ async fn selected_gateway_held_provider_uses_internal_broker_and_tokenless_adapt
             "whatsapp",
             "emi_reminder_v1"
         )
+    );
+
+    *gateway_held_forwarder.response.lock().unwrap() = Some(kavach_dataplane::ForwardResult::Lost);
+    let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
+        "mandate_id": mandate,
+        "request_id": "gateway-held-lost-response",
+        "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" }
+    }))
+    .unwrap();
+    let reply =
+        kavach_dataplane::execute(&deps, &agent("collections-agent"), "send_reminder", request)
+            .await
+            .unwrap();
+    assert_eq!(reply.outcome, Some(Outcome::Unknown));
+    assert_eq!(reply.outcome_reason.as_deref(), Some("timeout_after_send"));
+    assert_eq!(
+        normal_forwarder.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the local tokenless adapter remains the only forwarder for the selected provider"
     );
 }
 
