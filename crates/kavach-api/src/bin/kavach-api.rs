@@ -578,6 +578,18 @@ struct Cli {
     #[arg(long, env = "KAVACH_REQUIRE_HARDENING")]
     require_hardening: bool,
 
+    /// Owner-only 32-byte hex key file for durable D17 review snapshots.
+    #[arg(long, env = "KAVACH_REVIEW_SNAPSHOT_KEY_FILE")]
+    review_snapshot_key_file: Option<PathBuf>,
+
+    /// Rotation id stored with encrypted D17 review snapshots.
+    #[arg(
+        long,
+        env = "KAVACH_REVIEW_SNAPSHOT_KEY_ID",
+        default_value = kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID
+    )]
+    review_snapshot_key_id: String,
+
     /// Cedar policy file (required when --access-control cedar).
     #[arg(long, env = "KAVACH_CEDAR_POLICY")]
     cedar_policy: Option<PathBuf>,
@@ -777,6 +789,8 @@ impl Cli {
             database_pool_size: self.database_pool_size,
             dataplane,
             require_hardening: self.require_hardening,
+            review_snapshot_key_file: self.review_snapshot_key_file,
+            review_snapshot_key_id: self.review_snapshot_key_id,
             roles,
         };
         validate_principal_sources(&config)?;

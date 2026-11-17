@@ -173,6 +173,26 @@ fn a_secret_file_open_to_group_or_others_is_refused() {
             mode: 0o644
         }]
     );
+
+    // The D17 snapshot key.
+    let mut api = hardened();
+    let snapshot_key = api
+        .tls
+        .as_ref()
+        .unwrap()
+        .key_path
+        .with_file_name("review.key");
+    owner_only(&snapshot_key, &"ab".repeat(32));
+    api.review_snapshot_key_file = Some(snapshot_key.clone());
+    assert_eq!(violations(&api, &[]), vec![]);
+    set_mode(&snapshot_key, 0o640);
+    assert_eq!(
+        violations(&api, &[]),
+        vec![Violation::SecretFileMode {
+            flag: "--review-snapshot-key-file",
+            mode: 0o640
+        }]
+    );
 }
 
 #[test]

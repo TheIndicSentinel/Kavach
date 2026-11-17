@@ -49,6 +49,8 @@ fn registry() -> PathBuf {
 fn config(root: &Path, database_url: &str, pack: &str, bootstrap_pack: bool) -> ApiConfig {
     ApiConfig {
         require_hardening: false,
+        review_snapshot_key_file: None,
+        review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: root.join("packs/finance").join(pack),
         model_path: root.join("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,
