@@ -34,8 +34,8 @@ use chrono::{DateTime, Duration, Utc};
 use kavach_jws::KeySet;
 use kavach_ports::{
     CredentialBroker, CredentialRequest, Destination, InternalCredentialBroker,
-    InternalCredentialReceipt, IssuedCredential, KeyProvider, PortError, StatusQuestions,
-    TokenSecret, MAX_CREDENTIAL_TTL_SECONDS,
+    InternalCredentialFuture, InternalCredentialReceipt, IssuedCredential, KeyProvider, PortError,
+    StatusQuestions, TokenSecret, MAX_CREDENTIAL_TTL_SECONDS,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -519,32 +519,34 @@ impl<K: KeyProvider> CredentialBroker for JoseCredentialBroker<K> {
 }
 
 impl<K: KeyProvider> InternalCredentialBroker for JoseCredentialBroker<K> {
-    async fn issue_internal(
-        &self,
-        request: &CredentialRequest<'_>,
-    ) -> Result<InternalCredentialReceipt, PortError> {
-        Self::validate(request)?;
-        let exp = Self::expiry(request)?;
-        // This recipient belongs only to this issuance. The private half is
-        // dropped after sealing; neither it nor the ciphertext leaves the
-        // broker. The committed evidence record retains the credential id.
-        let ephemeral = DecryptionKey::generate("kavach-internal-ephemeral")?;
-        let recipient = ephemeral.recipient();
-        self.reserve(request)?;
-        let token = self.seal(request, &recipient, exp).await;
-        drop(ephemeral);
-        match token {
-            Ok(token) => {
-                drop(token);
-                Ok(InternalCredentialReceipt {
-                    credential_id: request.credential_id.to_string(),
-                    expires_at: exp,
-                })
+    fn issue_internal<'a>(
+        &'a self,
+        request: &'a CredentialRequest<'a>,
+    ) -> InternalCredentialFuture<'a> {
+        Box::pin(async move {
+            Self::validate(request)?;
+            let exp = Self::expiry(request)?;
+            // This recipient belongs only to this issuance. The private half is
+            // dropped after sealing; neither it nor the ciphertext leaves the
+            // broker. The committed evidence record retains the credential id.
+            let ephemeral = DecryptionKey::generate("kavach-internal-ephemeral")?;
+            let recipient = ephemeral.recipient();
+            self.reserve(request)?;
+            let token = self.seal(request, &recipient, exp).await;
+            drop(ephemeral);
+            match token {
+                Ok(token) => {
+                    drop(token);
+                    Ok(InternalCredentialReceipt {
+                        credential_id: request.credential_id.to_string(),
+                        expires_at: exp,
+                    })
+                }
+                Err(err) => {
+                    self.release(request.credential_id);
+                    Err(err)
+                }
             }
-            Err(err) => {
-                self.release(request.credential_id);
-                Err(err)
-            }
-        }
+        })
     }
 }

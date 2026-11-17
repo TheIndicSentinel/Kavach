@@ -15,6 +15,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::pin::Pin;
 
 use chrono::{DateTime, Utc};
 use zeroize::Zeroize;
@@ -120,6 +121,10 @@ pub struct InternalCredentialReceipt {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Object-safe future returned by [`InternalCredentialBroker`].
+pub type InternalCredentialFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<InternalCredentialReceipt, PortError>> + Send + 'a>>;
+
 /// Mints the signed question a gateway puts to a provider about one earlier
 /// send (ADR-017 R2). A question names the send (`jti`), the tenant and the
 /// provider and carries nothing about the recipient; it is not a credential
@@ -168,9 +173,10 @@ pub trait CredentialBroker: Send + Sync {
 /// Implementations encrypt it to a short-lived Kavach-only key, discard that
 /// key and ciphertext, and return only a receipt. This capability is separate
 /// from [`CredentialBroker`] so provider-verifiable issuance remains unchanged.
+/// The trait is object-safe for runtime mode selection.
 pub trait InternalCredentialBroker: Send + Sync {
-    fn issue_internal(
-        &self,
-        request: &CredentialRequest<'_>,
-    ) -> impl Future<Output = Result<InternalCredentialReceipt, PortError>> + Send;
+    fn issue_internal<'a>(
+        &'a self,
+        request: &'a CredentialRequest<'a>,
+    ) -> InternalCredentialFuture<'a>;
 }

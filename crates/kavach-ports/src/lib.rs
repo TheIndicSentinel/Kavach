@@ -25,8 +25,8 @@ mod time;
 
 pub use credential::{
     CredentialBroker, CredentialRequest, Destination, InternalCredentialBroker,
-    InternalCredentialReceipt, IssuedCredential, StatusQuestions, TokenSecret,
-    MAX_CREDENTIAL_TTL_SECONDS,
+    InternalCredentialFuture, InternalCredentialReceipt, IssuedCredential, StatusQuestions,
+    TokenSecret, MAX_CREDENTIAL_TTL_SECONDS,
 };
 pub use error::{ErrorClass, PortError};
 pub use evidence::{

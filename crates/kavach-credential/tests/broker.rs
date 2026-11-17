@@ -97,6 +97,7 @@ async fn internal_credential_needs_no_provider_recipient_and_returns_no_token() 
     let mut keys = InMemoryKeyProvider::new();
     keys.generate(KID).unwrap();
     let broker = JoseCredentialBroker::new(keys, KID, "kavach-test", BTreeMap::new());
+    let broker: &dyn InternalCredentialBroker = &broker;
     let destination = Destination::new(DESTINATION);
     let request = credential_broker::request(&destination, "cred-internal");
 

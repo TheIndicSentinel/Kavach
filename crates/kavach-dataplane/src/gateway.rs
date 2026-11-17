@@ -13,6 +13,7 @@
 //! provider's raw response to the agent: [`GatewayReply`] is an allowlist.
 
 use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -65,6 +66,9 @@ pub struct GatewayHeldRequest<'a> {
     pub template_id: &'a str,
 }
 
+/// Object-safe future returned by [`GatewayHeldForwarder`].
+pub type GatewayHeldForwardFuture<'a> = Pin<Box<dyn Future<Output = ForwardResult> + Send + 'a>>;
+
 /// Sends one credential to a provider. Implementations must not retry, must
 /// not follow redirects and must not use ambient proxies.
 pub trait Forwarder: Send + Sync {
@@ -91,11 +95,11 @@ pub trait Forwarder: Send + Sync {
 /// accidentally forward a Kavach credential. Implementations must send once,
 /// without retries, redirects or ambient proxies.
 pub trait GatewayHeldForwarder: Send + Sync {
-    fn forward_gateway_held(
-        &self,
-        provider: &str,
-        request: &GatewayHeldRequest<'_>,
-    ) -> impl Future<Output = ForwardResult> + Send;
+    fn forward_gateway_held<'a>(
+        &'a self,
+        provider: &'a str,
+        request: &'a GatewayHeldRequest<'a>,
+    ) -> GatewayHeldForwardFuture<'a>;
 }
 
 async fn send_forward_request<F: Forwarder>(
@@ -626,18 +630,19 @@ mod tests {
     struct TokenlessGatewayHeldAdapter;
 
     impl GatewayHeldForwarder for TokenlessGatewayHeldAdapter {
-        async fn forward_gateway_held(
-            &self,
-            provider: &str,
-            request: &GatewayHeldRequest<'_>,
-        ) -> ForwardResult {
-            tokio::task::yield_now().await;
-            assert_eq!(provider, "free-local-adapter");
-            assert_eq!(request.credential_id, "record-1");
-            assert_eq!(request.destination.expose(), "+919876543210");
-            assert_eq!(request.channel, "whatsapp");
-            assert_eq!(request.template_id, "reminder-v1");
-            responded(202)
+        fn forward_gateway_held<'a>(
+            &'a self,
+            provider: &'a str,
+            request: &'a GatewayHeldRequest<'a>,
+        ) -> GatewayHeldForwardFuture<'a> {
+            Box::pin(async move {
+                assert_eq!(provider, "free-local-adapter");
+                assert_eq!(request.credential_id, "record-1");
+                assert_eq!(request.destination.expose(), "+919876543210");
+                assert_eq!(request.channel, "whatsapp");
+                assert_eq!(request.template_id, "reminder-v1");
+                responded(202)
+            })
         }
     }
 
@@ -650,7 +655,8 @@ mod tests {
             channel: "whatsapp",
             template_id: "reminder-v1",
         };
-        let result = TokenlessGatewayHeldAdapter
+        let adapter: &dyn GatewayHeldForwarder = &TokenlessGatewayHeldAdapter;
+        let result = adapter
             .forward_gateway_held("free-local-adapter", &request)
             .await;
         assert_eq!(result, responded(202));

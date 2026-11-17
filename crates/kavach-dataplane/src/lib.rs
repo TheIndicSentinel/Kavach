@@ -23,8 +23,8 @@ pub use checkpointer::{
 };
 pub use gateway::{
     execute, CredentialAcceptingRequest, ForwardResult, Forwarder, GatewayDeps, GatewayError,
-    GatewayHeldForwarder, GatewayHeldRequest, GatewayObserver, GatewayReply, ProviderStatus, Stage,
-    StatusAnswer, StatusAsker,
+    GatewayHeldForwardFuture, GatewayHeldForwarder, GatewayHeldRequest, GatewayObserver,
+    GatewayReply, ProviderStatus, Stage, StatusAnswer, StatusAsker,
 };
 pub use outcome_reconciler::{reconcile_outcomes, OutcomeReconcileReport, PollState};
 pub use resolve::FixtureResolver;
