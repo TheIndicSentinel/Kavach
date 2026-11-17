@@ -11,8 +11,8 @@ use chrono::Utc;
 use kavach_domain::Decision;
 use kavach_ports::agent_evidence::AgentDecisionRecord;
 use kavach_ports::{
-    PortError, StepUpChallenge, StepUpChallengeState, StepUpChallengeStore, StepUpRequest,
-    TokenSecret, VerifiedStepUp,
+    PortError, PublicKey, StepUpChallenge, StepUpChallengeState, StepUpChallengeStore,
+    StepUpRequest, TokenSecret, VerifiedStepUp,
 };
 use reqwest::Url;
 use ring::rand::{SecureRandom, SystemRandom};
@@ -26,19 +26,21 @@ pub const STEP_UP_CALLBACK_PATH: &str = "/auth/step-up/callback";
 /// Builds step-up context only from a committed HUMAN_REVIEW evidence record
 /// and a reviewer identity obtained from the authenticated console session.
 /// The caller must load the record from the server-side evidence store and
-/// verify its evidence signature before calling this helper.
+/// supply the trusted evidence key set.
 pub fn request_for_human_review(
     record: &AgentDecisionRecord,
+    evidence_keys: &std::collections::BTreeMap<String, PublicKey>,
+    allow_dev_keys: bool,
     tenant_id: &str,
     reviewer_principal_key: &str,
     issued_at: chrono::DateTime<Utc>,
     expires_at: chrono::DateTime<Utc>,
 ) -> Result<StepUpRequest, PortError> {
-    let expected_hash = kavach_ports::agent_evidence::payload_hash(&record.payload)?;
+    kavach_ports::agent_evidence::check_record_signature(record, evidence_keys, allow_dev_keys)
+        .map_err(|_| PortError::rejected("review evidence signature is invalid"))?;
     if record.payload.tenant_id != tenant_id
         || record.payload.policy_decision != Decision::HumanReview
         || record.payload.returned_decision != Decision::HumanReview
-        || record.hash != expected_hash
     {
         return Err(PortError::rejected(
             "step-up requires a HUMAN_REVIEW record for this tenant",
@@ -576,9 +578,10 @@ mod tests {
     use jsonwebtoken::jwk::JwkSet;
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
     use kavach_ports::agent_evidence::{
-        Actor, AgentDecisionPayload, PolicyVersions, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
+        signing_message, Actor, AgentDecisionPayload, PolicyVersions, TimeSync, HASH_ALG_V2,
+        KIND_AGENT_DECISION,
     };
-    use kavach_ports::{StepUpChallengeStore, StepUpRequest};
+    use kavach_ports::{KeyAlgorithm, StepUpChallengeStore, StepUpRequest};
     use kavach_storage::MemoryStepUpChallengeStore;
     use ring::signature::{Ed25519KeyPair, KeyPair};
 
@@ -588,7 +591,11 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap()
     }
 
-    fn human_review_record() -> AgentDecisionRecord {
+    fn human_review_record() -> (
+        AgentDecisionRecord,
+        std::collections::BTreeMap<String, PublicKey>,
+    ) {
+        let keypair = Ed25519KeyPair::from_seed_unchecked(&[7u8; 32]).unwrap();
         let payload = AgentDecisionPayload {
             record_id: "adr:tenant-1:0:1".into(),
             tenant_id: "tenant-1".into(),
@@ -633,19 +640,27 @@ mod tests {
             ts: now(),
         };
         let hash = kavach_ports::agent_evidence::payload_hash(&payload).unwrap();
-        AgentDecisionRecord {
-            payload,
-            hash,
-            sig: "test-signature".into(),
-        }
+        let sig = hex::encode(keypair.sign(&signing_message(&hash)).as_ref());
+        let record = AgentDecisionRecord { payload, hash, sig };
+        let public_key = PublicKey {
+            kid: "evidence-key-1".into(),
+            algorithm: KeyAlgorithm::Ed25519,
+            bytes: keypair.public_key().as_ref().try_into().unwrap(),
+        };
+        (
+            record,
+            std::collections::BTreeMap::from([("evidence-key-1".into(), public_key)]),
+        )
     }
 
     #[test]
     fn review_step_up_request_uses_only_matching_human_review_evidence() {
-        let record = human_review_record();
+        let (record, evidence_keys) = human_review_record();
         let reviewer = "oidc:https://idp.example#reviewer-1";
         let request = request_for_human_review(
             &record,
+            &evidence_keys,
+            false,
             "tenant-1",
             reviewer,
             now(),
@@ -661,6 +676,8 @@ mod tests {
 
         assert!(request_for_human_review(
             &record,
+            &evidence_keys,
+            false,
             "tenant-2",
             reviewer,
             now(),
@@ -672,6 +689,8 @@ mod tests {
         not_review.payload.returned_decision = Decision::Block;
         assert!(request_for_human_review(
             &not_review,
+            &evidence_keys,
+            false,
             "tenant-1",
             reviewer,
             now(),
@@ -683,6 +702,21 @@ mod tests {
         tampered.hash = "edited-record-hash".into();
         assert!(request_for_human_review(
             &tampered,
+            &evidence_keys,
+            false,
+            "tenant-1",
+            reviewer,
+            now(),
+            now() + Duration::minutes(2),
+        )
+        .is_err());
+
+        let mut invalid_signature = record.clone();
+        invalid_signature.sig = hex::encode([0u8; 64]);
+        assert!(request_for_human_review(
+            &invalid_signature,
+            &evidence_keys,
+            false,
             "tenant-1",
             reviewer,
             now(),
@@ -694,6 +728,8 @@ mod tests {
         missing_hash.payload.review_action_hash = None;
         assert!(request_for_human_review(
             &missing_hash,
+            &evidence_keys,
+            false,
             "tenant-1",
             reviewer,
             now(),
