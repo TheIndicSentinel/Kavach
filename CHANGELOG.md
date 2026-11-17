@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **M4 D17 API challenge-store wiring.** `AppState` now retains the existing memory challenge store for development and the Postgres challenge store for configured durable storage, exposing the selected backend for the planned HTTP adapter. One-use challenge storage is available at runtime, but no step-up route is mounted yet.
 - **M4 D17 ACR configuration.** Added optional `--console-step-up-acr` / `KAVACH_CONSOLE_STEP_UP_ACR`, validated to a bounded non-control value and retained in console login settings for future route wiring. It does not enable step-up or approvals by itself; the IdP must map the value to WebAuthn and the routes remain pending.
 - **M4 D17 tenant-scoped review lookup.** The dataplane now loads candidate HUMAN_REVIEW evidence only through its configured tenant and returns no record for a foreign tenant, a non-review outcome, or a missing exact-action digest. Signature verification remains required before step-up context is derived; HTTP route wiring remains pending.
 - **M4 D17 reviewer authorization.** Added the Cedar `approve_human_review` action for the `approver` role (and the existing `superadmin` catch-all) after the owner approved extending `approver` on 2026-11-17. The IdP `change-approvers` group alias is unchanged. Role matrix tests and Cedar formal-analysis coverage include the new boundary.
