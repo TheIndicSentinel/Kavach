@@ -412,7 +412,9 @@ struct Session {
 
 struct PendingStepUp {
     session_key: [u8; 32],
+    tenant_id: String,
     principal_key: String,
+    action_hash: String,
     state: TokenSecret,
     nonce: TokenSecret,
     pkce_verifier: TokenSecret,
@@ -434,7 +436,9 @@ pub struct StepUpCallbackSecrets {
     pub state: TokenSecret,
     pub nonce: TokenSecret,
     pub pkce_verifier: TokenSecret,
+    pub tenant_id: String,
     pub principal_key: String,
+    pub action_hash: String,
     pub expires_at: DateTime<Utc>,
 }
 
@@ -657,8 +661,8 @@ impl ConsoleLogin {
         {
             return Err(StepUpSessionError::Expired);
         }
-        let principal_key = started.principal_key().to_string();
-        let (challenge, state, nonce, pkce_verifier) = started.into_parts();
+        let (challenge, tenant_id, principal_key, action_hash, state, nonce, pkce_verifier) =
+            started.into_parts();
         if challenge.challenge_id != state.expose() {
             return Err(StepUpSessionError::InvalidState);
         }
@@ -685,7 +689,9 @@ impl ConsoleLogin {
             callback_key,
             PendingStepUp {
                 session_key,
+                tenant_id,
                 principal_key,
+                action_hash,
                 state,
                 nonce,
                 pkce_verifier,
@@ -747,7 +753,9 @@ impl ConsoleLogin {
             state: current.state,
             nonce: current.nonce,
             pkce_verifier: current.pkce_verifier,
+            tenant_id: current.tenant_id,
             principal_key: current.principal_key,
+            action_hash: current.action_hash,
             expires_at: current.expires_at,
         })
     }
@@ -1609,7 +1617,9 @@ mod tests {
             .take_step_up_callback(callback_cookie.expose(), callback_state)
             .unwrap();
         assert_eq!(secrets.state.expose(), callback_state);
+        assert_eq!(secrets.tenant_id, "tenant-1");
         assert_eq!(secrets.principal_key, principal_key);
+        assert_eq!(secrets.action_hash, action_hash);
         assert_eq!(secrets.expires_at, challenge.expires_at);
         assert_eq!(
             login

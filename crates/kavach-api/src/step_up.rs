@@ -1,8 +1,8 @@
 //! Keycloak OIDC step-up authorization and callback verification (PRD D17).
 //!
 //! It starts a challenge, persists its action-bound context, and verifies the
-//! callback. HTTP route and authenticated-session wiring remain separate;
-//! callers must keep callback secrets in the server session.
+//! callback. HTTP route wiring remains separate; callback secrets and the
+//! challenge's tenant/reviewer/action context stay in server-side session state.
 
 use axum::http::header::{HeaderValue, ACCEPT, AUTHORIZATION};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -37,7 +37,9 @@ pub struct KeycloakStepUpConfig {
 /// custody. Do not serialize or log this value.
 pub struct KeycloakStepUpStart {
     challenge: StepUpChallenge,
+    tenant_id: String,
     principal_key: String,
+    action_hash: String,
     state: TokenSecret,
     nonce: TokenSecret,
     pkce_verifier: TokenSecret,
@@ -54,11 +56,39 @@ impl KeycloakStepUpStart {
         &self.principal_key
     }
 
+    #[must_use]
+    pub fn tenant_id(&self) -> &str {
+        &self.tenant_id
+    }
+
+    #[must_use]
+    pub fn action_hash(&self) -> &str {
+        &self.action_hash
+    }
+
     /// Transfers the challenge and callback secrets to the caller. The
     /// caller must bind these secrets to the authenticated browser session.
     #[must_use]
-    pub fn into_parts(self) -> (StepUpChallenge, TokenSecret, TokenSecret, TokenSecret) {
-        (self.challenge, self.state, self.nonce, self.pkce_verifier)
+    pub fn into_parts(
+        self,
+    ) -> (
+        StepUpChallenge,
+        String,
+        String,
+        String,
+        TokenSecret,
+        TokenSecret,
+        TokenSecret,
+    ) {
+        (
+            self.challenge,
+            self.tenant_id,
+            self.principal_key,
+            self.action_hash,
+            self.state,
+            self.nonce,
+            self.pkce_verifier,
+        )
     }
 }
 
@@ -429,6 +459,9 @@ impl<S: StepUpChallengeStore> KeycloakStepUpInitiator<S> {
             .append_pair("claims", &claims.to_string())
             .append_pair("max_age", "0");
 
+        let tenant_id = request.tenant_id.clone();
+        let principal_key = request.principal_key.clone();
+        let action_hash = request.action_hash.clone();
         let state_record = StepUpChallengeState {
             challenge_id: state.expose().to_string(),
             state_hash,
@@ -448,7 +481,9 @@ impl<S: StepUpChallengeStore> KeycloakStepUpInitiator<S> {
         };
         Ok(KeycloakStepUpStart {
             challenge,
-            principal_key: request.principal_key,
+            tenant_id,
+            principal_key,
+            action_hash,
             state,
             nonce,
             pkce_verifier,
@@ -644,7 +679,8 @@ mod tests {
         )
         .unwrap();
         let started = initiator.begin(request(now()), now()).await.unwrap();
-        let (challenge, state, nonce, verifier) = started.into_parts();
+        let (challenge, _tenant_id, _principal_key, _action_hash, state, nonce, verifier) =
+            started.into_parts();
         let url = Url::parse(&challenge.authorization_url).unwrap();
         let query: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
         let claims: serde_json::Value = serde_json::from_str(query.get("claims").unwrap()).unwrap();
