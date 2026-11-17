@@ -56,22 +56,23 @@ impl kavach_ports::ReviewApprovalStore for ReviewApprovalBackend {
         }
     }
 
-    async fn consume(
+    async fn release(
         &self,
         tenant_id: &str,
         approval_id: &str,
+        execution_id: &str,
         action_hash: &str,
         now: chrono::DateTime<Utc>,
-    ) -> Result<Option<kavach_ports::ReviewApprovalRecord>, kavach_ports::PortError> {
+    ) -> Result<Option<kavach_ports::ReviewReleaseRecord>, kavach_ports::PortError> {
         match self {
             Self::Memory(store) => {
                 store
-                    .consume(tenant_id, approval_id, action_hash, now)
+                    .release(tenant_id, approval_id, execution_id, action_hash, now)
                     .await
             }
             Self::Postgres(store) => {
                 store
-                    .consume(tenant_id, approval_id, action_hash, now)
+                    .release(tenant_id, approval_id, execution_id, action_hash, now)
                     .await
             }
         }
@@ -1398,6 +1399,8 @@ mod step_up_backend_tests {
         let record = ReviewApprovalRecord {
             tenant_id: "tenant-a".into(),
             approval_id: "approval-a".into(),
+            review_record_id: "adr:tenant-a:0:1".into(),
+            execution_id: Some("execution-a".into()),
             action_hash: action_hash.clone(),
             rendered_action: "Approve proposal".into(),
             approver: "oidc:https://idp.example#reviewer".into(),
@@ -1409,27 +1412,41 @@ mod step_up_backend_tests {
 
         let store = app.review_approval_store();
         store.insert(record.clone()).await.expect("insert");
-        assert_eq!(
-            store
-                .consume("tenant-a", "approval-a", &action_hash, now)
-                .await
-                .expect("consume"),
-            Some(record)
-        );
-        assert!(store
-            .consume("tenant-a", "approval-a", &action_hash, now)
+        let release = store
+            .release("tenant-a", "approval-a", "execution-a", &action_hash, now)
             .await
-            .expect("second consume")
-            .is_none());
+            .expect("release")
+            .expect("matching approval");
+        assert_eq!(release.review_record_id, record.review_record_id);
+        assert_eq!(release.execution_id, "execution-a");
         assert!(store
-            .consume(
+            .release(
                 "tenant-a",
                 "approval-a",
+                "execution-other",
+                &action_hash,
+                now
+            )
+            .await
+            .expect("different execution")
+            .is_none());
+        assert!(store
+            .release(
+                "tenant-a",
+                "approval-a",
+                "execution-other",
                 &format!("sha256-action-v1:{}", "b".repeat(64)),
                 now
             )
             .await
-            .expect("mismatched consume")
+            .expect("mismatched release")
             .is_none());
+        assert_eq!(
+            store
+                .release("tenant-a", "approval-a", "execution-a", &action_hash, now)
+                .await
+                .expect("idempotent release retry"),
+            Some(release)
+        );
     }
 }

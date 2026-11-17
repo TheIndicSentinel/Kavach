@@ -206,6 +206,7 @@ pub struct ApprovalDecisionBody {
 #[derive(Serialize)]
 pub struct ApprovalCreated {
     pub approval_id: String,
+    pub execution_id: Option<String>,
     pub decision: ReviewDecision,
     pub expires_at: DateTime<Utc>,
 }
@@ -258,6 +259,7 @@ async fn approve_inner(
         build_approval_record(&view, state.tenant_id(), &principal, proof, decision, now)?;
     let created = ApprovalCreated {
         approval_id: approval.approval_id.clone(),
+        execution_id: approval.execution_id.clone(),
         decision,
         expires_at: approval.expires,
     };
@@ -322,6 +324,9 @@ fn build_approval_record(
     let approval = ReviewApprovalRecord {
         tenant_id: proof.tenant_id,
         approval_id: uuid::Uuid::new_v4().to_string(),
+        review_record_id: view.record_id.clone(),
+        execution_id: (decision == ReviewDecision::Approve)
+            .then(|| uuid::Uuid::new_v4().to_string()),
         action_hash: view.action_hash.clone(),
         rendered_action,
         approver: principal.to_owned(),
@@ -634,9 +639,23 @@ mod tests {
         .expect("bound approval");
         assert_eq!(approval.action_hash, view.action_hash);
         assert_eq!(approval.tenant_id, "tenant-1");
+        assert_eq!(approval.review_record_id, view.record_id);
+        assert!(approval.execution_id.is_some());
         assert!(approval.single_use_credential_id.is_some());
         assert!(approval.expires <= now + Duration::seconds(APPROVAL_TTL_SECONDS));
         assert!(approval.rendered_action.contains("propose_plan"));
+
+        let rejected = build_approval_record(
+            &view,
+            "tenant-1",
+            &proof.principal_key,
+            proof.clone(),
+            ReviewDecision::Reject,
+            now,
+        )
+        .expect("bound rejection");
+        assert!(rejected.execution_id.is_none());
+        assert!(rejected.single_use_credential_id.is_none());
 
         assert!(build_approval_record(
             &view,

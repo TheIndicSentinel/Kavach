@@ -9,6 +9,8 @@ fn record(id: &str, decision: ReviewDecision) -> ReviewApprovalRecord {
     ReviewApprovalRecord {
         tenant_id: "tenant-1".into(),
         approval_id: id.into(),
+        review_record_id: "adr:tenant-1:0:1".into(),
+        execution_id: (decision == ReviewDecision::Approve).then(|| format!("execution-{id}")),
         action_hash: format!("sha256-action-v1:{}", "a".repeat(64)),
         rendered_action: "Propose a 35% waiver for borrower ref:B-9382".into(),
         approver: "oidc:https://idp.example#user-1".into(),
@@ -38,7 +40,7 @@ async fn pool() -> Option<StoragePool> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn runtime_role_persists_and_consumes_an_approval_once_for_its_exact_action() {
+async fn runtime_role_releases_an_approval_once_for_its_exact_execution() {
     let Some(pool) = pool().await else { return };
     let store = pool.review_approval_store();
     let approval = record("approval-1", ReviewDecision::Approve);
@@ -46,33 +48,76 @@ async fn runtime_role_persists_and_consumes_an_approval_once_for_its_exact_actio
     store.insert(approval.clone()).await.unwrap();
 
     assert!(store
-        .consume("tenant-2", "approval-1", &hash, now())
+        .release(
+            "tenant-2",
+            "approval-1",
+            "execution-approval-1",
+            &hash,
+            now()
+        )
         .await
         .unwrap()
         .is_none());
     assert!(store
-        .consume("tenant-1", "approval-1", "sha256-action-v1:other", now())
+        .release(
+            "tenant-1",
+            "approval-1",
+            "execution-approval-1",
+            "sha256-action-v1:other",
+            now()
+        )
         .await
         .unwrap()
         .is_none());
     assert!(store
-        .consume("tenant-1", "approval-1", &hash, approval.expires)
+        .release(
+            "tenant-1",
+            "approval-1",
+            "execution-approval-1",
+            &hash,
+            approval.expires
+        )
         .await
         .unwrap()
         .is_none());
 
     assert_eq!(
         store
-            .consume("tenant-1", "approval-1", &hash, now())
+            .release(
+                "tenant-1",
+                "approval-1",
+                "execution-approval-1",
+                &hash,
+                now()
+            )
             .await
             .unwrap(),
-        Some(approval.clone())
+        Some(kavach_ports::ReviewReleaseRecord {
+            tenant_id: "tenant-1".into(),
+            approval_id: "approval-1".into(),
+            review_record_id: "adr:tenant-1:0:1".into(),
+            execution_id: "execution-approval-1".into(),
+            action_hash: hash.clone(),
+            approver: approval.approver.clone(),
+            released_at: now(),
+        })
     );
     assert!(store
-        .consume("tenant-1", "approval-1", &hash, now())
+        .release("tenant-1", "approval-1", "execution-other", &hash, now())
         .await
         .unwrap()
         .is_none());
+    assert!(store
+        .release(
+            "tenant-1",
+            "approval-1",
+            "execution-approval-1",
+            &hash,
+            now()
+        )
+        .await
+        .unwrap()
+        .is_some());
     assert!(store.insert(approval).await.is_err());
 
     let mut reused_credential = record("approval-reused-credential", ReviewDecision::Approve);
@@ -82,9 +127,10 @@ async fn runtime_role_persists_and_consumes_an_approval_once_for_its_exact_actio
     let rejected = record("approval-rejected", ReviewDecision::Reject);
     store.insert(rejected.clone()).await.unwrap();
     assert!(store
-        .consume(
+        .release(
             "tenant-1",
             "approval-rejected",
+            "execution-approval-rejected",
             &rejected.action_hash,
             now()
         )
@@ -94,7 +140,7 @@ async fn runtime_role_persists_and_consumes_an_approval_once_for_its_exact_actio
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn concurrent_postgres_consumers_cannot_replay_an_approval() {
+async fn concurrent_postgres_release_retries_return_the_same_execution_record() {
     let Some(pool) = pool().await else { return };
     let store = pool.review_approval_store();
     let approval = record("approval-race", ReviewDecision::Approve);
@@ -102,12 +148,25 @@ async fn concurrent_postgres_consumers_cannot_replay_an_approval() {
     store.insert(approval).await.unwrap();
 
     let (left, right) = tokio::join!(
-        store.consume("tenant-1", "approval-race", &hash, now()),
-        store.consume("tenant-1", "approval-race", &hash, now()),
+        store.release(
+            "tenant-1",
+            "approval-race",
+            "execution-approval-race",
+            &hash,
+            now()
+        ),
+        store.release(
+            "tenant-1",
+            "approval-race",
+            "execution-approval-race",
+            &hash,
+            now()
+        ),
     );
     let left = left.unwrap();
     let right = right.unwrap();
-    assert_ne!(left.is_some(), right.is_some());
+    assert!(left.is_some() && right.is_some());
+    assert_eq!(left.unwrap(), right.unwrap());
 }
 
 #[tokio::test(flavor = "multi_thread")]

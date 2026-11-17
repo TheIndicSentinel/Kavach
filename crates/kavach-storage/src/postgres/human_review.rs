@@ -1,7 +1,7 @@
 //! PostgreSQL adapter for completed human-review approvals.
 
 use chrono::{DateTime, Utc};
-use kavach_ports::{PortError, ReviewApprovalRecord, ReviewApprovalStore, ReviewDecision};
+use kavach_ports::{PortError, ReviewApprovalRecord, ReviewApprovalStore, ReviewReleaseRecord};
 use sqlx::{PgPool, Row};
 
 #[derive(Clone)]
@@ -20,12 +20,15 @@ impl ReviewApprovalStore for PostgresReviewApprovalStore {
         record.validate()?;
         let result = sqlx::query(
             "INSERT INTO human_review_approvals \
-                (tenant_id, approval_id, action_hash, rendered_action, approver, \
-                 step_up_ref, decision, single_use_credential_id, expires_at) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                (tenant_id, approval_id, review_record_id, execution_id, action_hash, \
+                 rendered_action, approver, step_up_ref, decision, \
+                 single_use_credential_id, expires_at) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&record.tenant_id)
         .bind(&record.approval_id)
+        .bind(&record.review_record_id)
+        .bind(&record.execution_id)
         .bind(&record.action_hash)
         .bind(&record.rendered_action)
         .bind(&record.approver)
@@ -50,67 +53,117 @@ impl ReviewApprovalStore for PostgresReviewApprovalStore {
         })
     }
 
-    async fn consume(
+    async fn release(
         &self,
         tenant_id: &str,
         approval_id: &str,
+        execution_id: &str,
         action_hash: &str,
         now: DateTime<Utc>,
-    ) -> Result<Option<ReviewApprovalRecord>, PortError> {
+    ) -> Result<Option<ReviewReleaseRecord>, PortError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| PortError::unavailable("review approval storage is unavailable"))?;
         let row = sqlx::query(
             "UPDATE human_review_approvals \
              SET consumed_at = $4 \
              WHERE tenant_id = $1 AND approval_id = $2 AND action_hash = $3 \
-               AND decision = 'approve' AND expires_at > $4 AND consumed_at IS NULL \
-             RETURNING tenant_id, approval_id, action_hash, rendered_action, approver, \
-                       step_up_ref, decision, single_use_credential_id, expires_at",
+               AND execution_id = $5 AND decision = 'approve' \
+               AND expires_at > $4 AND consumed_at IS NULL \
+             RETURNING review_record_id, approver",
         )
         .bind(tenant_id)
         .bind(approval_id)
         .bind(action_hash)
         .bind(now)
-        .fetch_optional(&self.pool)
+        .bind(execution_id)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|_| PortError::unavailable("review approval storage is unavailable"))?;
-
-        row.map(|row| {
-            let decision = row
-                .try_get::<String, _>("decision")
-                .map_err(|_| PortError::unavailable("stored review approval is malformed"))?;
-            let decision = ReviewDecision::parse(&decision)
-                .ok_or_else(|| PortError::unavailable("stored review decision is unknown"))?;
-            let record = ReviewApprovalRecord {
-                tenant_id: row
-                    .try_get("tenant_id")
+        if let Some(row) = row {
+            let release = ReviewReleaseRecord {
+                tenant_id: tenant_id.to_owned(),
+                approval_id: approval_id.to_owned(),
+                review_record_id: row
+                    .try_get("review_record_id")
                     .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
-                approval_id: row
-                    .try_get("approval_id")
-                    .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
-                action_hash: row
-                    .try_get("action_hash")
-                    .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
-                rendered_action: row
-                    .try_get("rendered_action")
-                    .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
+                execution_id: execution_id.to_owned(),
+                action_hash: action_hash.to_owned(),
                 approver: row
                     .try_get("approver")
                     .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
-                step_up_ref: row
-                    .try_get("step_up_ref")
-                    .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
-                decision,
-                single_use_credential_id: row
-                    .try_get("single_use_credential_id")
-                    .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
-                expires: row
-                    .try_get("expires_at")
-                    .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
+                released_at: now,
             };
-            record
-                .validate()
-                .map_err(|_| PortError::unavailable("stored review approval is malformed"))?;
-            Ok(record)
-        })
-        .transpose()
+            release.validate()?;
+            sqlx::query(
+                "INSERT INTO human_review_releases \
+                    (tenant_id, execution_id, approval_id, review_record_id, action_hash, \
+                     approver, released_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            )
+            .bind(&release.tenant_id)
+            .bind(&release.execution_id)
+            .bind(&release.approval_id)
+            .bind(&release.review_record_id)
+            .bind(&release.action_hash)
+            .bind(&release.approver)
+            .bind(release.released_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| PortError::unavailable("human-review release could not be recorded"))?;
+            tx.commit().await.map_err(|_| {
+                PortError::unavailable("human-review release could not be committed")
+            })?;
+            return Ok(Some(release));
+        }
+
+        let existing = sqlx::query(
+            "SELECT tenant_id, approval_id, review_record_id, execution_id, action_hash, \
+                    approver, released_at \
+             FROM human_review_releases \
+             WHERE tenant_id = $1 AND execution_id = $2 AND approval_id = $3 \
+               AND action_hash = $4",
+        )
+        .bind(tenant_id)
+        .bind(execution_id)
+        .bind(approval_id)
+        .bind(action_hash)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| PortError::unavailable("review release storage is unavailable"))?;
+        tx.commit()
+            .await
+            .map_err(|_| PortError::unavailable("review release storage is unavailable"))?;
+        existing
+            .map(|row| {
+                let release = ReviewReleaseRecord {
+                    tenant_id: row.try_get("tenant_id").map_err(|_| {
+                        PortError::unavailable("stored review release is malformed")
+                    })?,
+                    approval_id: row.try_get("approval_id").map_err(|_| {
+                        PortError::unavailable("stored review release is malformed")
+                    })?,
+                    review_record_id: row.try_get("review_record_id").map_err(|_| {
+                        PortError::unavailable("stored review release is malformed")
+                    })?,
+                    execution_id: row.try_get("execution_id").map_err(|_| {
+                        PortError::unavailable("stored review release is malformed")
+                    })?,
+                    action_hash: row.try_get("action_hash").map_err(|_| {
+                        PortError::unavailable("stored review release is malformed")
+                    })?,
+                    approver: row.try_get("approver").map_err(|_| {
+                        PortError::unavailable("stored review release is malformed")
+                    })?,
+                    released_at: row.try_get("released_at").map_err(|_| {
+                        PortError::unavailable("stored review release is malformed")
+                    })?,
+                };
+                release.validate()?;
+                Ok(release)
+            })
+            .transpose()
     }
 }
