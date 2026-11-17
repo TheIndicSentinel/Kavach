@@ -114,6 +114,9 @@ pub struct ConsoleLoginSettings {
     /// Return the IdP's end-session URL from logout (off by default).
     pub idp_logout: bool,
     pub max_sessions: usize,
+    /// IdP ACR configured to require the intended WebAuthn/passkey flow for
+    /// D17 step-up. `None` leaves step-up initiation unconfigured.
+    pub step_up_acr: Option<String>,
 }
 
 impl ConsoleLoginSettings {
@@ -130,6 +133,7 @@ impl ConsoleLoginSettings {
             absolute_minutes: DEFAULT_ABSOLUTE_MINUTES,
             idp_logout: false,
             max_sessions: DEFAULT_MAX_SESSIONS,
+            step_up_acr: None,
         }
     }
 }
@@ -204,6 +208,14 @@ pub fn validate(settings: &ConsoleLoginSettings, config: &ApiConfig) -> Result<(
     if settings.client_id == oidc.audience {
         return Err(
             "--console-client-id must differ from --oidc-audience (the operator audience)".into(),
+        );
+    }
+    if settings.step_up_acr.as_ref().is_some_and(|acr| {
+        acr.is_empty() || acr.len() > 128 || acr.trim() != acr || acr.chars().any(char::is_control)
+    }) {
+        return Err(
+            "--console-step-up-acr must be 1-128 characters without controls or surrounding space"
+                .into(),
         );
     }
     if config
@@ -483,6 +495,7 @@ pub struct ConsoleLogin {
     absolute: Duration,
     idp_logout: bool,
     max_sessions: usize,
+    step_up_acr: Option<String>,
     http: reqwest::Client,
     clock: Clock,
     rng: SystemRandom,
@@ -591,6 +604,7 @@ impl ConsoleLogin {
             absolute: minutes(settings.absolute_minutes),
             idp_logout: settings.idp_logout,
             max_sessions: settings.max_sessions,
+            step_up_acr: settings.step_up_acr.clone(),
             http: idp_client(allow_plain_http)?,
             clock: Arc::new(Utc::now),
             rng: SystemRandom::new(),
@@ -619,6 +633,12 @@ impl ConsoleLogin {
     #[must_use]
     pub fn origin(&self) -> &str {
         &self.origin
+    }
+
+    /// The configured IdP ACR for D17 WebAuthn step-up, if enabled.
+    #[must_use]
+    pub fn step_up_acr(&self) -> Option<&str> {
+        self.step_up_acr.as_deref()
     }
 
     /// Live sessions (tests and the session-table bound).
