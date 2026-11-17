@@ -32,6 +32,7 @@ pub mod oidc;
 pub mod outcome_reconciler;
 pub mod problem;
 pub mod proto;
+pub mod provider_secrets;
 pub mod registry;
 pub mod relaxations;
 pub mod retention;

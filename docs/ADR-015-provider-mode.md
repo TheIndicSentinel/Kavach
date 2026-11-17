@@ -55,3 +55,13 @@ One sandbox channel adapter, chosen with the first design partner (and partly on
 
 ## Not addressed here
 Per-tenant provider selection in a pooled deployment (ADR-014 Tier 2), inbound messages, and non-messaging providers.
+
+## Implementation status (2026-11-16)
+
+The no-cost implementation work has started with the provider adapter boundary: the gateway can pass its resolved destination, channel, approved template id and credential to an adapter; the forwarder has a Twilio WhatsApp request path; and a development-only, owner-only file secret store implements the provider-secret port. The generic Kavach-credential provider path remains compatible. These pieces are not yet selectable through `--providers`, and the application is not ready to send through Twilio. In particular, the credential broker currently requires an X25519 recipient for every registry provider; the Twilio mode must explicitly retain and safely handle the internal decision artifact without pretending Twilio accepts or decrypts Kavach credentials.
+
+The account holder reports that Twilio Sandbox use requires a paid plan upgrade. No upgrade or paid service is assumed. The adapter path can be contract-tested against a local fake HTTP server; no Twilio sandbox or live request has been made. Treat Twilio as a candidate provider, not as a selected or verified pilot provider, until its free-tier eligibility and channel setup can be confirmed.
+
+Twilio's message creation response indicates provider acceptance, not handset delivery. It returns a provider message SID, but its status resource requires that SID. A lost response has no SID to query, so the existing unknown-outcome and operator-attestation path applies; the adapter must not retry. No idempotency guarantee or downstream delivery receipt is claimed here. These limits must be reflected in the status mapping and pilot checklist before enabling the mode.
+
+The next implementation work is to resolve the credential-broker boundary, expose a strict provider mode and template mapping in configuration, add a local fake-server request test (including proof that the Kavach credential is not sent), and update the security properties and operator setup guide. Only after those checks should this ADR's sandbox point be considered exercised. Production use additionally remains gated by the processor/cross-border review and deployed network isolation described above.

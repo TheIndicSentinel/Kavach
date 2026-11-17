@@ -9,10 +9,13 @@
 //!   of response read.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Duration;
 
-use kavach_dataplane::{ForwardResult, Forwarder, ProviderStatus, StatusAnswer, StatusAsker};
-use kavach_ports::TokenSecret;
+use kavach_dataplane::{
+    ForwardRequest, ForwardResult, Forwarder, ProviderStatus, StatusAnswer, StatusAsker,
+};
+use kavach_ports::{ProviderSecretStore, TokenSecret};
 use reqwest::Url;
 use sha2::Digest;
 
@@ -21,10 +24,52 @@ pub const AUTH_SCHEME: &str = "Kavach-Credential";
 /// The scheme of a status question (ADR-017 R2).
 pub const STATUS_SCHEME: &str = "Kavach-Status";
 
+#[derive(Clone)]
+pub enum ProviderTarget {
+    CredentialAccepting {
+        messages_url: Url,
+    },
+    TwilioWhatsApp {
+        messages_url: Url,
+        account_sid: String,
+        api_key_sid: String,
+        from: String,
+        secret_ref: String,
+        template_sids: BTreeMap<String, String>,
+    },
+}
+
+impl ProviderTarget {
+    #[must_use]
+    pub fn credential_accepting(messages_url: Url) -> Self {
+        Self::CredentialAccepting { messages_url }
+    }
+
+    #[must_use]
+    pub fn twilio_whatsapp(
+        messages_url: Url,
+        account_sid: String,
+        api_key_sid: String,
+        from: String,
+        secret_ref: String,
+        template_sids: BTreeMap<String, String>,
+    ) -> Self {
+        Self::TwilioWhatsApp {
+            messages_url,
+            account_sid,
+            api_key_sid,
+            from,
+            secret_ref,
+            template_sids,
+        }
+    }
+}
+
 pub struct HttpForwarder {
     client: reqwest::Client,
-    /// Provider audience → `…/v1/messages` URL.
-    endpoints: BTreeMap<String, Url>,
+    /// Provider audience → transport and provider endpoint.
+    targets: BTreeMap<String, ProviderTarget>,
+    secret_store: Option<Arc<dyn ProviderSecretStore>>,
 }
 
 /// Parses a provider endpoint: http(s), a host, no credentials, query or
@@ -33,6 +78,24 @@ pub struct HttpForwarder {
 /// An error names the endpoint by scheme, host and port only: it reaches
 /// stderr at startup, and the rest of the endpoint can carry a credential.
 pub fn messages_url(endpoint: &str) -> Result<(Url, bool), String> {
+    let (mut url, plain) = base_url(endpoint)?;
+    let path = format!("{}/v1/messages", url.path().trim_end_matches('/'));
+    url.set_path(&path);
+    Ok((url, plain))
+}
+
+/// Twilio's REST resource URL. The account id is validated before it is
+/// inserted into the path so configuration cannot change the request origin.
+pub fn twilio_messages_url(endpoint: &str, account_sid: &str) -> Result<(Url, bool), String> {
+    if !valid_sid(account_sid, "AC") {
+        return Err("Twilio account_sid must be an AC SID".into());
+    }
+    let (mut url, plain) = base_url(endpoint)?;
+    url.set_path(&format!("/2010-04-01/Accounts/{account_sid}/Messages.json"));
+    Ok((url, plain))
+}
+
+fn base_url(endpoint: &str) -> Result<(Url, bool), String> {
     // `url::ParseError` displays a fixed phrase, never the input.
     let base = Url::parse(endpoint).map_err(|e| format!("endpoint does not parse: {e}"))?;
     let plain = match base.scheme() {
@@ -52,10 +115,20 @@ pub fn messages_url(endpoint: &str) -> Result<(Url, bool), String> {
             crate::hardening::shown_endpoint(endpoint)
         ));
     }
-    let mut url = base;
-    let path = format!("{}/v1/messages", url.path().trim_end_matches('/'));
-    url.set_path(&path);
-    Ok((url, plain))
+    Ok((base, plain))
+}
+
+fn valid_sid(value: &str, prefix: &str) -> bool {
+    value.len() == 34
+        && value.starts_with(prefix)
+        && value.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+fn twilio_message_id(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let sid = value.get("sid")?.as_str()?;
+    (sid.len() == 34 && sid.starts_with("SM") && sid.bytes().all(|b| b.is_ascii_alphanumeric()))
+        .then(|| sid.to_string())
 }
 
 impl HttpForwarder {
@@ -87,7 +160,33 @@ impl HttpForwarder {
             .user_agent(concat!("kavach-gateway/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| format!("gateway http client: {e}"))?;
-        Ok(Self { client, endpoints })
+        let targets = endpoints
+            .into_iter()
+            .map(|(audience, url)| {
+                (
+                    audience,
+                    ProviderTarget::CredentialAccepting { messages_url: url },
+                )
+            })
+            .collect();
+        Ok(Self {
+            client,
+            targets,
+            secret_store: None,
+        })
+    }
+
+    pub fn with_targets(
+        targets: BTreeMap<String, ProviderTarget>,
+        connect_timeout: Duration,
+        timeout: Duration,
+        extra_roots: &[u8],
+        secret_store: Arc<dyn ProviderSecretStore>,
+    ) -> Result<Self, String> {
+        let mut forwarder = Self::new(BTreeMap::new(), connect_timeout, timeout, extra_roots)?;
+        forwarder.targets = targets;
+        forwarder.secret_store = Some(secret_store);
+        Ok(forwarder)
     }
 }
 
@@ -126,13 +225,14 @@ fn parse_status(body: &[u8]) -> Option<ProviderStatus> {
 
 impl Forwarder for HttpForwarder {
     async fn forward(&self, provider: &str, credential: &TokenSecret) -> ForwardResult {
-        let Some(url) = self.endpoints.get(provider) else {
+        let Some(ProviderTarget::CredentialAccepting { messages_url }) = self.targets.get(provider)
+        else {
             // Startup refuses a registry provider without an endpoint.
             return ForwardResult::NotSent;
         };
         let response = self
             .client
-            .post(url.clone())
+            .post(messages_url.clone())
             .header(
                 reqwest::header::AUTHORIZATION,
                 format!("{AUTH_SCHEME} {}", credential.expose()),
@@ -152,6 +252,69 @@ impl Forwarder for HttpForwarder {
             .and_then(|v| v.get("message_id")?.as_str().map(str::to_string));
         ForwardResult::Responded { status, message_id }
     }
+
+    async fn forward_request(&self, provider: &str, request: &ForwardRequest<'_>) -> ForwardResult {
+        let Some(target) = self.targets.get(provider) else {
+            return ForwardResult::NotSent;
+        };
+        let ProviderTarget::TwilioWhatsApp {
+            messages_url,
+            api_key_sid,
+            from,
+            secret_ref,
+            template_sids,
+            ..
+        } = target
+        else {
+            return self.forward(provider, request.credential).await;
+        };
+        if request.channel != "whatsapp" || !from.starts_with("whatsapp:+") {
+            return ForwardResult::NotSent;
+        }
+        let Some(content_sid) = template_sids.get(request.template_id) else {
+            return ForwardResult::NotSent;
+        };
+        if !valid_sid(api_key_sid, "SK") || !valid_sid(content_sid, "HX") {
+            return ForwardResult::NotSent;
+        }
+        let Some(secret_store) = &self.secret_store else {
+            return ForwardResult::NotSent;
+        };
+        let Ok(secret) = secret_store.read(secret_ref).await else {
+            return ForwardResult::NotSent;
+        };
+        let to = format!("whatsapp:{}", request.destination.expose());
+        let response = self
+            .client
+            .post(messages_url.clone())
+            .basic_auth(api_key_sid, Some(secret.expose()))
+            .form(&[
+                ("To", to.as_str()),
+                ("From", from),
+                ("ContentSid", content_sid),
+            ])
+            .send()
+            .await;
+        let mut response = match response {
+            Ok(response) => response,
+            Err(err) if err.is_connect() => return ForwardResult::NotSent,
+            Err(_) => return ForwardResult::Lost,
+        };
+        let status = response.status().as_u16();
+        let body = read_bounded(&mut response).await;
+        let message_id = twilio_message_id(&body);
+        // Twilio's 201 means the Message resource was accepted. ADR-015
+        // treats a successful provider API acceptance as a delivered
+        // provider outcome; downstream delivery receipts are separate.
+        ForwardResult::Responded {
+            status: if status == 201 && message_id.is_some() {
+                202
+            } else {
+                status
+            },
+            message_id,
+        }
+    }
 }
 
 impl StatusAsker for HttpForwarder {
@@ -161,7 +324,13 @@ impl StatusAsker for HttpForwarder {
         jti: &str,
         question: &TokenSecret,
     ) -> Option<StatusAnswer> {
-        let mut url = self.endpoints.get(provider)?.clone();
+        let target = self.targets.get(provider)?;
+        let ProviderTarget::CredentialAccepting { messages_url } = target else {
+            // Twilio's fetch endpoint requires its provider SID. Unknown
+            // responses without a SID are handled by the operator path.
+            return None;
+        };
+        let mut url = messages_url.clone();
         // The jti is one path segment, whatever it contains.
         url.path_segments_mut().ok()?.push(jti);
         let mut response = self
@@ -209,6 +378,37 @@ mod tests {
         ] {
             assert!(messages_url(bad).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn twilio_resource_url_uses_a_validated_account_sid() {
+        let (url, plain) = twilio_messages_url(
+            "https://api.twilio.com",
+            "AC12345678901234567890123456789012",
+        )
+        .unwrap();
+        assert_eq!(
+            url.as_str(),
+            "https://api.twilio.com/2010-04-01/Accounts/AC12345678901234567890123456789012/Messages.json"
+        );
+        assert!(!plain);
+        assert!(twilio_messages_url("https://api.twilio.com", "ACbad").is_err());
+        assert!(twilio_messages_url(
+            "https://api.twilio.com",
+            "AC1234567890123456789012345678901/"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn twilio_message_sid_parser_accepts_only_message_sids() {
+        let sid = "SM12345678901234567890123456789012";
+        assert_eq!(
+            twilio_message_id(format!(r#"{{"sid":"{sid}"}}"#).as_bytes()).as_deref(),
+            Some(sid)
+        );
+        assert!(twilio_message_id(br#"{"sid":"AC12345678901234567890123456789012"}"#).is_none());
+        assert!(twilio_message_id(br"not json").is_none());
     }
 
     /// A refused endpoint is named by scheme, host and port only. The

@@ -44,6 +44,16 @@ pub enum ForwardResult {
     Lost,
 }
 
+/// The gateway-owned values an adapter needs to construct a provider request.
+/// Destination and template data are sensitive and must never be logged.
+pub struct ForwardRequest<'a> {
+    pub credential_id: &'a str,
+    pub destination: &'a kavach_ports::Destination,
+    pub channel: &'a str,
+    pub template_id: &'a str,
+    pub credential: &'a TokenSecret,
+}
+
 /// Sends one credential to a provider. Implementations must not retry, must
 /// not follow redirects and must not use ambient proxies.
 pub trait Forwarder: Send + Sync {
@@ -52,6 +62,34 @@ pub trait Forwarder: Send + Sync {
         provider: &str,
         credential: &TokenSecret,
     ) -> impl Future<Output = ForwardResult> + Send;
+
+    /// Builds a provider-specific request from the gateway's resolved,
+    /// authorized values. Credential-accepting providers keep the original
+    /// wire format through the default implementation.
+    fn forward_request(
+        &self,
+        provider: &str,
+        request: &ForwardRequest<'_>,
+    ) -> impl Future<Output = ForwardResult> + Send {
+        self.forward(provider, request.credential)
+    }
+}
+
+async fn send_forward_request<F: Forwarder>(
+    forwarder: &F,
+    provider: &str,
+    request: ForwardRequest<'_>,
+) -> ForwardResult {
+    forwarder.forward_request(provider, &request).await
+}
+
+fn forwarded_message_id(result: &ForwardResult) -> Option<String> {
+    match result {
+        ForwardResult::Responded { message_id, .. } => {
+            message_id.as_deref().and_then(bounded_message_id)
+        }
+        _ => None,
+    }
 }
 
 /// What a provider says became of one earlier send (the status contract,
@@ -470,7 +508,6 @@ where
         })
         .await;
     deps.observer.stage(Stage::Credential, started.elapsed());
-    drop(destination);
     let credential = match issued {
         Ok(credential) => credential,
         Err(err) => {
@@ -494,16 +531,22 @@ where
     }
 
     let started = Instant::now();
-    let result = deps.forwarder.forward(provider, &credential.token).await;
+    let result = send_forward_request(
+        deps.forwarder,
+        provider,
+        ForwardRequest {
+            credential_id: allowed.credential_id,
+            destination: &destination,
+            channel,
+            template_id: content,
+            credential: &credential.token,
+        },
+    )
+    .await;
     deps.observer.stage(Stage::Forward, started.elapsed());
     drop(credential);
     let (outcome, reason, _) = classify(&result);
-    let message_id = match result {
-        ForwardResult::Responded { message_id, .. } => {
-            message_id.as_deref().and_then(bounded_message_id)
-        }
-        _ => None,
-    };
+    let message_id = forwarded_message_id(&result);
     (outcome, reason, message_id)
 }
 

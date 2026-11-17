@@ -18,6 +18,7 @@ mod keys;
 mod mandate;
 pub mod outcome_resolution;
 mod policy;
+pub mod provider_secret;
 mod reference;
 mod replay;
 mod time;
@@ -37,6 +38,7 @@ pub use mandate::{
     RevocationApply, RevocationCursor, ScopedRoot, StoredMandate, StoredRevocation,
 };
 pub use policy::PolicyEngine;
+pub use provider_secret::{ProviderSecretFuture, ProviderSecretStore};
 pub use reference::ReferenceResolver;
 pub use replay::ReplayGuard;
 pub use time::{SyncStatus, SystemClock, TimeSource, TrustedNow};
