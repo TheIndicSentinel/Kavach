@@ -16,6 +16,62 @@ use crate::PortError;
 /// must never be logged or returned to an agent.
 pub type StepUpProof = crate::TokenSecret;
 
+/// Ciphertext-only review projection suitable for durable storage. Cleartext
+/// action fields deliberately have no representation in this storage port.
+#[derive(Clone, PartialEq, Eq)]
+pub struct EncryptedReviewSnapshot {
+    pub version: u8,
+    pub key_id: String,
+    pub tenant_id: String,
+    pub record_id: String,
+    pub action_hash: String,
+    pub nonce: [u8; 12],
+    pub ciphertext: Vec<u8>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl EncryptedReviewSnapshot {
+    pub fn validate(&self, now: DateTime<Utc>) -> Result<(), PortError> {
+        if self.version != 1
+            || self.key_id.is_empty()
+            || self.key_id.len() > 128
+            || self.key_id.chars().any(char::is_control)
+            || self.tenant_id.is_empty()
+            || self.record_id.is_empty()
+            || !is_action_hash(&self.action_hash)
+            || self.ciphertext.len() < 16
+            || self.ciphertext.len() > 65_552
+            || self.expires_at <= now
+        {
+            return Err(PortError::invalid(
+                "encrypted review snapshot is invalid or expired",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Durable store for tenant-scoped encrypted D17 review projections.
+pub trait ReviewSnapshotStore: Send + Sync {
+    fn insert(
+        &self,
+        snapshot: EncryptedReviewSnapshot,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<(), PortError>> + Send;
+
+    fn get_live(
+        &self,
+        tenant_id: &str,
+        record_id: &str,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<Option<EncryptedReviewSnapshot>, PortError>> + Send;
+
+    fn purge_expired(
+        &self,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<u64, PortError>> + Send;
+}
+
 /// The reviewer's explicit decision for one rendered action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

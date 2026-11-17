@@ -10,6 +10,7 @@ mod jobs_store;
 mod model_governance;
 mod postgres;
 mod retention;
+mod review_snapshots;
 mod roles;
 mod startup;
 mod step_up;
@@ -38,13 +39,15 @@ pub use postgres::{
     BatchJobCreate, BatchJobStore, DatabaseTls, DatabaseTlsError, EvidenceSnapshot, JobStoreError,
     NoopBatchJobStore, PostgresAdminStore, PostgresAgentEvidenceStore, PostgresBatchJobStore,
     PostgresChangeStore, PostgresEvidenceStore, PostgresIncidentStore, PostgresMandateStore,
-    PostgresReplayGuard, PostgresRetentionStore, PostgresReviewApprovalStore, PostgresRoleStore,
-    PostgresStepUpChallengeStore, StoragePool, DEFAULT_POOL_SIZE,
+    PostgresReplayGuard, PostgresRetentionStore, PostgresReviewApprovalStore,
+    PostgresReviewSnapshotStore, PostgresRoleStore, PostgresStepUpChallengeStore, StoragePool,
+    DEFAULT_POOL_SIZE,
 };
 pub use retention::{
     MemoryRetentionStore, RetentionApplyReport, RetentionSettings, RetentionStoreError,
     TombstoneReason, TombstoneRecord,
 };
+pub use review_snapshots::MemoryReviewSnapshotStore;
 pub use roles::{
     binding_not_active_reason, duplicate_binding_reason, grant_refusal, last_admin_reason,
     revoke_target, BindingSubject, BootstrapOutcome, MemoryRoleStore, PrincipalRecord, Role,

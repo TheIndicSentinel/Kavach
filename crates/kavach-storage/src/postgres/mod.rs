@@ -11,6 +11,7 @@ mod jobs;
 mod mandates;
 mod migrate;
 mod retention;
+mod review_snapshots;
 mod roles;
 mod step_up;
 mod tls;
@@ -31,6 +32,7 @@ pub use migrate::{
     connect_pool, connect_runtime, connect_runtime_sized, migrate, DEFAULT_POOL_SIZE,
 };
 pub use retention::PostgresRetentionStore;
+pub use review_snapshots::PostgresReviewSnapshotStore;
 pub use roles::PostgresRoleStore;
 pub use step_up::PostgresStepUpChallengeStore;
 pub use tls::{connect_options, is_weakened, DatabaseTls, DatabaseTlsError};
@@ -119,6 +121,10 @@ impl StoragePool {
 
     pub fn role_store(&self) -> PostgresRoleStore {
         PostgresRoleStore::new(self.pool.clone())
+    }
+
+    pub fn review_snapshot_store(&self) -> PostgresReviewSnapshotStore {
+        PostgresReviewSnapshotStore::new(self.pool.clone())
     }
 
     pub fn review_approval_store(&self) -> PostgresReviewApprovalStore {
