@@ -76,7 +76,7 @@ impl StepUpRequest {
 }
 
 /// Information needed to continue the provider's challenge flow.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StepUpChallenge {
     pub challenge_id: String,
     pub authorization_url: String,

@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **M4 D17 Keycloak challenge initiation.** Added a step-up authorization request builder that persists state/nonce digests and action/reviewer context before redirect, requests the configured ACR as essential, sets `max_age=0`, and uses PKCE S256. Callback session custody, code exchange and token verification wiring remain pending; the builder is not mounted on an API route.
 - **M4 D17 durable step-up challenge state.** Added memory and PostgreSQL stores for nonce/state digests and the tenant, reviewer and action binding. Callback state lookup is expiry-scoped, consumption is atomic and one-use, and only expired rows can be purged. The stores are not yet connected to a Keycloak callback or approval route.
 - **M4 D17 OIDC step-up claim verifier.** Added strict validation for a signed step-up ID token: issuer, audience, nonce, expected reviewer subject and ACR, and `auth_time`/`iat` at or after the challenge. This verifies claims only; Keycloak challenge initiation/configuration, approval API and authorization wiring remain pending.
 - **M4 D17 step-up boundary and test double.** Added the step-up provider port and a testkit-only fake. Challenges and verified results bind the tenant, authenticated source-qualified reviewer, exact action digest and expiry; invalid, expired and replayed synthetic proofs fail. No WebAuthn/Keycloak adapter or approval route is active.

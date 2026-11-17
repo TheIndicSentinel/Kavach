@@ -42,6 +42,7 @@ pub mod roles_api;
 pub mod shutdown;
 pub mod signing;
 pub mod state;
+pub mod step_up;
 pub mod strict_json;
 pub mod tls;
 
@@ -59,6 +60,7 @@ pub use mtls::{MtlsSanKind, PeerCertificate};
 pub use oidc::{JwksSource, OidcConfig, OidcVerifier};
 pub use proto::kavach::v1::evaluate_service_server::EvaluateServiceServer;
 pub use state::{AppState, ChangeProposal, DEFAULT_CHANGE_TTL_HOURS};
+pub use step_up::{KeycloakStepUpConfig, KeycloakStepUpInitiator, KeycloakStepUpStart};
 pub use tls::{
     grpc_server_tls_config, serve_grpc_until, serve_http, serve_http_on, serve_http_on_until,
     serve_http_on_until_with_limits, serve_http_on_with_limits, serve_http_until,
