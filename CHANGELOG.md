@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **M4 D17 approval-store runtime selection.** `AppState` now selects the existing memory approval adapter for local/test workflows and the Postgres adapter when durable storage is configured. The API exposes the selected store internally; authenticated approval and credential/authorization wiring remain pending.
 - **M4 D17 review snapshot key rotation.** The active key seals new snapshots; repeatable decrypt-only previous keys open live envelopes by authenticated key id. Duplicate ids/material are refused, hardening checks every key file, and the runbook documents overlap and retirement.
 - **M4 D17 reviewer step-up (console).** The loaded exact-action review now offers explicit passkey step-up initiation and redirects to the IdP URL returned by the API. The UI states that step-up alone does not approve or release the action.
 - **M4 D17 reviewer display (console).** Agent Evidence now provides a role-aware manual lookup and read-only rendering of the audited exact-action projection; it introduces no decision-record listing or approval control.

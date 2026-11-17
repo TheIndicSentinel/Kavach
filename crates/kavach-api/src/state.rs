@@ -38,6 +38,46 @@ pub enum ReviewSnapshotBackend {
     Postgres(kavach_storage::PostgresReviewSnapshotStore),
 }
 
+/// Runtime-selected store for completed D17 human-review decisions.
+#[derive(Clone)]
+pub enum ReviewApprovalBackend {
+    Memory(std::sync::Arc<kavach_storage::MemoryReviewApprovalStore>),
+    Postgres(kavach_storage::PostgresReviewApprovalStore),
+}
+
+impl kavach_ports::ReviewApprovalStore for ReviewApprovalBackend {
+    async fn insert(
+        &self,
+        record: kavach_ports::ReviewApprovalRecord,
+    ) -> Result<(), kavach_ports::PortError> {
+        match self {
+            Self::Memory(store) => store.insert(record).await,
+            Self::Postgres(store) => store.insert(record).await,
+        }
+    }
+
+    async fn consume(
+        &self,
+        tenant_id: &str,
+        approval_id: &str,
+        action_hash: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Option<kavach_ports::ReviewApprovalRecord>, kavach_ports::PortError> {
+        match self {
+            Self::Memory(store) => {
+                store
+                    .consume(tenant_id, approval_id, action_hash, now)
+                    .await
+            }
+            Self::Postgres(store) => {
+                store
+                    .consume(tenant_id, approval_id, action_hash, now)
+                    .await
+            }
+        }
+    }
+}
+
 impl kavach_ports::ReviewSnapshotStore for ReviewSnapshotBackend {
     async fn insert(
         &self,
@@ -157,6 +197,8 @@ pub struct AppState {
     review_snapshot_key: Option<crate::review_snapshot_key::ReviewSnapshotKey>,
     /// Runtime-selected persistence for encrypted D17 review projections.
     review_snapshot_store: ReviewSnapshotBackend,
+    /// Runtime-selected persistence for exact-action D17 approvals.
+    review_approval_store: ReviewApprovalBackend,
     /// Console sign-in (ADR-018); `None` unless configured.
     console_login: Option<std::sync::Arc<crate::console_login::ConsoleLogin>>,
 }
@@ -225,7 +267,8 @@ impl AppState {
 
         let (evidence, incidents, batch_jobs, admin, retention, changes, roles, pool) =
             storage_backends(config).await?;
-        let (step_up_challenges, review_snapshot_store) = select_review_stores(pool.as_ref());
+        let (step_up_challenges, review_snapshot_store, review_approval_store) =
+            select_review_stores(pool.as_ref());
         let review_snapshot_key = load_review_snapshot_key(config)?;
         bootstrap_superadmins(&roles, &config.roles).await?;
         let dataplane = build_dataplane(config, pool.as_ref()).await?;
@@ -312,6 +355,7 @@ impl AppState {
             step_up_challenges,
             review_snapshot_key,
             review_snapshot_store,
+            review_approval_store,
             console_login: None,
         })
     }
@@ -376,6 +420,11 @@ impl AppState {
     /// Runtime snapshot store: memory for development, Postgres when configured.
     pub fn review_snapshot_store(&self) -> &ReviewSnapshotBackend {
         &self.review_snapshot_store
+    }
+
+    /// The configured one-use D17 approval persistence adapter.
+    pub fn review_approval_store(&self) -> &ReviewApprovalBackend {
+        &self.review_approval_store
     }
 
     pub fn hmac_secret(&self) -> Option<&str> {
@@ -711,7 +760,11 @@ fn load_review_snapshot_key(
 
 fn select_review_stores(
     pool: Option<&StoragePool>,
-) -> (StepUpChallengeBackend, ReviewSnapshotBackend) {
+) -> (
+    StepUpChallengeBackend,
+    ReviewSnapshotBackend,
+    ReviewApprovalBackend,
+) {
     let challenges = pool.map_or_else(
         || StepUpChallengeBackend::Memory(kavach_storage::MemoryStepUpChallengeStore::default()),
         |pool| StepUpChallengeBackend::Postgres(pool.step_up_challenge_store()),
@@ -724,7 +777,15 @@ fn select_review_stores(
         },
         |pool| ReviewSnapshotBackend::Postgres(pool.review_snapshot_store()),
     );
-    (challenges, snapshots)
+    let approvals = pool.map_or_else(
+        || {
+            ReviewApprovalBackend::Memory(std::sync::Arc::new(
+                kavach_storage::MemoryReviewApprovalStore::default(),
+            ))
+        },
+        |pool| ReviewApprovalBackend::Postgres(pool.review_approval_store()),
+    );
+    (challenges, snapshots, approvals)
 }
 
 /// The metrics registry, with the evidence checkpoint writer reporting into
@@ -1276,7 +1337,10 @@ mod poisoned_lock_tests {
 #[cfg(test)]
 mod step_up_backend_tests {
     use chrono::{Duration, Utc};
-    use kavach_ports::{StepUpChallengeState, StepUpChallengeStore};
+    use kavach_ports::{
+        ReviewApprovalRecord, ReviewApprovalStore, ReviewDecision, StepUpChallengeState,
+        StepUpChallengeStore,
+    };
 
     use super::*;
 
@@ -1316,6 +1380,56 @@ mod step_up_backend_tests {
             .consume(&challenge.state_hash, now)
             .await
             .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn app_state_exposes_exact_action_memory_approval_storage() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let app = AppState::from_paths_for_tests(
+            &root.join("packs/finance/v0.yaml"),
+            &root.join("models/finance/credit-underwriting-v1.yaml"),
+            None,
+        )
+        .await
+        .expect("state");
+        let now = Utc::now();
+        let action_hash = format!("sha256-action-v1:{}", "a".repeat(64));
+        let record = ReviewApprovalRecord {
+            tenant_id: "tenant-a".into(),
+            approval_id: "approval-a".into(),
+            action_hash: action_hash.clone(),
+            rendered_action: "Approve proposal".into(),
+            approver: "oidc:https://idp.example#reviewer".into(),
+            step_up_ref: "webauthn:opaque-proof".into(),
+            decision: ReviewDecision::Approve,
+            single_use_credential_id: Some("credential-a".into()),
+            expires: now + Duration::minutes(5),
+        };
+
+        let store = app.review_approval_store();
+        store.insert(record.clone()).await.expect("insert");
+        assert_eq!(
+            store
+                .consume("tenant-a", "approval-a", &action_hash, now)
+                .await
+                .expect("consume"),
+            Some(record)
+        );
+        assert!(store
+            .consume("tenant-a", "approval-a", &action_hash, now)
+            .await
+            .expect("second consume")
+            .is_none());
+        assert!(store
+            .consume(
+                "tenant-a",
+                "approval-a",
+                &format!("sha256-action-v1:{}", "b".repeat(64)),
+                now
+            )
+            .await
+            .expect("mismatched consume")
             .is_none());
     }
 }
