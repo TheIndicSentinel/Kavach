@@ -375,6 +375,13 @@ permit (
   resource == Kavach::System::"api"
 );
 
+@id("role-approver-may-approve-human-review")
+permit (
+  principal in Kavach::Role::"approver",
+  action == Kavach::Action::"approve_human_review",
+  resource == Kavach::System::"api"
+);
+
 @id("role-operator-may-run-the-system")
 permit (
   principal in Kavach::Role::"operator",

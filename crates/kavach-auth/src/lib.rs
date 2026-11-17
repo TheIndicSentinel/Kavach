@@ -84,11 +84,13 @@ pub enum KavachAction {
     AttestOutcomeNotDelivered,
     /// Propose or approve a two-person conflict closure (ADR-017).
     ResolveOutcomeConflict,
+    /// Approve one exact HUMAN_REVIEW action after D17 step-up.
+    ApproveHumanReview,
 }
 
 impl KavachAction {
     /// Every action, in declaration order.
-    pub const ALL: [Self; 40] = [
+    pub const ALL: [Self; 41] = [
         Self::Evaluate,
         Self::ReadHealth,
         Self::ReadMetrics,
@@ -129,6 +131,7 @@ impl KavachAction {
         Self::AttestOutcomeDelivered,
         Self::AttestOutcomeNotDelivered,
         Self::ResolveOutcomeConflict,
+        Self::ApproveHumanReview,
     ];
 
     /// Whether the action changes a role binding, and so needs the role
@@ -188,6 +191,7 @@ impl KavachAction {
             Self::AttestOutcomeDelivered => "attest_outcome_delivered",
             Self::AttestOutcomeNotDelivered => "attest_outcome_not_delivered",
             Self::ResolveOutcomeConflict => "resolve_outcome_conflict",
+            Self::ApproveHumanReview => "approve_human_review",
         }
     }
 }
@@ -780,8 +784,12 @@ mod tests {
         assert!(decide_as(&auth, &[], &admins, KavachAction::ProposeActivatePack, None).allowed);
         assert!(!decide_as(&auth, &[], &admins, KavachAction::ReadPrincipals, None).allowed);
         for alias in ["admins", "change-approvers", "operators", "viewers"] {
+            let groups = [alias.to_string()];
+            assert!(
+                !decide_as(&auth, &[], &groups, KavachAction::ApproveHumanReview, None).allowed,
+                "{alias} / approve_human_review"
+            );
             for action in KavachAction::ALL.into_iter().filter(|a| a.changes_a_role()) {
-                let groups = [alias.to_string()];
                 assert!(
                     !decide_as(&auth, &[], &groups, action, Some("viewer")).allowed,
                     "{alias} / {}",
