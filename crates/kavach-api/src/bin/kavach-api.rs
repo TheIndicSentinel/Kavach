@@ -871,6 +871,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             dp.resolver().describe()
         )
     });
+    let review_snapshot_store = state.review_snapshot_store().clone();
     let stopping = state.clone();
     let grpc_service = GrpcEvaluateService::with_limits(state, &limits);
 
@@ -887,6 +888,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // One signal stops every listener. A listener stops accepting at once
     // and lets its requests finish.
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let _review_snapshot_cleanup =
+        kavach_api::review_snapshot_cleanup::start(review_snapshot_store, stop_rx.clone());
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stop| *stop).await;
     };

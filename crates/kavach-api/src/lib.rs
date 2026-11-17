@@ -37,6 +37,7 @@ pub mod provider_secrets;
 pub mod registry;
 pub mod relaxations;
 pub mod retention;
+pub mod review_snapshot_cleanup;
 pub mod review_snapshot_key;
 pub mod revocation_audit;
 pub mod revocation_evidence;
