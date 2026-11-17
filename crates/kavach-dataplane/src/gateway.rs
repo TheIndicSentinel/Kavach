@@ -44,14 +44,25 @@ pub enum ForwardResult {
     Lost,
 }
 
-/// The gateway-owned values an adapter needs to construct a provider request.
-/// Destination and template data are sensitive and must never be logged.
-pub struct ForwardRequest<'a> {
+/// Request for a backend that accepts a Kavach-encrypted credential. Use
+/// [`GatewayHeldRequest`] for an adapter that holds its own provider token.
+pub struct CredentialAcceptingRequest<'a> {
     pub credential_id: &'a str,
     pub destination: &'a kavach_ports::Destination,
     pub channel: &'a str,
     pub template_id: &'a str,
     pub credential: &'a TokenSecret,
+}
+
+/// Request context for a gateway-held provider adapter. It deliberately has
+/// no Kavach token field; provider credentials must be resolved separately
+/// from the configured secret store at send time. These values are sensitive
+/// and must never be logged.
+pub struct GatewayHeldRequest<'a> {
+    pub credential_id: &'a str,
+    pub destination: &'a kavach_ports::Destination,
+    pub channel: &'a str,
+    pub template_id: &'a str,
 }
 
 /// Sends one credential to a provider. Implementations must not retry, must
@@ -69,16 +80,28 @@ pub trait Forwarder: Send + Sync {
     fn forward_request(
         &self,
         provider: &str,
-        request: &ForwardRequest<'_>,
+        request: &CredentialAcceptingRequest<'_>,
     ) -> impl Future<Output = ForwardResult> + Send {
         self.forward(provider, request.credential)
     }
 }
 
+/// Sends one gateway-held provider request. The interface intentionally has
+/// no `TokenSecret` argument, so an adapter implementing this trait cannot
+/// accidentally forward a Kavach credential. Implementations must send once,
+/// without retries, redirects or ambient proxies.
+pub trait GatewayHeldForwarder: Send + Sync {
+    fn forward_gateway_held(
+        &self,
+        provider: &str,
+        request: &GatewayHeldRequest<'_>,
+    ) -> impl Future<Output = ForwardResult> + Send;
+}
+
 async fn send_forward_request<F: Forwarder>(
     forwarder: &F,
     provider: &str,
-    request: ForwardRequest<'_>,
+    request: CredentialAcceptingRequest<'_>,
 ) -> ForwardResult {
     forwarder.forward_request(provider, &request).await
 }
@@ -534,7 +557,7 @@ where
     let result = send_forward_request(
         deps.forwarder,
         provider,
-        ForwardRequest {
+        CredentialAcceptingRequest {
             credential_id: allowed.credential_id,
             destination: &destination,
             channel,
@@ -598,5 +621,38 @@ mod tests {
         ] {
             assert_eq!(bounded_message_id(bad), None, "{bad:?}");
         }
+    }
+
+    struct TokenlessGatewayHeldAdapter;
+
+    impl GatewayHeldForwarder for TokenlessGatewayHeldAdapter {
+        async fn forward_gateway_held(
+            &self,
+            provider: &str,
+            request: &GatewayHeldRequest<'_>,
+        ) -> ForwardResult {
+            tokio::task::yield_now().await;
+            assert_eq!(provider, "free-local-adapter");
+            assert_eq!(request.credential_id, "record-1");
+            assert_eq!(request.destination.expose(), "+919876543210");
+            assert_eq!(request.channel, "whatsapp");
+            assert_eq!(request.template_id, "reminder-v1");
+            responded(202)
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_held_adapter_contract_has_no_kavach_token_parameter() {
+        let destination = kavach_ports::Destination::new("+919876543210");
+        let request = GatewayHeldRequest {
+            credential_id: "record-1",
+            destination: &destination,
+            channel: "whatsapp",
+            template_id: "reminder-v1",
+        };
+        let result = TokenlessGatewayHeldAdapter
+            .forward_gateway_held("free-local-adapter", &request)
+            .await;
+        assert_eq!(result, responded(202));
     }
 }

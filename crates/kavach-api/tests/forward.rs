@@ -13,7 +13,9 @@ use axum::response::IntoResponse;
 use axum::routing::{any, post};
 use axum::Router;
 use kavach_api::forward::{messages_url, HttpForwarder};
-use kavach_dataplane::{ForwardRequest, ForwardResult, Forwarder, ProviderStatus, StatusAsker};
+use kavach_dataplane::{
+    CredentialAcceptingRequest, ForwardResult, Forwarder, ProviderStatus, StatusAsker,
+};
 use kavach_ports::{Destination, TokenSecret};
 
 /// A loopback server; returns its base URL.
@@ -156,7 +158,7 @@ async fn adapter_context_keeps_the_credential_accepting_wire_contract() {
     let result = forwarder(&provider, 1000)
         .forward_request(
             "mock-messaging",
-            &ForwardRequest {
+            &CredentialAcceptingRequest {
                 credential_id: "record-1",
                 destination: &destination,
                 channel: "whatsapp",

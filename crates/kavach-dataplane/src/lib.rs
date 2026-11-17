@@ -22,8 +22,9 @@ pub use checkpointer::{
     CheckpointPolicy, CheckpointStatus, Checkpointer, Skip, StallChange, Tick, TickReport,
 };
 pub use gateway::{
-    execute, ForwardRequest, ForwardResult, Forwarder, GatewayDeps, GatewayError, GatewayObserver,
-    GatewayReply, ProviderStatus, Stage, StatusAnswer, StatusAsker,
+    execute, CredentialAcceptingRequest, ForwardResult, Forwarder, GatewayDeps, GatewayError,
+    GatewayHeldForwarder, GatewayHeldRequest, GatewayObserver, GatewayReply, ProviderStatus, Stage,
+    StatusAnswer, StatusAsker,
 };
 pub use outcome_reconciler::{reconcile_outcomes, OutcomeReconcileReport, PollState};
 pub use resolve::FixtureResolver;
