@@ -1,18 +1,20 @@
-//! Stable key-file loading for encrypted D17 review snapshots.
+//! Key-file loading and rotation for encrypted D17 review snapshots.
 //!
 //! The file contains exactly 32 bytes as 64 hexadecimal characters, optionally
 //! followed by one line feed. Production deployments should keep it owner-only
 //! and back it up with the encrypted snapshot database.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use zeroize::Zeroizing;
 
-/// Dedicated AES-256-GCM key and rotation identifier for review snapshots.
-/// Neither key bytes nor their file path are included in `Debug` or logs.
+/// Active AES-256-GCM key and decrypt-only previous keys for D17 snapshots.
+/// Neither key bytes nor their file paths are included in `Debug` or logs.
 pub struct ReviewSnapshotKey {
     key_id: String,
     key: Zeroizing<[u8; 32]>,
+    previous: BTreeMap<String, Zeroizing<[u8; 32]>>,
 }
 
 impl ReviewSnapshotKey {
@@ -37,7 +39,26 @@ impl ReviewSnapshotKey {
         Ok(Self {
             key_id: key_id.to_owned(),
             key,
+            previous: BTreeMap::new(),
         })
+    }
+
+    /// Adds a decrypt-only key for envelopes created before the active key
+    /// changed. Previous keys are never used to seal new snapshots.
+    pub fn add_previous(&mut self, previous: Self) -> Result<(), String> {
+        if self.key_id == previous.key_id || self.previous.contains_key(&previous.key_id) {
+            return Err("review snapshot key ids must be unique".into());
+        }
+        if self.key.as_ref() == previous.key.as_ref()
+            || self
+                .previous
+                .values()
+                .any(|key| key.as_ref() == previous.key.as_ref())
+        {
+            return Err("review snapshot key material must be unique".into());
+        }
+        self.previous.insert(previous.key_id, previous.key);
+        Ok(())
     }
 
     /// The non-secret rotation identifier written into authenticated snapshot
@@ -63,7 +84,8 @@ impl ReviewSnapshotKey {
         )
     }
 
-    /// Decrypts only the requested tenant, record, and action using this key id.
+    /// Decrypts only the requested tenant, record, and action using the
+    /// envelope's active or configured previous key id.
     pub fn open(
         &self,
         snapshot: &kavach_dataplane::EncryptedReviewSnapshot,
@@ -71,7 +93,16 @@ impl ReviewSnapshotKey {
         record_id: &str,
         action_hash: &str,
     ) -> Result<kavach_dataplane::ReviewActionSnapshot, kavach_ports::PortError> {
-        snapshot.open(&self.key_id, tenant_id, record_id, action_hash, &self.key)
+        let (key_id, key) = if snapshot.key_id == self.key_id {
+            (&self.key_id, &self.key)
+        } else if let Some(key) = self.previous.get(&snapshot.key_id) {
+            (&snapshot.key_id, key)
+        } else {
+            return Err(kavach_ports::PortError::rejected(
+                "review snapshot encryption key is unavailable",
+            ));
+        };
+        snapshot.open(key_id, tenant_id, record_id, action_hash, key)
     }
 }
 
@@ -184,6 +215,28 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    #[test]
+    fn refuses_duplicate_rotation_ids_and_key_material() {
+        let active_path = temp_file(&"ab".repeat(32));
+        let duplicate_id_path = temp_file(&"cd".repeat(32));
+        let duplicate_material_path = temp_file(&"ab".repeat(32));
+        let mut active = ReviewSnapshotKey::from_file(&active_path, "review-v2").expect("active");
+        assert!(active
+            .add_previous(
+                ReviewSnapshotKey::from_file(&duplicate_id_path, "review-v2").expect("same id")
+            )
+            .is_err());
+        assert!(active
+            .add_previous(
+                ReviewSnapshotKey::from_file(&duplicate_material_path, "review-v1")
+                    .expect("same material")
+            )
+            .is_err());
+        let _ = fs::remove_file(active_path);
+        let _ = fs::remove_file(duplicate_id_path);
+        let _ = fs::remove_file(duplicate_material_path);
+    }
+
     #[tokio::test]
     async fn persists_only_ciphertext_and_accepts_matching_retries() {
         let path = temp_file(&format!("{}\n", "cd".repeat(32)));
@@ -229,11 +282,44 @@ mod tests {
         )
         .await
         .expect("matching retry");
+        let rotated_path = temp_file(&format!("{}\n", "ef".repeat(32)));
+        let mut rotated =
+            ReviewSnapshotKey::from_file(&rotated_path, "review-v2").expect("new key");
+        let _ = fs::remove_file(rotated_path);
+        rotated.add_previous(key).expect("retain old decrypt key");
+        persist(
+            &rotated,
+            &store,
+            &snapshot,
+            "record-1",
+            &action_hash,
+            expires_at,
+            now,
+        )
+        .await
+        .expect("matching retry decrypts with previous key");
+        persist(
+            &rotated,
+            &store,
+            &snapshot,
+            "record-2",
+            &action_hash,
+            expires_at,
+            now,
+        )
+        .await
+        .expect("new snapshot uses active key");
+        let newly_sealed =
+            kavach_ports::ReviewSnapshotStore::get_live(&store, "tenant-1", "record-2", now)
+                .await
+                .expect("read new snapshot")
+                .expect("new snapshot exists");
+        assert_eq!(newly_sealed.key_id, "review-v2");
         let mut altered = snapshot.clone();
         altered.subject_ref = "ref:borrower:B-9999".into();
         let altered_hash = altered.action_hash().expect("altered digest");
         assert!(persist(
-            &key,
+            &rotated,
             &store,
             &altered,
             "record-1",

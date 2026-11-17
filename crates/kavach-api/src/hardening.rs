@@ -180,6 +180,9 @@ pub fn violations(config: &ApiConfig, built: &[Relaxation]) -> Vec<Violation> {
     if let Some(path) = &config.review_snapshot_key_file {
         check_secret_file("--review-snapshot-key-file", path, &mut out);
     }
+    for (_, path) in &config.review_snapshot_previous_keys {
+        check_secret_file("--review-snapshot-previous-key", path, &mut out);
+    }
     out
 }
 

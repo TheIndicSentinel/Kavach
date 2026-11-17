@@ -41,10 +41,12 @@ pub struct ApiConfig {
     /// `--require-hardening`: the start was checked against
     /// `crate::hardening`, and the development routes are not mounted.
     pub require_hardening: bool,
-    /// Stable owner-managed key file for D17 review snapshots. Off until set.
+    /// Active owner-managed key file for D17 review snapshots. Off until set.
     pub review_snapshot_key_file: Option<PathBuf>,
     /// Rotation id authenticated into each encrypted D17 snapshot.
     pub review_snapshot_key_id: String,
+    /// Previous D17 snapshot keys retained for decrypt-only overlap, as `(key_id, file)`.
+    pub review_snapshot_previous_keys: Vec<(String, PathBuf)>,
     /// Agent surfaces (`/v1/authorize`, `/v1/sor/events`; ADR-007, H5a-5).
     pub dataplane: Option<crate::dataplane::DataplaneConfig>,
     /// Operator roles (ADR-019).

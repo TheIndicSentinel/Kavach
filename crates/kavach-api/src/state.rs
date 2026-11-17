@@ -153,7 +153,7 @@ pub struct AppState {
     dataplane: Option<crate::dataplane::Dataplane>,
     /// One-use D17 step-up challenge state (PRD D17).
     step_up_challenges: StepUpChallengeBackend,
-    /// Stable AEAD key for encrypted D17 review projections, when configured.
+    /// Active and decrypt-only previous keys for encrypted D17 review projections.
     review_snapshot_key: Option<crate::review_snapshot_key::ReviewSnapshotKey>,
     /// Runtime-selected persistence for encrypted D17 review projections.
     review_snapshot_store: ReviewSnapshotBackend,
@@ -344,6 +344,7 @@ impl AppState {
             require_hardening: false,
             review_snapshot_key_file: None,
             review_snapshot_key_id: crate::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
+            review_snapshot_previous_keys: Vec::new(),
         };
         Self::from_config(&config).await
     }
@@ -367,7 +368,7 @@ impl AppState {
         &self.step_up_challenges
     }
 
-    /// Stable encryption key for D17 review snapshots, if configured.
+    /// Active D17 encryption key with configured decrypt-only previous keys, if configured.
     pub fn review_snapshot_key(&self) -> Option<&crate::review_snapshot_key::ReviewSnapshotKey> {
         self.review_snapshot_key.as_ref()
     }
@@ -687,17 +688,25 @@ impl AppState {
 fn load_review_snapshot_key(
     config: &ApiConfig,
 ) -> Result<Option<crate::review_snapshot_key::ReviewSnapshotKey>, ApiError> {
-    config
-        .review_snapshot_key_file
-        .as_deref()
-        .map(|path| {
-            crate::review_snapshot_key::ReviewSnapshotKey::from_file(
-                path,
-                &config.review_snapshot_key_id,
-            )
-            .map_err(ApiError::Internal)
-        })
-        .transpose()
+    let Some(path) = config.review_snapshot_key_file.as_deref() else {
+        if config.review_snapshot_previous_keys.is_empty() {
+            return Ok(None);
+        }
+        return Err(ApiError::Internal(
+            "previous review snapshot keys require an active key file".into(),
+        ));
+    };
+    let mut active = crate::review_snapshot_key::ReviewSnapshotKey::from_file(
+        path,
+        &config.review_snapshot_key_id,
+    )
+    .map_err(ApiError::Internal)?;
+    for (key_id, path) in &config.review_snapshot_previous_keys {
+        let previous = crate::review_snapshot_key::ReviewSnapshotKey::from_file(path, key_id)
+            .map_err(ApiError::Internal)?;
+        active.add_previous(previous).map_err(ApiError::Internal)?;
+    }
+    Ok(Some(active))
 }
 
 fn select_review_stores(

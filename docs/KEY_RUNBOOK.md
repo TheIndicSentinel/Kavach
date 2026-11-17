@@ -68,6 +68,13 @@ The rule for every role: **the new key signs from the switch; the old key stays 
 2. Set `--credential-key-id` and restart every replica.
 3. After a minute (15 seconds plus clock skew), providers drop the old key. Destroy the old private key.
 
+**D17 review-snapshot encryption key.** Snapshots live 30 minutes. The API encrypts new snapshots only with `--review-snapshot-key-file` / `--review-snapshot-key-id`; repeat `--review-snapshot-previous-key KEY_ID=PATH` for old keys that may still decrypt live rows. `--require-hardening` checks every configured key file is owner-only.
+1. Create a new owner-only 32-byte key and choose a never-reused key id.
+2. With multiple replicas, first add the new key as a previous/decrypt-only key on every replica while keeping the old key active; restart all replicas. This makes every running instance able to read snapshots written under either key before any instance starts writing with the new one.
+3. Switch the active key id and file to the new key on every replica, listing the old `(id, file)` as previous; restart all replicas. New rows use the new id; old rows remain readable by id, and retries compare through the matching previous key instead of replacing the ciphertext. A single-instance deployment can switch directly to this configuration.
+4. Keep the old key available for at least 30 minutes after the last old-key writer is stopped, plus the deployment and cleanup margin. Then remove its previous-key entry from every replica, restart, and securely retire its file and backups according to the secret-retention policy. Rows still encrypted under the retired id are refused; do not remove the old key before its review queue has expired.
+5. If an old key is compromised, remove it from the ring immediately and restart. Live snapshots under that id become unreadable until their expiry; this fail-closed loss of review availability is preferable to retaining a compromised decrypt key.
+
 **Export key.** The exporter's own key.
 1. Add the new public key to the verifiers' trusted keys file.
 2. Export with the new `--key-id`. Keep the old public key while bundles signed with it are kept.

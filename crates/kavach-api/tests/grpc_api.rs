@@ -129,6 +129,7 @@ async fn spawn_cedar_grpc_server() -> (SocketAddr, tokio::task::JoinHandle<()>) 
     let config = ApiConfig {
         require_hardening: false,
         review_snapshot_key_file: None,
+        review_snapshot_previous_keys: Vec::new(),
         review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: pack,
         model_path: model,

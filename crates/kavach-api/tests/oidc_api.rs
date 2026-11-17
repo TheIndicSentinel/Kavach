@@ -84,6 +84,7 @@ async fn state_with_roles(insecure_dev: bool, roles: kavach_api::RolesConfig) ->
     let config = ApiConfig {
         require_hardening: false,
         review_snapshot_key_file: None,
+        review_snapshot_previous_keys: Vec::new(),
         review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: repo("packs/finance/v0.yaml"),
         model_path: repo("models/finance/credit-underwriting-v1.yaml"),
@@ -304,6 +305,7 @@ fn cedar_without_an_authenticated_source_is_refused() {
     let mut config = ApiConfig {
         require_hardening: false,
         review_snapshot_key_file: None,
+        review_snapshot_previous_keys: Vec::new(),
         review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: "p".into(),
         model_path: "m".into(),
