@@ -469,6 +469,7 @@ async fn plans_need_a_waiver_and_large_waivers_need_review() {
         .await
         .unwrap();
     assert_eq!(d.decision, Decision::HumanReview);
+    assert!(d.record.is_some(), "the review decision is recorded");
     assert!(d.grant.is_none(), "review is not an allow");
     let d = w
         .core
