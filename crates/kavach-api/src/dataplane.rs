@@ -2023,6 +2023,7 @@ pub async fn tool_call(
             resolver: &dp.resolver,
             broker: &*dp.broker,
             forwarder: &*dp.forwarder,
+            gateway_held: None,
             observer: task_state.metrics(),
         };
         execute(&deps, &task_agent, &task_tool, request).await

@@ -12,6 +12,7 @@
 //! Nothing here ever returns the destination, the credential or a
 //! provider's raw response to the agent: [`GatewayReply`] is an allowlist.
 
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
@@ -64,6 +65,15 @@ pub struct GatewayHeldRequest<'a> {
     pub destination: &'a kavach_ports::Destination,
     pub channel: &'a str,
     pub template_id: &'a str,
+}
+
+/// Runtime selection for providers whose credentials are held by Kavach.
+/// Each selected provider is issued an internal artifact and sent through the
+/// tokenless adapter. Providers absent from this set use the standard path.
+pub struct GatewayHeldDispatch<'a> {
+    pub providers: &'a BTreeSet<String>,
+    pub broker: &'a dyn kavach_ports::InternalCredentialBroker,
+    pub forwarder: &'a dyn GatewayHeldForwarder,
 }
 
 /// Object-safe future returned by [`GatewayHeldForwarder`].
@@ -280,6 +290,8 @@ pub struct GatewayDeps<'a, V, S, R, B, F, O> {
     pub resolver: &'a R,
     pub broker: &'a B,
     pub forwarder: &'a F,
+    /// Optional per-provider dispatch for gateway-held provider tokens.
+    pub gateway_held: Option<&'a GatewayHeldDispatch<'a>>,
     pub observer: &'a O,
 }
 
@@ -288,6 +300,20 @@ struct Allowed<'a> {
     credential_id: &'a str,
     expires_at: DateTime<Utc>,
     send_by: Option<DateTime<Utc>>,
+}
+
+enum IssuedForCall {
+    Provider(kavach_ports::IssuedCredential),
+    Internal(kavach_ports::InternalCredentialReceipt),
+}
+
+impl IssuedForCall {
+    fn expires_at(&self) -> DateTime<Utc> {
+        match self {
+            Self::Provider(credential) => credential.expires_at,
+            Self::Internal(receipt) => receipt.expires_at,
+        }
+    }
 }
 
 /// Executes one tool call. `Err` only for calls that get no decision reply.
@@ -516,36 +542,36 @@ where
         });
     }
     let started = Instant::now();
-    let issued = deps
-        .broker
-        .issue(&CredentialRequest {
-            tenant_id: core.tenant_id(),
-            agent_id: &agent.agent_id,
-            mandate_id: &call.mandate_id,
-            record_id: &allowed.record.payload.record_id,
-            credential_id: allowed.credential_id,
-            audience: provider,
-            action: &call.action,
-            destination: &destination,
-            channel,
-            template_id: content,
-            expires_at: allowed.expires_at,
-            send_by: allowed.send_by,
-            now,
-        })
-        .await;
-    deps.observer.stage(Stage::Credential, started.elapsed());
-    let credential = match issued {
-        Ok(credential) => credential,
+    let credential_request = CredentialRequest {
+        tenant_id: core.tenant_id(),
+        agent_id: &agent.agent_id,
+        mandate_id: &call.mandate_id,
+        record_id: &allowed.record.payload.record_id,
+        credential_id: allowed.credential_id,
+        audience: provider,
+        action: &call.action,
+        destination: &destination,
+        channel,
+        template_id: content,
+        expires_at: allowed.expires_at,
+        send_by: allowed.send_by,
+        now,
+    };
+    let gateway_held = deps
+        .gateway_held
+        .filter(|dispatch| dispatch.providers.contains(provider));
+    let issued = match issue_for_call(deps.broker, gateway_held, &credential_request).await {
+        Ok(issued) => issued,
         Err(err) => {
+            deps.observer.stage(Stage::Credential, started.elapsed());
             return not_executed(match err.class {
                 ErrorClass::Rejected => "credential_refused",
                 ErrorClass::Invalid => "credential_invalid",
                 ErrorClass::Unavailable => "credential_unavailable",
-            })
+            });
         }
     };
-
+    deps.observer.stage(Stage::Credential, started.elapsed());
     // A slow resolver or broker must not push the send past the deadline.
     let Some(now) = core.trusted_now() else {
         return not_executed("trusted_time_unavailable");
@@ -553,28 +579,70 @@ where
     if allowed.send_by.is_some_and(|send_by| now >= send_by) {
         return not_executed("send_by_passed");
     }
-    if now >= credential.expires_at {
+    if now >= issued.expires_at() {
         return not_executed("credential_expired");
     }
 
     let started = Instant::now();
-    let result = send_forward_request(
-        deps.forwarder,
-        provider,
-        CredentialAcceptingRequest {
-            credential_id: allowed.credential_id,
-            destination: &destination,
-            channel,
-            template_id: content,
-            credential: &credential.token,
-        },
-    )
-    .await;
+    let Ok(result) =
+        forward_issued(deps.forwarder, gateway_held, &credential_request, &issued).await
+    else {
+        return not_executed("provider_mode_mismatch");
+    };
     deps.observer.stage(Stage::Forward, started.elapsed());
-    drop(credential);
     let (outcome, reason, _) = classify(&result);
     let message_id = forwarded_message_id(&result);
     (outcome, reason, message_id)
+}
+
+async fn issue_for_call<B: CredentialBroker>(
+    broker: &B,
+    gateway_held: Option<&GatewayHeldDispatch<'_>>,
+    request: &CredentialRequest<'_>,
+) -> Result<IssuedForCall, kavach_ports::PortError> {
+    match gateway_held {
+        Some(dispatch) => dispatch
+            .broker
+            .issue_internal(request)
+            .await
+            .map(IssuedForCall::Internal),
+        None => broker.issue(request).await.map(IssuedForCall::Provider),
+    }
+}
+
+async fn forward_issued<F: Forwarder>(
+    forwarder: &F,
+    gateway_held: Option<&GatewayHeldDispatch<'_>>,
+    request: &CredentialRequest<'_>,
+    issued: &IssuedForCall,
+) -> Result<ForwardResult, ()> {
+    match (gateway_held, issued) {
+        (Some(dispatch), IssuedForCall::Internal(_)) => Ok(dispatch
+            .forwarder
+            .forward_gateway_held(
+                request.audience,
+                &GatewayHeldRequest {
+                    credential_id: request.credential_id,
+                    destination: request.destination,
+                    channel: request.channel,
+                    template_id: request.template_id,
+                },
+            )
+            .await),
+        (None, IssuedForCall::Provider(credential)) => Ok(send_forward_request(
+            forwarder,
+            request.audience,
+            CredentialAcceptingRequest {
+                credential_id: request.credential_id,
+                destination: request.destination,
+                channel: request.channel,
+                template_id: request.template_id,
+                credential: &credential.token,
+            },
+        )
+        .await),
+        _ => Err(()),
+    }
 }
 
 #[cfg(test)]
