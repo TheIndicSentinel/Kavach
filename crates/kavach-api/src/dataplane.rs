@@ -22,6 +22,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
 use kavach_credential::{JoseCredentialBroker, RecipientKey};
+use kavach_dataplane::ReviewActionSnapshot;
 use kavach_dataplane::{
     execute, AgentIdentity, AuthorizeConfig, AuthorizeCore, CheckpointPolicy, Checkpointer,
     Decided, FixtureResolver, GatewayDeps, GatewayError, GatewayReply, Mode, RegistryTrust,
@@ -59,6 +60,8 @@ use crate::state::AppState;
 
 /// Size limit for a system-of-record event request.
 pub const SOR_BODY_LIMIT: usize = 16 * 1024;
+/// Review projections expire after 30 minutes, limiting retained action data.
+pub const REVIEW_SNAPSHOT_TTL_SECONDS: i64 = 30 * 60;
 
 #[derive(Debug, Clone)]
 pub struct DataplaneConfig {
@@ -2113,6 +2116,7 @@ pub async fn tool_call(
     let guard = dp.in_flight.enter();
     let task_state = Arc::clone(&state);
     let (task_agent, task_tool) = (agent.clone(), tool.clone());
+    let (review_tool, review_request) = (tool.clone(), request.clone());
     let started = tokio::spawn(async move {
         let _counted = guard;
         let Some(dp) = task_state.dataplane() else {
@@ -2164,6 +2168,8 @@ pub async fn tool_call(
             );
         }
     }
+    persist_gateway_review_snapshot(&state, dp, &agent, &review_tool, review_request, &result)
+        .await?;
     match result {
         Ok(reply) => Ok(Json(reply)),
         Err(GatewayError::Invalid(message)) => Err(malformed(message)),
@@ -2181,6 +2187,96 @@ pub async fn tool_call(
              later for its outcome",
         )),
     }
+}
+
+async fn persist_gateway_review_snapshot(
+    state: &AppState,
+    dataplane: &Dataplane,
+    agent: &AgentIdentity,
+    tool: &str,
+    request: ToolRequest,
+    result: &Result<GatewayReply, GatewayError>,
+) -> Result<(), Refusal> {
+    if state.review_snapshot_key().is_none() {
+        return Ok(());
+    }
+    let Ok(reply) = result else {
+        return Ok(());
+    };
+    if reply.decision != Decision::HumanReview {
+        return Ok(());
+    }
+    let record_id = reply.record_id.as_deref().ok_or_else(|| {
+        crate::problem::Problem::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "review record is unavailable",
+        )
+    })?;
+    persist_review_snapshot(state, dataplane, agent, tool, request, record_id)
+        .await
+        .map_err(|_| {
+            crate::problem::Problem::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "review snapshot could not be stored",
+            )
+        })
+}
+
+async fn persist_review_snapshot(
+    state: &AppState,
+    dataplane: &Dataplane,
+    agent: &AgentIdentity,
+    tool: &str,
+    request: ToolRequest,
+    record_id: &str,
+) -> Result<(), PortError> {
+    let key = state
+        .review_snapshot_key()
+        .ok_or_else(|| PortError::unavailable("review snapshot encryption is not configured"))?;
+    let call = dataplane
+        .core()
+        .tools()
+        .extract(tool, request)
+        .map_err(|_| PortError::rejected("review action could not be reconstructed"))?;
+    let projection = ReviewActionSnapshot::from_request(
+        state.tenant_id(),
+        agent,
+        dataplane.core().tools().digest(),
+        &call,
+    )?;
+    let action_hash = projection.action_hash()?;
+    let record = dataplane
+        .human_review_record(record_id)
+        .await?
+        .ok_or_else(|| PortError::rejected("review record is unavailable"))?;
+    if record.payload.tenant_id != state.tenant_id()
+        || record.payload.policy_decision != Decision::HumanReview
+        || record.payload.returned_decision != Decision::HumanReview
+        || record.payload.review_action_hash.as_deref() != Some(action_hash.as_str())
+    {
+        return Err(PortError::rejected(
+            "review projection does not match the committed record",
+        ));
+    }
+    let expires_at = record.payload.ts + chrono::Duration::seconds(REVIEW_SNAPSHOT_TTL_SECONDS);
+    let now = Utc::now();
+    if expires_at <= now {
+        return Err(PortError::rejected(
+            "review snapshot lifetime already expired",
+        ));
+    }
+    crate::review_snapshot_key::persist(
+        key,
+        state.review_snapshot_store(),
+        &projection,
+        record_id,
+        &action_hash,
+        expires_at,
+        now,
+    )
+    .await
 }
 
 /// A fixed label for a refusal (never its message, which may quote input).

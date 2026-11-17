@@ -75,9 +75,78 @@ impl ReviewSnapshotKey {
     }
 }
 
+/// Encrypts and inserts a review projection, treating an identical retry as
+/// success only after decrypting and comparing the already stored projection.
+pub async fn persist<S: kavach_ports::ReviewSnapshotStore>(
+    key: &ReviewSnapshotKey,
+    store: &S,
+    snapshot: &kavach_dataplane::ReviewActionSnapshot,
+    record_id: &str,
+    action_hash: &str,
+    expires_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(), kavach_ports::PortError> {
+    if expires_at <= now || snapshot.action_hash()? != action_hash {
+        return Err(kavach_ports::PortError::rejected(
+            "review snapshot binding or lifetime is invalid",
+        ));
+    }
+    if let Some(existing) = store.get_live(&snapshot.tenant_id, record_id, now).await? {
+        return verify_existing(key, &existing, snapshot, action_hash);
+    }
+    let sealed = key.seal(snapshot, record_id, action_hash)?;
+    let stored = kavach_ports::EncryptedReviewSnapshot {
+        version: sealed.version,
+        key_id: sealed.key_id,
+        tenant_id: sealed.tenant_id,
+        record_id: sealed.record_id,
+        action_hash: sealed.action_hash,
+        nonce: sealed.nonce,
+        ciphertext: sealed.ciphertext,
+        expires_at,
+    };
+    match store.insert(stored, now).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.class == kavach_ports::ErrorClass::Rejected => {
+            let existing = store
+                .get_live(&snapshot.tenant_id, record_id, now)
+                .await?
+                .ok_or(error)?;
+            verify_existing(key, &existing, snapshot, action_hash)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn verify_existing(
+    key: &ReviewSnapshotKey,
+    stored: &kavach_ports::EncryptedReviewSnapshot,
+    expected: &kavach_dataplane::ReviewActionSnapshot,
+    action_hash: &str,
+) -> Result<(), kavach_ports::PortError> {
+    let envelope = kavach_dataplane::EncryptedReviewSnapshot {
+        version: stored.version,
+        key_id: stored.key_id.clone(),
+        tenant_id: stored.tenant_id.clone(),
+        record_id: stored.record_id.clone(),
+        action_hash: stored.action_hash.clone(),
+        nonce: stored.nonce,
+        ciphertext: stored.ciphertext.clone(),
+    };
+    let opened = key.open(&envelope, &stored.tenant_id, &stored.record_id, action_hash)?;
+    if opened == *expected {
+        Ok(())
+    } else {
+        Err(kavach_ports::PortError::rejected(
+            "stored review projection does not match the committed action",
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
     use std::fs;
 
     fn temp_file(contents: &str) -> std::path::PathBuf {
@@ -113,5 +182,75 @@ mod tests {
         assert!(ReviewSnapshotKey::from_file(&path, "").is_err());
         assert!(ReviewSnapshotKey::from_file(&path, "bad\nid").is_err());
         let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn persists_only_ciphertext_and_accepts_matching_retries() {
+        let path = temp_file(&format!("{}\n", "cd".repeat(32)));
+        let key = ReviewSnapshotKey::from_file(&path, "review-v1").expect("key");
+        let _ = fs::remove_file(path);
+        let now = chrono::Utc::now();
+        let snapshot = kavach_dataplane::ReviewActionSnapshot {
+            tenant_id: "tenant-1".into(),
+            agent_id: "agent-1".into(),
+            identity_key: "issuer:subject".into(),
+            tool_registry_digest: "sha256:registry".into(),
+            mandate_id: "mandate-1".into(),
+            request_id: "request-1".into(),
+            action: "propose_plan".into(),
+            subject_ref: "ref:borrower:B-9382".into(),
+            channel: None,
+            waiver_bps: Some(3500),
+            requested_fields: Default::default(),
+            parameters: Default::default(),
+        };
+        let action_hash = snapshot.action_hash().expect("digest");
+        let store = kavach_storage::MemoryReviewSnapshotStore::default();
+        let expires_at = now + Duration::minutes(30);
+        persist(
+            &key,
+            &store,
+            &snapshot,
+            "record-1",
+            &action_hash,
+            expires_at,
+            now,
+        )
+        .await
+        .expect("persist");
+        persist(
+            &key,
+            &store,
+            &snapshot,
+            "record-1",
+            &action_hash,
+            expires_at,
+            now,
+        )
+        .await
+        .expect("matching retry");
+        let mut altered = snapshot.clone();
+        altered.subject_ref = "ref:borrower:B-9999".into();
+        let altered_hash = altered.action_hash().expect("altered digest");
+        assert!(persist(
+            &key,
+            &store,
+            &altered,
+            "record-1",
+            &altered_hash,
+            expires_at,
+            now,
+        )
+        .await
+        .is_err());
+        let stored =
+            kavach_ports::ReviewSnapshotStore::get_live(&store, "tenant-1", "record-1", now)
+                .await
+                .expect("read")
+                .expect("snapshot");
+        assert!(!stored
+            .ciphertext
+            .windows(b"B-9382".len())
+            .any(|part| part == b"B-9382"));
     }
 }

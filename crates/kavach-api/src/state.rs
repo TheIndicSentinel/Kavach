@@ -31,6 +31,48 @@ pub enum StepUpChallengeBackend {
     Postgres(kavach_storage::PostgresStepUpChallengeStore),
 }
 
+/// Runtime-selected D17 encrypted review-snapshot store.
+#[derive(Clone)]
+pub enum ReviewSnapshotBackend {
+    Memory(std::sync::Arc<kavach_storage::MemoryReviewSnapshotStore>),
+    Postgres(kavach_storage::PostgresReviewSnapshotStore),
+}
+
+impl kavach_ports::ReviewSnapshotStore for ReviewSnapshotBackend {
+    async fn insert(
+        &self,
+        snapshot: kavach_ports::EncryptedReviewSnapshot,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<(), kavach_ports::PortError> {
+        match self {
+            Self::Memory(store) => store.insert(snapshot, now).await,
+            Self::Postgres(store) => store.insert(snapshot, now).await,
+        }
+    }
+
+    async fn get_live(
+        &self,
+        tenant_id: &str,
+        record_id: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Option<kavach_ports::EncryptedReviewSnapshot>, kavach_ports::PortError> {
+        match self {
+            Self::Memory(store) => store.get_live(tenant_id, record_id, now).await,
+            Self::Postgres(store) => store.get_live(tenant_id, record_id, now).await,
+        }
+    }
+
+    async fn purge_expired(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<u64, kavach_ports::PortError> {
+        match self {
+            Self::Memory(store) => store.purge_expired(now).await,
+            Self::Postgres(store) => store.purge_expired(now).await,
+        }
+    }
+}
+
 impl kavach_ports::StepUpChallengeStore for StepUpChallengeBackend {
     async fn insert(
         &self,
@@ -113,6 +155,8 @@ pub struct AppState {
     step_up_challenges: StepUpChallengeBackend,
     /// Stable AEAD key for encrypted D17 review projections, when configured.
     review_snapshot_key: Option<crate::review_snapshot_key::ReviewSnapshotKey>,
+    /// Runtime-selected persistence for encrypted D17 review projections.
+    review_snapshot_store: ReviewSnapshotBackend,
     /// Console sign-in (ADR-018); `None` unless configured.
     console_login: Option<std::sync::Arc<crate::console_login::ConsoleLogin>>,
 }
@@ -181,15 +225,7 @@ impl AppState {
 
         let (evidence, incidents, batch_jobs, admin, retention, changes, roles, pool) =
             storage_backends(config).await?;
-        let step_up_challenges =
-            pool.as_ref().map_or_else(
-                || {
-                    StepUpChallengeBackend::Memory(
-                        kavach_storage::MemoryStepUpChallengeStore::default(),
-                    )
-                },
-                |pool| StepUpChallengeBackend::Postgres(pool.step_up_challenge_store()),
-            );
+        let (step_up_challenges, review_snapshot_store) = select_review_stores(pool.as_ref());
         let review_snapshot_key = load_review_snapshot_key(config)?;
         bootstrap_superadmins(&roles, &config.roles).await?;
         let dataplane = build_dataplane(config, pool.as_ref()).await?;
@@ -275,6 +311,7 @@ impl AppState {
             dataplane,
             step_up_challenges,
             review_snapshot_key,
+            review_snapshot_store,
             console_login: None,
         })
     }
@@ -333,6 +370,11 @@ impl AppState {
     /// Stable encryption key for D17 review snapshots, if configured.
     pub fn review_snapshot_key(&self) -> Option<&crate::review_snapshot_key::ReviewSnapshotKey> {
         self.review_snapshot_key.as_ref()
+    }
+
+    /// Runtime snapshot store: memory for development, Postgres when configured.
+    pub fn review_snapshot_store(&self) -> &ReviewSnapshotBackend {
+        &self.review_snapshot_store
     }
 
     pub fn hmac_secret(&self) -> Option<&str> {
@@ -656,6 +698,24 @@ fn load_review_snapshot_key(
             .map_err(ApiError::Internal)
         })
         .transpose()
+}
+
+fn select_review_stores(
+    pool: Option<&StoragePool>,
+) -> (StepUpChallengeBackend, ReviewSnapshotBackend) {
+    let challenges = pool.map_or_else(
+        || StepUpChallengeBackend::Memory(kavach_storage::MemoryStepUpChallengeStore::default()),
+        |pool| StepUpChallengeBackend::Postgres(pool.step_up_challenge_store()),
+    );
+    let snapshots = pool.map_or_else(
+        || {
+            ReviewSnapshotBackend::Memory(std::sync::Arc::new(
+                kavach_storage::MemoryReviewSnapshotStore::default(),
+            ))
+        },
+        |pool| ReviewSnapshotBackend::Postgres(pool.review_snapshot_store()),
+    );
+    (challenges, snapshots)
 }
 
 /// The metrics registry, with the evidence checkpoint writer reporting into
