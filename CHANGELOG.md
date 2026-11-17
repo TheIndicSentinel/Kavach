@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **M4 D17 OIDC step-up claim verifier.** Added strict validation for a signed step-up ID token: issuer, audience, nonce, expected reviewer subject and ACR, and `auth_time`/`iat` at or after the challenge. This verifies claims only; Keycloak challenge initiation/configuration, approval API and authorization wiring remain pending.
 - **M4 D17 step-up boundary and test double.** Added the step-up provider port and a testkit-only fake. Challenges and verified results bind the tenant, authenticated source-qualified reviewer, exact action digest and expiry; invalid, expired and replayed synthetic proofs fail. No WebAuthn/Keycloak adapter or approval route is active.
 - **M4 durable approval storage.** Added a tenant-scoped PostgreSQL approval table and memory/PostgreSQL store implementations. Consumption is one atomic update, bound to the exact action hash and trusted current time; approval IDs and credential IDs are unique, records cannot be edited or deleted, and replay, rejection, mismatch and expiry return no approval. The store is not wired to reviewer authentication, step-up or credential issuance.
 - **M4 approval-record contract.** Added the PRD FR-6 record shape with strict digest and decision/credential validation plus exact tenant/action and expiry checks. Its persistence and atomic consumption are now implemented by the M4 durable-storage slice; reviewer authentication, step-up, authorization wiring and credential issuance remain pending.

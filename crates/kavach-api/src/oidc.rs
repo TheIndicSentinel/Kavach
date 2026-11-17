@@ -64,6 +64,25 @@ pub struct VerifiedToken {
     pub groups: Vec<String>,
 }
 
+/// Minimal identity and freshness claims for a verified step-up ID token.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedStepUpClaims {
+    pub subject: String,
+    pub acr: String,
+    pub auth_time: chrono::DateTime<chrono::Utc>,
+}
+
+/// Inputs required to validate one action-bound step-up ID token.
+pub struct StepUpIdTokenRequest<'a> {
+    pub token: &'a str,
+    pub client_id: &'a str,
+    pub nonce: &'a str,
+    pub expected_subject: &'a str,
+    pub expected_acr: &'a str,
+    pub challenge_issued_at: chrono::DateTime<chrono::Utc>,
+    pub now: chrono::DateTime<chrono::Utc>,
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum OidcError {
     #[error("token header: {0}")]
@@ -328,6 +347,115 @@ impl OidcVerifier {
         client_id: &str,
         nonce: &str,
     ) -> Result<(), OidcError> {
+        self.verify_id_token_claims(token, client_id, nonce)
+            .map(|_| ())
+    }
+
+    /// Verifies a Keycloak step-up ID token for the exact challenged human.
+    ///
+    /// `expected_acr` must be configured at the identity provider to mean the
+    /// required WebAuthn/passkey level. The signed token must carry a fresh
+    /// `auth_time` and `iat` at or after the challenge start, the expected
+    /// subject, audience, issuer and nonce. This method validates claims; it
+    /// does not configure Keycloak's ACR-to-flow mapping.
+    pub fn verify_step_up_id_token(
+        &self,
+        request: &StepUpIdTokenRequest<'_>,
+    ) -> Result<VerifiedStepUpClaims, OidcError> {
+        let StepUpIdTokenRequest {
+            token,
+            client_id,
+            nonce,
+            expected_subject,
+            expected_acr,
+            challenge_issued_at,
+            now,
+        } = *request;
+        if expected_subject.is_empty() || expected_acr.is_empty() {
+            return Err(OidcError::Claim(
+                "step-up configuration".into(),
+                "expected subject and ACR must not be empty".into(),
+            ));
+        }
+        if challenge_issued_at > now {
+            return Err(OidcError::Claim(
+                "step-up challenge".into(),
+                "issued in the future".into(),
+            ));
+        }
+        let claims = self.verify_id_token_claims(token, client_id, nonce)?;
+        let subject = claims
+            .get("sub")
+            .and_then(Value::as_str)
+            .filter(|subject| !subject.is_empty() && subject.len() <= MAX_ID_LEN)
+            .ok_or_else(|| OidcError::Claim("sub".into(), "missing or invalid".into()))?;
+        if subject != expected_subject {
+            return Err(OidcError::Claim(
+                "sub".into(),
+                "does not match reviewer".into(),
+            ));
+        }
+        let acr = claims
+            .get("acr")
+            .and_then(Value::as_str)
+            .ok_or_else(|| OidcError::Claim("acr".into(), "missing or invalid".into()))?;
+        if acr != expected_acr {
+            return Err(OidcError::Claim(
+                "acr".into(),
+                "does not meet the required step-up level".into(),
+            ));
+        }
+        let auth_time = claims
+            .get("auth_time")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| OidcError::Claim("auth_time".into(), "missing or invalid".into()))?;
+        let issued_at = claims
+            .get("iat")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| OidcError::Claim("iat".into(), "missing or invalid".into()))?;
+        let challenge_time = challenge_issued_at.timestamp();
+        let latest_allowed = now
+            .timestamp()
+            .saturating_add(i64::try_from(self.config.leeway_seconds).unwrap_or(i64::MAX));
+        if auth_time < challenge_time {
+            return Err(OidcError::Claim(
+                "auth_time".into(),
+                "authentication predates the step-up challenge".into(),
+            ));
+        }
+        if issued_at < challenge_time {
+            return Err(OidcError::Claim(
+                "iat".into(),
+                "token predates the step-up challenge".into(),
+            ));
+        }
+        if auth_time > latest_allowed {
+            return Err(OidcError::Claim(
+                "auth_time".into(),
+                "authentication time is in the future".into(),
+            ));
+        }
+        if issued_at > latest_allowed {
+            return Err(OidcError::Claim(
+                "iat".into(),
+                "token issue time is in the future".into(),
+            ));
+        }
+        let auth_time = chrono::DateTime::<chrono::Utc>::from_timestamp(auth_time, 0)
+            .ok_or_else(|| OidcError::Claim("auth_time".into(), "out of range".into()))?;
+        Ok(VerifiedStepUpClaims {
+            subject: subject.to_string(),
+            acr: acr.to_string(),
+            auth_time,
+        })
+    }
+
+    fn verify_id_token_claims(
+        &self,
+        token: &str,
+        client_id: &str,
+        nonce: &str,
+    ) -> Result<Map<String, Value>, OidcError> {
         let (alg, key) = self.signing_key(token)?;
         let mut validation = Validation::new(alg);
         validation.leeway = self.config.leeway_seconds;
@@ -343,8 +471,8 @@ impl OidcVerifier {
         }
         let several = matches!(claims.get("aud"), Some(Value::Array(a)) if a.len() > 1);
         match claims.get("azp") {
-            Some(Value::String(azp)) if azp == client_id => Ok(()),
-            None if !several => Ok(()),
+            Some(Value::String(azp)) if azp == client_id => Ok(claims),
+            None if !several => Ok(claims),
             _ => Err(OidcError::Claim("azp".into(), "is not this client".into())),
         }
     }
@@ -443,7 +571,7 @@ mod tests {
         serde_json::from_value(json!({ "keys": keys })).unwrap()
     }
 
-    fn token(seed: u8, kid: &str) -> String {
+    fn signed_token(seed: u8, kid: &str, claims: Value) -> String {
         // PKCS#8 v1 DER for an Ed25519 private key (RFC 8410).
         let mut der = vec![
             0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
@@ -452,10 +580,34 @@ mod tests {
         der.extend_from_slice(&[seed; 32]);
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(kid.into());
-        let now = chrono::Utc::now().timestamp();
-        let claims = json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice",
-                             "groups": ["ops"], "exp": now + 300 });
         encode(&header, &claims, &EncodingKey::from_ed_der(&der)).unwrap()
+    }
+
+    fn token(seed: u8, kid: &str) -> String {
+        let now = chrono::Utc::now().timestamp();
+        signed_token(
+            seed,
+            kid,
+            json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice",
+                    "groups": ["ops"], "exp": now + 300 }),
+        )
+    }
+
+    fn step_up_token(
+        acr: &str,
+        sub: &str,
+        nonce: &str,
+        auth_time: i64,
+        iat: i64,
+        now: i64,
+    ) -> String {
+        signed_token(
+            1,
+            "good",
+            json!({ "iss": ISSUER, "aud": "kavach-console", "azp": "kavach-console",
+                    "sub": sub, "nonce": nonce, "acr": acr, "auth_time": auth_time,
+                    "iat": iat, "exp": now + 300 }),
+        )
     }
 
     /// Every signing algorithm the library knows.
@@ -489,6 +641,54 @@ mod tests {
             config(JwksSource::File(PathBuf::new())),
             &jwks(&[jwk(1, "good")]),
         )
+    }
+
+    #[test]
+    fn step_up_id_token_requires_the_expected_identity_acr_nonce_and_fresh_times() {
+        let verifier = verifier();
+        let now = chrono::Utc::now().timestamp();
+        let challenge_issued_at = chrono::DateTime::<chrono::Utc>::from_timestamp(now - 30, 0)
+            .expect("valid challenge time");
+        let trusted_now =
+            chrono::DateTime::<chrono::Utc>::from_timestamp(now, 0).expect("valid current time");
+        let valid = step_up_token("2", "alice", "nonce-1", now - 1, now, now);
+
+        let claims = verifier
+            .verify_step_up_id_token(&StepUpIdTokenRequest {
+                token: &valid,
+                client_id: "kavach-console",
+                nonce: "nonce-1",
+                expected_subject: "alice",
+                expected_acr: "2",
+                challenge_issued_at,
+                now: trusted_now,
+            })
+            .unwrap();
+        assert_eq!(claims.subject, "alice");
+        assert_eq!(claims.acr, "2");
+        assert_eq!(claims.auth_time.timestamp(), now - 1);
+
+        let rejected = [
+            step_up_token("1", "alice", "nonce-1", now - 1, now, now),
+            step_up_token("2", "mallory", "nonce-1", now - 1, now, now),
+            step_up_token("2", "alice", "other-nonce", now - 1, now, now),
+            step_up_token("2", "alice", "nonce-1", now - 31, now, now),
+            step_up_token("2", "alice", "nonce-1", now + 10, now, now),
+            step_up_token("2", "alice", "nonce-1", now - 1, now - 31, now),
+        ];
+        for token in rejected {
+            assert!(verifier
+                .verify_step_up_id_token(&StepUpIdTokenRequest {
+                    token: &token,
+                    client_id: "kavach-console",
+                    nonce: "nonce-1",
+                    expected_subject: "alice",
+                    expected_acr: "2",
+                    challenge_issued_at,
+                    now: trusted_now,
+                },)
+                .is_err());
+        }
     }
 
     /// Only RS256, PS256, ES256 and EdDSA are accepted; every other algorithm
