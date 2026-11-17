@@ -8,6 +8,8 @@ use axum::http::header::{HeaderValue, ACCEPT, AUTHORIZATION};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::Utc;
+use kavach_domain::Decision;
+use kavach_ports::agent_evidence::AgentDecisionRecord;
 use kavach_ports::{
     PortError, StepUpChallenge, StepUpChallengeState, StepUpChallengeStore, StepUpRequest,
     TokenSecret, VerifiedStepUp,
@@ -20,6 +22,43 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
 pub const STEP_UP_CALLBACK_PATH: &str = "/auth/step-up/callback";
+
+/// Builds step-up context only from a committed HUMAN_REVIEW evidence record
+/// and a reviewer identity obtained from the authenticated console session.
+/// The caller must load the record from the server-side evidence store and
+/// verify its evidence signature before calling this helper.
+pub fn request_for_human_review(
+    record: &AgentDecisionRecord,
+    tenant_id: &str,
+    reviewer_principal_key: &str,
+    issued_at: chrono::DateTime<Utc>,
+    expires_at: chrono::DateTime<Utc>,
+) -> Result<StepUpRequest, PortError> {
+    let expected_hash = kavach_ports::agent_evidence::payload_hash(&record.payload)?;
+    if record.payload.tenant_id != tenant_id
+        || record.payload.policy_decision != Decision::HumanReview
+        || record.payload.returned_decision != Decision::HumanReview
+        || record.hash != expected_hash
+    {
+        return Err(PortError::rejected(
+            "step-up requires a HUMAN_REVIEW record for this tenant",
+        ));
+    }
+    let action_hash = record
+        .payload
+        .review_action_hash
+        .clone()
+        .ok_or_else(|| PortError::rejected("review record has no exact-action binding"))?;
+    let request = StepUpRequest {
+        tenant_id: tenant_id.to_string(),
+        principal_key: reviewer_principal_key.to_string(),
+        action_hash,
+        issued_at,
+        expires_at,
+    };
+    request.validate(issued_at)?;
+    Ok(request)
+}
 
 /// OIDC client and Keycloak LoA configuration for the step-up request.
 #[derive(Clone)]
@@ -536,6 +575,9 @@ mod tests {
     use chrono::{Duration, TimeZone};
     use jsonwebtoken::jwk::JwkSet;
     use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+    use kavach_ports::agent_evidence::{
+        Actor, AgentDecisionPayload, PolicyVersions, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
+    };
     use kavach_ports::{StepUpChallengeStore, StepUpRequest};
     use kavach_storage::MemoryStepUpChallengeStore;
     use ring::signature::{Ed25519KeyPair, KeyPair};
@@ -544,6 +586,120 @@ mod tests {
 
     fn now() -> chrono::DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap()
+    }
+
+    fn human_review_record() -> AgentDecisionRecord {
+        let payload = AgentDecisionPayload {
+            record_id: "adr:tenant-1:0:1".into(),
+            tenant_id: "tenant-1".into(),
+            partition_id: 0,
+            seq: 1,
+            prev_hash: "0".repeat(64),
+            kind: KIND_AGENT_DECISION.into(),
+            hash_alg: HASH_ALG_V2.into(),
+            key_id: "evidence-key-1".into(),
+            actor: Actor {
+                agent_id: "collections-agent".into(),
+                identity_key: "oidc:https://agent.example#collections-agent".into(),
+            },
+            chain: vec!["mandate-1".into()],
+            mandate_id: "mandate-1".into(),
+            purpose: "loan_recovery".into(),
+            consent_refs: vec![],
+            action: "propose_plan".into(),
+            request_id: "request-1".into(),
+            subject_pseudonym: "psn:review-subject".into(),
+            params_mac: None,
+            review_action_hash: Some(format!("sha256-action-v1:{}", "a".repeat(64))),
+            policy_versions: PolicyVersions {
+                cedar: "sha256:cedar".into(),
+                cel: None,
+                packs: vec![],
+                tools: Some("sha256:tools".into()),
+                build: "test".into(),
+            },
+            signals: vec!["escalated".into()],
+            pre_commit_decision: Decision::HumanReview,
+            policy_decision: Decision::HumanReview,
+            returned_decision: Decision::HumanReview,
+            obligations: vec![],
+            credential_id: None,
+            credential_expires_at: None,
+            send_by: None,
+            time_sync: TimeSync {
+                status: "synced".into(),
+                max_error_ms: Some(1),
+            },
+            ts: now(),
+        };
+        let hash = kavach_ports::agent_evidence::payload_hash(&payload).unwrap();
+        AgentDecisionRecord {
+            payload,
+            hash,
+            sig: "test-signature".into(),
+        }
+    }
+
+    #[test]
+    fn review_step_up_request_uses_only_matching_human_review_evidence() {
+        let record = human_review_record();
+        let reviewer = "oidc:https://idp.example#reviewer-1";
+        let request = request_for_human_review(
+            &record,
+            "tenant-1",
+            reviewer,
+            now(),
+            now() + Duration::minutes(2),
+        )
+        .unwrap();
+        assert_eq!(request.tenant_id, "tenant-1");
+        assert_eq!(request.principal_key, reviewer);
+        assert_eq!(
+            request.action_hash,
+            record.payload.review_action_hash.as_deref().unwrap()
+        );
+
+        assert!(request_for_human_review(
+            &record,
+            "tenant-2",
+            reviewer,
+            now(),
+            now() + Duration::minutes(2),
+        )
+        .is_err());
+
+        let mut not_review = record.clone();
+        not_review.payload.returned_decision = Decision::Block;
+        assert!(request_for_human_review(
+            &not_review,
+            "tenant-1",
+            reviewer,
+            now(),
+            now() + Duration::minutes(2),
+        )
+        .is_err());
+
+        let mut tampered = record.clone();
+        tampered.hash = "edited-record-hash".into();
+        assert!(request_for_human_review(
+            &tampered,
+            "tenant-1",
+            reviewer,
+            now(),
+            now() + Duration::minutes(2),
+        )
+        .is_err());
+
+        let mut missing_hash = record;
+        missing_hash.payload.review_action_hash = None;
+        assert!(request_for_human_review(
+            &missing_hash,
+            "tenant-1",
+            reviewer,
+            now(),
+            now() + Duration::minutes(2),
+        )
+        .is_err());
     }
 
     fn request(now: chrono::DateTime<Utc>) -> StepUpRequest {

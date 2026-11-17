@@ -633,6 +633,34 @@ impl ConsoleLogin {
         self.logins.lock().map_or(0, |l| l.len())
     }
 
+    /// Returns the source-qualified identity from a live console session for
+    /// server-side step-up initiation. It is never accepted from a request
+    /// parameter or exposed through the session JSON response.
+    pub fn step_up_principal_key(
+        &self,
+        session_cookie: &str,
+    ) -> Result<String, StepUpSessionError> {
+        let now = self.now();
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        let session = sessions
+            .get(&digest(session_cookie))
+            .ok_or(StepUpSessionError::NoSession)?;
+        if !self.live(session, now) {
+            return Err(StepUpSessionError::Expired);
+        }
+        let principal_key = session
+            .principal_key
+            .clone()
+            .ok_or(StepUpSessionError::IdentityMismatch)?;
+        if let Ok(mut last_seen) = session.last_seen.lock() {
+            *last_seen = now;
+        }
+        Ok(principal_key)
+    }
+
     /// Binds callback secrets from a freshly created challenge to the live
     /// authenticated console session. Only one step-up may be pending per
     /// session; a live ceremony is never silently replaced.
@@ -1549,6 +1577,10 @@ mod tests {
             .lock()
             .unwrap()
             .insert(digest(session_cookie), session);
+        assert_eq!(
+            login.step_up_principal_key(session_cookie).unwrap(),
+            principal_key
+        );
 
         let store = MemoryStepUpChallengeStore::default();
         let initiator = crate::step_up::KeycloakStepUpInitiator::new(
