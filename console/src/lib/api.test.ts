@@ -4,6 +4,7 @@ import {
   ApiError,
   fetchAgent,
   fetchAgentDecision,
+  fetchHumanReviewSnapshot,
   fetchAgents,
   fetchAccessReviewCsv,
   fetchRevocationRecord,
@@ -165,10 +166,12 @@ describe("agent calls", () => {
     const seen = capture({});
     await fetchAgent("a/b?c");
     await fetchAgentDecision("adr:t:0:1");
+    await fetchHumanReviewSnapshot("adr:t:0:1");
     await fetchRevocationRecord("los:core", "evt/1");
     expect(seen.mock.calls.map((call) => call[0])).toEqual([
       "/v1/agents/a%2Fb%3Fc",
       "/v1/agent-decisions/adr%3At%3A0%3A1",
+      "/auth/human-review/adr%3At%3A0%3A1",
       "/v1/agent-revocations/los%3Acore/evt%2F1",
     ]);
   });

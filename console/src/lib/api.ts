@@ -340,6 +340,9 @@ export type AgentListQuery = NonNullable<operations["listAgents"]["parameters"][
 /** `GET /v1/agent-decisions/{record_id}`: the signed record and its outcome, if any. */
 export type AgentDecisionLookup = Ok<"getAgentDecision">;
 
+/** Exact-action fields for an authorized HUMAN_REVIEW decision (D17). */
+export type HumanReviewSnapshot = Ok<"readHumanReviewSnapshot">;
+
 /** One page of unknown outcomes and ADR-017 history. */
 export type UnknownOutcomeReviewPage = Ok<"listUnknownOutcomes">;
 export type UnknownOutcomeReviewQuery = NonNullable<operations["listUnknownOutcomes"]["parameters"]["query"]>;
@@ -368,6 +371,11 @@ export function fetchAgent(agentId: string): Promise<AgentStateView> {
 /** Audited and rate limited by the API: call it once per lookup the operator asks for. */
 export function fetchAgentDecision(recordId: string): Promise<AgentDecisionLookup> {
   return request(`/v1/agent-decisions/${encodeURIComponent(recordId)}`);
+}
+
+/** Audited by the API; returns only the encrypted snapshot's display projection. */
+export function fetchHumanReviewSnapshot(recordId: string): Promise<HumanReviewSnapshot> {
+  return request(`/auth/human-review/${encodeURIComponent(recordId)}`);
 }
 
 export function unknownOutcomeReviewsPath(query: UnknownOutcomeReviewQuery = {}): string {

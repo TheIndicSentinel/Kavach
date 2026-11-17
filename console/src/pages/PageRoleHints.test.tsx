@@ -71,11 +71,14 @@ describe.each(surfaces)("$name: role hint", (surface) => {
   });
 
   it("known denied: no control, and one line per action saying the server decides", () => {
-    const html = render(surface.page({ principal: null, groups: surface.denied }));
+    const html = render(surface.page({ principal: null, groups: surface.denied, roles: [] }));
     expect(html).not.toContain('type="submit"');
     for (const label of surface.buttons) expect(html).not.toContain(`${label}</button>`);
     expect(count(text(html), surface.line)).toBe(surface.lines);
-    expect(text(html)).toContain(`Your groups (${surface.denied.join(", ")})`);
+    expect(text(html)).toContain(`Your roles (none) and groups (${surface.denied.join(", ")})`);
+    if (surface.name === "AgentEvidencePage") {
+      expect(text(html)).toContain("may review HUMAN_REVIEW actions. The server decides");
+    }
   });
 
   it("unknown groups: the control shows and there is no hint", () => {

@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **M4 D17 reviewer display (console).** Agent Evidence now provides a role-aware manual lookup and read-only rendering of the audited exact-action projection; it introduces no decision-record listing or approval control.
 - **M4 D17 expired snapshot cleanup.** The API purges expired encrypted review snapshots at startup and every 60 seconds; deletion remains expiry-gated by the store and cleanup stops with the existing server shutdown signal. Cleanup errors are logged and retried at the next interval.
 - **M4 D17 reviewer read endpoint.** Added authenticated `GET /auth/human-review/{record_id}` for the `approver` permission and live console session. It verifies the tenant-scoped evidence signature, exact action digest and 30-minute expiry, returns only reviewer display fields, and audits before returning; general evidence routes remain unchanged.
 - **M4 D17 encrypted snapshot storage.** Added a ciphertext-only store port, volatile development adapter, and tenant-scoped Postgres table for encrypted action projections. The gateway now persists committed `HUMAN_REVIEW` projections when the snapshot key is configured, with a 30-minute lifetime; retries decrypt and compare instead of overwriting. The table supports live reads and expiry cleanup, rejects updates, and blocks deletion before expiry.

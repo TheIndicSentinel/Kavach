@@ -16,9 +16,11 @@ import { useLookup, type Lookup } from "../hooks/useLookup";
 import { LOOKUP_MAX_LENGTH, idProblem, recordIdProblem } from "../lib/agents";
 import {
   fetchAgentDecision,
+  fetchHumanReviewSnapshot,
   fetchRevocationRecord,
   fetchUnknownOutcomeReviews,
   type AgentDecisionLookup,
+  type HumanReviewSnapshot,
   type RevocationLookup,
   type UnknownOutcomeReviewPage,
 } from "../lib/api";
@@ -102,6 +104,95 @@ function DecisionLookup({
             notFound="No agent decision record with that id on this server."
             done={(result) => `Found record ${result.record.record_id}.`}
             render={(result) => <DecisionRecordView result={result} />}
+          />
+        </>
+      )}
+    </Card>
+  );
+}
+
+function HumanReviewLookup({
+  viewer,
+  initial,
+}: {
+  viewer: Viewer;
+  initial?: Lookup<HumanReviewSnapshot>;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  const [recordId, setRecordId] = useState("");
+  const [problem, setProblem] = useState<string | null>(null);
+  const { lookup, run } = useLookup<HumanReviewSnapshot>(initial);
+  const hint = roleHint(viewer, "approve_human_review", "review HUMAN_REVIEW actions");
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (lookup.phase === "loading") return;
+    const id = recordId.trim();
+    if (!checkFields([{ problem: recordIdProblem(id), set: setProblem, ref: input }])) return;
+    run(`Loading human review ${id}`, () => fetchHumanReviewSnapshot(id));
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Human review</CardTitle>
+        <CardDescription>
+          Review the exact action held for this signed decision. This view does not approve or release it.
+        </CardDescription>
+      </CardHeader>
+      {hint ? <RoleHint>{hint}</RoleHint> : (
+        <>
+          <form onSubmit={submit} noValidate className="flex flex-col gap-3 sm:flex-row sm:items-start">
+            <TextField
+              id="human-review-record-id"
+              label="Decision record id"
+              value={recordId}
+              onChange={setRecordId}
+              hint="adr:<tenant>:<partition>:<sequence>"
+              error={problem}
+              maxLength={LOOKUP_MAX_LENGTH}
+              ref={input}
+              className="flex-1"
+            />
+            <Button
+              type="submit"
+              variant="secondary"
+              className="sm:mt-7 aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+              aria-disabled={lookup.phase === "loading"}
+            >
+              {lookup.phase === "loading" ? "Loading review…" : "Load human review"}
+            </Button>
+          </form>
+          <LookupPanel
+            lookup={lookup}
+            notFound="No live human-review snapshot is available for that decision record."
+            done={(result) => `Loaded the exact action for ${result.record_id}.`}
+            render={(result) => (
+              <div className="rounded-lg border border-border bg-surface p-4">
+                <dl className="grid gap-3 text-sm sm:grid-cols-[max-content_1fr]">
+                  <dt className="text-muted">Decision record</dt><dd className="break-all font-mono text-xs">{result.record_id}</dd>
+                  <dt className="text-muted">Action digest</dt><dd className="break-all font-mono text-xs">{result.action_hash}</dd>
+                  <dt className="text-muted">Agent</dt><dd>{result.agent_id}</dd>
+                  <dt className="text-muted">Action</dt><dd>{result.action}</dd>
+                  <dt className="text-muted">Subject reference</dt><dd className="break-all font-mono text-xs">{result.subject_ref}</dd>
+                  {result.channel && <><dt className="text-muted">Channel</dt><dd>{result.channel}</dd></>}
+                  {result.waiver_bps !== null && result.waiver_bps !== undefined && <><dt className="text-muted">Waiver</dt><dd>{result.waiver_bps} bps</dd></>}
+                  <dt className="text-muted">Requested fields</dt>
+                  <dd>{result.requested_fields.length ? result.requested_fields.join(", ") : "None"}</dd>
+                  <dt className="text-muted">Parameters</dt>
+                  <dd>
+                    {Object.keys(result.parameters).length ? (
+                      <dl className="grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1">
+                        {Object.entries(result.parameters).map(([name, value]) => (
+                          <div key={name} className="contents"><dt className="text-muted">{name}</dt><dd className="break-all font-mono text-xs">{value}</dd></div>
+                        ))}
+                      </dl>
+                    ) : "None"}
+                  </dd>
+                  <dt className="text-muted">Snapshot expires</dt><dd>{new Date(result.expires_at).toLocaleString()}</dd>
+                </dl>
+              </div>
+            )}
           />
         </>
       )}
@@ -323,6 +414,7 @@ type AgentEvidencePageProps = {
   viewer?: Viewer;
   /** For tests: each lookup's phase, as if it had been submitted. */
   decision?: Lookup<AgentDecisionLookup>;
+  humanReview?: Lookup<HumanReviewSnapshot>;
   revocation?: Lookup<RevocationLookup>;
   /** For tests: the on-demand unknown-outcome review state. */
   review?: Resource<UnknownOutcomeReviewPage>;
@@ -331,6 +423,7 @@ type AgentEvidencePageProps = {
 export default function AgentEvidencePage({
   viewer: given,
   decision,
+  humanReview,
   revocation,
   review,
 }: AgentEvidencePageProps) {
@@ -353,6 +446,7 @@ export default function AgentEvidencePage({
 
       <div className="space-y-6">
         <UnknownOutcomeReview viewer={viewer} initial={review} />
+        <HumanReviewLookup viewer={viewer} initial={humanReview} />
         <DecisionLookup viewer={viewer} initial={decision} />
         <RevocationLookupCard viewer={viewer} initial={revocation} />
       </div>

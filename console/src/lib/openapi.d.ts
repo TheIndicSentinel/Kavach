@@ -755,6 +755,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/human-review/{record_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Reads one encrypted, exact-action HUMAN_REVIEW projection (D17).
+         * @description Requires a live console session, `X-Kavach-Console: 1`, same-origin
+         *     request metadata, and Cedar permission for `approve_human_review`.
+         *     The API loads and verifies the signed record from its configured
+         *     tenant, decrypts only a live snapshot whose action digest and 30-minute
+         *     expiry match that record, and audits the read before returning the
+         *     minimum display projection. The response is never included in general
+         *     evidence APIs and is not cached.
+         */
+        get: operations["readHumanReviewSnapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/step-up/{record_id}": {
         parameters: {
             query?: never;
@@ -2851,6 +2877,51 @@ export interface operations {
         requestBody?: never;
         responses: {
             303: components["responses"]["ConsoleRedirect"];
+        };
+    };
+    readHumanReviewSnapshot: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The console's CSRF header; must be `1`. */
+                "X-Kavach-Console": components["parameters"]["ConsoleHeader"];
+            };
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact-action reviewer projection. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        record_id: string;
+                        action_hash: string;
+                        agent_id: string;
+                        action: string;
+                        subject_ref: string;
+                        channel?: string | null;
+                        /** Format: int64 */
+                        waiver_bps?: number | null;
+                        requested_fields: string[];
+                        parameters: {
+                            [key: string]: string;
+                        };
+                        /** Format: date-time */
+                        expires_at: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            503: components["responses"]["Unavailable"];
         };
     };
     beginHumanReviewStepUp: {

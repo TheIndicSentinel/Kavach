@@ -71,6 +71,7 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `GET /auth/login` | none (public) | Sign-in: the link on `/signin` | done (ADR-018 sign-in) |
 | `GET /auth/callback` | none (public) | none | exempt: the IdP redirects the browser there; the console never requests or links it |
 | `GET /auth/session` | session cookie | `SessionGate`, header, Settings | done (ADR-018 sign-in) |
+| `GET /auth/human-review/{record_id}` | `approve_human_review` | Agent Evidence: manually load the exact-action reviewer projection by decision record id | done (D17 read-only display slice; no list/search or approval action) |
 | `POST /auth/logout` | session cookie | header: Sign out | done (ADR-018 sign-in) |
 
 The credit-track pages keep working and get no new features. On an `--agent-only` server they are left out (#244).
@@ -139,6 +140,11 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - The same loading, empty, error, 401/403 and 404 states on every page, a 404 page, and every page checked at 375px (#254).
 - OIDC authorization code with PKCE in place of the pasted token, per [ADR-018](ADR-018-console-login-and-token-storage.md) option C.
 - The API path check (section 2).
+
+### D17 browser reviewer surface — in progress
+
+- **Done (first UI slice):** Agent Evidence provides a Cedar-role-aware manual lookup by signed decision record id and renders only the projection returned by the audited `GET /auth/human-review/{record_id}` endpoint. It is display-only; no approval or release control is present. No decision-record listing/search endpoint is introduced.
+- **Pending:** expose the mounted step-up initiation as an explicit user action, then implement the separate approval and single-use credential path only when its backend endpoint is complete.
 
 ### ADR-019 step 3: operator role management — done
 

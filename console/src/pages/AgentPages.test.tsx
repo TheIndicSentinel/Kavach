@@ -3,8 +3,9 @@
 // role=alert, labelled controls, and no actions.
 import { describe, expect, it } from "vitest";
 import type { Resource } from "../hooks/useResource";
-import type { AgentDecisionLookup, AgentStateView, RevocationLookup } from "../lib/api";
-import { decisionLookup, neverChanged, revocationLookup, unknownOutcomeReview } from "../test/fixtures";
+import type { AgentDecisionLookup, AgentStateView, HumanReviewSnapshot, RevocationLookup } from "../lib/api";
+import type { Viewer } from "../lib/permissions";
+import { decisionLookup, humanReviewSnapshot, neverChanged, revocationLookup, unknownOutcomeReview } from "../test/fixtures";
 import { byRole, render, renderAt, text } from "../test/markup";
 import {
   badGateway,
@@ -66,11 +67,11 @@ describe("AgentEvidencePage", () => {
   });
 
   it("labels every lookup field and starts with empty status and alert regions", () => {
-    for (const id of ["decision-record-id", "revocation-system", "revocation-event-id"]) {
+    for (const id of ["decision-record-id", "human-review-record-id", "revocation-system", "revocation-event-id"]) {
       expect(html).toContain(`<label for="${id}"`);
     }
-    expect(byRole(html, "status")).toEqual(["", ""]);
-    expect(byRole(html, "alert")).toEqual(["", ""]);
+    expect(byRole(html, "status")).toEqual(["", "", ""]);
+    expect(byRole(html, "alert")).toEqual(["", "", ""]);
   });
 });
 
@@ -174,21 +175,23 @@ describe("AgentDetailPage states", () => {
 describe("AgentEvidencePage states", () => {
   const decision = (lookup: Parameters<typeof AgentEvidencePage>[0]["decision"]) =>
     render(<AgentEvidencePage decision={lookup} />);
+  const humanReview = (lookup: Parameters<typeof AgentEvidencePage>[0]["humanReview"], viewer: Viewer = { principal: null, groups: ["approver"], roles: ["approver"] }) =>
+    render(<AgentEvidencePage viewer={viewer} humanReview={lookup} />);
   const revocation = (lookup: Parameters<typeof AgentEvidencePage>[0]["revocation"]) =>
     render(<AgentEvidencePage revocation={lookup} />);
 
   it("loading: what is being looked up, and a skeleton", () => {
     const html = decision(lookupLoading<AgentDecisionLookup>("Looking up record adr:t:p:1"));
-    expect(byRole(html, "status")).toEqual(["Looking up record adr:t:p:1…", ""]);
+    expect(byRole(html, "status")).toEqual(["", "Looking up record adr:t:p:1…", ""]);
     expect(html).toContain(SKELETON);
     expect(html).toMatch(/aria-disabled="true"[^>]*>Look up record</);
   });
 
   it("found: the record and its id in role=status", () => {
     const html = decision({ phase: "done", what: "x", result: decisionLookup });
-    expect(byRole(html, "status")[0]).toBe(`Found record ${decisionLookup.record.record_id}.`);
+    expect(byRole(html, "status")[1]).toBe(`Found record ${decisionLookup.record.record_id}.`);
     const rev = revocation({ phase: "done", what: "x", result: revocationLookup });
-    expect(byRole(rev, "status")[1]).toBe(
+    expect(byRole(rev, "status")[2]).toBe(
       `Found the revocation for event ${revocationLookup.record.event_id} from ${revocationLookup.record.source_system}.`,
     );
   });
@@ -203,18 +206,45 @@ describe("AgentEvidencePage states", () => {
     expect(byRole(html, "status")).toContain("1 unknown outcome loaded; more are available");
   });
 
+  it("renders only the authorized exact-action projection and states that it does not approve", () => {
+    const html = humanReview({ phase: "done", what: "human review", result: humanReviewSnapshot });
+    expect(text(html)).toContain("subj-pseudo-4");
+    expect(text(html)).toContain("waive_interest");
+    expect(text(html)).toContain("3500 bps");
+    expect(text(html)).toContain("This view does not approve or release it.");
+    expect(html).toContain('id="human-review-record-id"');
+  });
+
+  it("shows the Cedar role hint to a viewer without the approver role", () => {
+    const html = humanReview(undefined, { principal: null, groups: ["viewers"], roles: [] });
+    expect(text(html)).toContain("don't include one that may review HUMAN_REVIEW actions");
+    expect(html).not.toContain('id="human-review-record-id"');
+  });
+
+  it("shows the empty, loading, not-found, and API error states", () => {
+    const idle = render(<AgentEvidencePage viewer={{ principal: null, groups: ["approver"], roles: ["approver"] }} />);
+    expect(idle).toContain('id="human-review-record-id"');
+    expect(byRole(idle, "status")).toContain("");
+    const loadingReview = humanReview(lookupLoading<HumanReviewSnapshot>("Loading human review adr:t:0:1"));
+    expect(byRole(loadingReview, "status")).toContain("Loading human review adr:t:0:1…");
+    const missing = humanReview(lookupFailed<HumanReviewSnapshot>("x", notFound));
+    expect(byRole(missing, "alert")[0]).toContain("No live human-review snapshot");
+    const failedReview = humanReview(lookupFailed<HumanReviewSnapshot>("x", serverError));
+    expect(byRole(failedReview, "alert")[0]).toContain("storage unavailable HTTP 500");
+  });
+
   it("404: says no such record exists, with the server's detail and request_id", () => {
-    expect(byRole(decision(lookupFailed<AgentDecisionLookup>("x", notFound)), "alert")[0]).toBe(
+    expect(byRole(decision(lookupFailed<AgentDecisionLookup>("x", notFound)), "alert")[1]).toBe(
       "No agent decision record with that id on this server. no such record · HTTP 404 · request_id req-404",
     );
-    expect(byRole(revocation(lookupFailed<RevocationLookup>("x", notFound)), "alert")[1]).toBe(
+    expect(byRole(revocation(lookupFailed<RevocationLookup>("x", notFound)), "alert")[2]).toBe(
       "No revocation record for that system and event id on this server. no such record · HTTP 404 · request_id req-404",
     );
   });
 
   it("error, a non-JSON 502, 401 and 403", () => {
     const alert = (error: unknown) =>
-      byRole(decision(lookupFailed<AgentDecisionLookup>("x", error)), "alert")[0];
+      byRole(decision(lookupFailed<AgentDecisionLookup>("x", error)), "alert")[1];
     expect(alert(serverError)).toBe("storage unavailable HTTP 500 · request_id req-500");
     expect(alert(badGateway("/v1/agent-decisions/x"))).toContain("no request_id was returned");
     expect(alert(unauthorized)).toContain("Sign in again");
