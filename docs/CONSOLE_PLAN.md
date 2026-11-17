@@ -146,7 +146,8 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 
 - **Done (first UI slice):** Agent Evidence provides a Cedar-role-aware manual lookup by signed decision record id and renders only the projection returned by the audited `GET /auth/human-review/{record_id}` endpoint. It is display-only; no approval or release control is present. No decision-record listing/search endpoint is introduced.
 - **Done (second UI slice):** An explicit button starts `POST /auth/step-up/{record_id}` for the displayed action and redirects to the server-provided IdP URL. The UI states passkey verification is not approval; the callback retains proof server-side and returns to the console root.
-- **Pending:** implement the separate approval and single-use credential path only when its backend endpoint is complete.
+- **Backend done (D17 approval creation):** `POST /auth/human-review/{record_id}/approval` requires an explicit decision, Cedar permission, a live console session, and a one-use exact-action step-up proof; it audits before storing a short-lived approval and returns the opaque `approval_id`.
+- **Pending:** wire approval consumption to agent authorization, then add the console decision controls and handoff only after that path is complete and tested.
 
 ### ADR-019 step 3: operator role management — done
 

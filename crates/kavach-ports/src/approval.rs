@@ -1,9 +1,9 @@
 //! Human-review approval record contract (PRD D17 / FR-6).
 //!
 //! This defines the record shape, structural checks, and durable-store port.
-//! Storage adapters enforce one-time consumption. The approval service that
-//! authenticates reviewers, verifies step-up, and wires consumption to
-//! authorization and credential issuance is still pending.
+//! Storage adapters enforce one-time consumption. The API creates records
+//! after authenticated exact-action step-up; authorization consumption and
+//! credential issuance wiring remain pending.
 
 use std::future::Future;
 

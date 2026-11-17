@@ -11,7 +11,10 @@ use chrono::{DateTime, Duration, Utc};
 use kavach_auth::KavachAction;
 use kavach_dataplane::{EncryptedReviewSnapshot, ReviewActionSnapshot};
 use kavach_ports::agent_evidence::{check_record_signature, AgentDecisionRecord};
-use kavach_ports::{EncryptedReviewSnapshot as StoredReviewSnapshot, ReviewSnapshotStore};
+use kavach_ports::{
+    EncryptedReviewSnapshot as StoredReviewSnapshot, ReviewApprovalRecord, ReviewApprovalStore,
+    ReviewDecision, ReviewSnapshotStore, VerifiedStepUp,
+};
 use kavach_storage::AuditInsert;
 use serde::Serialize;
 use serde_json::json;
@@ -23,6 +26,7 @@ use crate::state::AppState;
 
 const READS_PER_SECOND: f64 = 5.0;
 const BURST: f64 = 20.0;
+const APPROVAL_TTL_SECONDS: i64 = 300;
 
 struct Bucket {
     tokens: f64,
@@ -191,6 +195,146 @@ pub async fn read(
         Ok(view) => Json(view).into_response(),
         Err(error) => error.into_response(),
     }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApprovalDecisionBody {
+    pub decision: ReviewDecision,
+}
+
+#[derive(Serialize)]
+pub struct ApprovalCreated {
+    pub approval_id: String,
+    pub decision: ReviewDecision,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// `POST /auth/human-review/{record_id}/approval`: records one explicit
+/// decision after reloading the signed action and consuming its session proof.
+pub async fn approve(
+    State(state): State<std::sync::Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Path(record_id): Path<String>,
+    credentials: Credentials,
+    body: Result<Json<ApprovalDecisionBody>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    match approve_inner(&state, &headers, &record_id, &credentials, body).await {
+        Ok(created) => Json(created).into_response(),
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn approve_inner(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    record_id: &str,
+    credentials: &Credentials,
+    body: Result<Json<ApprovalDecisionBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<ApprovalCreated, ApiError> {
+    let login = state.console_login().ok_or_else(|| {
+        ApiError::Unavailable("console reviewer session is not configured".into())
+    })?;
+    // The router's cookie_step middleware checks the console marker and
+    // same-origin headers before it injects the session bearer token.
+    let session_cookie =
+        cookie(headers, crate::console_login::SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
+    let principal = login
+        .step_up_principal_key(session_cookie)
+        .map_err(|_| ApiError::Unauthorized)?;
+    let authorization =
+        authorize_credentials(state, credentials, KavachAction::ApproveHumanReview).await?;
+    let Json(ApprovalDecisionBody { decision }) =
+        body.map_err(|_| ApiError::BadRequest("malformed human-review decision".into()))?;
+
+    // Reload and re-verify the signed record and encrypted snapshot at the
+    // decision boundary. This also enforces the current Cedar permission.
+    let view = read_inner(state, headers, record_id, credentials).await?;
+    let now = Utc::now();
+    let proof = login
+        .take_verified_step_up(session_cookie, &view.action_hash)
+        .map_err(|_| ApiError::Conflict("fresh exact-action step-up is required".into()))?;
+    let approval =
+        build_approval_record(&view, state.tenant_id(), &principal, proof, decision, now)?;
+    let created = ApprovalCreated {
+        approval_id: approval.approval_id.clone(),
+        decision,
+        expires_at: approval.expires,
+    };
+
+    // Audit before inserting an actionable record; an audit outage fails
+    // closed and cannot leave an approval that downstream callers can use.
+    state
+        .admin()
+        .append_audit(AuditInsert {
+            acting_as_superadmin: authorization.acting_as_superadmin,
+            action: "create_human_review_approval".into(),
+            resource_type: "human_review_approval".into(),
+            resource_id: approval.approval_id.clone(),
+            actor_principal: principal.clone(),
+            approver_principal: principal,
+            payload: json!({
+                "decision": match decision {
+                    ReviewDecision::Approve => "approve",
+                    ReviewDecision::Reject => "reject",
+                },
+                "record_id": record_id,
+                "action_hash": approval.action_hash,
+            }),
+        })
+        .await
+        .map_err(|_| ApiError::Unavailable("human-review decision could not be audited".into()))?;
+    state
+        .review_approval_store()
+        .insert(approval)
+        .await
+        .map_err(|_| ApiError::Unavailable("human-review approval store is unavailable".into()))?;
+    Ok(created)
+}
+
+fn build_approval_record(
+    view: &HumanReviewSnapshotView,
+    expected_tenant: &str,
+    principal: &str,
+    proof: VerifiedStepUp,
+    decision: ReviewDecision,
+    now: DateTime<Utc>,
+) -> Result<ReviewApprovalRecord, ApiError> {
+    if proof.tenant_id != expected_tenant
+        || proof.principal_key != principal
+        || proof.action_hash != view.action_hash
+        || proof.verified_at > now
+    {
+        return Err(ApiError::Conflict(
+            "step-up proof does not match this review".into(),
+        ));
+    }
+    let proof_expiry = proof
+        .verified_at
+        .checked_add_signed(Duration::seconds(APPROVAL_TTL_SECONDS))
+        .ok_or_else(|| ApiError::Conflict("step-up proof has expired".into()))?;
+    let expires = view.expires_at.min(proof_expiry);
+    if expires <= now {
+        return Err(ApiError::Conflict("step-up proof has expired".into()));
+    }
+    let rendered_action = serde_json::to_string(view)
+        .map_err(|_| ApiError::Internal("review action rendering failed".into()))?;
+    let approval = ReviewApprovalRecord {
+        tenant_id: proof.tenant_id,
+        approval_id: uuid::Uuid::new_v4().to_string(),
+        action_hash: view.action_hash.clone(),
+        rendered_action,
+        approver: principal.to_owned(),
+        step_up_ref: proof.step_up_ref,
+        decision,
+        single_use_credential_id: (decision == ReviewDecision::Approve)
+            .then(|| uuid::Uuid::new_v4().to_string()),
+        expires,
+    };
+    approval
+        .validate()
+        .map_err(|_| ApiError::Internal("human-review approval was invalid".into()))?;
+    Ok(approval)
 }
 
 async fn read_inner(
@@ -455,5 +599,64 @@ mod tests {
         assert!(
             open_snapshot(&key, &bad_signature, &stored, "tenant-1", now, &keys, false,).is_err()
         );
+    }
+
+    #[test]
+    fn approval_record_requires_exact_live_step_up_and_is_short_lived() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
+        let view = HumanReviewSnapshotView {
+            record_id: "adr:tenant-1:0:1".into(),
+            action_hash: format!("sha256-action-v1:{}", "a".repeat(64)),
+            agent_id: "agent-1".into(),
+            action: "propose_plan".into(),
+            subject_ref: "ref:borrower:B-1".into(),
+            channel: None,
+            waiver_bps: Some(3500),
+            requested_fields: Default::default(),
+            parameters: Default::default(),
+            expires_at: now + Duration::minutes(30),
+        };
+        let proof = VerifiedStepUp {
+            tenant_id: "tenant-1".into(),
+            principal_key: "oidc:https://idp.example#reviewer".into(),
+            action_hash: view.action_hash.clone(),
+            step_up_ref: "webauthn:opaque-ref".into(),
+            verified_at: now - Duration::seconds(1),
+        };
+        let approval = build_approval_record(
+            &view,
+            "tenant-1",
+            &proof.principal_key,
+            proof.clone(),
+            ReviewDecision::Approve,
+            now,
+        )
+        .expect("bound approval");
+        assert_eq!(approval.action_hash, view.action_hash);
+        assert_eq!(approval.tenant_id, "tenant-1");
+        assert!(approval.single_use_credential_id.is_some());
+        assert!(approval.expires <= now + Duration::seconds(APPROVAL_TTL_SECONDS));
+        assert!(approval.rendered_action.contains("propose_plan"));
+
+        assert!(build_approval_record(
+            &view,
+            "tenant-other",
+            &proof.principal_key,
+            proof.clone(),
+            ReviewDecision::Approve,
+            now,
+        )
+        .is_err());
+        let mut mismatched = proof;
+        mismatched.action_hash = format!("sha256-action-v1:{}", "b".repeat(64));
+        assert!(build_approval_record(
+            &view,
+            "tenant-1",
+            "oidc:https://idp.example#reviewer",
+            mismatched,
+            ReviewDecision::Approve,
+            now,
+        )
+        .is_err());
     }
 }
