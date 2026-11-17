@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **M4 D17 Keycloak callback verifier.** Added bounded authorization-code exchange with sensitive client authentication and PKCE S256, exact session/reviewer/tenant/action binding, signed ID-token checks, and atomic challenge consumption only after successful verification. The service is not mounted on a callback route; browser session custody and PAR/request-object protection remain pending.
 - **M4 D17 Keycloak challenge initiation.** Added a step-up authorization request builder that persists state/nonce digests and action/reviewer context before redirect, requests the configured ACR as essential, sets `max_age=0`, and uses PKCE S256. Callback session custody, code exchange and token verification wiring remain pending; the builder is not mounted on an API route.
 - **M4 D17 durable step-up challenge state.** Added memory and PostgreSQL stores for nonce/state digests and the tenant, reviewer and action binding. Callback state lookup is expiry-scoped, consumption is atomic and one-use, and only expired rows can be purged. The stores are not yet connected to a Keycloak callback or approval route.
 - **M4 D17 OIDC step-up claim verifier.** Added strict validation for a signed step-up ID token: issuer, audience, nonce, expected reviewer subject and ACR, and `auth_time`/`iat` at or after the challenge. This verifies claims only; Keycloak challenge initiation/configuration, approval API and authorization wiring remain pending.

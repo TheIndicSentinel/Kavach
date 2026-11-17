@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::future::{ready, Future};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
 use kavach_ports::{PortError, StepUpChallengeState, StepUpChallengeStore};
@@ -15,9 +15,9 @@ struct StoredChallenge {
     consumed: bool,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MemoryStepUpChallengeStore {
-    rows: Mutex<HashMap<String, StoredChallenge>>,
+    rows: Arc<Mutex<HashMap<String, StoredChallenge>>>,
 }
 
 impl StepUpChallengeStore for MemoryStepUpChallengeStore {
