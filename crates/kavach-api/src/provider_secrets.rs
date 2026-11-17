@@ -106,14 +106,14 @@ mod tests {
         let root = scratch();
         std::fs::create_dir(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = root.join("twilio-sandbox");
+        let path = root.join("provider-token");
         std::fs::write(&path, "secret-value\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
 
         let store = FileProviderSecretStore::new(root.clone());
-        let secret = store.read("twilio-sandbox").await.unwrap();
+        let secret = store.read("provider-token").await.unwrap();
         assert_eq!(secret.expose(), "secret-value");
-        assert!(store.read("../twilio-sandbox").await.is_err());
+        assert!(store.read("../provider-token").await.is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -122,12 +122,12 @@ mod tests {
         let root = scratch();
         std::fs::create_dir(&root).unwrap();
         std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let path = root.join("twilio-sandbox");
+        let path = root.join("provider-token");
         std::fs::write(&path, "secret-value").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
         let store = FileProviderSecretStore::new(root.clone());
-        assert!(store.read("twilio-sandbox").await.is_err());
+        assert!(store.read("provider-token").await.is_err());
         std::fs::remove_dir_all(root).unwrap();
     }
 }
