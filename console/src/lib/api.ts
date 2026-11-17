@@ -343,6 +343,9 @@ export type AgentDecisionLookup = Ok<"getAgentDecision">;
 /** Exact-action fields for an authorized HUMAN_REVIEW decision (D17). */
 export type HumanReviewSnapshot = Ok<"readHumanReviewSnapshot">;
 
+/** The IdP redirect returned for a session-bound D17 step-up challenge. */
+export type HumanReviewStepUp = Ok<"beginHumanReviewStepUp">;
+
 /** One page of unknown outcomes and ADR-017 history. */
 export type UnknownOutcomeReviewPage = Ok<"listUnknownOutcomes">;
 export type UnknownOutcomeReviewQuery = NonNullable<operations["listUnknownOutcomes"]["parameters"]["query"]>;
@@ -376,6 +379,11 @@ export function fetchAgentDecision(recordId: string): Promise<AgentDecisionLooku
 /** Audited by the API; returns only the encrypted snapshot's display projection. */
 export function fetchHumanReviewSnapshot(recordId: string): Promise<HumanReviewSnapshot> {
   return request(`/auth/human-review/${encodeURIComponent(recordId)}`);
+}
+
+/** Starts exact-action step-up; the server binds it to the live session and record. */
+export function beginHumanReviewStepUp(recordId: string): Promise<HumanReviewStepUp> {
+  return request(`/auth/step-up/${encodeURIComponent(recordId)}`, { method: "POST" });
 }
 
 export function unknownOutcomeReviewsPath(query: UnknownOutcomeReviewQuery = {}): string {

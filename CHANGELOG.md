@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **M4 D17 reviewer step-up (console).** The loaded exact-action review now offers explicit passkey step-up initiation and redirects to the IdP URL returned by the API. The UI states that step-up alone does not approve or release the action.
 - **M4 D17 reviewer display (console).** Agent Evidence now provides a role-aware manual lookup and read-only rendering of the audited exact-action projection; it introduces no decision-record listing or approval control.
 - **M4 D17 expired snapshot cleanup.** The API purges expired encrypted review snapshots at startup and every 60 seconds; deletion remains expiry-gated by the store and cleanup stops with the existing server shutdown signal. Cleanup errors are logged and retried at the next interval.
 - **M4 D17 reviewer read endpoint.** Added authenticated `GET /auth/human-review/{record_id}` for the `approver` permission and live console session. It verifies the tenant-scoped evidence signature, exact action digest and 30-minute expiry, returns only reviewer display fields, and audits before returning; general evidence routes remain unchanged.

@@ -212,6 +212,8 @@ describe("AgentEvidencePage states", () => {
     expect(text(html)).toContain("waive_interest");
     expect(text(html)).toContain("3500 bps");
     expect(text(html)).toContain("This view does not approve or release it.");
+    expect(text(html)).toContain("Continue to passkey verification");
+    expect(text(html)).toContain("Completing it does not approve or release the action.");
     expect(html).toContain('id="human-review-record-id"');
   });
 

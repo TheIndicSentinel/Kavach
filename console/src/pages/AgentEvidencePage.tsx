@@ -16,6 +16,7 @@ import { useLookup, type Lookup } from "../hooks/useLookup";
 import { LOOKUP_MAX_LENGTH, idProblem, recordIdProblem } from "../lib/agents";
 import {
   fetchAgentDecision,
+  beginHumanReviewStepUp,
   fetchHumanReviewSnapshot,
   fetchRevocationRecord,
   fetchUnknownOutcomeReviews,
@@ -121,8 +122,23 @@ function HumanReviewLookup({
   const input = useRef<HTMLInputElement>(null);
   const [recordId, setRecordId] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
+  const [stepUpError, setStepUpError] = useState<unknown>(null);
+  const [startingStepUp, setStartingStepUp] = useState(false);
   const { lookup, run } = useLookup<HumanReviewSnapshot>(initial);
   const hint = roleHint(viewer, "approve_human_review", "review HUMAN_REVIEW actions");
+
+  async function startStepUp(recordId: string) {
+    if (startingStepUp) return;
+    setStartingStepUp(true);
+    setStepUpError(null);
+    try {
+      const started = await beginHumanReviewStepUp(recordId);
+      window.location.assign(started.authorization_url);
+    } catch (error) {
+      setStepUpError(error);
+      setStartingStepUp(false);
+    }
+  }
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -191,6 +207,23 @@ function HumanReviewLookup({
                   </dd>
                   <dt className="text-muted">Snapshot expires</dt><dd>{new Date(result.expires_at).toLocaleString()}</dd>
                 </dl>
+                <div className="mt-5 border-t border-border pt-4">
+                  <p className="mb-3 text-sm text-muted">
+                    Passkey verification is bound to this exact action. Completing it does not approve or release the action.
+                  </p>
+                  <Button
+                    variant="secondary"
+                    aria-disabled={startingStepUp}
+                    className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+                    onClick={() => void startStepUp(result.record_id)}
+                  >
+                    {startingStepUp ? "Starting passkey verification…" : "Continue to passkey verification"}
+                  </Button>
+                  <p role="status" aria-live="polite" className="mt-2 text-sm text-muted">
+                    {startingStepUp ? "Starting the identity-provider step-up flow…" : ""}
+                  </p>
+                  <ProblemAlert error={stepUpError} className="mt-3" />
+                </div>
               </div>
             )}
           />

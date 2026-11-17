@@ -72,6 +72,7 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `GET /auth/callback` | none (public) | none | exempt: the IdP redirects the browser there; the console never requests or links it |
 | `GET /auth/session` | session cookie | `SessionGate`, header, Settings | done (ADR-018 sign-in) |
 | `GET /auth/human-review/{record_id}` | `approve_human_review` | Agent Evidence: manually load the exact-action reviewer projection by decision record id | done (D17 read-only display slice; no list/search or approval action) |
+| `POST /auth/step-up/{record_id}` | `approve_human_review` | Agent Evidence: explicitly start exact-action IdP passkey verification from the loaded review | done (D17 step-up initiation UI; callback keeps proof server-side; no approval action) |
 | `POST /auth/logout` | session cookie | header: Sign out | done (ADR-018 sign-in) |
 
 The credit-track pages keep working and get no new features. On an `--agent-only` server they are left out (#244).
@@ -144,7 +145,8 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 ### D17 browser reviewer surface — in progress
 
 - **Done (first UI slice):** Agent Evidence provides a Cedar-role-aware manual lookup by signed decision record id and renders only the projection returned by the audited `GET /auth/human-review/{record_id}` endpoint. It is display-only; no approval or release control is present. No decision-record listing/search endpoint is introduced.
-- **Pending:** expose the mounted step-up initiation as an explicit user action, then implement the separate approval and single-use credential path only when its backend endpoint is complete.
+- **Done (second UI slice):** An explicit button starts `POST /auth/step-up/{record_id}` for the displayed action and redirects to the server-provided IdP URL. The UI states passkey verification is not approval; the callback retains proof server-side and returns to the console root.
+- **Pending:** implement the separate approval and single-use credential path only when its backend endpoint is complete.
 
 ### ADR-019 step 3: operator role management — done
 
