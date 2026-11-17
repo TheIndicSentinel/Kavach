@@ -15,7 +15,7 @@ pub mod tools;
 pub mod whatif;
 
 pub use agent_state_evidence::{reconcile_agent_states, StateReconcileReport};
-pub use approval::review_action_hash;
+pub use approval::{review_action_hash, EncryptedReviewSnapshot, ReviewActionSnapshot};
 pub use authorize::{
     policy_versions, validate_request_id, AgentIdentity, AppliedStateChange, AuthorizeConfig,
     AuthorizeCore, CommitStatus, CredentialGrant, Decided, MandateVerifier, Mode, ToolCall,

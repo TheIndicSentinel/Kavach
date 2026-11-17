@@ -2317,6 +2317,7 @@ dependencies = [
  "kavach-storage",
  "proptest",
  "regex",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml",
