@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::PortError;
 
+/// A one-time proof used to complete a step-up ceremony. It is a secret and
+/// must never be logged or returned to an agent.
+pub type StepUpProof = crate::TokenSecret;
+
 /// The reviewer's explicit decision for one rendered action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +41,79 @@ impl ReviewDecision {
             _ => None,
         }
     }
+}
+
+/// Server-side context for a fresh reviewer step-up challenge.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepUpRequest {
+    pub tenant_id: String,
+    /// Source-qualified identity from the authenticated operator principal.
+    pub principal_key: String,
+    pub action_hash: String,
+    pub issued_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl StepUpRequest {
+    pub fn validate(&self, now: DateTime<Utc>) -> Result<(), PortError> {
+        if self.tenant_id.is_empty() || self.principal_key.is_empty() {
+            return Err(PortError::invalid(
+                "step-up tenant and principal must not be empty",
+            ));
+        }
+        if !is_action_hash(&self.action_hash) {
+            return Err(PortError::invalid(
+                "step-up action_hash must be a version 1 SHA-256 action digest",
+            ));
+        }
+        if self.issued_at > now || self.expires_at <= now || self.expires_at <= self.issued_at {
+            return Err(PortError::rejected(
+                "step-up challenge is not within its live time window",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Information needed to continue the provider's challenge flow.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StepUpChallenge {
+    pub challenge_id: String,
+    pub authorization_url: String,
+    pub expires_at: DateTime<Utc>,
+}
+
+/// Provider-verified, action-bound step-up result.
+///
+/// Only the configured provider implementation may produce this result in a
+/// live service. The record is intentionally not serializable.
+#[derive(Clone, PartialEq, Eq)]
+pub struct VerifiedStepUp {
+    pub tenant_id: String,
+    pub principal_key: String,
+    pub action_hash: String,
+    /// Opaque provider reference; never the proof or an assertion token.
+    pub step_up_ref: String,
+    pub verified_at: DateTime<Utc>,
+}
+
+/// Begins and verifies a fresh step-up ceremony (PRD D17).
+///
+/// The production adapter must verify the provider's WebAuthn/passkey result
+/// and bind it to the challenge context. Normal OIDC authentication alone
+/// does not satisfy this port.
+pub trait StepUpProvider: Send + Sync {
+    fn begin(
+        &self,
+        request: StepUpRequest,
+    ) -> impl Future<Output = Result<StepUpChallenge, PortError>> + Send;
+
+    fn verify(
+        &self,
+        challenge_id: &str,
+        proof: StepUpProof,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<VerifiedStepUp, PortError>> + Send;
 }
 
 /// One human decision tied to one action digest.
@@ -73,12 +150,7 @@ impl ReviewApprovalRecord {
                 "human-review approval fields must not be empty",
             ));
         }
-        if !self.action_hash.starts_with("sha256-action-v1:")
-            || self.action_hash.len() != "sha256-action-v1:".len() + 64
-            || !self.action_hash["sha256-action-v1:".len()..]
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
+        if !is_action_hash(&self.action_hash) {
             return Err(PortError::invalid(
                 "action_hash must be a version 1 SHA-256 action digest",
             ));
@@ -118,6 +190,15 @@ impl ReviewApprovalRecord {
         }
         Ok(())
     }
+}
+
+fn is_action_hash(value: &str) -> bool {
+    const PREFIX: &str = "sha256-action-v1:";
+    value.starts_with(PREFIX)
+        && value.len() == PREFIX.len() + 64
+        && value[PREFIX.len()..]
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 /// Durable storage for completed human-review decisions (PRD FR-6).
