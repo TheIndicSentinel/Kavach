@@ -37,6 +37,7 @@ pub struct KeycloakStepUpConfig {
 /// custody. Do not serialize or log this value.
 pub struct KeycloakStepUpStart {
     challenge: StepUpChallenge,
+    principal_key: String,
     state: TokenSecret,
     nonce: TokenSecret,
     pkce_verifier: TokenSecret,
@@ -46,6 +47,11 @@ impl KeycloakStepUpStart {
     #[must_use]
     pub fn challenge(&self) -> &StepUpChallenge {
         &self.challenge
+    }
+
+    #[must_use]
+    pub fn principal_key(&self) -> &str {
+        &self.principal_key
     }
 
     /// Transfers the challenge and callback secrets to the caller. The
@@ -428,7 +434,7 @@ impl<S: StepUpChallengeStore> KeycloakStepUpInitiator<S> {
             state_hash,
             nonce_hash,
             tenant_id: request.tenant_id,
-            principal_key: request.principal_key,
+            principal_key: request.principal_key.clone(),
             action_hash: request.action_hash,
             issued_at: request.issued_at,
             expires_at: request.expires_at,
@@ -442,6 +448,7 @@ impl<S: StepUpChallengeStore> KeycloakStepUpInitiator<S> {
         };
         Ok(KeycloakStepUpStart {
             challenge,
+            principal_key: request.principal_key,
             state,
             nonce,
             pkce_verifier,
