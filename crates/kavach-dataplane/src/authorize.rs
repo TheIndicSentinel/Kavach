@@ -974,6 +974,22 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
                     .and_then(|m| m.window)
                     .map_or(0, |w| u32::from(w.max_per_day)),
             });
+        // Keep only the action digest on the signed review decision. The
+        // canonical parameters are transient and zeroized by this helper.
+        let (decision, reasons, review_action_hash) = if decision == Decision::HumanReview {
+            match self.versions.tools.as_deref().and_then(|registry_digest| {
+                crate::review_action_hash(&self.config.tenant_id, agent, registry_digest, call).ok()
+            }) {
+                Some(action_hash) => (decision, reasons, Some(action_hash)),
+                None => (
+                    Decision::Block,
+                    vec!["review_action_binding_unavailable".to_string()],
+                    None,
+                ),
+            }
+        } else {
+            (decision, reasons, None)
+        };
         let draft = AgentDecisionPayload {
             record_id: String::new(),
             tenant_id: self.config.tenant_id.clone(),
@@ -997,6 +1013,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             request_id: call.request_id.clone(),
             subject_pseudonym: assessment.pseudonym.clone(),
             params_mac: assessment.params_mac.clone(),
+            review_action_hash,
             policy_versions: self.versions.clone(),
             signals: reasons,
             pre_commit_decision: decision,

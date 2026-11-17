@@ -470,6 +470,16 @@ async fn plans_need_a_waiver_and_large_waivers_need_review() {
         .unwrap();
     assert_eq!(d.decision, Decision::HumanReview);
     assert!(d.record.is_some(), "the review decision is recorded");
+    assert!(
+        d.record
+            .as_ref()
+            .unwrap()
+            .payload
+            .review_action_hash
+            .as_deref()
+            .is_some_and(|digest| digest.starts_with("sha256-action-v1:")),
+        "the signed review decision carries its exact action digest"
+    );
     assert!(d.grant.is_none(), "review is not an allow");
     let d = w
         .core
