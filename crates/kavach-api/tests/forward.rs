@@ -13,8 +13,8 @@ use axum::response::IntoResponse;
 use axum::routing::{any, post};
 use axum::Router;
 use kavach_api::forward::{messages_url, HttpForwarder};
-use kavach_dataplane::{ForwardResult, Forwarder, ProviderStatus, StatusAsker};
-use kavach_ports::TokenSecret;
+use kavach_dataplane::{ForwardRequest, ForwardResult, Forwarder, ProviderStatus, StatusAsker};
+use kavach_ports::{Destination, TokenSecret};
 
 /// A loopback server; returns its base URL.
 async fn serve(app: Router) -> String {
@@ -128,7 +128,7 @@ async fn ambient_proxies_are_ignored() {
 }
 
 #[tokio::test]
-async fn the_credential_is_sent_once_in_the_kavach_scheme_and_bodies_are_bounded() {
+async fn adapter_context_keeps_the_credential_accepting_wire_contract() {
     let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
     let record = Arc::clone(&seen);
     let provider = serve(Router::new().route(
@@ -151,8 +151,19 @@ async fn the_credential_is_sent_once_in_the_kavach_scheme_and_bodies_are_bounded
         }),
     ))
     .await;
+    let destination = Destination::new("+919876543210");
+    let token = credential();
     let result = forwarder(&provider, 1000)
-        .forward("mock-messaging", &credential())
+        .forward_request(
+            "mock-messaging",
+            &ForwardRequest {
+                credential_id: "record-1",
+                destination: &destination,
+                channel: "whatsapp",
+                template_id: "reminder-v1",
+                credential: &token,
+            },
+        )
         .await;
     assert_eq!(
         result,
@@ -164,7 +175,7 @@ async fn the_credential_is_sent_once_in_the_kavach_scheme_and_bodies_are_bounded
     assert_eq!(
         *seen.lock().unwrap(),
         vec![(Some("Kavach-Credential a.b.c.d.e".to_string()), 0)],
-        "one request, no body"
+        "the default adapter sends one credential-authenticated request, with no body or resolved destination/template fields"
     );
 
     // An oversized response keeps its status and drops the body.
