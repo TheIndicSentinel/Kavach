@@ -845,6 +845,9 @@ pub struct Dataplane {
     resolver: FixtureResolver,
     forwarder: Arc<crate::forward::HttpForwarder>,
     keys: KeySources,
+    /// Trusted public key for the configured evidence signer, used to verify
+    /// D17 review records before initiating a step-up ceremony.
+    review_evidence_keys: std::collections::BTreeMap<String, PublicKey>,
     /// Gateway calls that have started and not finished (an orderly stop
     /// waits for them).
     in_flight: Arc<crate::shutdown::InFlight>,
@@ -909,6 +912,13 @@ impl Dataplane {
             &config.evidence_keys_dir,
             &config.evidence_key_id,
         )?;
+        let review_evidence_key = sources
+            .public_key(
+                HsmRole::Evidence,
+                &config.evidence_keys_dir,
+                &config.evidence_key_id,
+            )
+            .await?;
         let resolver = FixtureResolver::from_file(&config.references)
             .map_err(|e| format!("references: {}", e.message))?;
         let forwarder = build_forwarder(config, &tools)?;
@@ -958,6 +968,10 @@ impl Dataplane {
             resolver,
             forwarder: Arc::new(forwarder),
             keys: sources,
+            review_evidence_keys: std::collections::BTreeMap::from([(
+                review_evidence_key.kid.clone(),
+                review_evidence_key,
+            )]),
             in_flight: crate::shutdown::InFlight::new(),
             agent_only: config.agent_only,
         })
@@ -1036,6 +1050,13 @@ impl Dataplane {
         record_id: &str,
     ) -> Result<Option<AgentDecisionRecord>, PortError> {
         tenant_scoped_human_review_record(self.core.store().as_ref(), &self.tenant, record_id).await
+    }
+
+    /// Trusted public key(s) currently configured for review evidence.
+    /// Records using an older key id fail closed until a trusted rotation set
+    /// is configured for this dataplane.
+    pub fn review_evidence_keys(&self) -> &std::collections::BTreeMap<String, PublicKey> {
+        &self.review_evidence_keys
     }
 
     /// The agent ids this configuration has a passport for in its own

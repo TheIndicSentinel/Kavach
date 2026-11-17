@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 
-use axum::extract::{Query, Request, State};
+use axum::extract::{Path as AxumPath, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -39,18 +39,24 @@ use axum::Json;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
-use kavach_ports::{StepUpChallenge, TokenSecret};
+use kavach_auth::KavachAction;
+use kavach_ports::{ErrorClass, PortError, StepUpChallenge, StepUpChallengeStore, TokenSecret};
 use reqwest::Url;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::auth::{authorize_credentials, Credentials};
 use crate::config::ApiConfig;
+use crate::error::ApiError;
 use crate::oidc::{OidcError, OidcVerifier};
 use crate::problem::Problem;
 use crate::state::AppState;
-use crate::step_up::KeycloakStepUpStart;
+use crate::step_up::{
+    request_for_human_review, KeycloakStepUpConfig, KeycloakStepUpInitiator, KeycloakStepUpStart,
+    STEP_UP_CALLBACK_PATH,
+};
 
 /// The login cookie: binds the callback to the browser that started it.
 pub const LOGIN_COOKIE: &str = "__Host-kavach_login";
@@ -639,6 +645,29 @@ impl ConsoleLogin {
     #[must_use]
     pub fn step_up_acr(&self) -> Option<&str> {
         self.step_up_acr.as_deref()
+    }
+
+    /// Builds the Keycloak D17 initiator from this confidential client's
+    /// already-validated endpoints and redirect origin.
+    pub fn step_up_initiator<S: StepUpChallengeStore>(
+        &self,
+        store: S,
+        allow_http_loopback: bool,
+    ) -> Result<KeycloakStepUpInitiator<S>, PortError> {
+        let expected_acr = self
+            .step_up_acr
+            .as_ref()
+            .ok_or_else(|| PortError::rejected("D17 step-up ACR is not configured"))?;
+        KeycloakStepUpInitiator::new(
+            KeycloakStepUpConfig {
+                authorization_endpoint: self.endpoints.authorization.clone(),
+                client_id: self.client_id.clone(),
+                redirect_uri: format!("{}{STEP_UP_CALLBACK_PATH}", self.origin),
+                expected_acr: expected_acr.clone(),
+                allow_http_loopback,
+            },
+            store,
+        )
     }
 
     /// Live sessions (tests and the session-table bound).
@@ -1512,11 +1541,135 @@ async fn logout_response(state: &AppState, headers: &HeaderMap) -> Response {
     }
 }
 
+/// `POST /auth/step-up/{record_id}`: start an action-bound WebAuthn step-up
+/// from a live console session and a signed, tenant-scoped HUMAN_REVIEW row.
+/// The browser receives only the IdP URL and a one-time opaque callback
+/// cookie; challenge state and callback secrets remain server-side.
+pub async fn begin_step_up(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(record_id): AxumPath<String>,
+    credentials: Credentials,
+) -> Response {
+    match begin_step_up_inner(&state, &headers, &record_id, &credentials).await {
+        Ok((authorization_url, expires_at, callback_cookie)) => {
+            let mut response = Json(json!({
+                "authorization_url": authorization_url,
+                "expires_at": expires_at,
+            }))
+            .into_response();
+            let cookie = TokenSecret::new(format!(
+                "{STEP_UP_COOKIE}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={MAX_STEP_UP_TTL_SECONDS}",
+                callback_cookie.expose()
+            ));
+            append_cookie(&mut response, cookie.expose());
+            response
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn begin_step_up_inner(
+    state: &AppState,
+    headers: &HeaderMap,
+    record_id: &str,
+    credentials: &Credentials,
+) -> Result<(String, DateTime<Utc>, TokenSecret), ApiError> {
+    let login = state
+        .console_login()
+        .ok_or_else(|| ApiError::Unavailable("console step-up is not configured".into()))?;
+    if login.step_up_acr().is_none() || state.access_control().is_none() {
+        return Err(ApiError::Unavailable(
+            "console step-up is not configured".into(),
+        ));
+    }
+    let session_cookie = cookie(headers, SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
+    let principal_key = login
+        .step_up_principal_key(session_cookie)
+        .map_err(|_| ApiError::Unauthorized)?;
+    authorize_credentials(state, credentials, KavachAction::ApproveHumanReview).await?;
+    if !login.admit() {
+        return Err(ApiError::Unavailable(
+            "step-up initiation is temporarily unavailable".into(),
+        ));
+    }
+    if !crate::evidence_read::valid_record_id(record_id) {
+        return Err(ApiError::BadRequest("invalid review record id".into()));
+    }
+
+    let dataplane = state
+        .dataplane()
+        .ok_or_else(|| ApiError::Unavailable("agent evidence is not configured".into()))?;
+    let record = dataplane
+        .human_review_record(record_id)
+        .await
+        .map_err(|_| ApiError::Unavailable("review evidence is unavailable".into()))?
+        .ok_or_else(|| ApiError::NotFound("no eligible HUMAN_REVIEW record".into()))?;
+    if record.payload.tenant_id != state.tenant_id() {
+        return Err(ApiError::NotFound("no eligible HUMAN_REVIEW record".into()));
+    }
+
+    let now = Utc::now();
+    let expires_at = now + Duration::seconds(MAX_STEP_UP_TTL_SECONDS);
+    let request = request_for_human_review(
+        &record,
+        dataplane.review_evidence_keys(),
+        state.insecure_dev(),
+        state.tenant_id(),
+        &principal_key,
+        now,
+        expires_at,
+    )
+    .map_err(|_| ApiError::NotFound("no eligible HUMAN_REVIEW record".into()))?;
+
+    let store = state.step_up_challenges().clone();
+    store
+        .purge_expired(now)
+        .await
+        .map_err(|_| ApiError::Unavailable("step-up challenge store is unavailable".into()))?;
+    let initiator = login
+        .step_up_initiator(store, state.insecure_dev())
+        .map_err(|_| ApiError::Unavailable("step-up provider is not configured".into()))?;
+    let started = initiator
+        .begin(request, now)
+        .await
+        .map_err(|error| match error.class {
+            ErrorClass::Unavailable => {
+                ApiError::Unavailable("step-up challenge could not be created".into())
+            }
+            ErrorClass::Rejected => {
+                ApiError::Conflict("a step-up challenge is already active".into())
+            }
+            ErrorClass::Invalid => ApiError::BadRequest("invalid step-up challenge".into()),
+        })?;
+    let bound = login
+        .bind_step_up_start(session_cookie, started)
+        .map_err(|error| match error {
+            StepUpSessionError::ChallengePending => {
+                ApiError::Conflict("a step-up challenge is already active".into())
+            }
+            StepUpSessionError::NoSession
+            | StepUpSessionError::Expired
+            | StepUpSessionError::IdentityMismatch => ApiError::Unauthorized,
+            StepUpSessionError::InvalidState | StepUpSessionError::Unavailable => {
+                ApiError::Unavailable("step-up session could not be prepared".into())
+            }
+        })?;
+    Ok((
+        bound.challenge.authorization_url,
+        bound.challenge.expires_at,
+        bound.callback_cookie,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
     use chrono::{Duration, TimeZone};
+    use http_body_util::BodyExt;
     use kavach_ports::{StepUpChallengeStore, StepUpRequest};
     use kavach_storage::MemoryStepUpChallengeStore;
+    use tower::ServiceExt;
 
     use super::*;
 
@@ -1557,13 +1710,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn step_up_start_is_mounted_but_unavailable_without_console_login() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let state = Arc::new(
+            AppState::from_paths_for_tests(
+                &root.join("packs/finance/v0.yaml"),
+                &root.join("models/finance/credit-underwriting-v1.yaml"),
+                None,
+            )
+            .await
+            .expect("state"),
+        );
+        let response = crate::http::router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/step-up/adr:default:0:1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(problem["code"], "unavailable");
+    }
+
+    #[tokio::test]
     async fn step_up_secrets_stay_in_the_bound_console_session_and_are_taken_once() {
         let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
-        let settings = ConsoleLoginSettings::new(
+        let mut settings = ConsoleLoginSettings::new(
             "kavach-console",
             PathBuf::new(),
             "https://console.example/auth/callback",
         );
+        settings.step_up_acr = Some("webauthn-2".into());
         let login = ConsoleLogin::build(
             &settings,
             IdpEndpoints {
@@ -1603,20 +1785,7 @@ mod tests {
         );
 
         let store = MemoryStepUpChallengeStore::default();
-        let initiator = crate::step_up::KeycloakStepUpInitiator::new(
-            crate::step_up::KeycloakStepUpConfig {
-                authorization_endpoint: "https://idp.example/authorize".into(),
-                client_id: "kavach-console".into(),
-                redirect_uri: format!(
-                    "https://console.example{}",
-                    crate::step_up::STEP_UP_CALLBACK_PATH
-                ),
-                expected_acr: "webauthn-2".into(),
-                allow_http_loopback: false,
-            },
-            store.clone(),
-        )
-        .unwrap();
+        let initiator = login.step_up_initiator(store.clone(), false).unwrap();
         let action_hash = format!("sha256-action-v1:{}", "a".repeat(64));
         let start = initiator
             .begin(

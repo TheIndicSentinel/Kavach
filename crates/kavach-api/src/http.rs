@@ -57,6 +57,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/v1/admin/audit", get(list_audit_log))
         .route(
+            "/auth/step-up/{record_id}",
+            post(crate::console_login::begin_step_up),
+        )
+        .route(
             "/v1/agent-decisions/{record_id}",
             get(crate::evidence_read::read_agent_decision),
         )

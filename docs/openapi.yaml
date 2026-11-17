@@ -1097,6 +1097,47 @@ paths:
         "303":
           $ref: "#/components/responses/ConsoleRedirect"
 
+  /auth/step-up/{record_id}:
+    post:
+      operationId: beginHumanReviewStepUp
+      tags: [console-auth]
+      summary: Starts step-up for one signed HUMAN_REVIEW record (D17).
+      description: |
+        Requires a live console session, `X-Kavach-Console: 1`, same-origin
+        request metadata, the configured step-up ACR, and Cedar permission
+        for `approve_human_review`. The API loads the record only from its
+        configured tenant and verifies its evidence signature and exact-action
+        binding before initiating the IdP flow. The response contains the IdP
+        authorization URL and sets an opaque, one-time
+        `__Host-kavach_step_up` cookie (HttpOnly; Secure; SameSite=Lax;
+        Path=/; Max-Age=300). Callback routing is a separate pending slice;
+        this endpoint alone does not complete approval.
+      security:
+        - consoleSession: []
+      parameters:
+        - { name: record_id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/ConsoleHeader"
+      responses:
+        "200":
+          description: IdP step-up flow started; opaque callback cookie is set.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorization_url, expires_at]
+                properties:
+                  authorization_url: { type: string, format: uri }
+                  expires_at: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /auth/session:
     get:
       operationId: getConsoleSession

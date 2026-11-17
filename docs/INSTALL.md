@@ -335,7 +335,7 @@ The rows stay (ended, with no change request), and the new bootstrap's audit row
 
 **Console sign-in (ADR-018).** Off unless `--console-client-id` is set. With it, the console signs in through `kavach-api`: the API runs the authorization code flow with PKCE against your IdP as a confidential client, keeps the tokens on the server, and gives the browser only an `HttpOnly` session cookie. It needs operator OIDC (above) on the same issuer: the access tokens the API gets for a console user must pass the same issuer, audience and JWKS checks as a CLI token, so a person is the same Cedar principal either way. Sessions live in the API process's memory: a restart signs everyone out, and with several replicas a user's requests must reach the replica that holds their session.
 
-For the planned D17 step-up flow, `--console-step-up-acr` stores the IdP ACR value that the realm must map to the required WebAuthn/passkey authentication flow. The value is bounded and validated at startup. Setting it alone does not enable approvals: the HTTP initiation/callback and approval routes are still pending.
+For the D17 step-up flow, `--console-step-up-acr` stores the IdP ACR value that the realm must map to the required WebAuthn/passkey authentication flow. The value is bounded and validated at startup. The initiation endpoint (`POST /auth/step-up/{record_id}`) is mounted; callback and approval routes are still pending, so this endpoint does not yet complete an approval. When using initiation, register the callback URI `https://<console host>/auth/step-up/callback` with the IdP in addition to `/auth/callback`.
 
 *At the IdP*, register one client for the console:
 
