@@ -1,8 +1,11 @@
 //! Human-review approval record contract (PRD D17 / FR-6).
 //!
-//! This defines the record shape and its structural checks. It does not
-//! authenticate the approver, verify step-up, or make an approval single-use;
-//! those guarantees belong to the future approval service and store adapter.
+//! This defines the record shape, structural checks, and durable-store port.
+//! Storage adapters enforce one-time consumption. The approval service that
+//! authenticates reviewers, verifies step-up, and wires consumption to
+//! authorization and credential issuance is still pending.
+
+use std::future::Future;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -15,6 +18,25 @@ use crate::PortError;
 pub enum ReviewDecision {
     Approve,
     Reject,
+}
+
+impl ReviewDecision {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Approve => "approve",
+            Self::Reject => "reject",
+        }
+    }
+
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "approve" => Some(Self::Approve),
+            "reject" => Some(Self::Reject),
+            _ => None,
+        }
+    }
 }
 
 /// One human decision tied to one action digest.
@@ -96,6 +118,28 @@ impl ReviewApprovalRecord {
         }
         Ok(())
     }
+}
+
+/// Durable storage for completed human-review decisions (PRD FR-6).
+///
+/// Implementations preserve records and atomically return an approved record
+/// at most once. The caller supplies `now` from Kavach's trusted clock.
+pub trait ReviewApprovalStore: Send + Sync {
+    fn insert(
+        &self,
+        record: ReviewApprovalRecord,
+    ) -> impl Future<Output = Result<(), PortError>> + Send;
+
+    /// Atomically consumes a live approval for exactly this tenant and action.
+    /// Missing, rejected, expired, mismatched, or previously consumed records
+    /// return `Ok(None)`; storage failures return `Err` and must fail closed.
+    fn consume(
+        &self,
+        tenant_id: &str,
+        approval_id: &str,
+        action_hash: &str,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<Option<ReviewApprovalRecord>, PortError>> + Send;
 }
 
 #[cfg(test)]

@@ -24,7 +24,7 @@ mod reference;
 mod replay;
 mod time;
 
-pub use approval::{ReviewApprovalRecord, ReviewDecision};
+pub use approval::{ReviewApprovalRecord, ReviewApprovalStore, ReviewDecision};
 pub use credential::{
     CredentialBroker, CredentialRequest, Destination, InternalCredentialBroker,
     InternalCredentialFuture, InternalCredentialReceipt, IssuedCredential, StatusQuestions,

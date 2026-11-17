@@ -14,6 +14,7 @@ Changes that need a second reviewer before v0.1 is tagged. One person wrote and 
 
 | PR | Area | What to check |
 |---|---|---|
+| Pending (M4 approval store) | Data plane, migrations | `human_review_approvals` tenant key and constraints; unique credential IDs; immutability except one `consumed_at` transition; runtime role column grants; exact tenant/action/expiry predicates on atomic consumption; no path grants authority before reviewer authentication and step-up |
 | #94 | Keys, evidence | `kavach_ports::jcs::to_vec` is the only canonicaliser on signed and hashed paths; safe-integer bounds; output unchanged for valid input (vectors) |
 | #96 | Authentication | HMAC v2 skew check with `abs_diff`; no other caller-controlled arithmetic in `hmac_auth` |
 | #97 | Data plane | PAN and Aadhaar rules, the at-most-8-digits reference rule, where each is applied (extraction and core), false-positive risk |
