@@ -14,8 +14,8 @@ use kavach_credential::{
 use kavach_jws::KeySet;
 use kavach_keys::InMemoryKeyProvider;
 use kavach_ports::{
-    CredentialBroker, CredentialRequest, Destination, ErrorClass, KeyProvider, PortError,
-    PublicKey, TokenSecret,
+    CredentialBroker, CredentialRequest, Destination, ErrorClass, InternalCredentialBroker,
+    KeyProvider, PortError, PublicKey, TokenSecret,
 };
 use kavach_ports_testkit::credential_broker::{
     self, conformance, unavailable_conformance, ClaimsView, DESTINATION,
@@ -90,6 +90,22 @@ async fn jose_broker_meets_the_contract() {
         },
     )
     .await;
+}
+
+#[tokio::test]
+async fn internal_credential_needs_no_provider_recipient_and_returns_no_token() {
+    let mut keys = InMemoryKeyProvider::new();
+    keys.generate(KID).unwrap();
+    let broker = JoseCredentialBroker::new(keys, KID, "kavach-test", BTreeMap::new());
+    let destination = Destination::new(DESTINATION);
+    let request = credential_broker::request(&destination, "cred-internal");
+
+    let receipt = broker.issue_internal(&request).await.unwrap();
+    assert_eq!(receipt.credential_id, "cred-internal");
+    assert!(receipt.expires_at <= request.expires_at);
+    assert!(receipt.expires_at > request.now);
+    assert!(!format!("{receipt:?}").contains(DESTINATION));
+    assert!(broker.issue_internal(&request).await.is_err());
 }
 
 /// A key store that is down.

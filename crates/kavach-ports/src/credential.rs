@@ -112,6 +112,14 @@ pub struct IssuedCredential {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Receipt for a credential minted only as an internal decision artifact.
+/// The encrypted token is discarded before this value is returned.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InternalCredentialReceipt {
+    pub credential_id: String,
+    pub expires_at: DateTime<Utc>,
+}
+
 /// Mints the signed question a gateway puts to a provider about one earlier
 /// send (ADR-017 R2). A question names the send (`jti`), the tenant and the
 /// provider and carries nothing about the recipient; it is not a credential
@@ -154,4 +162,15 @@ pub trait CredentialBroker: Send + Sync {
     fn is_test_double(&self) -> bool {
         false
     }
+}
+
+/// Issues an internal credential artifact for a gateway-held provider mode.
+/// Implementations encrypt it to a short-lived Kavach-only key, discard that
+/// key and ciphertext, and return only a receipt. This capability is separate
+/// from [`CredentialBroker`] so provider-verifiable issuance remains unchanged.
+pub trait InternalCredentialBroker: Send + Sync {
+    fn issue_internal(
+        &self,
+        request: &CredentialRequest<'_>,
+    ) -> impl Future<Output = Result<InternalCredentialReceipt, PortError>> + Send;
 }
