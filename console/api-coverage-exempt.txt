@@ -13,3 +13,5 @@ POST /v1/tools/{tool} Agent listener: an agent's tool call through the gateway, 
 POST /v1/sor/events System-of-record listener (backend network only): signed events from the lender's systems; not on the operator listener the console talks to.
 GET /v1/change-requests/{id} The Change requests page reads requests from GET /v1/change-requests, whose items are the same ChangeRequest; the console has no view of one request by id. Outside kavach-api's own tests, nothing in the tree calls this read.
 GET /auth/callback The IdP redirects the browser here after sign-in (ADR-018); the console never calls it, the browser follows the redirect.
+POST /auth/step-up/{record_id} Step-up initiation is awaiting the approved reviewer surface; the future console action will call this route with the selected HUMAN_REVIEW record.
+GET /auth/step-up/callback The IdP redirects the browser here after WebAuthn step-up; the console never calls it, the browser follows the redirect.

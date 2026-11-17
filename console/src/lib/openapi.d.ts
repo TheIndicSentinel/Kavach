@@ -755,6 +755,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/step-up/{record_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Starts step-up for one signed HUMAN_REVIEW record (D17).
+         * @description Requires a live console session, `X-Kavach-Console: 1`, same-origin
+         *     request metadata, the configured step-up ACR, and Cedar permission
+         *     for `approve_human_review`. The API loads the record only from its
+         *     configured tenant and verifies its evidence signature and exact-action
+         *     binding before initiating the IdP flow. The response contains the IdP
+         *     authorization URL and sets an opaque, one-time
+         *     `__Host-kavach_step_up` cookie (HttpOnly; Secure; SameSite=Lax;
+         *     Path=/; Max-Age=300). The callback verifies the IdP response and
+         *     retains a short-lived proof on the initiating session; it does not
+         *     itself complete approval.
+         */
+        post: operations["beginHumanReviewStepUp"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/session": {
         parameters: {
             query?: never;
@@ -770,6 +799,34 @@ export interface paths {
          *     403. A 401 means the session has ended.
          */
         get: operations["getConsoleSession"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/step-up/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Completes the session-bound D17 step-up callback.
+         * @description The identity provider redirects here with `code` and `state`. The
+         *     handler requires the opaque `__Host-kavach_step_up` cookie, checks
+         *     state against server-held secrets and the initiating live console
+         *     session, exchanges the code with PKCE, verifies the signed ID token's
+         *     issuer, audience, reviewer subject, ACR, nonce and freshness, then
+         *     consumes the challenge once. Success stores the verified exact-action
+         *     proof server-side on that session and redirects to `/`; it does not
+         *     create or authorize an approval. Every response expires the callback
+         *     cookie.
+         */
+        get: operations["completeHumanReviewStepUp"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2796,6 +2853,43 @@ export interface operations {
             303: components["responses"]["ConsoleRedirect"];
         };
     };
+    beginHumanReviewStepUp: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The console's CSRF header; must be `1`. */
+                "X-Kavach-Console": components["parameters"]["ConsoleHeader"];
+            };
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description IdP step-up flow started; opaque callback cookie is set. */
+            200: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** Format: uri */
+                        authorization_url: string;
+                        /** Format: date-time */
+                        expires_at: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
     getConsoleSession: {
         parameters: {
             query?: never;
@@ -2820,6 +2914,40 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    completeHumanReviewStepUp: {
+        parameters: {
+            query?: {
+                code?: string;
+                state?: string;
+                error?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Step-up verified; redirects to the console root. */
+            303: {
+                headers: {
+                    Location?: "/";
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Callback refused; callback cookie is expired. */
+            400: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["Problem"];
+                };
+            };
         };
     };
     consoleLogout: {

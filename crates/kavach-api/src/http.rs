@@ -139,6 +139,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/auth/config", get(crate::console_login::config))
         .route("/auth/login", get(crate::console_login::login))
         .route("/auth/callback", get(crate::console_login::callback))
+        .route(
+            crate::step_up::STEP_UP_CALLBACK_PATH,
+            get(crate::console_login::step_up_callback),
+        )
         .route("/auth/session", get(crate::console_login::session))
         .route("/auth/logout", post(crate::console_login::logout));
 

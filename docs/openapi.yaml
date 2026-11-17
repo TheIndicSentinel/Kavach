@@ -1110,8 +1110,9 @@ paths:
         binding before initiating the IdP flow. The response contains the IdP
         authorization URL and sets an opaque, one-time
         `__Host-kavach_step_up` cookie (HttpOnly; Secure; SameSite=Lax;
-        Path=/; Max-Age=300). Callback routing is a separate pending slice;
-        this endpoint alone does not complete approval.
+        Path=/; Max-Age=300). The callback verifies the IdP response and
+        retains a short-lived proof on the initiating session; it does not
+        itself complete approval.
       security:
         - consoleSession: []
       parameters:
@@ -1161,6 +1162,44 @@ paths:
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
+
+  /auth/step-up/callback:
+    get:
+      operationId: completeHumanReviewStepUp
+      tags: [console-auth]
+      summary: Completes the session-bound D17 step-up callback.
+      description: |
+        The identity provider redirects here with `code` and `state`. The
+        handler requires the opaque `__Host-kavach_step_up` cookie, checks
+        state against server-held secrets and the initiating live console
+        session, exchanges the code with PKCE, verifies the signed ID token's
+        issuer, audience, reviewer subject, ACR, nonce and freshness, then
+        consumes the challenge once. Success stores the verified exact-action
+        proof server-side on that session and redirects to `/`; it does not
+        create or authorize an approval. Every response expires the callback
+        cookie.
+      security:
+        - stepUpCallback: []
+      parameters:
+        - { name: code, in: query, schema: { type: string } }
+        - { name: state, in: query, schema: { type: string } }
+        - { name: error, in: query, schema: { type: string } }
+      responses:
+        "303":
+          description: Step-up verified; redirects to the console root.
+          headers:
+            Location:
+              schema: { type: string, const: / }
+            Set-Cookie:
+              schema: { type: string }
+        "400":
+          description: Callback refused; callback cookie is expired.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/problem+json:
+              schema: { $ref: "#/components/schemas/Problem" }
 
   /auth/logout:
     post:
@@ -1214,6 +1253,11 @@ components:
         `X-Kavach-Principal`; a cross-site `Origin` or `Sec-Fetch-Site` is
         refused. The server puts the session's access token in front of the
         request, so authorization is the same as with that token.
+    stepUpCallback:
+      type: apiKey
+      in: cookie
+      name: __Host-kavach_step_up
+      description: Opaque, one-time callback handle; callback secrets remain server-side.
 
   parameters:
     ConsoleHeader:
