@@ -202,6 +202,46 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path, what: &str) -> Result<
     serde_json::from_str(&text).map_err(|e| format!("{what} {}: {e}", path.display()))
 }
 
+fn read_consents(path: &Path) -> Result<Vec<ConsentRecord>, String> {
+    let consents: Vec<ConsentRecord> = read_json(path, "consents")?;
+    for consent in &consents {
+        consent.validate().map_err(str::to_owned)?;
+    }
+    Ok(consents)
+}
+
+#[cfg(test)]
+mod consent_fixture_tests {
+    use super::read_consents;
+
+    #[test]
+    fn loader_accepts_legacy_consent_and_refuses_invalid_artefact() {
+        let path =
+            std::env::temp_dir().join(format!("kavach-consents-{}.json", uuid::Uuid::new_v4()));
+        let mut records = serde_json::json!([{
+            "consent_id": "C-1",
+            "tenant_id": "tenant-a",
+            "subject_ref": "ref:borrower:B-1",
+            "purposes": ["loan_recovery"],
+            "expires_at": "2027-01-01T00:00:00Z",
+            "active": true
+        }]);
+        std::fs::write(&path, records.to_string()).unwrap();
+        assert_eq!(read_consents(&path).unwrap().len(), 1);
+
+        records[0]["artefact"] = serde_json::json!({
+            "data_types": ["loan_account"],
+            "valid_from": "2026-01-01T00:00:00Z",
+            "data_from": "2026-11-01T00:00:00Z",
+            "data_to": "2026-10-01T00:00:00Z",
+            "status": "active"
+        });
+        std::fs::write(&path, records.to_string()).unwrap();
+        assert!(read_consents(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
+}
+
 // ---- adapters selected at startup (ADR-006 §5) ----
 
 pub enum MandateStoreBackend {
@@ -896,7 +936,7 @@ impl Dataplane {
             .iter()
             .map(|issuer| issuer.key.kid.clone())
             .collect();
-        let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
+        let consents = read_consents(&config.consents)?;
         let evidence = Arc::new(evidence);
         let mandates = mandate_service(
             config,
@@ -1184,7 +1224,7 @@ impl WhatIf {
         let keys = sources.keys(HsmRole::Mandate, &config.mandate_keys_dir);
         let (mandate_config, passports) =
             load_mandate_config(&config.mandate_config, &keys, insecure_dev).await?;
-        let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
+        let consents = read_consents(&config.consents)?;
         let mandates = Arc::new(
             MandateService::new(
                 MandateDeps {

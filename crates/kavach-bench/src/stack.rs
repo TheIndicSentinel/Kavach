@@ -130,6 +130,7 @@ fn write_workload(kavach: &Path, n: usize, provider_url: &str) -> Result<(), Str
             purposes: ["loan_recovery".to_string()].into(),
             expires_at: Utc::now() + chrono::Duration::days(30),
             active: true,
+            artefact: None,
         })
         .collect();
     write_json(
@@ -188,6 +189,9 @@ fn api_config(
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
         roles: kavach_api::RolesConfig::default(),
+        review_snapshot_key_file: None,
+        review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
+        review_snapshot_previous_keys: Vec::new(),
         migration_database_url: None,
         database_tls: tls,
         database_pool_size: pool_size,

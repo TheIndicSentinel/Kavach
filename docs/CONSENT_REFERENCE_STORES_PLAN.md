@@ -1,6 +1,6 @@
-# Consent and reference stores — proposed pilot plan
+# Consent and reference stores — pilot plan
 
-**Status:** Proposed; implementation choices below require owner approval before runtime or schema changes.
+**Status:** Accepted on 2026-11-18. The owner approved signed tenant-bound updates, a dedicated local reference-encryption key with decrypt-only previous keys, and fail-closed contact when a current preference record is missing. Implementation is in slices; the first consent-fixture contract slice is implemented.
 **Scope:** The next pilot blocker in `AGENTS.md`; PRD D7/FR-8, ADR-004 §5/§7 and ADR-006 §4. Tier 1 remains one tenant per stack (ADR-014). This plan uses local Postgres and file-held keys, with no paid service dependency.
 
 ## Current boundary
@@ -17,7 +17,7 @@
 4. **Encrypted reference vault.** Store tenant/subject/channel indexes separately from AES-256-GCM encrypted destinations. Bind ciphertext to tenant, subject reference, channel, version and key id as authenticated data. Use a dedicated owner-readable local key file initially, with an adapter boundary for HSM/KMS. Reject a missing or unknown key; never log or return plaintext outside the gateway's existing `Destination` type. Keep keys available for live ciphertext during rotation, and document retirement and restore steps.
 5. **Gateway wiring.** Select persistent adapters at startup for pilot mode. Resolve only after the existing authorization and current consent/preference checks. Keep fixture adapters limited to explicit development mode. Run memory/Postgres port conformance, fault tests, migration tests and a live withdrawal/opt-out acceptance path before enabling real destinations.
 
-## Decisions to approve
+## Approved decisions
 
 1. **Authority for updates (recommended):** signed, tenant-bound system-of-record events; no direct operator edit of consent or destination values.
 2. **Reference encryption (recommended):** a dedicated local AES-256-GCM key file and explicit decrypt-only previous keys, following the review-snapshot key rotation pattern. No reuse of the review-snapshot key.

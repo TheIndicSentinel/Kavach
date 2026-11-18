@@ -188,6 +188,57 @@ pub struct ConsentRecord {
     pub purposes: BTreeSet<String>,
     pub expires_at: DateTime<Utc>,
     pub active: bool,
+    /// Optional richer local artefact fields. Older fixtures omit this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artefact: Option<ConsentArtefactSubset>,
+}
+
+/// The local fields needed from a ReBIT-shaped consent artefact, without
+/// storing customer identity or claiming to implement the full AA protocol.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsentArtefactSubset {
+    pub data_types: BTreeSet<String>,
+    pub valid_from: DateTime<Utc>,
+    pub data_from: DateTime<Utc>,
+    pub data_to: DateTime<Utc>,
+    pub status: ConsentStatus,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConsentStatus {
+    Active,
+    Revoked,
+    Expired,
+}
+
+impl ConsentRecord {
+    /// Checks fixture consistency without returning any subject information.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(artefact) = &self.artefact {
+            if artefact.data_types.is_empty() || artefact.data_types.iter().any(String::is_empty) {
+                return Err("consent data_types must be nonempty");
+            }
+            if artefact.valid_from >= self.expires_at || artefact.data_from > artefact.data_to {
+                return Err("consent date range is invalid");
+            }
+            if self.active != (artefact.status == ConsentStatus::Active) {
+                return Err("consent status disagrees with active flag");
+            }
+        }
+        Ok(())
+    }
+
+    /// Legacy fixtures use `active` and expiry; richer artefacts also enforce
+    /// their validity start and explicit status.
+    pub fn is_active_at(&self, now: DateTime<Utc>) -> bool {
+        self.active
+            && self.expires_at > now
+            && self.artefact.as_ref().is_none_or(|artefact| {
+                artefact.status == ConsentStatus::Active && artefact.valid_from <= now
+            })
+    }
 }
 
 /// Scope requested for a child mandate; the result is always intersected with
@@ -321,6 +372,45 @@ pub fn is_capability_ref(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consent_artefact_is_backward_compatible_and_rejects_inconsistent_scope() {
+        let now = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let mut consent = ConsentRecord {
+            consent_id: "C-1".into(),
+            tenant_id: "t".into(),
+            subject_ref: "ref:borrower:B-1".into(),
+            purposes: BTreeSet::from(["loan_recovery".into()]),
+            expires_at: now + chrono::Duration::days(30),
+            active: true,
+            artefact: None,
+        };
+        let legacy = serde_json::to_value(&consent).unwrap();
+        assert!(legacy.get("artefact").is_none());
+        assert_eq!(
+            serde_json::from_value::<ConsentRecord>(legacy).unwrap(),
+            consent
+        );
+
+        consent.artefact = Some(ConsentArtefactSubset {
+            data_types: BTreeSet::from(["loan_account".into()]),
+            valid_from: now + chrono::Duration::days(1),
+            data_from: now - chrono::Duration::days(30),
+            data_to: now,
+            status: ConsentStatus::Active,
+        });
+        assert_eq!(consent.validate(), Ok(()));
+        assert!(!consent.is_active_at(now));
+        assert!(consent.is_active_at(now + chrono::Duration::days(2)));
+        consent.artefact.as_mut().unwrap().data_from = now + chrono::Duration::days(2);
+        assert!(consent.validate().is_err());
+        consent.artefact.as_mut().unwrap().data_from = now;
+        consent.artefact.as_mut().unwrap().status = ConsentStatus::Revoked;
+        assert!(consent.validate().is_err());
+        let mut value = serde_json::to_value(&consent).unwrap();
+        value["artefact"]["status"] = "unknown".into();
+        assert!(serde_json::from_value::<ConsentRecord>(value).is_err());
+    }
 
     #[test]
     fn capability_refs_are_strict() {

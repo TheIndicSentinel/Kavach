@@ -273,6 +273,7 @@ fn write_mandates_and_consents(dir: &std::path::Path) {
         purposes: set(&["loan_recovery"]),
         expires_at: chrono::Utc::now() + chrono::Duration::days(30),
         active: true,
+        artefact: None,
     };
     let consents = vec![
         consent("C-7f3a", SUBJECT),

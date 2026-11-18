@@ -33,8 +33,8 @@ use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use kavach_credential::DecryptionKey;
 use kavach_domain::mandate::{
-    AgentPassport, ConsentRecord, ContactWindow, DelegationRules, MandateTemplate, SorEvent,
-    TimeZoneId,
+    AgentPassport, ConsentArtefactSubset, ConsentRecord, ConsentStatus, ContactWindow,
+    DelegationRules, MandateTemplate, SorEvent, TimeZoneId,
 };
 use kavach_keys::{sign_tool_registry, LocalFileKeyProvider};
 use serde_json::{json, Value};
@@ -562,6 +562,13 @@ fn write_kavach_config(
                     purposes: set(&["loan_recovery"]),
                     expires_at: Utc::now() + Duration::days(30),
                     active: true,
+                    artefact: Some(ConsentArtefactSubset {
+                        data_types: set(&["loan_account"]),
+                        valid_from: Utc::now() - Duration::days(1),
+                        data_from: Utc::now() - Duration::days(30),
+                        data_to: Utc::now(),
+                        status: ConsentStatus::Active,
+                    }),
                 })
                 .collect::<Vec<_>>(),
         )

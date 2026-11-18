@@ -116,6 +116,7 @@ pub fn consent(now: DateTime<Utc>) -> ConsentRecord {
         purposes: set(&["loan_recovery"]),
         expires_at: now + Duration::days(30),
         active: true,
+        artefact: None,
     }
 }
 
