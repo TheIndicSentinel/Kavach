@@ -2576,6 +2576,7 @@ name = "kavach-storage"
 version = "0.1.0-alpha.1"
 dependencies = [
  "chrono",
+ "hex",
  "kavach-domain",
  "kavach-evaluate",
  "kavach-evidence",
@@ -2586,6 +2587,7 @@ dependencies = [
  "kavach-ports-testkit",
  "kavach-storage",
  "proptest",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -2595,6 +2597,7 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

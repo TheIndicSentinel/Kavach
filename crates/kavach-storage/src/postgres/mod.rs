@@ -12,6 +12,7 @@ mod incidents;
 mod jobs;
 mod mandates;
 mod migrate;
+mod reference_vault;
 mod retention;
 mod review_snapshots;
 mod roles;
@@ -38,6 +39,7 @@ pub use mandates::{PostgresMandateStore, PostgresReplayGuard};
 pub use migrate::{
     connect_pool, connect_runtime, connect_runtime_sized, migrate, DEFAULT_POOL_SIZE,
 };
+pub use reference_vault::{EncryptedDestination, ReferenceVaultKey};
 pub use retention::PostgresRetentionStore;
 pub use review_snapshots::PostgresReviewSnapshotStore;
 pub use roles::PostgresRoleStore;

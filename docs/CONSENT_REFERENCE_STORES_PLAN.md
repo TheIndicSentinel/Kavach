@@ -1,6 +1,6 @@
 # Consent and reference stores — pilot plan
 
-**Status:** Accepted on 2026-11-18. The owner approved signed tenant-bound updates, a dedicated local reference-encryption key with decrypt-only previous keys, and fail-closed contact when a current preference record is missing. Implementation is in slices; the local contracts, Postgres projections, signed update verifier, transactional preference and grant writers, and atomic consent withdrawal/revocation writer are implemented. API selection, encrypted reference storage and gateway enforcement remain pending.
+**Status:** Accepted on 2026-11-18. The owner approved signed tenant-bound updates, a dedicated local reference-encryption key with decrypt-only previous keys, and fail-closed contact when a current preference record is missing. Implementation is in slices; the local contracts, Postgres projections, signed update verifier, transactional preference and consent writers, atomic consent withdrawal/revocation, and the encrypted-reference codec/key rotation primitive are implemented. Encrypted reference persistence, resolver/API selection and gateway enforcement remain pending.
 **Scope:** The next pilot blocker in `AGENTS.md`; PRD D7/FR-8, ADR-004 §5/§7 and ADR-006 §4. Tier 1 remains one tenant per stack (ADR-014). This plan uses local Postgres and file-held keys, with no paid service dependency.
 
 ## Current boundary
@@ -23,7 +23,7 @@
 2. **Reference encryption (recommended):** a dedicated local AES-256-GCM key file and explicit decrypt-only previous keys, following the review-snapshot key rotation pattern. No reuse of the review-snapshot key.
 3. **Missing contact preference (recommended):** fail closed for outbound contact until the authoritative source has supplied a current preference record. This is stricter than the current fixture behavior and requires seeding for pilots.
 
-The first code slice added the backward-compatible consent contract and fixture validation. The next slices added the preference lookup contract, Postgres projections, signed update verifier, transactional preference writer, and transactional signed consent grant writer. The seventh slice adds atomic consent withdrawal and mandate revocation. Security claims, migration guidance and acceptance status change with the slice that changes their guarantees.
+The first code slice added the backward-compatible consent contract and fixture validation. The next slices added the preference lookup contract, Postgres projections, signed update verifier, transactional preference writer, transactional signed consent grant writer, and atomic consent withdrawal/mandate revocation. The eighth slice adds the encrypted-reference envelope and local key rotation primitive. Security claims, migration guidance and acceptance status change with the slice that changes their guarantees.
 
 ## Signed update envelope and verification boundary
 
@@ -36,6 +36,8 @@ Migration 034 lets the runtime append to `authority_updates` and insert/update `
 ## Migration and current rollout boundary
 
 Migration 033 adds append-only `authority_updates` history and tenant-scoped `consent_current` and `contact_preference_current` projections. Migration 034 grants preference writes; migration 035 grants consent projection writes and the existing mandate-revocation permissions; migration 036 adds the consent-withdrawal barrier index. The read adapters compare a projection with its source history row and validate its tenant and key before returning it. The migrations do not backfill existing development fixtures, and the API still selects its fixture adapter, so live update and gateway behavior remain pending.
+
+The encrypted-reference codec is implemented in `kavach-storage` but has no persistent table or runtime resolver yet. It stores only an AES-256-GCM envelope, with tenant, subject reference, channel, record version and key id authenticated as associated data. `ReferenceVaultKey` reads 32-byte hex keys from regular owner-only files, encrypts with the active key, and opens ciphertext with explicitly configured previous keys. The next slice must add the tenant-scoped Postgres records and read/write adapter, then select the persistent resolver and key set at API startup.
 
 ## References
 
