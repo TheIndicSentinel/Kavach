@@ -213,6 +213,49 @@ pub enum ConsentStatus {
     Expired,
 }
 
+/// Current channel preference from an authoritative source. This contains a
+/// capability reference, never a phone number or other destination.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ContactPreferenceRecord {
+    pub tenant_id: String,
+    pub subject_ref: String,
+    pub channel: String,
+    pub status: ContactPreferenceStatus,
+    pub valid_from: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactPreferenceStatus {
+    Allowed,
+    OptedOut,
+}
+
+impl ContactPreferenceRecord {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.tenant_id.trim().is_empty()
+            || !is_capability_ref(&self.subject_ref)
+            || !ALLOWED_CHANNELS.contains(&self.channel.as_str())
+        {
+            return Err("contact preference key is invalid");
+        }
+        if self.valid_from >= self.expires_at {
+            return Err("contact preference validity interval is invalid");
+        }
+        Ok(())
+    }
+
+    /// A missing record is denied by the lookup boundary; this evaluates an
+    /// existing, validated record only.
+    pub fn allows_contact_at(&self, now: DateTime<Utc>) -> bool {
+        self.status == ContactPreferenceStatus::Allowed
+            && self.valid_from <= now
+            && now < self.expires_at
+    }
+}
+
 impl ConsentRecord {
     /// Checks fixture consistency without returning any subject information.
     pub fn validate(&self) -> Result<(), &'static str> {
@@ -410,6 +453,29 @@ mod tests {
         let mut value = serde_json::to_value(&consent).unwrap();
         value["artefact"]["status"] = "unknown".into();
         assert!(serde_json::from_value::<ConsentRecord>(value).is_err());
+    }
+
+    #[test]
+    fn contact_preference_requires_current_explicit_allow() {
+        let now = DateTime::from_timestamp(1_790_000_000, 0).unwrap();
+        let mut preference = ContactPreferenceRecord {
+            tenant_id: "tenant-a".into(),
+            subject_ref: "ref:borrower:B-1".into(),
+            channel: "sms".into(),
+            status: ContactPreferenceStatus::Allowed,
+            valid_from: now - chrono::Duration::hours(1),
+            expires_at: now + chrono::Duration::hours(1),
+        };
+        assert_eq!(preference.validate(), Ok(()));
+        assert!(preference.allows_contact_at(now));
+        assert!(!preference.allows_contact_at(preference.expires_at));
+        preference.status = ContactPreferenceStatus::OptedOut;
+        assert!(!preference.allows_contact_at(now));
+        preference.valid_from = preference.expires_at;
+        assert!(preference.validate().is_err());
+        let mut value = serde_json::to_value(&preference).unwrap();
+        value["status"] = "unknown".into();
+        assert!(serde_json::from_value::<ContactPreferenceRecord>(value).is_err());
     }
 
     #[test]

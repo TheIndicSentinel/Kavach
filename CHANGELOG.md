@@ -6,6 +6,7 @@ Notable changes to Kavach. The format follows [Keep a Changelog](https://keepach
 
 ### Added
 
+- **Contact-preference contract, second approved store slice.** Added a tenant, subject and channel scoped record with validity bounds and explicit allow/opt-out status. The lookup helper denies missing, expired, opted-out or mismatched records, and the development memory adapter rejects malformed or duplicate records. Gateway enforcement and persistent records remain pending.
 - **Consent fixture contract, first approved store slice.** Local consent records may now carry information types, validity start, data date range and explicit status. Existing fixtures remain readable; malformed richer records fail API startup, and mandate issuance waits for the validity start. The generated development fixture includes the richer subset. The benchmark config now supplies the existing disabled review-snapshot defaults needed to compile. Persistent consent, preferences and encrypted references follow the accepted plan.
 - **D17 live proof reuse refusal.** The console-to-agent integration now retries approval after a successful decision and verifies that the consumed exact-action step-up proof cannot create a second approval (`409`) on either memory or least-privilege Postgres.
 - **D17 live approval refusal checks.** The memory and least-privilege Postgres console-to-agent integration now proves that changing the approved waiver amount conflicts, while repeating the original request without release IDs remains `HUMAN_REVIEW` despite the reviewer's live session.

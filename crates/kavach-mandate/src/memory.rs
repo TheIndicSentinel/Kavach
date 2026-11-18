@@ -4,10 +4,13 @@ use std::collections::HashMap;
 use std::future::{ready, Future};
 use std::sync::Mutex;
 
-use kavach_domain::mandate::{ConsentRecord, MandateStatus, RevocationReason};
+use kavach_domain::mandate::{
+    ConsentRecord, ContactPreferenceRecord, MandateStatus, RevocationReason,
+};
 use kavach_ports::{
-    scope_time, AppliedRevocation, ClosureRule, ConsentSource, DomainEvent, EventBus, MandateStore,
-    PortError, RevocationApply, RevocationCursor, ScopedRoot, StoredMandate, StoredRevocation,
+    scope_time, AppliedRevocation, ClosureRule, ConsentSource, ContactPreferenceSource,
+    DomainEvent, EventBus, MandateStore, PortError, RevocationApply, RevocationCursor, ScopedRoot,
+    StoredMandate, StoredRevocation,
 };
 
 type Key = (String, String);
@@ -550,6 +553,50 @@ impl ConsentSource for InMemoryConsentSource {
         ready(Ok(self
             .records
             .get(&(tenant_id.to_string(), consent_id.to_string()))
+            .cloned()))
+    }
+}
+
+/// Development fixture for channel preferences. No record means no contact.
+#[derive(Debug, Default)]
+pub struct InMemoryContactPreferenceSource {
+    records: HashMap<(String, String, String), ContactPreferenceRecord>,
+}
+
+impl InMemoryContactPreferenceSource {
+    pub fn new(
+        records: impl IntoIterator<Item = ContactPreferenceRecord>,
+    ) -> Result<Self, PortError> {
+        let mut indexed = HashMap::new();
+        for record in records {
+            record.validate().map_err(PortError::invalid)?;
+            let key = (
+                record.tenant_id.clone(),
+                record.subject_ref.clone(),
+                record.channel.clone(),
+            );
+            if indexed.insert(key, record).is_some() {
+                return Err(PortError::invalid("duplicate contact preference"));
+            }
+        }
+        Ok(Self { records: indexed })
+    }
+}
+
+impl ContactPreferenceSource for InMemoryContactPreferenceSource {
+    fn get(
+        &self,
+        tenant_id: &str,
+        subject_ref: &str,
+        channel: &str,
+    ) -> impl Future<Output = Result<Option<ContactPreferenceRecord>, PortError>> + Send {
+        ready(Ok(self
+            .records
+            .get(&(
+                tenant_id.to_string(),
+                subject_ref.to_string(),
+                channel.to_string(),
+            ))
             .cloned()))
     }
 }

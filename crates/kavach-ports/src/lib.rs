@@ -11,6 +11,7 @@ pub mod bundle;
 pub mod bundle_verify;
 pub mod chain_record;
 pub mod checkpoint;
+mod contact_preference;
 pub mod credential;
 mod error;
 mod evidence;
@@ -29,6 +30,7 @@ pub use approval::{
     ReviewReleaseRecord, ReviewSnapshotStore, StepUpChallenge, StepUpChallengeState,
     StepUpChallengeStore, StepUpProof, StepUpProvider, StepUpRequest, VerifiedStepUp,
 };
+pub use contact_preference::{require_contact_permission, ContactPreferenceSource};
 pub use credential::{
     CredentialBroker, CredentialRequest, Destination, InternalCredentialBroker,
     InternalCredentialFuture, InternalCredentialReceipt, IssuedCredential, StatusQuestions,
