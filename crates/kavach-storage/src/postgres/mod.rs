@@ -20,7 +20,9 @@ mod tls;
 
 pub use admin::PostgresAdminStore;
 pub use agent_evidence::PostgresAgentEvidenceStore;
-pub use authority_updates::{AppliedPreferenceUpdate, PostgresAuthorityUpdateStore};
+pub use authority_updates::{
+    AppliedConsentGrant, AppliedPreferenceUpdate, PostgresAuthorityUpdateStore,
+};
 pub use change_requests::PostgresChangeStore;
 pub use consent_preferences::{PostgresConsentSource, PostgresContactPreferenceSource};
 
