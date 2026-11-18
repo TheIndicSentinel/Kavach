@@ -2,7 +2,9 @@ mod common;
 
 use chrono::Duration;
 use common::{consent, fixture, t0, TENANT};
-use kavach_domain::authority::{AuthorityChange, AuthorityUpdateEvent};
+use kavach_domain::authority::{
+    AuthorityChange, AuthorityUpdateEvent, ReferenceDestinationRecord, SensitiveDestination,
+};
 use kavach_domain::mandate::{
     ConsentArtefactSubset, ConsentStatus, ContactPreferenceRecord, ContactPreferenceStatus,
 };
@@ -51,6 +53,22 @@ fn preference_update() -> AuthorityUpdateEvent {
     }
 }
 
+fn reference_destination_update() -> AuthorityUpdateEvent {
+    AuthorityUpdateEvent {
+        update_id: "destination-1".into(),
+        tenant_id: TENANT.into(),
+        system: "lms".into(),
+        occurred_at: t0(),
+        nonce: "nonce-destination-1".into(),
+        change: AuthorityChange::ReferenceDestination(ReferenceDestinationRecord {
+            tenant_id: TENANT.into(),
+            subject_ref: common::SUBJECT.into(),
+            channel: "sms".into(),
+            destination: SensitiveDestination::new("+919876543210"),
+        }),
+    }
+}
+
 #[tokio::test]
 async fn signed_updates_require_registered_tenant_and_system_key() {
     let f = fixture();
@@ -86,6 +104,61 @@ async fn signed_updates_require_registered_tenant_and_system_key() {
             .message,
         UNTRUSTED_ISSUER
     );
+}
+
+#[tokio::test]
+async fn signed_destination_updates_are_fresh_scoped_and_redacted() {
+    let f = fixture();
+    let verifier = AuthorityVerifier::new(TENANT, f.config).unwrap();
+    let event = reference_destination_update();
+    let signed = jws::sign(&f.sor, "lms-issuer-1", TYP_AUTHORITY_UPDATE, &event)
+        .await
+        .unwrap();
+    let verified = verifier
+        .verify(&signed, now(SyncStatus::Synced { max_error_ms: 0 }))
+        .unwrap();
+    assert_eq!(verified.event(), &event);
+    assert!(!format!("{event:?}").contains("+919876543210"));
+    assert!(!format!("{verified:?}").contains("+919876543210"));
+
+    let mut wrong_tenant = reference_destination_update();
+    if let AuthorityChange::ReferenceDestination(record) = &mut wrong_tenant.change {
+        record.tenant_id = "other-tenant".into();
+    }
+    let signed = jws::sign(&f.sor, "lms-issuer-1", TYP_AUTHORITY_UPDATE, &wrong_tenant)
+        .await
+        .unwrap();
+    assert_eq!(
+        verifier
+            .verify(&signed, now(SyncStatus::Synced { max_error_ms: 0 }))
+            .unwrap_err()
+            .class,
+        ErrorClass::Invalid
+    );
+
+    let mut stale = reference_destination_update();
+    stale.occurred_at = t0() - Duration::days(1);
+    let signed = jws::sign(&f.sor, "lms-issuer-1", TYP_AUTHORITY_UPDATE, &stale)
+        .await
+        .unwrap();
+    assert_eq!(
+        verifier
+            .verify(&signed, now(SyncStatus::Synced { max_error_ms: 0 }))
+            .unwrap_err()
+            .class,
+        ErrorClass::Rejected
+    );
+
+    let mut invalid = reference_destination_update();
+    if let AuthorityChange::ReferenceDestination(record) = &mut invalid.change {
+        record.channel = "email".into();
+    }
+    assert!(invalid.validate().is_err());
+    let mut invalid = reference_destination_update();
+    if let AuthorityChange::ReferenceDestination(record) = &mut invalid.change {
+        record.destination = SensitiveDestination::new("+919876543210\nsecret");
+    }
+    assert!(invalid.validate().is_err());
 }
 
 #[tokio::test]

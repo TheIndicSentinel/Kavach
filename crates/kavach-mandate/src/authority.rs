@@ -10,7 +10,7 @@ use crate::config::MandateConfig;
 use crate::jws::{self, TYP_AUTHORITY_UPDATE};
 use crate::UNTRUSTED_ISSUER;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VerifiedAuthorityUpdate {
     event: AuthorityUpdateEvent,
     payload_sha256: String,
