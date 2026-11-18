@@ -65,7 +65,7 @@ fn poisoned<T>(_: T) -> PortError {
     PortError::unavailable("agent evidence lock poisoned")
 }
 
-/// Same request → replay; same id, other content → conflict.
+/// Same idempotency key and binding → replay; same key, other content → conflict.
 pub(crate) fn classify(
     record: AgentDecisionRecord,
     stored: &RequestBinding,
@@ -82,7 +82,7 @@ fn request_key(request: &CommitRequest) -> RequestKey {
     (
         request.tenant_id.clone(),
         request.draft.actor.agent_id.clone(),
-        request.draft.request_id.clone(),
+        request.idempotency_key.clone(),
     )
 }
 
@@ -93,6 +93,7 @@ impl MemoryAgentEvidenceStore {
         clock: &dyn TimeSource,
         signer: &dyn EvidenceSigner,
     ) -> Result<CommitResult, PortError> {
+        request.validate_idempotency()?;
         let mut state = self.state.lock().map_err(poisoned)?;
         let key = request_key(&request);
         if let Some((index, binding)) = state.requests.get(&key) {
@@ -149,9 +150,14 @@ impl MemoryAgentEvidenceStore {
     ) -> Result<Option<AgentDecisionRecord>, PortError> {
         let state = self.state.lock().map_err(poisoned)?;
         Ok(state
-            .requests
-            .get(&(tenant_id.into(), agent_id.into(), request_id.into()))
-            .map(|(index, _)| state.records[*index].clone()))
+            .records
+            .iter()
+            .find(|record| {
+                record.payload.tenant_id == tenant_id
+                    && record.payload.actor.agent_id == agent_id
+                    && record.payload.request_id == request_id
+            })
+            .cloned())
     }
 
     fn record_outcome_sync(&self, outcome: OutcomeRecord) -> Result<(), PortError> {

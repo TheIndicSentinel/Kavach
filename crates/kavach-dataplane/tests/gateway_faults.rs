@@ -294,6 +294,7 @@ fn request(mandate: &str, request_id: &str) -> ToolRequest {
         mandate_id: mandate.into(),
         request_id: request_id.into(),
         approval_id: None,
+        execution_id: None,
         params: params.as_object().unwrap().clone(),
     }
 }

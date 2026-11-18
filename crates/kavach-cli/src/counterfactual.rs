@@ -194,6 +194,8 @@ impl Trial<'_> {
                 ToolRequest {
                     mandate_id: self.mandate_id.to_string(),
                     request_id: "what-if-cf".into(),
+                    approval_id: None,
+                    execution_id: None,
                     params: params.clone(),
                 },
             )

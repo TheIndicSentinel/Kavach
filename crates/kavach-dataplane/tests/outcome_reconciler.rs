@@ -102,6 +102,7 @@ fn reminder(mandate_id: &str, request_id: &str) -> ToolCall {
         action: "send_reminder".into(),
         request_id: request_id.into(),
         approval_id: None,
+        execution_id: None,
         subject_ref: SUBJECT.into(),
         channel: Some("whatsapp".into()),
         waiver_bps: None,

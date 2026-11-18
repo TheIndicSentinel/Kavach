@@ -287,6 +287,8 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
             ToolRequest {
                 mandate_id: mandate_id.clone(),
                 request_id: "what-if-1".into(),
+                approval_id: None,
+                execution_id: None,
                 params: params.clone(),
             },
         )
@@ -330,6 +332,8 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
                         ToolRequest {
                             mandate_id,
                             request_id: "what-if-cf".into(),
+                            approval_id: None,
+                            execution_id: None,
                             params: params.clone(),
                         },
                     )

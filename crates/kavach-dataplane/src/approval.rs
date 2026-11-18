@@ -430,6 +430,7 @@ mod tests {
             action: "propose_plan".into(),
             request_id: "request-1".into(),
             approval_id: None,
+            execution_id: None,
             subject_ref: "ref:borrower:B-9382".into(),
             channel: None,
             waiver_bps: Some(3500),
@@ -536,12 +537,13 @@ mod tests {
     }
 
     #[test]
-    fn approval_id_does_not_change_the_exact_action_hash() {
+    fn approval_and_execution_ids_do_not_change_the_exact_action_hash() {
         let mut with_approval = call();
         let original =
             review_action_hash("tenant-1", &identity(), "sha256:tools-1", &with_approval)
                 .expect("original hash");
         with_approval.approval_id = Some("approval-1".into());
+        with_approval.execution_id = Some("execution-1".into());
         assert_eq!(
             review_action_hash("tenant-1", &identity(), "sha256:tools-1", &with_approval)
                 .expect("hash with approval"),

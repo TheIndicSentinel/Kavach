@@ -104,6 +104,9 @@ pub struct ToolCall {
     /// parameter serialization and the exact-action digest.
     #[serde(skip)]
     pub approval_id: Option<String>,
+    /// Separate D17 execution identity; excluded from action parameters/hash.
+    #[serde(skip)]
+    pub execution_id: Option<String>,
     pub subject_ref: String,
     pub channel: Option<String>,
     pub waiver_bps: Option<i64>,
@@ -1038,7 +1041,14 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
                 params_mac: assessment.params_mac,
                 subject_pseudonym: assessment.pseudonym,
                 mandate_id: call.mandate_id.clone(),
+                request_id: call.execution_id.as_ref().map(|_| call.request_id.clone()),
+                approval_id: call.approval_id.clone(),
+                execution_id: call.execution_id.clone(),
             },
+            idempotency_key: call
+                .execution_id
+                .clone()
+                .unwrap_or_else(|| call.request_id.clone()),
             draft,
             contact,
             // Unguessable; the credential is minted with this `jti`.
