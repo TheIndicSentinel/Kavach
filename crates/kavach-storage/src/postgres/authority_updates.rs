@@ -1,5 +1,4 @@
-//! Transactional signed preference updates. Consent writes and withdrawal
-//! revocation follow in a separate slice.
+//! Transactional signed consent and preference updates.
 
 use kavach_domain::authority::AuthorityChange;
 use kavach_domain::mandate::{ConsentRecord, ContactPreferenceRecord, ContactPreferenceStatus};
@@ -21,6 +20,12 @@ pub struct AppliedConsentGrant {
     pub replayed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedConsentWithdrawal {
+    pub replayed: bool,
+    pub revoked: Vec<String>,
+}
+
 #[derive(Clone)]
 pub struct PostgresAuthorityUpdateStore {
     pool: PgPool,
@@ -32,8 +37,9 @@ impl PostgresAuthorityUpdateStore {
         Self { pool }
     }
 
-    /// Stores a signed grant. A withdrawal is refused until mandate
-    /// revocation can share this transaction.
+    /// Stores a signed grant. A withdrawal is handled by
+    /// [`Self::apply_consent_withdrawal`] so the mandates it affects are
+    /// revoked in the same transaction.
     pub async fn apply_consent_grant(
         &self,
         verified: &VerifiedAuthorityUpdate,
@@ -45,12 +51,12 @@ impl PostgresAuthorityUpdateStore {
             ));
         };
         if !record.active {
-            return Err(PortError::rejected(
-                "consent withdrawal requires atomic mandate revocation",
+            return Err(PortError::invalid(
+                "use apply_consent_withdrawal for consent withdrawals",
             ));
         }
         let mut tx = self.pool.begin().await.map_err(|_| unavailable())?;
-        Self::lock_tenant(&mut tx, &event.tenant_id).await?;
+        Self::lock_mandate_tenant(&mut tx, &event.tenant_id).await?;
         if Self::is_replay(&mut tx, verified).await? {
             return Ok(AppliedConsentGrant { replayed: true });
         }
@@ -59,6 +65,144 @@ impl PostgresAuthorityUpdateStore {
         Self::write_consent(&mut tx, verified, record, version, next_version).await?;
         tx.commit().await.map_err(|_| unavailable())?;
         Ok(AppliedConsentGrant { replayed: false })
+    }
+
+    /// Stores a signed consent withdrawal and revokes every active root
+    /// mandate that references the consent, including its active children.
+    /// Both changes commit together under the mandate tenant lock.
+    pub async fn apply_consent_withdrawal(
+        &self,
+        verified: &VerifiedAuthorityUpdate,
+    ) -> Result<AppliedConsentWithdrawal, PortError> {
+        let event = verified.event();
+        let AuthorityChange::Consent(record) = &event.change else {
+            return Err(PortError::invalid(
+                "authority update is not a consent change",
+            ));
+        };
+        if record.active {
+            return Err(PortError::invalid(
+                "authority update is not a consent withdrawal",
+            ));
+        }
+        let mut tx = self.pool.begin().await.map_err(|_| unavailable())?;
+        Self::lock_mandate_tenant(&mut tx, &event.tenant_id).await?;
+        let withdrawal_event_id = format!("consent:{}", event.update_id);
+        let event_digest = format!("sha256-jcs-v1:{}", verified.payload_sha256());
+        if Self::is_replay(&mut tx, verified).await? {
+            let revoked = Self::read_withdrawal_result(
+                &mut tx,
+                &event.tenant_id,
+                &event.system,
+                &withdrawal_event_id,
+                &event_digest,
+            )
+            .await?;
+            return Ok(AppliedConsentWithdrawal {
+                replayed: true,
+                revoked,
+            });
+        }
+        let version = Self::consent_version(&mut tx, verified, record).await?;
+        let next_version = version.checked_add(1).ok_or_else(unavailable)?;
+        Self::write_consent(&mut tx, verified, record, version, next_version).await?;
+        let revoked =
+            Self::revoke_consent_mandates(&mut tx, &event.tenant_id, &record.consent_id).await?;
+        let revoked_json = serde_json::to_value(&revoked).map_err(|_| unavailable())?;
+        sqlx::query(
+            "INSERT INTO mandate_revocations \
+             (tenant_id, source_system, event_id, content_sha256, event_type, \
+              record_ref, occurred_at, revoked, created_at, clock_synced) \
+             VALUES ($1, $2, $3, $4, 'consent.withdrawn', $5, $6, $7, NOW(), $8)",
+        )
+        .bind(&event.tenant_id)
+        .bind(&event.system)
+        .bind(&withdrawal_event_id)
+        .bind(&event_digest)
+        .bind(&record.consent_id)
+        .bind(event.occurred_at)
+        .bind(revoked_json)
+        .bind(verified.clock_synced())
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| unavailable())?;
+        tx.commit().await.map_err(|_| unavailable())?;
+        Ok(AppliedConsentWithdrawal {
+            replayed: false,
+            revoked,
+        })
+    }
+
+    async fn read_withdrawal_result(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: &str,
+        system: &str,
+        event_id: &str,
+        expected_digest: &str,
+    ) -> Result<Vec<String>, PortError> {
+        let row = sqlx::query(
+            "SELECT content_sha256, revoked FROM mandate_revocations \
+             WHERE tenant_id = $1 AND source_system = $2 AND event_id = $3",
+        )
+        .bind(tenant_id)
+        .bind(system)
+        .bind(event_id)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|_| unavailable())?
+        .ok_or_else(unavailable)?;
+        let digest: String = row.try_get("content_sha256").map_err(|_| unavailable())?;
+        let revoked: serde_json::Value = row.try_get("revoked").map_err(|_| unavailable())?;
+        if digest != expected_digest {
+            return Err(PortError::rejected(
+                "consent withdrawal id was already used with different content",
+            ));
+        }
+        serde_json::from_value(revoked).map_err(|_| unavailable())
+    }
+
+    async fn revoke_consent_mandates(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: &str,
+        consent_id: &str,
+    ) -> Result<Vec<String>, PortError> {
+        let roots: Vec<String> = sqlx::query_scalar(
+            "SELECT id FROM mandates WHERE tenant_id = $1 AND parent_id IS NULL \
+             AND status = 'active' AND mandate->'consent_refs' ? $2 \
+             ORDER BY created_at, id FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(consent_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|_| unavailable())?;
+        let mut revoked = Vec::new();
+        for root_id in roots {
+            let rows = sqlx::query(
+                "WITH RECURSIVE sub AS ( \
+                    SELECT id, 0 AS lvl FROM mandates WHERE tenant_id = $1 AND id = $2 \
+                  UNION ALL \
+                    SELECT m.id, sub.lvl + 1 FROM mandates m JOIN sub ON m.parent_id = sub.id \
+                    WHERE m.tenant_id = $1 AND sub.lvl < 16 \
+                 ) \
+                 UPDATE mandates SET status = 'revoked', \
+                    revoked_reason = CASE WHEN id = $2 THEN 'consent_withdrawn' \
+                        ELSE 'parent_revoked' END \
+                 WHERE tenant_id = $1 AND status = 'active' \
+                    AND id IN (SELECT id FROM sub) \
+                 RETURNING id",
+            )
+            .bind(tenant_id)
+            .bind(root_id)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|_| unavailable())?;
+            for row in &rows {
+                revoked.push(row.try_get("id").map_err(|_| unavailable())?);
+            }
+        }
+        revoked.sort();
+        Ok(revoked)
     }
 
     async fn consent_version(
@@ -350,6 +494,18 @@ impl PostgresAuthorityUpdateStore {
         tenant_id: &str,
     ) -> Result<(), PortError> {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('kavach-authority:' || $1, 0))")
+            .bind(tenant_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|_| unavailable())?;
+        Ok(())
+    }
+
+    async fn lock_mandate_tenant(
+        tx: &mut Transaction<'_, Postgres>,
+        tenant_id: &str,
+    ) -> Result<(), PortError> {
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('kavach-mandates:' || $1, 0))")
             .bind(tenant_id)
             .execute(&mut **tx)
             .await

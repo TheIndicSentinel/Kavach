@@ -14,6 +14,7 @@ use crate::UNTRUSTED_ISSUER;
 pub struct VerifiedAuthorityUpdate {
     event: AuthorityUpdateEvent,
     payload_sha256: String,
+    clock_synced: bool,
 }
 
 impl VerifiedAuthorityUpdate {
@@ -25,6 +26,12 @@ impl VerifiedAuthorityUpdate {
     /// will be idempotent only for this same digest.
     pub fn payload_sha256(&self) -> &str {
         &self.payload_sha256
+    }
+
+    /// Whether Kavach's clock met the configured bound when this update was
+    /// verified. Restrictive updates are still accepted when this is false.
+    pub fn clock_synced(&self) -> bool {
+        self.clock_synced
     }
 }
 
@@ -78,9 +85,11 @@ impl AuthorityVerifier {
             }
         }
         let bytes = kavach_ports::jcs::to_vec(&event)?;
+        let clock_synced = now.require_synced(self.config.max_clock_error_ms).is_ok();
         Ok(VerifiedAuthorityUpdate {
             event,
             payload_sha256: hex::encode(Sha256::digest(bytes)),
+            clock_synced,
         })
     }
 }

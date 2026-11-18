@@ -123,7 +123,7 @@ Each revocation is also a signed record in the agent evidence chain (kind `manda
 
 ## Not addressed here
 
-- **Consent withdrawal:** needs runtime consent changes, which have their own ADR.
+- **Consent withdrawal:** `docs/CONSENT_REFERENCE_STORES_PLAN.md` now defines and tests the atomic Postgres consent/mandate revocation writer. A live signed-update route and API selection remain pending under that plan.
 - **Quarantine and manual kill:** ADR-013. A quarantine *suspends* mandates (reversible); only revoking an agent, or this ADR's events, revokes them.
 - **Revocation propagation to other replicas' caches:** there are none today, because mandates are read from the store on every call.
 - **An outbox for `MandateRevoked`:** FR-9's Postgres outbox, which comes with the event bus work.
