@@ -29,10 +29,13 @@ use common::Creds;
 use http_body_util::BodyExt;
 use kavach_api::console_login::{
     self, ConsoleLogin, ConsoleLoginSettings, IdpEndpoints, LOGIN_COOKIE, SESSION_COOKIE,
+    STEP_UP_COOKIE,
 };
 use kavach_api::dataplane::TestClock;
 use kavach_api::hardening::{console_login_violations, Violation};
 use kavach_api::{ApiConfig, AppState, EvidenceStoreKind};
+use kavach_ports::agent_evidence::AgentEvidenceStore;
+use kavach_ports::ReviewApprovalStore;
 use kavach_ports::TokenSecret;
 use kavach_ports_testkit::FakeClock;
 use oidc_double::{DoubleConfig, OidcDouble, TestUser};
@@ -343,6 +346,26 @@ async fn authorize(authorization_url: &str) -> (String, String) {
     assert_eq!(response.status().as_u16(), 303);
     let back = response.headers()["location"].to_str().unwrap().to_string();
     assert!(back.starts_with(&format!("{REDIRECT_URI}?")), "{back}");
+    let query = query_of(&back);
+    (query["code"].clone(), query["state"].clone())
+}
+
+/// The IdP returns a step-up callback rather than the normal login callback.
+async fn authorize_step_up(authorization_url: &str) -> (String, String) {
+    let response = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap()
+        .get(authorization_url)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 303);
+    let back = response.headers()["location"].to_str().unwrap().to_string();
+    assert!(
+        back.starts_with(&format!("{ORIGIN}/auth/step-up/callback?")),
+        "{back}"
+    );
     let query = query_of(&back);
     (query["code"].clone(), query["state"].clone())
 }
@@ -1525,6 +1548,200 @@ fn d17_step_up_acr_is_bounded_and_rejects_controls_or_surrounding_space() {
             "ACR {acr:?}"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn d17_live_step_up_decision_and_approved_agent_execution_are_bound_to_one_action() {
+    const ACR: &str = "urn:kavach:test:webauthn";
+    let at = Utc::now() - Duration::seconds(5);
+    let clock = Arc::new(FakeClock::synced_at(at));
+    let mut config = agent_fixture::config(EvidenceStoreKind::Memory, true, 50);
+    config.dataplane.as_mut().unwrap().test_clock = Some(TestClock(clock));
+    agent_fixture::enable_review_snapshots(&mut config);
+    // Exercise the production Cedar path with a bootstrapped superadmin,
+    // including the exact-action review permission used by step-up.
+    config.roles.bootstrap_superadmins = vec![
+        kavach_storage::BindingSubject {
+            kind: kavach_storage::SubjectKind::Principal,
+            issuer: ISSUER.into(),
+            value: "ops-1".into(),
+        },
+        kavach_storage::BindingSubject {
+            kind: kavach_storage::SubjectKind::Principal,
+            issuer: ISSUER.into(),
+            value: "ops-2".into(),
+        },
+    ];
+    let h = harness_on(config, admin(), |settings| {
+        settings.step_up_acr = Some(ACR.into());
+    })
+    .await;
+
+    let session_cookie = sign_in(&h).await;
+    let mandate = agent_fixture::issue_at(&h.state, "d17-live-review", at).await;
+    let request_id = "d17-live-request";
+    let action = json!({
+        "mandate_id": mandate,
+        "request_id": request_id,
+        "params": { "subject_ref": agent_fixture::SUBJECT, "waiver_bps": 3500 }
+    });
+    let (status, review) = agent_fixture::send(
+        contract::agent_router(h.state.clone()),
+        "/v1/tools/propose_plan",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_fixture::agent_token(AGENT)),
+        )],
+        action.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{review}");
+    assert_eq!(review["decision"], "HUMAN_REVIEW");
+    let record_id = review["record_id"].as_str().expect("review record id");
+
+    let started = send(
+        &h.app(),
+        "POST",
+        &format!("/auth/step-up/{record_id}"),
+        &console(&session_cookie),
+        None,
+    )
+    .await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.text());
+    let step_up_cookie = cookie_value(
+        &started
+            .set_cookie(STEP_UP_COOKIE)
+            .expect("opaque step-up callback cookie"),
+    );
+    let started_body = started.json();
+    let authorization_url = started_body["authorization_url"]
+        .as_str()
+        .expect("step-up authorization URL");
+    let (code, state) = authorize_step_up(authorization_url).await;
+    let mut callback_url =
+        reqwest::Url::parse("http://console.invalid/auth/step-up/callback").unwrap();
+    callback_url
+        .query_pairs_mut()
+        .append_pair("code", &code)
+        .append_pair("state", &state);
+    let callback_creds = vec![(
+        "cookie",
+        format!("{SESSION_COOKIE}={session_cookie}; {STEP_UP_COOKIE}={step_up_cookie}"),
+    )];
+    let callback = send(
+        &h.app(),
+        "GET",
+        &format!("{}?{}", callback_url.path(), callback_url.query().unwrap()),
+        &callback_creds,
+        None,
+    )
+    .await;
+    assert_eq!(
+        (callback.status, callback.location()),
+        (StatusCode::SEE_OTHER, "/"),
+        "{}",
+        callback.text()
+    );
+
+    let approval = send(
+        &h.app(),
+        "POST",
+        &format!("/auth/human-review/{record_id}/approval"),
+        &console(&session_cookie),
+        Some(json!({ "decision": "approve" })),
+    )
+    .await;
+    assert_eq!(approval.status, StatusCode::OK, "{}", approval.text());
+    assert_eq!(approval.json()["decision"], "approve");
+    let approval_body = approval.json();
+    let approval_id = approval_body["approval_id"].as_str().unwrap().to_owned();
+    let execution_id = approval_body["execution_id"].as_str().unwrap().to_owned();
+
+    let mut approved_action = action;
+    approved_action["approval_id"] = json!(approval_id);
+    approved_action["execution_id"] = json!(execution_id);
+    let (status, authorized) = agent_fixture::send(
+        contract::agent_router(h.state.clone()),
+        "/v1/tools/propose_plan",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_fixture::agent_token(AGENT)),
+        )],
+        approved_action.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{authorized}");
+    assert_eq!(authorized["decision"], "PASS");
+    assert_eq!(authorized["outcome_recorded"], false);
+    let approved_record_id = authorized["record_id"].as_str().unwrap();
+    let records = h
+        .state
+        .dataplane()
+        .unwrap()
+        .core()
+        .store()
+        .records("default", 0)
+        .await
+        .expect("signed agent evidence");
+    let approved_record = records
+        .into_iter()
+        .filter_map(kavach_ports::chain_record::ChainRecord::into_decision)
+        .find(|record| record.payload.record_id == approved_record_id)
+        .expect("approved action record");
+    let source = h
+        .state
+        .dataplane()
+        .unwrap()
+        .core()
+        .store()
+        .get_by_request("default", AGENT, request_id)
+        .await
+        .expect("source review evidence")
+        .expect("source review evidence exists");
+    let action_hash = source
+        .payload
+        .review_action_hash
+        .as_deref()
+        .expect("source action digest");
+    let release = h
+        .state
+        .review_approval_store()
+        .release(
+            "default",
+            &approval_id,
+            &execution_id,
+            action_hash,
+            Utc::now(),
+        )
+        .await
+        .expect("release retry")
+        .expect("durable release");
+    assert_eq!(
+        approved_record.payload.policy_decision,
+        kavach_domain::Decision::HumanReview
+    );
+    assert_eq!(
+        approved_record.payload.returned_decision,
+        kavach_domain::Decision::Pass
+    );
+    assert_eq!(
+        approved_record.payload.credential_id.as_deref(),
+        Some(release.single_use_credential_id.as_str())
+    );
+
+    let (status, replay) = agent_fixture::send(
+        contract::agent_router(h.state.clone()),
+        "/v1/tools/propose_plan",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_fixture::agent_token(AGENT)),
+        )],
+        approved_action.clone(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["record_id"], approved_record_id);
+    assert_eq!(replay["replayed"], true);
 }
 
 #[test]

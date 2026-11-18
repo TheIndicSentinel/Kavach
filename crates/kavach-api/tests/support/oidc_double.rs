@@ -100,6 +100,7 @@ struct CodeGrant {
     redirect_uri: String,
     challenge: String,
     nonce: String,
+    acr: Option<String>,
     user: TestUser,
 }
 
@@ -182,13 +183,17 @@ impl Shared {
         }))
     }
 
-    fn id_token(&self, user: &TestUser, nonce: &str, b: &Behaviour) -> String {
-        self.sign(&json!({
+    fn id_token(&self, user: &TestUser, nonce: &str, acr: Option<&str>, b: &Behaviour) -> String {
+        let mut claims = json!({
             "iss": b.id_token_iss.clone().unwrap_or_else(|| self.issuer.clone()),
             "aud": b.id_token_aud.clone().unwrap_or_else(|| self.config.client_id.clone()),
             "sub": user.sub, "nonce": b.id_token_nonce.clone().unwrap_or_else(|| nonce.to_string()),
-            "iat": now(), "exp": now() + 300,
-        }))
+            "iat": now(), "auth_time": now(), "exp": now() + 300,
+        });
+        if let Some(acr) = acr {
+            claims["acr"] = acr.into();
+        }
+        self.sign(&claims)
     }
 
     /// HTTP Basic client authentication (RFC 6749 §2.3.1).
@@ -310,6 +315,16 @@ async fn authorize(
             redirect_uri: field("redirect_uri"),
             challenge: field("code_challenge"),
             nonce: field("nonce"),
+            acr: q.get("claims").and_then(|claims| {
+                serde_json::from_str::<Value>(claims)
+                    .ok()
+                    .and_then(|claims| {
+                        claims
+                            .pointer("/id_token/acr/values/0")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                    })
+            }),
             user,
         },
     );
@@ -428,7 +443,7 @@ async fn token(
                 "access_token": s.access_token(&grant.user, &b),
                 "token_type": "Bearer",
                 "expires_in": b.expires_in,
-                "id_token": s.id_token(&grant.user, &grant.nonce, &b),
+                "id_token": s.id_token(&grant.user, &grant.nonce, grant.acr.as_deref(), &b),
             });
             if b.issue_refresh {
                 let refresh = s.issue();

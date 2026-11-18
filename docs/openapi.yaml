@@ -1186,6 +1186,51 @@ paths:
         "409": { $ref: "#/components/responses/Conflict" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /auth/human-review/{record_id}/approval:
+    post:
+      operationId: decideHumanReview
+      tags: [console-auth]
+      summary: Records one exact-action HUMAN_REVIEW decision (D17).
+      description: |
+        Requires a live reviewer session, Cedar permission and a fresh
+        session-bound step-up proof for the signed action. Approval creates a
+        short-lived release and execution ID; rejection records the decision
+        without permitting agent execution.
+      security:
+        - consoleSession: []
+      parameters:
+        - { name: record_id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/ConsoleHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              additionalProperties: false
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+      responses:
+        "200":
+          description: The decision was recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approval_id, execution_id, decision, expires_at]
+                properties:
+                  approval_id: { type: string }
+                  execution_id: { type: string, nullable: true }
+                  decision: { type: string, enum: [approve, reject] }
+                  expires_at: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /auth/session:
     get:
       operationId: getConsoleSession
