@@ -134,7 +134,7 @@ async fn assert_tampered_projections_fail(owner: &StoragePool, runtime: &Storage
 }
 
 #[tokio::test]
-async fn postgres_authority_projections_are_tenant_scoped_and_read_only_to_runtime() {
+async fn postgres_authority_projections_are_tenant_scoped_with_scoped_runtime_grants() {
     let Some((owner_url, runtime_url)) = isolated_database_urls().await else {
         return;
     };
@@ -191,21 +191,27 @@ async fn postgres_authority_projections_are_tenant_scoped_and_read_only_to_runti
         ErrorClass::Rejected
     );
 
-    for table in [
-        "authority_updates",
-        "consent_current",
-        "contact_preference_current",
+    for (table, privilege, expected) in [
+        ("authority_updates", "INSERT", true),
+        ("authority_updates", "UPDATE", false),
+        ("authority_updates", "DELETE", false),
+        ("authority_updates", "TRUNCATE", false),
+        ("consent_current", "INSERT", false),
+        ("consent_current", "UPDATE", false),
+        ("consent_current", "DELETE", false),
+        ("consent_current", "TRUNCATE", false),
+        ("contact_preference_current", "INSERT", true),
+        ("contact_preference_current", "UPDATE", true),
+        ("contact_preference_current", "DELETE", false),
+        ("contact_preference_current", "TRUNCATE", false),
     ] {
-        for privilege in ["INSERT", "UPDATE", "DELETE", "TRUNCATE"] {
-            let allowed: bool =
-                sqlx::query_scalar("SELECT has_table_privilege(current_user, $1, $2)")
-                    .bind(table)
-                    .bind(privilege)
-                    .fetch_one(&runtime.pool)
-                    .await
-                    .unwrap();
-            assert!(!allowed, "runtime has {privilege} on {table}");
-        }
+        let allowed: bool = sqlx::query_scalar("SELECT has_table_privilege(current_user, $1, $2)")
+            .bind(table)
+            .bind(privilege)
+            .fetch_one(&runtime.pool)
+            .await
+            .unwrap();
+        assert_eq!(allowed, expected, "runtime {privilege} on {table}");
     }
 
     assert_tampered_projections_fail(&owner, &runtime).await;

@@ -36,8 +36,9 @@ pub use jobs_store::{BatchJobRecord, JobQueryError, MemoryBatchJobStore};
 pub use model_governance::{govern_model, GovernedModel, ModelStartupError, ModelStartupRole};
 pub use postgres::{
     connect_options, connect_pool, connect_runtime, connect_runtime_sized, is_weakened, migrate,
-    BatchJobCreate, BatchJobStore, DatabaseTls, DatabaseTlsError, EvidenceSnapshot, JobStoreError,
-    NoopBatchJobStore, PostgresAdminStore, PostgresAgentEvidenceStore, PostgresBatchJobStore,
+    AppliedPreferenceUpdate, BatchJobCreate, BatchJobStore, DatabaseTls, DatabaseTlsError,
+    EvidenceSnapshot, JobStoreError, NoopBatchJobStore, PostgresAdminStore,
+    PostgresAgentEvidenceStore, PostgresAuthorityUpdateStore, PostgresBatchJobStore,
     PostgresChangeStore, PostgresConsentSource, PostgresContactPreferenceSource,
     PostgresEvidenceStore, PostgresIncidentStore, PostgresMandateStore, PostgresReplayGuard,
     PostgresRetentionStore, PostgresReviewApprovalStore, PostgresReviewSnapshotStore,

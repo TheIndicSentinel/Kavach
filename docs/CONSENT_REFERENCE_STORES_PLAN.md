@@ -1,6 +1,6 @@
 # Consent and reference stores — pilot plan
 
-**Status:** Accepted on 2026-11-18. The owner approved signed tenant-bound updates, a dedicated local reference-encryption key with decrypt-only previous keys, and fail-closed contact when a current preference record is missing. Implementation is in slices; the local contracts, read-only Postgres projections and signed update verifier are implemented. Transactional update writes, live withdrawal and gateway selection remain pending.
+**Status:** Accepted on 2026-11-18. The owner approved signed tenant-bound updates, a dedicated local reference-encryption key with decrypt-only previous keys, and fail-closed contact when a current preference record is missing. Implementation is in slices; the local contracts, Postgres projections, signed update verifier and transactional preference writer are implemented. Consent writes, live withdrawal and gateway selection remain pending.
 **Scope:** The next pilot blocker in `AGENTS.md`; PRD D7/FR-8, ADR-004 §5/§7 and ADR-006 §4. Tier 1 remains one tenant per stack (ADR-014). This plan uses local Postgres and file-held keys, with no paid service dependency.
 
 ## Current boundary
@@ -23,17 +23,19 @@
 2. **Reference encryption (recommended):** a dedicated local AES-256-GCM key file and explicit decrypt-only previous keys, following the review-snapshot key rotation pattern. No reuse of the review-snapshot key.
 3. **Missing contact preference (recommended):** fail closed for outbound contact until the authoritative source has supplied a current preference record. This is stricter than the current fixture behavior and requires seeding for pilots.
 
-The first code slice added the backward-compatible consent contract and fixture validation. The next slices added the preference lookup contract, read-only Postgres projections and signed update verifier. Transactional update writes and gateway selection follow in separate reviewed commits. Security claims, migration guidance and acceptance status change with the slice that changes their guarantees.
+The first code slice added the backward-compatible consent contract and fixture validation. The next slices added the preference lookup contract, Postgres projections, signed update verifier and transactional preference writer. Consent writes and gateway selection follow in separate reviewed commits. Security claims, migration guidance and acceptance status change with the slice that changes their guarantees.
 
 ## Signed update envelope and verification boundary
 
 An update is a canonical Ed25519 JWS with `typ` `kavach-authority-update+jws`. Its payload has `update_id`, `tenant_id`, `system`, `occurred_at`, `nonce` and a `change` tagged as `consent` or `contact_preference` with a `record`. The signer must be registered for that exact tenant and source system in the governed mandate configuration. Signed consent changes require an explicit artefact: active means grant, revoked means withdrawal; expiry is time based. Preference changes carry `allowed` or `opted_out`. The record tenant must match the signed envelope, and subject references must be capabilities.
 
-Grants and preference allows require a trusted clock and the existing SoR freshness window, capped at 60 seconds into the future. Withdrawals and opt-outs may arrive late or during clock uncertainty because they reduce authority. The verifier returns the canonical payload SHA-256 for durable update-ID idempotency in the next storage-write slice. No API route accepts these updates yet; this contract alone does not change live consent or contact decisions.
+Grants and preference allows require a trusted clock and the existing SoR freshness window, capped at 60 seconds into the future. Withdrawals and opt-outs may arrive late or during clock uncertainty because they reduce authority. The verifier returns the canonical payload SHA-256 for durable update-ID idempotency. No API route accepts these updates yet; this contract alone does not change live consent or contact decisions.
+
+Migration 034 lets the runtime append to `authority_updates` and insert/update `contact_preference_current`; `consent_current` stays read-only. `PostgresAuthorityUpdateStore` accepts only a `VerifiedAuthorityUpdate`, locks updates by tenant, and commits the history and current row in one transaction. An exact `(tenant, source, update_id)` retry returns the stored outcome; a changed payload is refused. The first registered source to write a preference pins its source system. A late opt-out may supersede an allow. An allow may renew a still-allowed preference only when its signed occurrence time advances; it cannot reopen an opt-out in this slice. This conservative boundary avoids treating a delayed old allow as a new opt-in. The API still does not select this writer or the Postgres lookup; the next slice must handle consent withdrawal atomically with mandate revocation before live rollout.
 
 ## Migration and current rollout boundary
 
-Migration 033 adds append-only `authority_updates` history and tenant-scoped `consent_current` and `contact_preference_current` projections. The runtime role has SELECT only on these tables. The read adapters compare a projection with its source history row and validate its tenant and key before returning it. The migration does not backfill existing development fixtures, and the API still selects its fixture adapter. The signed update slice will own transactional writes and version advances before the gateway selects these projections for pilot use.
+Migration 033 adds append-only `authority_updates` history and tenant-scoped `consent_current` and `contact_preference_current` projections. Migration 034 grants the runtime only the preference-write permissions described above; consent remains read-only. The read adapters compare a projection with its source history row and validate its tenant and key before returning it. The migrations do not backfill existing development fixtures, and the API still selects its fixture adapter. Consent writes and gateway selection follow in separate slices.
 
 ## References
 

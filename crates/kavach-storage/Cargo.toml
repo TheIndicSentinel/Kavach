@@ -11,6 +11,7 @@ tracing = { workspace = true }
 kavach-domain = { workspace = true }
 kavach-evaluate = { workspace = true }
 kavach-evidence = { workspace = true }
+kavach-mandate = { workspace = true }
 kavach-ports = { workspace = true }
 chrono.workspace = true
 serde.workspace = true

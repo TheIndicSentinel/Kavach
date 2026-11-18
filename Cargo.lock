@@ -2580,6 +2580,7 @@ dependencies = [
  "kavach-evaluate",
  "kavach-evidence",
  "kavach-keys",
+ "kavach-mandate",
  "kavach-policy",
  "kavach-ports",
  "kavach-ports-testkit",
