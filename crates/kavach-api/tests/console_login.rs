@@ -1551,11 +1551,33 @@ fn d17_step_up_acr_is_bounded_and_rejects_controls_or_surrounding_space() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn d17_live_step_up_decision_and_approved_agent_execution_are_bound_to_one_action() {
+async fn d17_live_step_up_decision_and_approved_agent_execution_in_memory() {
+    d17_live_step_up_decision_and_approved_agent_execution(EvidenceStoreKind::Memory, None).await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn d17_live_step_up_decision_and_approved_agent_execution_on_postgres() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    d17_live_step_up_decision_and_approved_agent_execution(
+        EvidenceStoreKind::Postgres {
+            database_url: runtime,
+        },
+        Some(owner),
+    )
+    .await;
+}
+
+async fn d17_live_step_up_decision_and_approved_agent_execution(
+    store: EvidenceStoreKind,
+    migration_database_url: Option<String>,
+) {
     const ACR: &str = "urn:kavach:test:webauthn";
     let at = Utc::now() - Duration::seconds(5);
     let clock = Arc::new(FakeClock::synced_at(at));
-    let mut config = agent_fixture::config(EvidenceStoreKind::Memory, true, 50);
+    let mut config = agent_fixture::config(store, true, 50);
+    config.migration_database_url = migration_database_url;
     config.dataplane.as_mut().unwrap().test_clock = Some(TestClock(clock));
     agent_fixture::enable_review_snapshots(&mut config);
     // Exercise the production Cedar path with a bootstrapped superadmin,
