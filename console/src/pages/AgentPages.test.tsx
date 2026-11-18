@@ -213,7 +213,9 @@ describe("AgentEvidencePage states", () => {
     expect(text(html)).toContain("3500 bps");
     expect(text(html)).toContain("This view does not approve or release it.");
     expect(text(html)).toContain("Continue to passkey verification");
-    expect(text(html)).toContain("Completing it does not approve or release the action.");
+    expect(text(html)).toContain("After verification, choose approve or reject.");
+    expect(text(html)).toContain("Approve exact action");
+    expect(text(html)).toContain("Reject exact action");
     expect(html).toContain('id="human-review-record-id"');
   });
 

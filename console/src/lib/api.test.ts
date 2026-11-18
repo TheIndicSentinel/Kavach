@@ -6,6 +6,7 @@ import {
   fetchAgentDecision,
   fetchHumanReviewSnapshot,
   beginHumanReviewStepUp,
+  decideHumanReview,
   fetchAgents,
   fetchAccessReviewCsv,
   fetchRevocationRecord,
@@ -171,6 +172,20 @@ describe("agent calls", () => {
     await beginHumanReviewStepUp("adr:t:0:1");
     expect(seen.mock.calls[0][0]).toBe("/auth/step-up/adr%3At%3A0%3A1");
     expect(seen.mock.calls[0][1]?.method).toBe("POST");
+    expect((seen.mock.calls[0][1]?.headers as Record<string, string>)["X-Kavach-Console"]).toBe("1");
+  });
+
+  it("submits an explicit exact-action decision with the console CSRF header", async () => {
+    const seen = capture({
+      approval_id: "approval-1",
+      execution_id: "execution-1",
+      decision: "approve",
+      expires_at: "2026-11-17T12:30:00Z",
+    });
+    await decideHumanReview("adr:t:0:1", "approve");
+    expect(seen.mock.calls[0][0]).toBe("/auth/human-review/adr%3At%3A0%3A1/approval");
+    expect(seen.mock.calls[0][1]?.method).toBe("POST");
+    expect(seen.mock.calls[0][1]?.body).toBe(JSON.stringify({ decision: "approve" }));
     expect((seen.mock.calls[0][1]?.headers as Record<string, string>)["X-Kavach-Console"]).toBe("1");
   });
 

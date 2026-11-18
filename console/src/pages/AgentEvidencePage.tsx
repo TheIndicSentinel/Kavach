@@ -17,11 +17,13 @@ import { LOOKUP_MAX_LENGTH, idProblem, recordIdProblem } from "../lib/agents";
 import {
   fetchAgentDecision,
   beginHumanReviewStepUp,
+  decideHumanReview,
   fetchHumanReviewSnapshot,
   fetchRevocationRecord,
   fetchUnknownOutcomeReviews,
   type AgentDecisionLookup,
   type HumanReviewSnapshot,
+  type HumanReviewDecisionResult,
   type RevocationLookup,
   type UnknownOutcomeReviewPage,
 } from "../lib/api";
@@ -124,6 +126,9 @@ function HumanReviewLookup({
   const [problem, setProblem] = useState<string | null>(null);
   const [stepUpError, setStepUpError] = useState<unknown>(null);
   const [startingStepUp, setStartingStepUp] = useState(false);
+  const [decisionError, setDecisionError] = useState<unknown>(null);
+  const [savingDecision, setSavingDecision] = useState(false);
+  const [decisionResult, setDecisionResult] = useState<HumanReviewDecisionResult | null>(null);
   const { lookup, run } = useLookup<HumanReviewSnapshot>(initial);
   const hint = roleHint(viewer, "approve_human_review", "review HUMAN_REVIEW actions");
 
@@ -137,6 +142,20 @@ function HumanReviewLookup({
     } catch (error) {
       setStepUpError(error);
       setStartingStepUp(false);
+    }
+  }
+
+  async function decide(recordId: string, decision: "approve" | "reject") {
+    if (savingDecision) return;
+    setSavingDecision(true);
+    setDecisionError(null);
+    setDecisionResult(null);
+    try {
+      setDecisionResult(await decideHumanReview(recordId, decision));
+    } catch (error) {
+      setDecisionError(error);
+    } finally {
+      setSavingDecision(false);
     }
   }
 
@@ -209,7 +228,7 @@ function HumanReviewLookup({
                 </dl>
                 <div className="mt-5 border-t border-border pt-4">
                   <p className="mb-3 text-sm text-muted">
-                    Passkey verification is bound to this exact action. Completing it does not approve or release the action.
+                    Passkey verification is bound to this exact action. After verification, choose approve or reject. Approval records a short-lived execution handoff; it does not send the action.
                   </p>
                   <Button
                     variant="secondary"
@@ -223,6 +242,37 @@ function HumanReviewLookup({
                     {startingStepUp ? "Starting the identity-provider step-up flow…" : ""}
                   </p>
                   <ProblemAlert error={stepUpError} className="mt-3" />
+                </div>
+                <div className="mt-4 border-t border-border pt-4">
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      disabled={savingDecision}
+                      onClick={() => void decide(result.record_id, "approve")}
+                    >
+                      {savingDecision ? "Recording decision…" : "Approve exact action"}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      disabled={savingDecision}
+                      onClick={() => void decide(result.record_id, "reject")}
+                    >
+                      Reject exact action
+                    </Button>
+                  </div>
+                  <ProblemAlert error={decisionError} className="mt-3" />
+                  {decisionResult && (
+                    <div role="status" aria-live="polite" className="mt-3 rounded-lg border border-border bg-surface p-3 text-sm">
+                      <p>Decision recorded: <strong>{decisionResult.decision}</strong>. Expires {new Date(decisionResult.expires_at).toLocaleString()}.</p>
+                      {decisionResult.decision === "approve" && decisionResult.execution_id && (
+                        <dl className="mt-2 grid gap-2 sm:grid-cols-[max-content_1fr]">
+                          <dt className="text-muted">Approval ID</dt><dd className="break-all font-mono text-xs">{decisionResult.approval_id}</dd>
+                          <dt className="text-muted">Execution ID</dt><dd className="break-all font-mono text-xs">{decisionResult.execution_id}</dd>
+                          <dt className="text-muted">Agent handoff</dt><dd>Send both IDs with the original request ID and unchanged action parameters.</dd>
+                        </dl>
+                      )}
+                      {decisionResult.decision === "reject" && <p className="mt-1">The action was rejected and cannot be executed from this decision.</p>}
+                    </div>
+                  )}
                 </div>
               </div>
             )}
