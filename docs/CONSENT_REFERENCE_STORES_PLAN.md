@@ -1,6 +1,6 @@
 # Consent and reference stores — pilot plan
 
-**Status:** Accepted on 2026-11-18. The owner approved signed tenant-bound updates, a dedicated local reference-encryption key with decrypt-only previous keys, and fail-closed contact when a current preference record is missing. Implementation is in slices; the consent-fixture contract and contact-preference lookup contract are implemented. The preference source is not yet wired into the gateway.
+**Status:** Accepted on 2026-11-18. The owner approved signed tenant-bound updates, a dedicated local reference-encryption key with decrypt-only previous keys, and fail-closed contact when a current preference record is missing. Implementation is in slices; the local contracts and read-only Postgres projections are implemented. Signed updates and gateway selection remain pending.
 **Scope:** The next pilot blocker in `AGENTS.md`; PRD D7/FR-8, ADR-004 §5/§7 and ADR-006 §4. Tier 1 remains one tenant per stack (ADR-014). This plan uses local Postgres and file-held keys, with no paid service dependency.
 
 ## Current boundary
@@ -23,7 +23,11 @@
 2. **Reference encryption (recommended):** a dedicated local AES-256-GCM key file and explicit decrypt-only previous keys, following the review-snapshot key rotation pattern. No reuse of the review-snapshot key.
 3. **Missing contact preference (recommended):** fail closed for outbound contact until the authoritative source has supplied a current preference record. This is stricter than the current fixture behavior and requires seeding for pilots.
 
-After approval, the first code slice is the backward-compatible consent contract and fixture validation. Persistent stores and gateway selection follow in separate reviewed commits. Security claims, migration guidance and acceptance status change with the slice that changes their guarantees.
+The first code slice added the backward-compatible consent contract and fixture validation. The next slices added the preference lookup contract and read-only Postgres projections. Signed updates and gateway selection follow in separate reviewed commits. Security claims, migration guidance and acceptance status change with the slice that changes their guarantees.
+
+## Migration and current rollout boundary
+
+Migration 033 adds append-only `authority_updates` history and tenant-scoped `consent_current` and `contact_preference_current` projections. The runtime role has SELECT only on these tables. The read adapters compare a projection with its source history row and validate its tenant and key before returning it. The migration does not backfill existing development fixtures, and the API still selects its fixture adapter. The signed update slice will own transactional writes and version advances before the gateway selects these projections for pilot use.
 
 ## References
 

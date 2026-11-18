@@ -3,6 +3,7 @@
 mod admin;
 mod agent_evidence;
 mod change_requests;
+mod consent_preferences;
 mod evidence;
 mod export;
 mod human_review;
@@ -19,6 +20,7 @@ mod tls;
 pub use admin::PostgresAdminStore;
 pub use agent_evidence::PostgresAgentEvidenceStore;
 pub use change_requests::PostgresChangeStore;
+pub use consent_preferences::{PostgresConsentSource, PostgresContactPreferenceSource};
 
 pub use evidence::PostgresEvidenceStore;
 pub use export::EvidenceSnapshot;
@@ -109,6 +111,14 @@ impl StoragePool {
 
     pub fn mandate_store(&self) -> PostgresMandateStore {
         PostgresMandateStore::new(self.pool.clone())
+    }
+
+    pub fn consent_source(&self) -> PostgresConsentSource {
+        PostgresConsentSource::new(self.pool.clone())
+    }
+
+    pub fn contact_preference_source(&self) -> PostgresContactPreferenceSource {
+        PostgresContactPreferenceSource::new(self.pool.clone())
     }
 
     pub fn replay_guard(&self) -> PostgresReplayGuard {
