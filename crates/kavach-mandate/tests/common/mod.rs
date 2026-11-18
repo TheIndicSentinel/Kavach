@@ -37,6 +37,7 @@ pub struct Fixture {
     pub service: Service,
     pub sor: InMemoryKeyProvider,
     pub now: DateTime<Utc>,
+    pub config: MandateConfig,
 }
 
 impl Fixture {
@@ -167,9 +168,14 @@ pub fn try_fixture(
             events: InMemoryEventBus::new(),
             clock: FakeClock::synced_at(now),
         },
-        config,
+        config.clone(),
     )?;
-    Ok(Fixture { service, sor, now })
+    Ok(Fixture {
+        service,
+        sor,
+        now,
+        config,
+    })
 }
 
 pub fn fixture() -> Fixture {

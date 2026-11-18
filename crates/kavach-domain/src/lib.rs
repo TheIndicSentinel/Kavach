@@ -4,6 +4,7 @@
 //! dependency inversion via traits in future crates.
 
 pub mod agent;
+pub mod authority;
 pub mod decision;
 pub mod error;
 pub mod golden;
