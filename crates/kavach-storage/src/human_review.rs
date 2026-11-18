@@ -96,6 +96,10 @@ impl ReviewApprovalStore for MemoryReviewApprovalStore {
                         .clone()
                         .ok_or_else(|| PortError::invalid("approval has no execution id"))?,
                     action_hash: record.action_hash.clone(),
+                    single_use_credential_id: record
+                        .single_use_credential_id
+                        .clone()
+                        .ok_or_else(|| PortError::invalid("approval has no credential id"))?,
                     approver: record.approver.clone(),
                     released_at: now,
                 };
@@ -198,6 +202,7 @@ mod tests {
                 review_record_id: "adr:tenant-1:0:1".into(),
                 execution_id: "execution-approval-1".into(),
                 action_hash: hash.clone(),
+                single_use_credential_id: approval.single_use_credential_id.clone().unwrap(),
                 approver: approval.approver.clone(),
                 released_at: now(),
             })

@@ -72,7 +72,7 @@ impl ReviewApprovalStore for PostgresReviewApprovalStore {
              WHERE tenant_id = $1 AND approval_id = $2 AND action_hash = $3 \
                AND execution_id = $5 AND decision = 'approve' \
                AND expires_at > $4 AND consumed_at IS NULL \
-             RETURNING review_record_id, approver",
+             RETURNING review_record_id, approver, single_use_credential_id",
         )
         .bind(tenant_id)
         .bind(approval_id)
@@ -91,6 +91,9 @@ impl ReviewApprovalStore for PostgresReviewApprovalStore {
                     .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
                 execution_id: execution_id.to_owned(),
                 action_hash: action_hash.to_owned(),
+                single_use_credential_id: row
+                    .try_get("single_use_credential_id")
+                    .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
                 approver: row
                     .try_get("approver")
                     .map_err(|_| PortError::unavailable("stored review approval is malformed"))?,
@@ -100,14 +103,15 @@ impl ReviewApprovalStore for PostgresReviewApprovalStore {
             sqlx::query(
                 "INSERT INTO human_review_releases \
                     (tenant_id, execution_id, approval_id, review_record_id, action_hash, \
-                     approver, released_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                     single_use_credential_id, approver, released_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind(&release.tenant_id)
             .bind(&release.execution_id)
             .bind(&release.approval_id)
             .bind(&release.review_record_id)
             .bind(&release.action_hash)
+            .bind(&release.single_use_credential_id)
             .bind(&release.approver)
             .bind(release.released_at)
             .execute(&mut *tx)
@@ -121,7 +125,7 @@ impl ReviewApprovalStore for PostgresReviewApprovalStore {
 
         let existing = sqlx::query(
             "SELECT tenant_id, approval_id, review_record_id, execution_id, action_hash, \
-                    approver, released_at \
+                    single_use_credential_id, approver, released_at \
              FROM human_review_releases \
              WHERE tenant_id = $1 AND execution_id = $2 AND approval_id = $3 \
                AND action_hash = $4",
@@ -154,6 +158,9 @@ impl ReviewApprovalStore for PostgresReviewApprovalStore {
                     action_hash: row.try_get("action_hash").map_err(|_| {
                         PortError::unavailable("stored review release is malformed")
                     })?,
+                    single_use_credential_id: row.try_get("single_use_credential_id").map_err(
+                        |_| PortError::unavailable("stored review release is malformed"),
+                    )?,
                     approver: row.try_get("approver").map_err(|_| {
                         PortError::unavailable("stored review release is malformed")
                     })?,

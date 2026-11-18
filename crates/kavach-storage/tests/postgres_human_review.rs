@@ -98,6 +98,7 @@ async fn runtime_role_releases_an_approval_once_for_its_exact_execution() {
             review_record_id: "adr:tenant-1:0:1".into(),
             execution_id: "execution-approval-1".into(),
             action_hash: hash.clone(),
+            single_use_credential_id: approval.single_use_credential_id.clone().unwrap(),
             approver: approval.approver.clone(),
             released_at: now(),
         })
@@ -170,7 +171,7 @@ async fn concurrent_postgres_release_retries_return_the_same_execution_record() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn approval_history_cannot_be_edited_deleted_or_truncated() {
+async fn approval_and_release_history_cannot_be_forged_edited_deleted_or_truncated() {
     let Some((owner_url, runtime_url)) = isolated_database_urls().await else {
         return;
     };
@@ -187,6 +188,22 @@ async fn approval_history_cannot_be_edited_deleted_or_truncated() {
         .insert(approval.clone())
         .await
         .unwrap();
+    let release = runtime
+        .review_approval_store()
+        .release(
+            &approval.tenant_id,
+            &approval.approval_id,
+            approval.execution_id.as_deref().unwrap(),
+            &approval.action_hash,
+            now(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        release.single_use_credential_id,
+        approval.single_use_credential_id.clone().unwrap()
+    );
 
     assert!(sqlx::query(
         "UPDATE human_review_approvals SET rendered_action = 'tampered' \
@@ -206,6 +223,42 @@ async fn approval_history_cannot_be_edited_deleted_or_truncated() {
     .await
     .is_err());
     assert!(sqlx::query("TRUNCATE human_review_approvals")
+        .execute(&owner.pool)
+        .await
+        .is_err());
+    assert!(sqlx::query(
+        "INSERT INTO human_review_releases \
+            (tenant_id, execution_id, approval_id, review_record_id, action_hash, \
+             single_use_credential_id, approver, released_at) \
+         VALUES ($1, 'forged-execution', $2, $3, $4, 'credential-forged', $5, $6)",
+    )
+    .bind(&release.tenant_id)
+    .bind(&release.approval_id)
+    .bind(&release.review_record_id)
+    .bind(&release.action_hash)
+    .bind(&release.approver)
+    .bind(release.released_at)
+    .execute(&owner.pool)
+    .await
+    .is_err());
+    assert!(sqlx::query(
+        "UPDATE human_review_releases SET single_use_credential_id = 'tampered' \
+         WHERE tenant_id = $1 AND execution_id = $2",
+    )
+    .bind(&release.tenant_id)
+    .bind(&release.execution_id)
+    .execute(&owner.pool)
+    .await
+    .is_err());
+    assert!(sqlx::query(
+        "DELETE FROM human_review_releases WHERE tenant_id = $1 AND execution_id = $2",
+    )
+    .bind(&release.tenant_id)
+    .bind(&release.execution_id)
+    .execute(&owner.pool)
+    .await
+    .is_err());
+    assert!(sqlx::query("TRUNCATE human_review_releases")
         .execute(&owner.pool)
         .await
         .is_err());

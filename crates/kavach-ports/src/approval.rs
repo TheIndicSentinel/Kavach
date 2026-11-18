@@ -296,7 +296,7 @@ impl ReviewApprovalRecord {
             self.execution_id.as_deref(),
         ) {
             (ReviewDecision::Approve, Some(credential), Some(execution))
-                if !credential.is_empty() && is_approval_id(execution) =>
+                if is_approval_id(credential) && is_approval_id(execution) =>
             {
                 Ok(())
             }
@@ -344,6 +344,8 @@ pub struct ReviewReleaseRecord {
     pub review_record_id: String,
     pub execution_id: String,
     pub action_hash: String,
+    /// One-use resource credential identity retained for the later broker handoff.
+    pub single_use_credential_id: String,
     pub approver: String,
     pub released_at: DateTime<Utc>,
 }
@@ -356,6 +358,7 @@ impl ReviewReleaseRecord {
             || !is_approval_id(&self.execution_id)
             || self.approver.is_empty()
             || !is_action_hash(&self.action_hash)
+            || !is_approval_id(&self.single_use_credential_id)
         {
             return Err(PortError::invalid("human-review release record is invalid"));
         }

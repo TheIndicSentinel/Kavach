@@ -1419,6 +1419,10 @@ mod step_up_backend_tests {
             .expect("matching approval");
         assert_eq!(release.review_record_id, record.review_record_id);
         assert_eq!(release.execution_id, "execution-a");
+        assert_eq!(
+            release.single_use_credential_id,
+            record.single_use_credential_id.clone().unwrap()
+        );
         assert!(store
             .release(
                 "tenant-a",
