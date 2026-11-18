@@ -1678,6 +1678,20 @@ async fn d17_live_step_up_decision_and_approved_agent_execution(
     let approval_body = approval.json();
     let approval_id = approval_body["approval_id"].as_str().unwrap().to_owned();
     let execution_id = approval_body["execution_id"].as_str().unwrap().to_owned();
+    let reused_proof = send(
+        &h.app(),
+        "POST",
+        &format!("/auth/human-review/{record_id}/approval"),
+        &console(&session_cookie),
+        Some(json!({ "decision": "approve" })),
+    )
+    .await;
+    assert_eq!(
+        reused_proof.status,
+        StatusCode::CONFLICT,
+        "{}",
+        reused_proof.text()
+    );
 
     let mut approved_action = action;
     approved_action["approval_id"] = json!(approval_id);
