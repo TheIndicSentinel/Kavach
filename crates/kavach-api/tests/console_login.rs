@@ -1764,6 +1764,43 @@ async fn d17_live_step_up_decision_and_approved_agent_execution(
     assert_eq!(status, StatusCode::OK, "{replay}");
     assert_eq!(replay["record_id"], approved_record_id);
     assert_eq!(replay["replayed"], true);
+
+    let mut altered_action = approved_action.clone();
+    altered_action["params"]["waiver_bps"] = json!(3400);
+    let (status, altered) = agent_fixture::send(
+        contract::agent_router(h.state.clone()),
+        "/v1/tools/propose_plan",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_fixture::agent_token(AGENT)),
+        )],
+        altered_action,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{altered}");
+
+    let mut without_release = approved_action;
+    without_release
+        .as_object_mut()
+        .unwrap()
+        .remove("approval_id");
+    without_release
+        .as_object_mut()
+        .unwrap()
+        .remove("execution_id");
+    let (status, session_only) = agent_fixture::send(
+        contract::agent_router(h.state.clone()),
+        "/v1/tools/propose_plan",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_fixture::agent_token(AGENT)),
+        )],
+        without_release,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{session_only}");
+    assert_eq!(session_only["decision"], "HUMAN_REVIEW");
+    assert_eq!(session_only["record_id"], record_id);
 }
 
 #[test]
