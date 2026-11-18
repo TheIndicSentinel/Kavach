@@ -292,6 +292,8 @@ pub struct GatewayDeps<'a, V, S, R, B, F, O> {
     pub forwarder: &'a F,
     /// Optional per-provider dispatch for gateway-held provider tokens.
     pub gateway_held: Option<&'a GatewayHeldDispatch<'a>>,
+    /// A release atomically consumed by the host for this exact request.
+    pub approval_release: Option<&'a kavach_ports::ReviewReleaseRecord>,
     pub observer: &'a O,
 }
 
@@ -349,10 +351,12 @@ where
         .extract(tool, request)
         .map_err(|e| GatewayError::Invalid(e.message))?;
     let started = Instant::now();
-    let decided = core
-        .authorize(agent, &call, Mode::Commit)
-        .await
-        .map_err(|e| GatewayError::Invalid(e.message))?;
+    let decided = if let Some(release) = deps.approval_release {
+        core.authorize_released(agent, &call, release).await
+    } else {
+        core.authorize(agent, &call, Mode::Commit).await
+    }
+    .map_err(|e| GatewayError::Invalid(e.message))?;
     let authorize_time = started.elapsed();
     let commit_time = decided.commit_time.unwrap_or_default();
     deps.observer

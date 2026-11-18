@@ -731,7 +731,11 @@ pub fn complete_payload(
     payload.prev_hash = prev_hash.to_string();
     payload.kind = KIND_AGENT_DECISION.into();
     payload.hash_alg = HASH_ALG_V2.into();
-    payload.policy_decision = final_decision;
+    // A released D17 action remains a policy HUMAN_REVIEW. The approval
+    // changes the returned authorization result, not what policy decided.
+    if request.binding.approval_id.is_none() {
+        payload.policy_decision = final_decision;
+    }
     payload.returned_decision = final_decision;
     if let Some(reason) = reason {
         payload.signals.push(reason.to_string());
@@ -747,7 +751,7 @@ pub fn complete_payload(
         payload.credential_id = None;
         payload.credential_expires_at = None;
     }
-    if final_decision != Decision::HumanReview {
+    if payload.policy_decision != Decision::HumanReview {
         payload.review_action_hash = None;
     }
     payload.time_sync = now.sync.into();

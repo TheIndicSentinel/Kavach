@@ -45,6 +45,7 @@ use kavach_ports::chain_record::{
 };
 use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::CredentialBroker;
+use kavach_ports::ReviewApprovalStore as _;
 use kavach_ports::{
     ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey, ReplayGuard,
     RevocationCursor, StoredMandate, StoredRevocation, SyncStatus, TimeSource, TrustedNow,
@@ -2097,16 +2098,45 @@ pub async fn tool_call(
         refuse(StatusCode::BAD_REQUEST, message)
     };
     // The parser's message can quote values, so it is not echoed.
-    let StrictJson(request) = body.map_err(|_| {
+    let StrictJson(mut request) = body.map_err(|_| {
         malformed(
             "malformed body: expected JSON with mandate_id, request_id, optional approval_id and execution_id, params".into(),
         )
     })?;
     // The registry's own check first, for a refusal with its code; the
     // gateway runs the same check (one validation path).
-    if let Err(refusal) = dp.core.tools().check(&tool, request.clone()) {
-        metrics.observe_gateway_malformed();
-        return Err(refuse_tool(refusal));
+    let checked_call = match dp.core.tools().check(&tool, request.clone()) {
+        Ok(call) => call,
+        Err(refusal) => {
+            metrics.observe_gateway_malformed();
+            return Err(refuse_tool(refusal));
+        }
+    };
+    // Consume only a release matching this authenticated caller's extracted
+    // action. Missing, expired or unavailable releases leave the original
+    // HUMAN_REVIEW request untouched and therefore non-forwardable.
+    let release = match (
+        request.approval_id.as_deref(),
+        request.execution_id.as_deref(),
+        dp.core.trusted_now(),
+    ) {
+        (Some(approval_id), Some(execution_id), Some(now)) => {
+            match dp.core.review_action_digest(&agent, &checked_call) {
+                Ok(action_hash) => state
+                    .review_approval_store()
+                    .release(&dp.tenant, approval_id, execution_id, &action_hash, now)
+                    .await
+                    .ok()
+                    .flatten(),
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
+    if release.is_none() {
+        // Do not key an unapproved HUMAN_REVIEW retry by execution id.
+        request.approval_id = None;
+        request.execution_id = None;
     }
     // Log the registry's tool name, never the caller's path text.
     let tool_label = dp
@@ -2124,6 +2154,7 @@ pub async fn tool_call(
     let task_state = Arc::clone(&state);
     let (task_agent, task_tool) = (agent.clone(), tool.clone());
     let (review_tool, review_request) = (tool.clone(), request.clone());
+    let approval_release = release;
     let started = tokio::spawn(async move {
         let _counted = guard;
         let Some(dp) = task_state.dataplane() else {
@@ -2137,6 +2168,7 @@ pub async fn tool_call(
             broker: &*dp.broker,
             forwarder: &*dp.forwarder,
             gateway_held: None,
+            approval_release: approval_release.as_ref(),
             observer: task_state.metrics(),
         };
         execute(&deps, &task_agent, &task_tool, request).await

@@ -321,6 +321,7 @@ impl World {
             broker: &self.broker,
             forwarder: &self.forwarder,
             gateway_held: None,
+            approval_release: None,
             observer: &self.observer,
         };
         execute(

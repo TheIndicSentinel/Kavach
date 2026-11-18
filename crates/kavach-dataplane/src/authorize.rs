@@ -741,6 +741,21 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         &self.tools
     }
 
+    /// Computes the same tenant, agent and registry bound digest used by
+    /// committed HUMAN_REVIEW evidence.
+    pub fn review_action_digest(
+        &self,
+        agent: &AgentIdentity,
+        call: &ToolCall,
+    ) -> Result<String, PortError> {
+        let registry = self
+            .versions
+            .tools
+            .as_deref()
+            .ok_or_else(|| PortError::unavailable("tool registry digest is unavailable"))?;
+        crate::review_action_hash(&self.config.tenant_id, agent, registry, call)
+    }
+
     /// Decides a tool call. `Err` only for a malformed request (`Invalid`,
     /// HTTP 400); every other failure is a BLOCK-shaped `Decided`.
     pub async fn authorize(
@@ -748,6 +763,29 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         agent: &AgentIdentity,
         call: &ToolCall,
         mode: Mode,
+    ) -> Result<Decided, PortError> {
+        self.authorize_inner(agent, call, mode, None).await
+    }
+
+    /// Applies a durable, exact-action D17 release to a matching review.
+    /// The release is only an input to this verifier: policy is reevaluated,
+    /// and only a resulting HUMAN_REVIEW can be lifted.
+    pub async fn authorize_released(
+        &self,
+        agent: &AgentIdentity,
+        call: &ToolCall,
+        release: &kavach_ports::ReviewReleaseRecord,
+    ) -> Result<Decided, PortError> {
+        self.authorize_inner(agent, call, Mode::Commit, Some(release))
+            .await
+    }
+
+    async fn authorize_inner(
+        &self,
+        agent: &AgentIdentity,
+        call: &ToolCall,
+        mode: Mode,
+        release: Option<&kavach_ports::ReviewReleaseRecord>,
     ) -> Result<Decided, PortError> {
         validate_request_id(&call.request_id)?;
         let action = AgentAction::from_name(&call.action)
@@ -759,7 +797,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         let tenant = &self.config.tenant_id;
 
         let verified = self.verifier.verify(tenant, &call.mandate_id).await;
-        let (decision, reasons, mandate_view) = match verified {
+        let (policy_decision, reasons, mandate_view) = match verified {
             Err(err) => {
                 let reason = if err.class == ErrorClass::Unavailable {
                     "dependency_unavailable"
@@ -791,6 +829,42 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             },
         };
 
+        let released = if let Some(release) = release {
+            let expected_hash = self
+                .versions
+                .tools
+                .as_deref()
+                .and_then(|digest| crate::review_action_hash(tenant, agent, digest, call).ok());
+            let source = self
+                .store
+                .get_by_request(tenant, &agent.agent_id, &call.request_id)
+                .await
+                .ok()
+                .flatten();
+            let valid = call.approval_id.as_deref() == Some(release.approval_id.as_str())
+                && call.execution_id.as_deref() == Some(release.execution_id.as_str())
+                && release.tenant_id == *tenant
+                && expected_hash.as_deref() == Some(release.action_hash.as_str())
+                && source.as_ref().is_some_and(|record| {
+                    record.payload.record_id == release.review_record_id
+                        && record.payload.tenant_id == *tenant
+                        && record.payload.actor.agent_id == agent.agent_id
+                        && record.payload.policy_decision == Decision::HumanReview
+                        && record.payload.returned_decision == Decision::HumanReview
+                        && record.payload.review_action_hash.as_deref()
+                            == Some(release.action_hash.as_str())
+                });
+            valid.then_some(release)
+        } else {
+            None
+        };
+
+        let decision = if policy_decision == Decision::HumanReview && released.is_some() {
+            Decision::Pass
+        } else {
+            policy_decision
+        };
+
         if mode == Mode::Precheck {
             self.prechecks.fetch_add(1, Ordering::Relaxed);
             return Ok(Decided {
@@ -808,9 +882,11 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
                 action,
                 call,
                 assessment,
+                policy_decision,
                 decision,
                 reasons,
                 mandate_view.as_ref(),
+                released.map(|r| r.single_use_credential_id.as_str()),
             )
             .await)
     }
@@ -934,18 +1010,22 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         action: AgentAction,
         call: &ToolCall,
         assessment: Assessment,
+        policy_decision: Decision,
         decision: Decision,
         reasons: Vec<String>,
         mandate_view: Option<&(Mandate, Vec<String>)>,
+        credential_id: Option<&str>,
     ) -> Decided {
         let request = self.commit_request(
             agent,
             action,
             call,
             assessment,
+            policy_decision,
             decision,
             reasons,
             mandate_view,
+            credential_id,
         );
         let started = std::time::Instant::now();
         let result = self
@@ -965,9 +1045,11 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         action: AgentAction,
         call: &ToolCall,
         assessment: Assessment,
+        policy_decision: Decision,
         decision: Decision,
         reasons: Vec<String>,
         mandate_view: Option<&(Mandate, Vec<String>)>,
+        credential_id: Option<&str>,
     ) -> CommitRequest {
         let (mandate, chain) = match mandate_view {
             Some((m, c)) => (Some(m), c.clone()),
@@ -983,7 +1065,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             });
         // Keep only the action digest on the signed review decision. The
         // canonical parameters are transient and zeroized by this helper.
-        let (decision, reasons, review_action_hash) = if decision == Decision::HumanReview {
+        let (decision, reasons, review_action_hash) = if policy_decision == Decision::HumanReview {
             match self.versions.tools.as_deref().and_then(|registry_digest| {
                 crate::review_action_hash(&self.config.tenant_id, agent, registry_digest, call).ok()
             }) {
@@ -1024,7 +1106,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             policy_versions: self.versions.clone(),
             signals: reasons,
             pre_commit_decision: decision,
-            policy_decision: decision,
+            policy_decision,
             returned_decision: decision,
             obligations: Vec::new(),
             credential_id: None,
@@ -1052,7 +1134,8 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             draft,
             contact,
             // Unguessable; the credential is minted with this `jti`.
-            credential_id: uuid::Uuid::new_v4().to_string(),
+            credential_id: credential_id
+                .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned),
             credential_ttl: self.config.credential_ttl,
             max_clock_error_ms: self.config.max_clock_error_ms,
         }
