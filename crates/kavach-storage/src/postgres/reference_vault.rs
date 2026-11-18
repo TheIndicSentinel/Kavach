@@ -8,11 +8,14 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
+use chrono::{DateTime, Utc};
+use kavach_domain::authority::AuthorityChange;
 use kavach_domain::mandate::is_capability_ref;
+use kavach_mandate::VerifiedAuthorityUpdate;
 use kavach_ports::{Destination, PortError, ReferenceResolver};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::rand::{SecureRandom, SystemRandom};
-use sqlx::{PgPool, Row};
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use zeroize::Zeroizing;
 
 const ENVELOPE_VERSION: u8 = 1;
@@ -79,6 +82,211 @@ impl PostgresReferenceResolver {
             pool,
             key: std::sync::Arc::new(key),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppliedReferenceDestination {
+    pub replayed: bool,
+}
+
+/// Persists signed destinations as authenticated ciphertext. The first source
+/// system owns each tenant/reference/channel key; later updates must be newer.
+#[derive(Clone)]
+pub struct PostgresReferenceDestinationStore {
+    pool: PgPool,
+    key: std::sync::Arc<ReferenceVaultKey>,
+}
+
+impl PostgresReferenceDestinationStore {
+    #[must_use]
+    pub fn new(pool: PgPool, key: ReferenceVaultKey) -> Self {
+        Self {
+            pool,
+            key: std::sync::Arc::new(key),
+        }
+    }
+
+    pub async fn apply(
+        &self,
+        verified: &VerifiedAuthorityUpdate,
+    ) -> Result<AppliedReferenceDestination, PortError> {
+        let event = verified.event();
+        let AuthorityChange::ReferenceDestination(record) = &event.change else {
+            return Err(PortError::invalid(
+                "authority update is not a reference destination change",
+            ));
+        };
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| reference_unavailable())?;
+        lock_reference_tenant(&mut tx, &event.tenant_id).await?;
+        if reference_update_replay(&mut tx, verified).await? {
+            tx.commit().await.map_err(|_| reference_unavailable())?;
+            return Ok(AppliedReferenceDestination { replayed: true });
+        }
+
+        let current = sqlx::query(
+            "SELECT version, source_system, source_occurred_at FROM reference_destinations \
+             WHERE tenant_id = $1 AND subject_ref = $2 AND channel = $3 FOR UPDATE",
+        )
+        .bind(&event.tenant_id)
+        .bind(&record.subject_ref)
+        .bind(&record.channel)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|_| reference_unavailable())?;
+        let previous_version = if let Some(row) = current {
+            let version: i64 = row
+                .try_get("version")
+                .map_err(|_| reference_unavailable())?;
+            let source_system: Option<String> = row
+                .try_get("source_system")
+                .map_err(|_| reference_unavailable())?;
+            let source_occurred_at: Option<DateTime<Utc>> = row
+                .try_get("source_occurred_at")
+                .map_err(|_| reference_unavailable())?;
+            let source_system = source_system.ok_or_else(|| {
+                PortError::rejected("reference destination has no signed source binding")
+            })?;
+            let source_occurred_at = source_occurred_at.ok_or_else(|| reference_unavailable())?;
+            if source_system != event.system {
+                return Err(PortError::rejected(
+                    "reference destination source system changed",
+                ));
+            }
+            if event.occurred_at <= source_occurred_at {
+                return Err(PortError::rejected(
+                    "reference destination update is not newer than the current record",
+                ));
+            }
+            version
+        } else {
+            0
+        };
+        let next_version = previous_version
+            .checked_add(1)
+            .ok_or_else(reference_unavailable)?;
+        let destination = Destination::new(record.destination.expose().to_owned());
+        let encrypted = self.key.seal(
+            &event.tenant_id,
+            &record.subject_ref,
+            &record.channel,
+            next_version,
+            &destination,
+        )?;
+        let metadata = serde_json::json!({
+            "tenant_id": event.tenant_id,
+            "subject_ref": record.subject_ref,
+            "channel": record.channel,
+        });
+        sqlx::query(
+            "INSERT INTO authority_updates \
+             (tenant_id, source_system, update_id, kind, subject_ref, channel, \
+              payload_sha256, record, occurred_at) \
+             VALUES ($1, $2, $3, 'reference_destination', $4, $5, $6, $7, $8)",
+        )
+        .bind(&event.tenant_id)
+        .bind(&event.system)
+        .bind(&event.update_id)
+        .bind(&record.subject_ref)
+        .bind(&record.channel)
+        .bind(verified.payload_sha256())
+        .bind(metadata)
+        .bind(event.occurred_at)
+        .execute(&mut *tx)
+        .await
+        .map_err(|_| reference_unavailable())?;
+        if previous_version == 0 {
+            sqlx::query(
+                "INSERT INTO reference_destinations \
+                 (tenant_id, subject_ref, channel, version, format_version, key_id, nonce, \
+                  ciphertext, source_system, update_id, source_occurred_at) \
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+            )
+            .bind(&event.tenant_id)
+            .bind(&record.subject_ref)
+            .bind(&record.channel)
+            .bind(next_version)
+            .bind(i16::from(encrypted.format_version()))
+            .bind(encrypted.key_id())
+            .bind(encrypted.nonce().as_slice())
+            .bind(encrypted.ciphertext())
+            .bind(&event.system)
+            .bind(&event.update_id)
+            .bind(event.occurred_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| reference_unavailable())?;
+        } else {
+            let updated = sqlx::query(
+                "UPDATE reference_destinations SET version = $4, format_version = $5, \
+                    key_id = $6, nonce = $7, ciphertext = $8, update_id = $9, \
+                    source_occurred_at = $10, updated_at = NOW() \
+                 WHERE tenant_id = $1 AND subject_ref = $2 AND channel = $3 AND version = $11",
+            )
+            .bind(&event.tenant_id)
+            .bind(&record.subject_ref)
+            .bind(&record.channel)
+            .bind(next_version)
+            .bind(i16::from(encrypted.format_version()))
+            .bind(encrypted.key_id())
+            .bind(encrypted.nonce().as_slice())
+            .bind(encrypted.ciphertext())
+            .bind(&event.update_id)
+            .bind(event.occurred_at)
+            .bind(previous_version)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| reference_unavailable())?;
+            if updated.rows_affected() != 1 {
+                return Err(reference_unavailable());
+            }
+        }
+        tx.commit().await.map_err(|_| reference_unavailable())?;
+        Ok(AppliedReferenceDestination { replayed: false })
+    }
+}
+
+fn reference_unavailable() -> PortError {
+    PortError::unavailable("reference destination store is unavailable")
+}
+
+async fn lock_reference_tenant(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+) -> Result<(), PortError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('kavach-authority:' || $1, 0))")
+        .bind(tenant_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|_| reference_unavailable())?;
+    Ok(())
+}
+
+async fn reference_update_replay(
+    tx: &mut Transaction<'_, Postgres>,
+    verified: &VerifiedAuthorityUpdate,
+) -> Result<bool, PortError> {
+    let event = verified.event();
+    let old_digest: Option<String> = sqlx::query_scalar(
+        "SELECT payload_sha256 FROM authority_updates \
+         WHERE tenant_id = $1 AND source_system = $2 AND update_id = $3",
+    )
+    .bind(&event.tenant_id)
+    .bind(&event.system)
+    .bind(&event.update_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| reference_unavailable())?;
+    match old_digest {
+        Some(digest) if digest == verified.payload_sha256() => Ok(true),
+        Some(_) => Err(PortError::rejected(
+            "update id reused with different content",
+        )),
+        None => Ok(false),
     }
 }
 
