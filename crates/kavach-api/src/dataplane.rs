@@ -35,7 +35,7 @@ use kavach_keys::{SubjectKeys, TrustedSigners};
 use crate::signing::{HsmConfig, HsmRole, HsmStatus, KeySources, SigningKeys};
 use kavach_mandate::jws::KeySet;
 use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus, InMemoryMandateStore};
-use kavach_mandate::{MandateConfig, MandateDeps, MandateService, SorIssuer};
+use kavach_mandate::{AuthorityVerifier, MandateConfig, MandateDeps, MandateService, SorIssuer};
 use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
@@ -111,8 +111,13 @@ pub struct DataplaneConfig {
     /// Resource providers (JSON): each audience's X25519 encryption key.
     pub providers: PathBuf,
     /// Reference fixture (JSON): capability references to destinations,
-    /// synthetic numbers only (a reference vault replaces it in M2).
+    /// synthetic numbers only. Persistent destinations remain unavailable to
+    /// the gateway until current contact-preference enforcement is wired.
     pub references: PathBuf,
+    /// Optional persistent signed destination updates. When set, requires a
+    /// Postgres storage pool; gateway resolution remains on the fixture until
+    /// current contact-preference enforcement is wired.
+    pub reference_vault: Option<ReferenceVaultConfig>,
     /// Gateway → provider timeouts (no retries). Both stay below the
     /// credential lifetime.
     pub provider_connect_timeout_ms: u64,
@@ -130,6 +135,13 @@ pub struct DataplaneConfig {
     /// unless `--insecure-dev` is on and every signing key is a `dev-` key;
     /// what it times is marked `dev_fixed`.
     pub dev_clock: Option<Arc<crate::dev_clock::DevClock>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceVaultConfig {
+    pub key_file: PathBuf,
+    pub key_id: String,
+    pub previous_keys: Vec<(String, PathBuf)>,
 }
 
 #[derive(Deserialize)]
@@ -871,6 +883,7 @@ impl TokenBucket {
 
 pub struct Dataplane {
     dev_clock: Option<Arc<crate::dev_clock::DevClock>>,
+    clock: ClockBackend,
     mandates: Arc<Mandates>,
     core: Arc<AuthorizeCore<Arc<Mandates>, EvidenceBackend>>,
     checkpointer: Arc<Checkpointer<EvidenceBackend>>,
@@ -887,6 +900,7 @@ pub struct Dataplane {
     /// What only the build knows is relaxed (see `crate::relaxations`).
     relaxed: Vec<crate::relaxations::Relaxation>,
     resolver: FixtureResolver,
+    reference_destination_updates: Option<ReferenceDestinationUpdates>,
     forwarder: Arc<crate::forward::HttpForwarder>,
     keys: KeySources,
     /// Trusted public key for the configured evidence signer, used to verify
@@ -896,6 +910,11 @@ pub struct Dataplane {
     /// waits for them).
     in_flight: Arc<crate::shutdown::InFlight>,
     agent_only: bool,
+}
+
+struct ReferenceDestinationUpdates {
+    store: kavach_storage::PostgresReferenceDestinationStore,
+    verifier: AuthorityVerifier,
 }
 
 impl Dataplane {
@@ -931,6 +950,8 @@ impl Dataplane {
         for issuer in &mandate_config.sor_issuers {
             refuse_dev_key("system-of-record issuer", &issuer.key.kid, insecure_dev)?;
         }
+        let reference_destination_updates =
+            build_reference_destination_updates(config, pool, &mandate_config)?;
         let issuer_kids: Vec<String> = mandate_config
             .sor_issuers
             .iter()
@@ -986,7 +1007,7 @@ impl Dataplane {
             tools,
             subject_keys,
             signer,
-            Box::new(clock),
+            Box::new(clock.clone()),
             authorize,
         )
         .map_err(|e| format!("authorization core: {e}"))?;
@@ -999,6 +1020,7 @@ impl Dataplane {
         Ok(Self {
             relaxed,
             dev_clock: config.dev_clock.clone(),
+            clock,
             mandates,
             core: Arc::new(core),
             checkpointer,
@@ -1010,6 +1032,7 @@ impl Dataplane {
             reconcile_limiter,
             broker: Arc::new(broker),
             resolver,
+            reference_destination_updates,
             forwarder: Arc::new(forwarder),
             keys: sources,
             review_evidence_keys: std::collections::BTreeMap::from([(
@@ -1341,6 +1364,31 @@ fn build_relaxations(
         relaxed.push(Relaxation::TestDoubleBroker);
     }
     relaxed
+}
+
+fn build_reference_destination_updates(
+    config: &DataplaneConfig,
+    pool: Option<&StoragePool>,
+    mandate_config: &MandateConfig,
+) -> Result<Option<ReferenceDestinationUpdates>, String> {
+    let Some(vault_config) = &config.reference_vault else {
+        return Ok(None);
+    };
+    let pool = pool.ok_or_else(|| {
+        "reference vault configuration requires the Postgres evidence store".to_string()
+    })?;
+    let mut key =
+        kavach_storage::ReferenceVaultKey::from_file(&vault_config.key_file, &vault_config.key_id)?;
+    for (key_id, path) in &vault_config.previous_keys {
+        let previous = kavach_storage::ReferenceVaultKey::from_file(path, key_id)?;
+        key.add_previous(previous)?;
+    }
+    let verifier = AuthorityVerifier::new(config.tenant_id.clone(), mandate_config.clone())
+        .map_err(|error| format!("reference destination update verifier: {}", error.message))?;
+    Ok(Some(ReferenceDestinationUpdates {
+        store: pool.reference_destination_store(key),
+        verifier,
+    }))
 }
 
 fn dataplane_clock(config: &DataplaneConfig, insecure_dev: bool) -> Result<ClockBackend, String> {
@@ -1948,6 +1996,11 @@ pub struct SorEventBody {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ReferenceDestinationUpdateResponse {
+    pub replayed: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SorEventResponse {
     pub mandate_id: String,
     pub exp: DateTime<Utc>,
@@ -2041,6 +2094,57 @@ pub async fn sor_event(
             }
         },
     }
+}
+
+/// `POST /v1/sor/reference-destinations`: accepts the signed authority-update
+/// envelope and persists only encrypted destination bytes plus signed metadata.
+pub async fn sor_reference_destination(
+    State(state): State<Arc<AppState>>,
+    body: Result<StrictJson<SorEventBody>, StrictJsonRejection>,
+) -> Result<(StatusCode, Json<ReferenceDestinationUpdateResponse>), Refusal> {
+    let dp = dataplane(&state)?;
+    let allowed = dp.sor_limiter.lock().is_ok_and(|mut bucket| bucket.take());
+    if !allowed {
+        return Err(refuse(StatusCode::TOO_MANY_REQUESTS, "event rate limit"));
+    }
+    let updates = dp.reference_destination_updates.as_ref().ok_or_else(|| {
+        refuse(
+            StatusCode::NOT_FOUND,
+            "reference destination updates are disabled",
+        )
+    })?;
+    let StrictJson(body) = body.map_err(|_| {
+        refuse(
+            StatusCode::BAD_REQUEST,
+            "malformed body: expected JSON with a signed event",
+        )
+    })?;
+    let now = dp.clock.now();
+    let verified = updates
+        .verifier
+        .verify(&body.event, now)
+        .map_err(|error| event_refusal(&error))?;
+    let applied = updates.store.apply(&verified).await.map_err(|error| {
+        if error.class == ErrorClass::Rejected && error.message.contains("different content") {
+            crate::problem::Problem::new(
+                StatusCode::CONFLICT,
+                "event_conflict",
+                "destination update conflicts with a previously accepted update",
+            )
+        } else {
+            event_refusal(&error)
+        }
+    })?;
+    Ok((
+        if applied.replayed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(ReferenceDestinationUpdateResponse {
+            replayed: applied.replayed,
+        }),
+    ))
 }
 
 /// Writes a revocation's evidence-chain record (ADR-012 §7). The revocation
@@ -2392,6 +2496,10 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
 pub fn sor_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/sor/events", post(sor_event))
+        .route(
+            "/v1/sor/reference-destinations",
+            post(sor_reference_destination),
+        )
         .fallback(crate::problem::not_found)
         .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))

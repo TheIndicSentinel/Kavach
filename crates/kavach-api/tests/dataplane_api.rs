@@ -62,6 +62,35 @@ async fn sor_events_issue_once_and_retries_are_idempotent() {
 }
 
 #[tokio::test]
+async fn signed_destination_updates_require_an_enabled_postgres_vault() {
+    let s = state(50).await;
+    let (status, _) = send(
+        sor_router(s),
+        "/v1/sor/reference-destinations",
+        &[],
+        json!({ "event": "unused" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let mut config = config(EvidenceStoreKind::Memory, true, 50);
+    config.dataplane.as_mut().unwrap().reference_vault =
+        Some(kavach_api::dataplane::ReferenceVaultConfig {
+            key_file: std::env::temp_dir().join("unused-reference-vault.key"),
+            key_id: "reference-v1".into(),
+            previous_keys: Vec::new(),
+        });
+    let error = AppState::from_config(&config)
+        .await
+        .err()
+        .expect("memory storage cannot enable the persistent vault");
+    assert!(
+        format!("{error:?}").contains("requires the Postgres evidence store"),
+        "{error:?}"
+    );
+}
+
+#[tokio::test]
 async fn sor_events_are_rate_limited() {
     let s = state(2).await;
     let mut statuses = Vec::new();

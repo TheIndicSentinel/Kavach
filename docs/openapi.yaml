@@ -1044,6 +1044,55 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /v1/sor/reference-destinations:
+    x-kavach-listeners: [sor]
+    servers:
+      - url: http://127.0.0.1:8090
+        description: system-of-record listener (backend network only)
+    post:
+      operationId: submitSignedReferenceDestination
+      tags: [sor]
+      summary: Submit a signed destination update for the encrypted reference vault.
+      description: |
+        Not authenticated by a token: the compact authority-update JWS must
+        be signed by the configured source key for this tenant and system.
+        The route is enabled only when the persistent vault and Postgres are
+        configured. Destination values are encrypted before persistence and
+        are never returned. Exact retries are idempotent. The gateway continues
+        to use the fixture resolver until current contact-preference enforcement
+        is wired.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [event]
+              properties:
+                event: { type: string, description: A compact authority-update JWS. }
+      responses:
+        "201":
+          description: The signed destination update was stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceDestinationUpdateResponse" }
+        "200":
+          description: An exact retry of a previously stored update.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ReferenceDestinationUpdateResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /auth/config:
     get:
       operationId: getConsoleAuthConfig
@@ -2545,4 +2594,11 @@ components:
           type: array
           items: { type: string }
           description: Every mandate whose status changed, delegations included.
+        replayed: { type: boolean }
+
+    ReferenceDestinationUpdateResponse:
+      type: object
+      additionalProperties: false
+      required: [replayed]
+      properties:
         replayed: { type: boolean }

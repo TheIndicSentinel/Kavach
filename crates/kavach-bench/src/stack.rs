@@ -221,6 +221,7 @@ fn api_config(
             credential_key_id: kavach_devkit::CREDENTIAL_KID.into(),
             providers: kavach.join("providers.json"),
             references: kavach.join("references.json"),
+            reference_vault: None,
             provider_connect_timeout_ms: 2_000,
             provider_timeout_ms: 5_000,
             provider_ca: None,

@@ -339,6 +339,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         credential_key_id: "kavach-credential-1".into(),
         providers: dir.join("providers.json"),
         references: dir.join("references.json"),
+        reference_vault: None,
         provider_connect_timeout_ms: 500,
         provider_timeout_ms: 1500,
         provider_ca: None,
