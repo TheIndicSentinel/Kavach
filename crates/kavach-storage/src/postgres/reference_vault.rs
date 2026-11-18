@@ -9,9 +9,10 @@ use std::fmt;
 use std::path::Path;
 
 use kavach_domain::mandate::is_capability_ref;
-use kavach_ports::Destination;
+use kavach_ports::{Destination, PortError, ReferenceResolver};
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use ring::rand::{SecureRandom, SystemRandom};
+use sqlx::{PgPool, Row};
 use zeroize::Zeroizing;
 
 const ENVELOPE_VERSION: u8 = 1;
@@ -30,15 +31,109 @@ pub struct ReferenceVaultKey {
 /// separate index columns and must be supplied again when opening it.
 #[derive(Clone, PartialEq, Eq)]
 pub struct EncryptedDestination {
-    pub(crate) version: u8,
+    pub(crate) format_version: u8,
     pub(crate) key_id: String,
     pub(crate) nonce: [u8; 12],
     pub(crate) ciphertext: Vec<u8>,
 }
 
+impl EncryptedDestination {
+    #[must_use]
+    pub fn format_version(&self) -> u8 {
+        self.format_version
+    }
+
+    #[must_use]
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    #[must_use]
+    pub fn nonce(&self) -> &[u8; 12] {
+        &self.nonce
+    }
+
+    #[must_use]
+    pub fn ciphertext(&self) -> &[u8] {
+        &self.ciphertext
+    }
+}
+
 impl fmt::Debug for EncryptedDestination {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("EncryptedDestination(<redacted>)")
+    }
+}
+
+/// Read-only Postgres adapter for encrypted destination rows.
+#[derive(Clone)]
+pub struct PostgresReferenceResolver {
+    pool: PgPool,
+    key: std::sync::Arc<ReferenceVaultKey>,
+}
+
+impl PostgresReferenceResolver {
+    #[must_use]
+    pub fn new(pool: PgPool, key: ReferenceVaultKey) -> Self {
+        Self {
+            pool,
+            key: std::sync::Arc::new(key),
+        }
+    }
+}
+
+impl ReferenceResolver for PostgresReferenceResolver {
+    async fn resolve(
+        &self,
+        tenant_id: &str,
+        subject_ref: &str,
+        channel: &str,
+    ) -> Result<Destination, PortError> {
+        validate_scope(tenant_id, subject_ref, channel, 1)?;
+        let row = sqlx::query(
+            "SELECT version, format_version, key_id, nonce, ciphertext FROM reference_destinations \
+             WHERE tenant_id = $1 AND subject_ref = $2 AND channel = $3",
+        )
+        .bind(tenant_id)
+        .bind(subject_ref)
+        .bind(channel)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|_| PortError::unavailable("reference vault is unavailable"))?
+        .ok_or_else(|| PortError::rejected("no destination is registered for this reference"))?;
+        let version: i64 = row
+            .try_get("version")
+            .map_err(|_| PortError::unavailable("reference vault record is unavailable"))?;
+        let format_version: i16 = row
+            .try_get("format_version")
+            .map_err(|_| PortError::unavailable("reference vault record is unavailable"))?;
+        let format_version = u8::try_from(format_version)
+            .map_err(|_| PortError::unavailable("reference vault record is unavailable"))?;
+        let key_id: String = row
+            .try_get("key_id")
+            .map_err(|_| PortError::unavailable("reference vault record is unavailable"))?;
+        let nonce_bytes: Vec<u8> = row
+            .try_get("nonce")
+            .map_err(|_| PortError::unavailable("reference vault record is unavailable"))?;
+        let nonce: [u8; 12] = nonce_bytes
+            .try_into()
+            .map_err(|_| PortError::unavailable("reference vault record is unavailable"))?;
+        let ciphertext: Vec<u8> = row
+            .try_get("ciphertext")
+            .map_err(|_| PortError::unavailable("reference vault record is unavailable"))?;
+        let encrypted = EncryptedDestination {
+            format_version,
+            key_id,
+            nonce,
+            ciphertext,
+        };
+        self.key
+            .open(&encrypted, tenant_id, subject_ref, channel, version)
+            .map_err(|_| PortError::unavailable("reference vault record could not be opened"))
+    }
+
+    fn describe(&self) -> String {
+        "Postgres encrypted reference vault".into()
     }
 }
 
@@ -139,7 +234,7 @@ impl ReferenceVaultKey {
                 kavach_ports::PortError::unavailable("reference vault encryption failed")
             })?;
         Ok(EncryptedDestination {
-            version: ENVELOPE_VERSION,
+            format_version: ENVELOPE_VERSION,
             key_id: self.key_id.clone(),
             nonce,
             ciphertext: plaintext.to_vec(),
@@ -156,7 +251,7 @@ impl ReferenceVaultKey {
         record_version: i64,
     ) -> Result<Destination, kavach_ports::PortError> {
         validate_scope(tenant_id, subject_ref, channel, record_version)?;
-        if encrypted.version != ENVELOPE_VERSION
+        if encrypted.format_version != ENVELOPE_VERSION
             || encrypted.ciphertext.len() > MAX_DESTINATION_BYTES + 16
         {
             return Err(kavach_ports::PortError::rejected(
@@ -167,12 +262,14 @@ impl ReferenceVaultKey {
             &self.key
         } else {
             self.previous.get(&encrypted.key_id).ok_or_else(|| {
-                kavach_ports::PortError::rejected("reference vault decryption key is unavailable")
+                kavach_ports::PortError::unavailable(
+                    "reference vault decryption key is unavailable",
+                )
             })?
         };
         let cipher = cipher(key)?;
         let aad = reference_aad(
-            encrypted.version,
+            encrypted.format_version,
             &encrypted.key_id,
             tenant_id,
             subject_ref,

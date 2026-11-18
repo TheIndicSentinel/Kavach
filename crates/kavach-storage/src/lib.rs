@@ -41,9 +41,10 @@ pub use postgres::{
     JobStoreError, NoopBatchJobStore, PostgresAdminStore, PostgresAgentEvidenceStore,
     PostgresAuthorityUpdateStore, PostgresBatchJobStore, PostgresChangeStore,
     PostgresConsentSource, PostgresContactPreferenceSource, PostgresEvidenceStore,
-    PostgresIncidentStore, PostgresMandateStore, PostgresReplayGuard, PostgresRetentionStore,
-    PostgresReviewApprovalStore, PostgresReviewSnapshotStore, PostgresRoleStore,
-    PostgresStepUpChallengeStore, ReferenceVaultKey, StoragePool, DEFAULT_POOL_SIZE,
+    PostgresIncidentStore, PostgresMandateStore, PostgresReferenceResolver, PostgresReplayGuard,
+    PostgresRetentionStore, PostgresReviewApprovalStore, PostgresReviewSnapshotStore,
+    PostgresRoleStore, PostgresStepUpChallengeStore, ReferenceVaultKey, StoragePool,
+    DEFAULT_POOL_SIZE,
 };
 pub use retention::{
     MemoryRetentionStore, RetentionApplyReport, RetentionSettings, RetentionStoreError,

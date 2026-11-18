@@ -39,7 +39,7 @@ pub use mandates::{PostgresMandateStore, PostgresReplayGuard};
 pub use migrate::{
     connect_pool, connect_runtime, connect_runtime_sized, migrate, DEFAULT_POOL_SIZE,
 };
-pub use reference_vault::{EncryptedDestination, ReferenceVaultKey};
+pub use reference_vault::{EncryptedDestination, PostgresReferenceResolver, ReferenceVaultKey};
 pub use retention::PostgresRetentionStore;
 pub use review_snapshots::PostgresReviewSnapshotStore;
 pub use roles::PostgresRoleStore;
@@ -130,6 +130,10 @@ impl StoragePool {
 
     pub fn authority_update_store(&self) -> PostgresAuthorityUpdateStore {
         PostgresAuthorityUpdateStore::new(self.pool.clone())
+    }
+
+    pub fn reference_resolver(&self, key: ReferenceVaultKey) -> PostgresReferenceResolver {
+        PostgresReferenceResolver::new(self.pool.clone(), key)
     }
 
     pub fn replay_guard(&self) -> PostgresReplayGuard {
