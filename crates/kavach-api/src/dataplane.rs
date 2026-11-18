@@ -2081,9 +2081,10 @@ async fn revoke_by_event(
 /// Router for the agent listener (`--agent-listen`, the only listener on the
 /// agent network): agent routes and liveness — never operator, admin,
 /// change-request, metrics or system-of-record routes (ADR-007).
-/// `POST /v1/tools/{tool}`: the gateway (H5b step 8). Decides and records,
-/// then (allow, first call only) resolves, obtains a credential, forwards
-/// once and records the outcome. The reply is an allowlist of fields.
+/// `POST /v1/tools/{tool}`: decides and records. Proposal-trust tools stop
+/// there; external-effect tools (allow, first call only) resolve, obtain a
+/// credential, forward once and record the outcome. The reply is an allowlist
+/// of fields.
 pub async fn tool_call(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(tool): axum::extract::Path<String>,
