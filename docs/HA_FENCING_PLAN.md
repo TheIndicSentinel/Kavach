@@ -1,6 +1,6 @@
 # HA active/passive fencing plan
 
-**Status:** Draft for owner approval. No fencing code or schema changes have been made.
+**Status:** Approved; implementation in progress (2026-11-19). The owner approved the Postgres epoch lease, token-hash write guards, self-fencing after renewal failure, and 3-second renewal/10-second expiry defaults. The first storage slice adds lease claim and renewal primitives; API activation and write guards remain gated on later slices.
 
 ## Goal
 
@@ -42,6 +42,11 @@ The migration must enumerate every table the runtime role can mutate, including 
 
 Use a 3-second renewal interval and a 10-second expiry, both measured by Postgres time. These bound normal failover detection to at most 10 seconds plus promotion and pointer convergence, without making an SLO claim. If the deployment needs different values, make them explicit configuration and test the selected values.
 
-## Approval requested
+## Slice record
 
-Approve the Postgres epoch lease, token-hash write guards, self-fencing after renewal failure, and the proposed 3-second/10-second defaults before schema or runtime changes are implemented.
+1. **Lease storage primitives — implemented.** Migration 039 creates owner-controlled lease rows and `SECURITY DEFINER` claim/renew functions. The runtime role can execute only those functions, cannot read or edit the table, and receives monotonically increasing epochs on expired-lease takeover. `crates/kavach-storage/tests/postgres_active_lease.rs` covers concurrent claims, token-bound renewal, expiry takeover, old-holder rejection, and table privilege isolation. This slice does not yet activate API leases or fence application writes.
+
+2. **API lease lifecycle — pending.** Generate an ephemeral process token, hash it, claim once at startup, renew on the approved interval, and permanently self-fence on failure.
+3. **Write fencing — pending.** Bind lease identity to runtime connections and guard all runtime-writable tables transactionally; verify trigger inventory against grants.
+4. **Readiness and lifecycle integration — pending.** Gate application routes/readiness on lease ownership while preserving liveness and non-HA single-instance mode.
+5. **HA reference deployment and fault tests — pending.** Complete the scenarios and deployment example in `HA_REFERENCE_PLAN.md` before enabling replicas.
