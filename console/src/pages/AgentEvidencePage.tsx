@@ -172,7 +172,7 @@ function HumanReviewLookup({
       <CardHeader>
         <CardTitle>Human review</CardTitle>
         <CardDescription>
-          Review the exact action held for this signed decision. This view does not approve or release it.
+          Review the exact action held for this signed decision. Passkey verification is required to approve or reject it. Approval creates a short-lived handoff; it does not execute the action.
         </CardDescription>
       </CardHeader>
       {hint ? <RoleHint>{hint}</RoleHint> : (

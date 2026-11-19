@@ -142,12 +142,12 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - OIDC authorization code with PKCE in place of the pasted token, per [ADR-018](ADR-018-console-login-and-token-storage.md) option C.
 - The API path check (section 2).
 
-### D17 browser reviewer surface — in progress
+### D17 browser reviewer surface — implemented
 
-- **Done (first UI slice):** Agent Evidence provides a Cedar-role-aware manual lookup by signed decision record id and renders only the projection returned by the audited `GET /auth/human-review/{record_id}` endpoint. It is display-only; no approval or release control is present. No decision-record listing/search endpoint is introduced.
-- **Done (second UI slice):** An explicit button starts `POST /auth/step-up/{record_id}` for the displayed action and redirects to the server-provided IdP URL. The UI states passkey verification is not approval; the callback retains proof server-side and returns to the console root.
-- **Backend done (D17 approval creation, release record, and execution handoff):** `POST /auth/human-review/{record_id}/approval` requires an explicit decision, Cedar permission, a live console session, and a one-use exact-action step-up proof; it audits before storing a short-lived approval and returns the opaque `approval_id`. Approved records also receive a separate execution ID. The store consumes an approval once and writes immutable release evidence while preserving the reviewed request ID and action hash. Agent requests accept both IDs, and evidence retries use the execution ID while keeping the original request ID in the signed payload. Authorization consumption, credential use and console decision controls remain pending.
-- **Pending:** wire approval consumption to agent authorization, then add the console decision controls and handoff only after that path is complete and tested.
+- **Done:** Agent Evidence provides a Cedar-role-aware manual lookup by signed decision record id and renders only the projection returned by the audited `GET /auth/human-review/{record_id}` endpoint. No decision-record listing/search endpoint is introduced.
+- **Done:** An explicit button starts `POST /auth/step-up/{record_id}` for the displayed action and redirects to the server-provided IdP URL. The callback retains proof server-side and returns to the console root.
+- **Done:** `POST /auth/human-review/{record_id}/approval` requires an explicit decision, Cedar permission, a live console session, and a one-use exact-action step-up proof; it audits before storing a short-lived approval. The console offers approve/reject controls and displays the opaque approval and execution IDs for an approved handoff, while explaining that approval does not execute the action.
+- **Done:** The agent request presents both IDs with the original request ID and unchanged action parameters. The gateway consumes the exact-action approval once, writes immutable release evidence, preserves the reviewed request ID and action hash, re-evaluates authorization, and binds the resulting credential to the approval. Integration coverage verifies the handoff, retry, altered-action rejection, and that the unapproved retry remains `HUMAN_REVIEW`.
 
 ### ADR-019 step 3: operator role management — done
 
