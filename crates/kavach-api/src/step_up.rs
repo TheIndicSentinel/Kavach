@@ -283,7 +283,7 @@ impl<S: StepUpChallengeStore> KeycloakStepUpCallback<S> {
         let state_hash = digest(state.expose());
         let challenge = self
             .store
-            .get_live(&state_hash, now)
+            .get_live(expected_tenant_id, &state_hash, now)
             .await?
             .ok_or_else(|| PortError::rejected("step-up challenge is missing, expired, or used"))?;
         if challenge.challenge_id != state.expose()
@@ -318,7 +318,7 @@ impl<S: StepUpChallengeStore> KeycloakStepUpCallback<S> {
 
         let consumed = self
             .store
-            .consume(&state_hash, now)
+            .consume(expected_tenant_id, &state_hash, now)
             .await?
             .ok_or_else(|| PortError::rejected("step-up challenge was already used"))?;
         if consumed != challenge {
@@ -904,7 +904,7 @@ mod tests {
         );
         let saved = initiator
             .store
-            .get_live(&state_hash, now())
+            .get_live("tenant-1", &state_hash, now())
             .await
             .unwrap()
             .unwrap();
@@ -963,7 +963,7 @@ mod tests {
         assert_eq!(verified.verified_at, now);
         assert!(verified.step_up_ref.starts_with("keycloak-step-up:"));
         assert!(store
-            .get_live(&digest(state.expose()), now)
+            .get_live(&state_record.tenant_id, &digest(state.expose()), now)
             .await
             .unwrap()
             .is_none());
@@ -1020,7 +1020,7 @@ mod tests {
             .await
             .is_err());
         assert!(store
-            .get_live(&digest(state.expose()), now)
+            .get_live(&record.tenant_id, &digest(state.expose()), now)
             .await
             .unwrap()
             .is_some());

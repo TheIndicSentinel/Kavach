@@ -52,6 +52,7 @@ impl StepUpChallengeStore for MemoryStepUpChallengeStore {
 
     fn get_live(
         &self,
+        tenant_id: &str,
         state_hash: &str,
         now: DateTime<Utc>,
     ) -> impl Future<Output = Result<Option<StepUpChallengeState>, PortError>> + Send {
@@ -63,7 +64,10 @@ impl StepUpChallengeStore for MemoryStepUpChallengeStore {
             let Some(stored) = rows.get(state_hash) else {
                 return Ok(None);
             };
-            if stored.consumed || stored.state.validate(now).is_err() {
+            if stored.state.tenant_id != tenant_id
+                || stored.consumed
+                || stored.state.validate(now).is_err()
+            {
                 return Ok(None);
             }
             Ok(Some(stored.state.clone()))
@@ -73,6 +77,7 @@ impl StepUpChallengeStore for MemoryStepUpChallengeStore {
 
     fn consume(
         &self,
+        tenant_id: &str,
         state_hash: &str,
         now: DateTime<Utc>,
     ) -> impl Future<Output = Result<Option<StepUpChallengeState>, PortError>> + Send {
@@ -84,7 +89,10 @@ impl StepUpChallengeStore for MemoryStepUpChallengeStore {
             let Some(stored) = rows.get_mut(state_hash) else {
                 return Ok(None);
             };
-            if stored.consumed || stored.state.validate(now).is_err() {
+            if stored.state.tenant_id != tenant_id
+                || stored.consumed
+                || stored.state.validate(now).is_err()
+            {
                 return Ok(None);
             }
             stored.consumed = true;
@@ -142,12 +150,32 @@ mod tests {
         store.insert(record.clone()).await.unwrap();
 
         assert_eq!(
-            store.get_live(&lookup, now()).await.unwrap(),
+            store.get_live("tenant-2", &lookup, now()).await.unwrap(),
+            None
+        );
+        assert!(store
+            .consume("tenant-2", &lookup, now())
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            store.get_live("tenant-1", &lookup, now()).await.unwrap(),
             Some(record.clone())
         );
-        assert_eq!(store.consume(&lookup, now()).await.unwrap(), Some(record));
-        assert!(store.get_live(&lookup, now()).await.unwrap().is_none());
-        assert!(store.consume(&lookup, now()).await.unwrap().is_none());
+        assert_eq!(
+            store.consume("tenant-1", &lookup, now()).await.unwrap(),
+            Some(record)
+        );
+        assert!(store
+            .get_live("tenant-1", &lookup, now())
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .consume("tenant-1", &lookup, now())
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -158,8 +186,16 @@ mod tests {
         store.insert(record.clone()).await.unwrap();
         let expired_at = record.expires_at;
 
-        assert!(store.get_live(&lookup, expired_at).await.unwrap().is_none());
-        assert!(store.consume(&lookup, expired_at).await.unwrap().is_none());
+        assert!(store
+            .get_live("tenant-1", &lookup, expired_at)
+            .await
+            .unwrap()
+            .is_none());
+        assert!(store
+            .consume("tenant-1", &lookup, expired_at)
+            .await
+            .unwrap()
+            .is_none());
         assert_eq!(store.purge_expired(expired_at).await.unwrap(), 1);
         assert_eq!(store.purge_expired(expired_at).await.unwrap(), 0);
     }

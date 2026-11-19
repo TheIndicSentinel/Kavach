@@ -127,23 +127,25 @@ impl kavach_ports::StepUpChallengeStore for StepUpChallengeBackend {
 
     async fn get_live(
         &self,
+        tenant_id: &str,
         state_hash: &str,
         now: chrono::DateTime<Utc>,
     ) -> Result<Option<kavach_ports::StepUpChallengeState>, kavach_ports::PortError> {
         match self {
-            Self::Memory(store) => store.get_live(state_hash, now).await,
-            Self::Postgres(store) => store.get_live(state_hash, now).await,
+            Self::Memory(store) => store.get_live(tenant_id, state_hash, now).await,
+            Self::Postgres(store) => store.get_live(tenant_id, state_hash, now).await,
         }
     }
 
     async fn consume(
         &self,
+        tenant_id: &str,
         state_hash: &str,
         now: chrono::DateTime<Utc>,
     ) -> Result<Option<kavach_ports::StepUpChallengeState>, kavach_ports::PortError> {
         match self {
-            Self::Memory(store) => store.consume(state_hash, now).await,
-            Self::Postgres(store) => store.consume(state_hash, now).await,
+            Self::Memory(store) => store.consume(tenant_id, state_hash, now).await,
+            Self::Postgres(store) => store.consume(tenant_id, state_hash, now).await,
         }
     }
 
@@ -1546,15 +1548,21 @@ mod step_up_backend_tests {
         let store = app.step_up_challenges();
         store.insert(challenge.clone()).await.unwrap();
         assert_eq!(
-            store.get_live(&challenge.state_hash, now).await.unwrap(),
+            store
+                .get_live(&challenge.tenant_id, &challenge.state_hash, now)
+                .await
+                .unwrap(),
             Some(challenge.clone())
         );
         assert_eq!(
-            store.consume(&challenge.state_hash, now).await.unwrap(),
+            store
+                .consume(&challenge.tenant_id, &challenge.state_hash, now)
+                .await
+                .unwrap(),
             Some(challenge.clone())
         );
         assert!(store
-            .consume(&challenge.state_hash, now)
+            .consume(&challenge.tenant_id, &challenge.state_hash, now)
             .await
             .unwrap()
             .is_none());

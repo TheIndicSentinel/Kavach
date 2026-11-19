@@ -2002,7 +2002,11 @@ mod tests {
             "sha256:{}",
             hex::encode(Sha256::digest(callback_state.as_bytes()))
         );
-        let persisted = store.get_live(&state_hash, now).await.unwrap().unwrap();
+        let persisted = store
+            .get_live("tenant-1", &state_hash, now)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(persisted.principal_key, principal_key);
         assert_eq!(persisted.action_hash, action_hash);
         assert!(!challenge

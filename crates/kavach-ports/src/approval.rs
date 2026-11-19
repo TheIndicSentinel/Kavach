@@ -192,9 +192,10 @@ pub trait StepUpChallengeStore: Send + Sync {
         state: StepUpChallengeState,
     ) -> impl Future<Output = Result<(), PortError>> + Send;
 
-    /// Reads a live challenge by the digest of the OIDC callback `state`.
+    /// Reads a live challenge by tenant and the digest of OIDC callback `state`.
     fn get_live(
         &self,
+        tenant_id: &str,
         state_hash: &str,
         now: DateTime<Utc>,
     ) -> impl Future<Output = Result<Option<StepUpChallengeState>, PortError>> + Send;
@@ -202,6 +203,7 @@ pub trait StepUpChallengeStore: Send + Sync {
     /// Atomically consumes a live challenge once, after token verification.
     fn consume(
         &self,
+        tenant_id: &str,
         state_hash: &str,
         now: DateTime<Utc>,
     ) -> impl Future<Output = Result<Option<StepUpChallengeState>, PortError>> + Send;

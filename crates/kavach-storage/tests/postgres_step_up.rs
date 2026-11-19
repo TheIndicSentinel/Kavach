@@ -40,20 +40,44 @@ async fn runtime_role_reads_and_consumes_step_up_challenge_once() {
     let state_hash = state.state_hash.clone();
     store.insert(state.clone()).await.unwrap();
 
+    assert!(store
+        .get_live("tenant-2", &state_hash, now)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .consume("tenant-2", &state_hash, now)
+        .await
+        .unwrap()
+        .is_none());
     assert_eq!(
-        store.get_live(&state_hash, now).await.unwrap(),
+        store
+            .get_live(&state.tenant_id, &state_hash, now)
+            .await
+            .unwrap(),
         Some(state.clone())
     );
     assert!(store
         .get_live(
+            &state.tenant_id,
             "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
             now
         )
         .await
         .unwrap()
         .is_none());
-    assert_eq!(store.consume(&state_hash, now).await.unwrap(), Some(state));
-    assert!(store.consume(&state_hash, now).await.unwrap().is_none());
+    assert_eq!(
+        store
+            .consume(&state.tenant_id, &state_hash, now)
+            .await
+            .unwrap(),
+        Some(state)
+    );
+    assert!(store
+        .consume("tenant-1", &state_hash, now)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -62,12 +86,13 @@ async fn concurrent_runtime_consumers_cannot_replay_step_up_challenge() {
     let store = pool.step_up_challenge_store();
     let now = Utc::now();
     let state = state("challenge-pg-race", 'd', now);
+    let tenant_id = state.tenant_id.clone();
     let state_hash = state.state_hash.clone();
     store.insert(state).await.unwrap();
 
     let (left, right) = tokio::join!(
-        store.consume(&state_hash, now),
-        store.consume(&state_hash, now),
+        store.consume(&tenant_id, &state_hash, now),
+        store.consume(&tenant_id, &state_hash, now),
     );
     assert_ne!(left.unwrap().is_some(), right.unwrap().is_some());
 }
@@ -80,12 +105,25 @@ async fn expired_step_up_state_is_purged_and_live_state_is_protected() {
     let expired = state("challenge-pg-expired", 'e', now - Duration::hours(1));
     let live = state("challenge-pg-live", 'f', now);
     let expired_hash = expired.state_hash.clone();
+    let expired_tenant = expired.tenant_id.clone();
     let live_hash = live.state_hash.clone();
+    let live_tenant = live.tenant_id.clone();
     store.insert(expired).await.unwrap();
     store.insert(live.clone()).await.unwrap();
 
-    assert!(store.get_live(&expired_hash, now).await.unwrap().is_none());
+    assert!(store
+        .get_live(&expired_tenant, &expired_hash, now)
+        .await
+        .unwrap()
+        .is_none());
     assert_eq!(store.purge_expired(now).await.unwrap(), 1);
-    assert!(store.get_live(&expired_hash, now).await.unwrap().is_none());
-    assert_eq!(store.get_live(&live_hash, now).await.unwrap(), Some(live));
+    assert!(store
+        .get_live(&expired_tenant, &expired_hash, now)
+        .await
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        store.get_live(&live_tenant, &live_hash, now).await.unwrap(),
+        Some(live)
+    );
 }

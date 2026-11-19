@@ -51,6 +51,7 @@ impl StepUpChallengeStore for PostgresStepUpChallengeStore {
 
     async fn get_live(
         &self,
+        tenant_id: &str,
         state_hash: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<StepUpChallengeState>, PortError> {
@@ -58,9 +59,10 @@ impl StepUpChallengeStore for PostgresStepUpChallengeStore {
             "SELECT challenge_id, state_hash, nonce_hash, tenant_id, principal_key, action_hash, \
                     issued_at, expires_at \
              FROM human_review_step_up_challenges \
-             WHERE state_hash = $1 AND issued_at <= $2 AND expires_at > $2 \
+             WHERE tenant_id = $1 AND state_hash = $2 AND issued_at <= $3 AND expires_at > $3 \
                AND consumed_at IS NULL",
         )
+        .bind(tenant_id)
         .bind(state_hash)
         .bind(now)
         .fetch_optional(&self.pool)
@@ -72,17 +74,19 @@ impl StepUpChallengeStore for PostgresStepUpChallengeStore {
 
     async fn consume(
         &self,
+        tenant_id: &str,
         state_hash: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<StepUpChallengeState>, PortError> {
         let row = sqlx::query(
             "UPDATE human_review_step_up_challenges \
-             SET consumed_at = $2 \
-             WHERE state_hash = $1 AND issued_at <= $2 AND expires_at > $2 \
+             SET consumed_at = $3 \
+             WHERE tenant_id = $1 AND state_hash = $2 AND issued_at <= $3 AND expires_at > $3 \
                AND consumed_at IS NULL \
              RETURNING challenge_id, state_hash, nonce_hash, tenant_id, principal_key, \
                        action_hash, issued_at, expires_at",
         )
+        .bind(tenant_id)
         .bind(state_hash)
         .bind(now)
         .fetch_optional(&self.pool)
