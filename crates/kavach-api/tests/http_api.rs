@@ -35,6 +35,7 @@ async fn health_returns_ok() {
     let app = router(state);
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/health")
@@ -44,6 +45,17 @@ async fn health_returns_ok() {
         .await
         .unwrap();
 
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
 

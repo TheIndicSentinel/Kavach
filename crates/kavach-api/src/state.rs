@@ -1304,6 +1304,14 @@ mod poisoned_lock_tests {
         .await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
         assert_eq!(body["code"], "unavailable", "{body}");
+        let (ready_status, ready_body) = send(&state, "GET", "/ready", None, None).await;
+        assert_eq!(
+            ready_status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{ready_body}"
+        );
+        let (health_status, _) = send(&state, "GET", "/health", None, None).await;
+        assert_eq!(health_status, StatusCode::OK);
         assert!(matches!(
             state.ensure_runtime_pointer_current().await,
             Err(ApiError::Unavailable(_))

@@ -70,6 +70,23 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
+  /ready:
+    x-kavach-listeners: [operator]
+    get:
+      operationId: getReadiness
+      tags: [operator]
+      summary: Readiness for governed operator traffic.
+      responses:
+        "200":
+          description: The process can serve the current governed runtime.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Readiness" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /metrics:
     get:
       operationId: getMetrics
@@ -1625,6 +1642,14 @@ components:
       required: [status]
       properties:
         status: { type: string }
+
+    Readiness:
+      type: object
+      additionalProperties: false
+      required: [status, runtime_pointer_version]
+      properties:
+        status: { const: ready }
+        runtime_pointer_version: { type: integer }
 
     ConsoleAuthConfig:
       type: object

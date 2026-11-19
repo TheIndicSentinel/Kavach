@@ -36,6 +36,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .is_some_and(crate::dataplane::Dataplane::agent_only);
     let router = Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/metrics", get(metrics))
         .route("/v1/runtime", get(runtime))
         .route(
@@ -206,6 +207,19 @@ async fn health(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadHealth).await?;
     Ok(Json(serde_json::json!({ "status": "ok" })))
+}
+
+async fn ready(
+    State(state): State<Arc<AppState>>,
+    credentials: Credentials,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    authorize_credentials(&state, &credentials, KavachAction::ReadHealth).await?;
+    state.ensure_runtime_pointer_current().await?;
+    let runtime = state.runtime()?;
+    Ok(Json(serde_json::json!({
+        "status": "ready",
+        "runtime_pointer_version": runtime.pointer_version,
+    })))
 }
 
 async fn metrics(
