@@ -195,6 +195,7 @@ pub const BOOTSTRAP_ACTOR: &str = "kavach-api --bootstrap-superadmins";
 
 pub(crate) fn bootstrap_audit(binding: &RoleBinding) -> AuditInsert {
     AuditInsert {
+        tenant_id: binding.tenant_id.clone(),
         acting_as_superadmin: true,
         action: BOOTSTRAP_AUDIT_ACTION.into(),
         resource_type: ROLE_BINDING_RESOURCE.into(),
@@ -673,7 +674,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again, BootstrapOutcome::AlreadyPresent);
-        let audit = admin.list_audit(10).unwrap();
+        let audit = admin.list_audit("t1", 10).unwrap();
         assert_eq!(audit.len(), 2);
         assert!(audit.iter().all(|e| e.acting_as_superadmin));
         // t2 already has a superadmin.

@@ -161,7 +161,7 @@ async fn a_run_is_audited_by_counts_and_sets_the_gauge() {
     let closed_at = gw.clock.now().utc + Duration::seconds(60);
     reconcile(&gw.state, &admin(), snapshot("paid", closed_at)).await;
 
-    let entries = gw.state.admin().list_audit(100).await.unwrap();
+    let entries = gw.state.admin().list_audit("default", 100).await.unwrap();
     let entry = entries
         .iter()
         .find(|e| e.action == "closed_records_reconciled")

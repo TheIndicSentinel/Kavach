@@ -146,10 +146,14 @@ impl AdminBackend {
         }
     }
 
-    pub async fn list_audit(&self, limit: u32) -> Result<Vec<AuditEntry>, AdminStoreError> {
+    pub async fn list_audit(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> Result<Vec<AuditEntry>, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.list_audit(limit),
-            Self::Postgres(store) => store.list_audit(i64::from(limit)).await,
+            Self::Memory(store) => store.list_audit(tenant_id, limit),
+            Self::Postgres(store) => store.list_audit(tenant_id, i64::from(limit)).await,
         }
     }
 
@@ -211,12 +215,13 @@ impl AdminBackend {
     /// Most recent audit row for `action` on `resource_id`.
     pub async fn last_audit(
         &self,
+        tenant_id: &str,
         action: &str,
         resource_id: &str,
     ) -> Result<Option<AuditEntry>, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.last_audit(action, resource_id),
-            Self::Postgres(store) => store.last_audit(action, resource_id).await,
+            Self::Memory(store) => store.last_audit(tenant_id, action, resource_id),
+            Self::Postgres(store) => store.last_audit(tenant_id, action, resource_id).await,
         }
     }
 }

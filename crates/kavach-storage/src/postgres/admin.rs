@@ -19,11 +19,12 @@ impl PostgresAdminStore {
     pub async fn append_audit(&self, insert: AuditInsert) -> Result<AuditEntry, AdminStoreError> {
         let row = sqlx::query_as::<_, AuditRow>(
             "INSERT INTO admin_audit_log \
-                (action, resource_type, resource_id, actor_principal, approver_principal, payload, \
+                (tenant_id, action, resource_type, resource_id, actor_principal, approver_principal, payload, \
                  acting_as_superadmin) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7) \
-            RETURNING id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at, acting_as_superadmin",
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+            RETURNING id, tenant_id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at, acting_as_superadmin",
         )
+        .bind(&insert.tenant_id)
         .bind(&insert.action)
         .bind(&insert.resource_type)
         .bind(&insert.resource_id)
@@ -47,11 +48,12 @@ impl PostgresAdminStore {
     ) -> Result<bool, AdminStoreError> {
         let result = sqlx::query(
             "INSERT INTO admin_audit_log \
-                (action, resource_type, resource_id, actor_principal, approver_principal, \
+                (tenant_id, action, resource_type, resource_id, actor_principal, approver_principal, \
                  payload, idempotency_key, acting_as_superadmin) \
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) \
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
             ON CONFLICT (idempotency_key) DO NOTHING",
         )
+        .bind(&insert.tenant_id)
         .bind(&insert.action)
         .bind(&insert.resource_type)
         .bind(&insert.resource_id)
@@ -66,11 +68,16 @@ impl PostgresAdminStore {
         Ok(result.rows_affected() == 1)
     }
 
-    pub async fn list_audit(&self, limit: i64) -> Result<Vec<AuditEntry>, AdminStoreError> {
+    pub async fn list_audit(
+        &self,
+        tenant_id: &str,
+        limit: i64,
+    ) -> Result<Vec<AuditEntry>, AdminStoreError> {
         let rows = sqlx::query_as::<_, AuditRow>(
-            "SELECT id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at, acting_as_superadmin \
-            FROM admin_audit_log ORDER BY created_at DESC LIMIT $1",
+            "SELECT id, tenant_id, action, resource_type, resource_id, actor_principal, approver_principal, payload, created_at, acting_as_superadmin \
+            FROM admin_audit_log WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2",
         )
+        .bind(tenant_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await
@@ -176,14 +183,16 @@ impl PostgresAdminStore {
 
     pub async fn last_audit(
         &self,
+        tenant_id: &str,
         action: &str,
         resource_id: &str,
     ) -> Result<Option<AuditEntry>, AdminStoreError> {
         let row = sqlx::query_as::<_, AuditRow>(
-            "SELECT id, action, resource_type, resource_id, actor_principal, approver_principal, \
+            "SELECT id, tenant_id, action, resource_type, resource_id, actor_principal, approver_principal, \
                 payload, created_at, acting_as_superadmin \
-            FROM admin_audit_log WHERE action = $1 AND resource_id = $2 ORDER BY id DESC LIMIT 1",
+            FROM admin_audit_log WHERE tenant_id = $1 AND action = $2 AND resource_id = $3 ORDER BY id DESC LIMIT 1",
         )
+        .bind(tenant_id)
         .bind(action)
         .bind(resource_id)
         .fetch_optional(&self.pool)
@@ -287,10 +296,11 @@ pub(crate) async fn insert_audit<'e>(
 ) -> Result<(), AdminStoreError> {
     sqlx::query(
         "INSERT INTO admin_audit_log \
-            (action, resource_type, resource_id, actor_principal, approver_principal, payload, \
+            (tenant_id, action, resource_type, resource_id, actor_principal, approver_principal, payload, \
              acting_as_superadmin) \
-        VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
     )
+    .bind(&insert.tenant_id)
     .bind(&insert.action)
     .bind(&insert.resource_type)
     .bind(&insert.resource_id)
@@ -307,6 +317,7 @@ pub(crate) async fn insert_audit<'e>(
 #[derive(sqlx::FromRow)]
 struct AuditRow {
     id: i64,
+    tenant_id: String,
     action: String,
     resource_type: String,
     resource_id: String,
@@ -321,6 +332,7 @@ impl AuditRow {
     fn into_entry(self) -> AuditEntry {
         AuditEntry {
             id: self.id,
+            tenant_id: self.tenant_id,
             action: self.action,
             resource_type: self.resource_type,
             resource_id: self.resource_id,

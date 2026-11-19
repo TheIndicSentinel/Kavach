@@ -134,7 +134,7 @@ async fn state_of(state: &Arc<AppState>, agent: &str) -> AgentState {
 async fn audit_actions(state: &Arc<AppState>) -> Vec<String> {
     state
         .admin()
-        .list_audit(200)
+        .list_audit("default", 200)
         .await
         .unwrap()
         .into_iter()
@@ -247,7 +247,7 @@ async fn only_admins_stop_and_a_refused_attempt_is_audited() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN);
     assert_eq!(state_of(&gw.state, AGENT).await, AgentState::Active);
-    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    let audit = gw.state.admin().list_audit("default", 50).await.unwrap();
     let refused = audit
         .iter()
         .find(|e| e.action == "stop_agent_refused")

@@ -29,7 +29,7 @@ fn row(event_id: &str, clock_synced: Option<bool>) -> StoredRevocation {
 async fn entries_for(state: &kavach_api::AppState, event_id: &str) -> Vec<serde_json::Value> {
     state
         .admin()
-        .list_audit(1000)
+        .list_audit("default", 1000)
         .await
         .unwrap()
         .into_iter()

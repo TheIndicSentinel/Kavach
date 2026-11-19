@@ -66,6 +66,7 @@ async fn audit(state: &AppState, action: &str, agent: &str, actor: (String, bool
     let result = state
         .admin()
         .append_audit(AuditInsert {
+            tenant_id: state.tenant_id().into(),
             acting_as_superadmin: superadmin,
             action: action.into(),
             resource_type: "agent".into(),

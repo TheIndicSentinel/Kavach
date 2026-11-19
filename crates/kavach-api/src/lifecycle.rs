@@ -37,7 +37,7 @@ pub async fn list_audit_log(
     let limit = query.limit.clamp(1, 200);
     let entries = state
         .admin()
-        .list_audit(limit)
+        .list_audit(state.tenant_id(), limit)
         .await
         .map_err(|e| ApiError::Internal(format!("audit list: {e}")))?;
     Ok(Json(entries))

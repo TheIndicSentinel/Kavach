@@ -343,10 +343,11 @@ impl PostgresRoleStore {
             let audit = bootstrap_audit(binding);
             sqlx::query(
                 "INSERT INTO admin_audit_log \
-                    (action, resource_type, resource_id, actor_principal, approver_principal, \
+                    (tenant_id, action, resource_type, resource_id, actor_principal, approver_principal, \
                      payload, acting_as_superadmin) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
+            .bind(&audit.tenant_id)
             .bind(&audit.action)
             .bind(&audit.resource_type)
             .bind(&audit.resource_id)

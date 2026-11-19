@@ -183,6 +183,7 @@ pub async fn set_dev_clock(
     let audited = state
         .admin()
         .append_audit(AuditInsert {
+            tenant_id: state.tenant_id().into(),
             acting_as_superadmin: decision.acting_as_superadmin,
             action: "dev_clock_set".into(),
             resource_type: "dev_clock".into(),

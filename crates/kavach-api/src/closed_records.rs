@@ -163,6 +163,7 @@ pub async fn reconcile_closed_records(
     if let Err(err) = state
         .admin()
         .append_audit(AuditInsert {
+            tenant_id: state.tenant_id().into(),
             acting_as_superadmin: decision.acting_as_superadmin,
             action: "closed_records_reconciled".into(),
             resource_type: "reconciliation".into(),

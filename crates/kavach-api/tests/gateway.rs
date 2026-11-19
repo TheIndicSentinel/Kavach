@@ -688,7 +688,7 @@ async fn evidence_reads_are_admin_only_audited_and_hold_no_secrets() {
     );
 
     // Both reads by the admin are audited: who, which record, found or not.
-    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    let audit = gw.state.admin().list_audit("default", 50).await.unwrap();
     let reads: Vec<_> = audit
         .iter()
         .filter(|e| e.action == "read_evidence")
@@ -758,7 +758,7 @@ async fn unknown_outcome_review_is_admin_only_paged_and_audited() {
         StatusCode::BAD_REQUEST
     );
 
-    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    let audit = gw.state.admin().list_audit("default", 50).await.unwrap();
     assert!(audit.iter().any(|entry| {
         entry.action == "read_evidence"
             && entry.resource_type == "unknown_outcomes"
@@ -893,7 +893,7 @@ async fn a_delivered_attestation_is_a_digest_only_one_person_change_request() {
         Some(format!("{:x}", sha2::Sha256::digest(reference.as_bytes())).as_str())
     );
     assert_eq!(gw.provider.inbox().len(), 1, "attestation does not resend");
-    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    let audit = gw.state.admin().list_audit("default", 50).await.unwrap();
     assert!(!serde_json::to_string(&audit).unwrap().contains(reference));
 }
 
@@ -999,7 +999,7 @@ async fn a_not_delivered_attestation_requires_a_distinct_operator() {
     let (_, replay) = gw.remind("attest-not-delivered-1").await;
     assert_eq!(replay["replayed"], true);
     assert!(gw.provider.inbox().is_empty(), "attestation cannot resend");
-    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    let audit = gw.state.admin().list_audit("default", 50).await.unwrap();
     assert!(!serde_json::to_string(&audit)
         .unwrap()
         .contains("provider case R3b"));
@@ -1160,7 +1160,7 @@ async fn a_conflict_closure_requires_two_operators_and_names_the_governing_state
     let (_, replay) = gw.remind("conflict-closure-1").await;
     assert_eq!(replay["replayed"], true);
     assert!(gw.provider.inbox().is_empty());
-    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    let audit = gw.state.admin().list_audit("default", 50).await.unwrap();
     assert!(!serde_json::to_string(&audit).unwrap().contains(reference));
 }
 
@@ -1255,7 +1255,7 @@ async fn another_tenants_event_is_refused_and_revocation_reads_are_audited() {
         "the refused event left no record"
     );
 
-    let audit = gw.state.admin().list_audit(50).await.unwrap();
+    let audit = gw.state.admin().list_audit("default", 50).await.unwrap();
     let reads: Vec<_> = audit
         .iter()
         .filter(|e| e.action == "read_evidence" && e.resource_type == "mandate_revocation")

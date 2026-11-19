@@ -507,7 +507,7 @@ async fn a_role_bound_to_the_person_decides_without_any_group() {
 
 /// The flag on the audit row of `action` about change request `id`.
 async fn flag(s: &AppState, action: &str, id: &str) -> bool {
-    let entries = s.admin().list_audit(200).await.unwrap();
+    let entries = s.admin().list_audit("default", 200).await.unwrap();
     let entry = entries
         .iter()
         .find(|e| {
@@ -1027,7 +1027,7 @@ async fn get_text(
 
 async fn exports(s: &AppState) -> Vec<kavach_storage::AuditEntry> {
     s.admin()
-        .list_audit(200)
+        .list_audit("default", 200)
         .await
         .unwrap()
         .into_iter()

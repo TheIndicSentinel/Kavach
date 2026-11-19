@@ -997,7 +997,7 @@ async fn decision_event_reads_are_admin_only_audited_and_hold_no_input() {
     assert_eq!(doc["tombstoned"], true);
     assert_eq!(doc["event"]["reason_codes"], json!([]));
 
-    let audit = s.admin().list_audit(50).await.unwrap();
+    let audit = s.admin().list_audit("default", 50).await.unwrap();
     let reads: Vec<_> = audit
         .iter()
         .filter(|e| e.action == "read_evidence" && e.resource_type == "decision_event")

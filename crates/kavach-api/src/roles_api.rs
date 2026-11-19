@@ -451,6 +451,7 @@ pub async fn access_review(
     state
         .admin()
         .append_audit(AuditInsert {
+            tenant_id: state.tenant_id().into(),
             acting_as_superadmin: decision.acting_as_superadmin,
             action: ACCESS_REVIEW_AUDIT_ACTION.into(),
             resource_type: "access_review".into(),

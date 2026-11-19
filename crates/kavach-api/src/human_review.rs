@@ -269,6 +269,7 @@ async fn approve_inner(
     state
         .admin()
         .append_audit(AuditInsert {
+            tenant_id: state.tenant_id().into(),
             acting_as_superadmin: authorization.acting_as_superadmin,
             action: "create_human_review_approval".into(),
             resource_type: "human_review_approval".into(),
@@ -441,6 +442,7 @@ async fn audit_read(
     state
         .admin()
         .append_audit(AuditInsert {
+            tenant_id: state.tenant_id().into(),
             acting_as_superadmin,
             action: "read_human_review_snapshot".into(),
             resource_type: "human_review_snapshot".into(),

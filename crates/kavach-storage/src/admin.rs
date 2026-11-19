@@ -9,6 +9,7 @@ use kavach_domain::{GovernanceMode, ModelStatus};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub id: i64,
+    pub tenant_id: String,
     pub action: String,
     pub resource_type: String,
     pub resource_id: String,
@@ -25,6 +26,7 @@ pub struct AuditEntry {
 
 #[derive(Debug, Clone)]
 pub struct AuditInsert {
+    pub tenant_id: String,
     /// Allowed only by a superadmin policy, or the superadmin bootstrap
     /// (ADR-019 §7); stored as the entry's `acting_as_superadmin`.
     pub acting_as_superadmin: bool,
@@ -131,6 +133,7 @@ impl MemoryAdminStore {
         *next_id += 1;
         let entry = AuditEntry {
             id: *next_id,
+            tenant_id: insert.tenant_id,
             action: insert.action,
             resource_type: insert.resource_type,
             resource_id: insert.resource_id,
@@ -166,13 +169,22 @@ impl MemoryAdminStore {
         Ok(true)
     }
 
-    pub fn list_audit(&self, limit: u32) -> Result<Vec<AuditEntry>, AdminStoreError> {
+    pub fn list_audit(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> Result<Vec<AuditEntry>, AdminStoreError> {
         let audit = self
             .audit
             .lock()
             .map_err(|_| AdminStoreError::Io("lock poisoned".into()))?;
-        let start = audit.len().saturating_sub(limit as usize);
-        Ok(audit[start..].to_vec())
+        let scoped: Vec<_> = audit
+            .iter()
+            .filter(|entry| entry.tenant_id == tenant_id)
+            .cloned()
+            .collect();
+        let start = scoped.len().saturating_sub(limit as usize);
+        Ok(scoped[start..].to_vec())
     }
 
     pub fn get_runtime_pointers(&self) -> Result<Option<RuntimePointers>, AdminStoreError> {
@@ -246,6 +258,7 @@ impl MemoryAdminStore {
 
     pub fn last_audit(
         &self,
+        tenant_id: &str,
         action: &str,
         resource_id: &str,
     ) -> Result<Option<AuditEntry>, AdminStoreError> {
@@ -255,7 +268,50 @@ impl MemoryAdminStore {
             .map_err(poisoned)?
             .iter()
             .rev()
-            .find(|e| e.action == action && e.resource_id == resource_id)
+            .find(|e| {
+                e.tenant_id == tenant_id && e.action == action && e.resource_id == resource_id
+            })
             .cloned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn insert(tenant_id: &str, resource_id: &str) -> AuditInsert {
+        AuditInsert {
+            tenant_id: tenant_id.into(),
+            acting_as_superadmin: false,
+            action: "review".into(),
+            resource_type: "test".into(),
+            resource_id: resource_id.into(),
+            actor_principal: "actor".into(),
+            approver_principal: "approver".into(),
+            payload: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn audit_reads_and_last_lookup_are_tenant_scoped() {
+        let store = MemoryAdminStore::default();
+        store.append_audit(insert("tenant-a", "shared")).unwrap();
+        store.append_audit(insert("tenant-b", "shared")).unwrap();
+
+        assert_eq!(store.list_audit("tenant-a", 10).unwrap().len(), 1);
+        assert_eq!(store.list_audit("tenant-b", 10).unwrap().len(), 1);
+        assert!(store.list_audit("tenant-c", 10).unwrap().is_empty());
+        assert_eq!(
+            store
+                .last_audit("tenant-a", "review", "shared")
+                .unwrap()
+                .unwrap()
+                .tenant_id,
+            "tenant-a"
+        );
+        assert!(store
+            .last_audit("tenant-c", "review", "shared")
+            .unwrap()
+            .is_none());
     }
 }

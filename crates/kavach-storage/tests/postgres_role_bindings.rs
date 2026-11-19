@@ -196,7 +196,11 @@ async fn the_bootstrap_writes_two_flagged_superadmins_once() {
     );
     assert!(roles_of(store.roles_for("t1", ISS, Some("carol"), &[]).await).is_empty());
 
-    let audit = pool.admin_store().list_audit(50).await.expect("audit");
+    let audit = pool
+        .admin_store()
+        .list_audit("t1", 50)
+        .await
+        .expect("audit");
     let rows: Vec<_> = audit
         .iter()
         .filter(|e| e.action == BOOTSTRAP_AUDIT_ACTION)

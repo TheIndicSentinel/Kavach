@@ -611,6 +611,7 @@ pub fn decision_audit(
     reason: Option<&str>,
 ) -> AuditInsert {
     AuditInsert {
+        tenant_id: request.tenant_id.clone(),
         acting_as_superadmin: false,
         action: action.into(),
         resource_type: "change_request".into(),

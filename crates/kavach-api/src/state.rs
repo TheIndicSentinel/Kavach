@@ -778,6 +778,7 @@ impl AppState {
         };
         self.admin
             .append_audit(AuditInsert {
+                tenant_id: self.tenant_id.clone(),
                 acting_as_superadmin: false,
                 action: format!("{operation}_refused"),
                 resource_type: "policy_pack".into(),
@@ -810,6 +811,7 @@ impl AppState {
             // so the fail-open reload is visible to governance reviewers.
             self.admin
                 .append_audit(AuditInsert {
+                    tenant_id: self.tenant_id.clone(),
                     acting_as_superadmin: false,
                     action: format!("{operation}_unpinned"),
                     resource_type: "policy_pack".into(),
@@ -830,6 +832,7 @@ impl AppState {
         };
         self.admin
             .append_audit(AuditInsert {
+                tenant_id: self.tenant_id.clone(),
                 acting_as_superadmin: false,
                 action: format!("{operation}_refused"),
                 resource_type: "policy_pack".into(),
@@ -1163,8 +1166,14 @@ fn precheck_model(model: &ModelRecord) -> Result<(), ApiError> {
 
 const STARTUP_PRINCIPAL: &str = "system:startup";
 
-fn startup_audit(action: &str, resource_id: &str, payload: serde_json::Value) -> AuditInsert {
+fn startup_audit(
+    tenant_id: &str,
+    action: &str,
+    resource_id: &str,
+    payload: serde_json::Value,
+) -> AuditInsert {
     AuditInsert {
+        tenant_id: tenant_id.into(),
         acting_as_superadmin: false,
         action: action.into(),
         resource_type: "policy_pack".into(),
@@ -1203,6 +1212,7 @@ async fn enforce_startup_pointer(
         Ok(StartupPackCheck::Matches { pinned: true }) => Ok(()),
         Ok(StartupPackCheck::Matches { pinned: false }) => {
             audit(startup_audit(
+                &config.roles.tenant_id,
                 "startup_unpinned",
                 &path_str,
                 serde_json::json!({ "pack_path": path_str, "actual_sha256": digest }),
@@ -1236,6 +1246,7 @@ async fn enforce_startup_pointer(
                 return Ok(());
             }
             audit(startup_audit(
+                &config.roles.tenant_id,
                 "startup_baseline_recorded",
                 &path_str,
                 serde_json::json!({ "pack_path": path_str, "pack_sha256": digest }),
@@ -1245,6 +1256,7 @@ async fn enforce_startup_pointer(
         Err(err) if config.bootstrap_pack => {
             tracing::warn!("--bootstrap-pack override: {err}");
             audit(startup_audit(
+                &config.roles.tenant_id,
                 "startup_bootstrap_override",
                 &path_str,
                 serde_json::json!({

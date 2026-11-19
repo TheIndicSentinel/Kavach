@@ -88,7 +88,7 @@ async fn start(root: &Path, url: &str, pack: &str) -> Result<Arc<AppState>, Stri
 async fn audit_actions(state: &AppState) -> Vec<String> {
     state
         .admin()
-        .list_audit(50)
+        .list_audit("default", 50)
         .await
         .unwrap()
         .into_iter()
@@ -1015,7 +1015,7 @@ async fn the_superadmin_bootstrap_applies_once_at_startup() {
     assert!(subjects.contains(&"alice") && subjects.contains(&"bob"));
     let flagged: Vec<_> = state
         .admin()
-        .list_audit(50)
+        .list_audit("default", 50)
         .await
         .unwrap()
         .into_iter()

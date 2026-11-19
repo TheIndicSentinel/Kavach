@@ -78,6 +78,7 @@ fn describe(status: ModelStatus, mode: GovernanceMode) -> String {
 
 fn audit(action: &str, model_id: &str, payload: serde_json::Value) -> AuditInsert {
     AuditInsert {
+        tenant_id: "default".into(),
         acting_as_superadmin: false,
         action: action.into(),
         resource_type: "model_record".into(),
@@ -216,7 +217,7 @@ async fn approved_history(
     model_id: &str,
 ) -> Result<Option<(ModelStatus, GovernanceMode)>, ModelStartupError> {
     let Some(entry) = admin
-        .last_audit("update_model", model_id)
+        .last_audit("default", "update_model", model_id)
         .await
         .map_err(store)?
     else {

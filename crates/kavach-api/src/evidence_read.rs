@@ -123,6 +123,7 @@ async fn audit(
     state
         .admin()
         .append_audit(AuditInsert {
+            tenant_id: state.tenant_id().into(),
             acting_as_superadmin: reader.acting_as_superadmin,
             action: "read_evidence".into(),
             resource_type: resource_type.into(),

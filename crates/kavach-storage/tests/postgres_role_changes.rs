@@ -38,6 +38,7 @@ fn person(sub: &str) -> BindingSubject {
 
 fn audit(action: &str, id: &str) -> AuditInsert {
     AuditInsert {
+        tenant_id: "default".into(),
         acting_as_superadmin: false,
         action: action.into(),
         resource_type: "change_request".into(),

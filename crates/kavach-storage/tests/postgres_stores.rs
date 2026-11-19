@@ -127,6 +127,48 @@ async fn concurrent_retries_of_one_request_return_the_same_decision() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn admin_audit_reads_are_scoped_to_the_requested_tenant() {
+    let Some(pool) = pool().await else { return };
+    let admin = pool.admin_store();
+    for tenant_id in ["audit-tenant-a", "audit-tenant-b"] {
+        let entry = admin
+            .append_audit(AuditInsert {
+                tenant_id: tenant_id.into(),
+                acting_as_superadmin: false,
+                action: "tenant_scope_probe".into(),
+                resource_type: "test".into(),
+                resource_id: "shared-resource".into(),
+                actor_principal: "actor".into(),
+                approver_principal: "approver".into(),
+                payload: serde_json::json!({}),
+            })
+            .await
+            .expect("append audit row");
+        assert_eq!(entry.tenant_id, tenant_id);
+    }
+
+    for tenant_id in ["audit-tenant-a", "audit-tenant-b"] {
+        let rows = admin
+            .list_audit(tenant_id, 10)
+            .await
+            .expect("scoped audit list");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].tenant_id, tenant_id);
+        let last = admin
+            .last_audit(tenant_id, "tenant_scope_probe", "shared-resource")
+            .await
+            .expect("scoped last audit")
+            .expect("tenant's audit row");
+        assert_eq!(last.tenant_id, tenant_id);
+    }
+    assert!(admin
+        .list_audit("audit-tenant-other", 10)
+        .await
+        .expect("unrelated tenant list")
+        .is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn runtime_pointers_and_audit_round_trip() {
     let Some(pool) = pool().await else { return };
     let admin = pool.admin_store();
@@ -172,6 +214,7 @@ async fn runtime_pointers_and_audit_round_trip() {
     for action in ["first", "second", "third"] {
         admin
             .append_audit(AuditInsert {
+                tenant_id: "default".into(),
                 acting_as_superadmin: false,
                 action: action.into(),
                 resource_type: "policy_pack".into(),
@@ -183,7 +226,7 @@ async fn runtime_pointers_and_audit_round_trip() {
             .await
             .unwrap();
     }
-    let listed = admin.list_audit(2).await.unwrap();
+    let listed = admin.list_audit("default", 2).await.unwrap();
     assert_eq!(listed.len(), 2);
     assert_eq!(listed[0].payload["n"], "third");
 }
@@ -195,6 +238,7 @@ async fn an_audit_entry_with_a_key_is_written_once() {
     let Some(pool) = pool().await else { return };
     let admin = pool.admin_store();
     let entry = |n: &str| AuditInsert {
+        tenant_id: "default".into(),
         acting_as_superadmin: false,
         action: "mandates_revoked_by_event".into(),
         resource_type: "loan".into(),
@@ -218,7 +262,7 @@ async fn an_audit_entry_with_a_key_is_written_once() {
     // Plain entries have no key and are never merged.
     admin.append_audit(entry("plain-1")).await.unwrap();
     admin.append_audit(entry("plain-2")).await.unwrap();
-    let listed = admin.list_audit(10).await.unwrap();
+    let listed = admin.list_audit("default", 10).await.unwrap();
     let ns: Vec<&str> = listed
         .iter()
         .filter_map(|e| e.payload["n"].as_str())

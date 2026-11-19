@@ -978,7 +978,7 @@ async fn logout_makes_the_old_cookie_useless() {
     let actions: Vec<String> = h
         .state
         .admin()
-        .list_audit(50)
+        .list_audit("default", 50)
         .await
         .unwrap()
         .into_iter()

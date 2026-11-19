@@ -377,6 +377,7 @@ impl AppState {
         };
         request.change_digest = change_digest(&request)?;
         let audit = AuditInsert {
+            tenant_id: request.tenant_id.clone(),
             acting_as_superadmin: proposer.acting_as_superadmin,
             action: "change_request_proposed".into(),
             resource_type: "change_request".into(),
@@ -598,6 +599,7 @@ impl AppState {
             expected_pointer_version: prepared.expected_version,
             effects: prepared.effects,
             audit: AuditInsert {
+                tenant_id: request.tenant_id.clone(),
                 acting_as_superadmin: approver.acting_as_superadmin,
                 action: request.kind.as_str().into(),
                 resource_type: prepared.resource_type.into(),
@@ -680,6 +682,7 @@ impl AppState {
                 by_key: by.identity_key(),
                 outcome: json!({ "reason": reason }),
                 audit: AuditInsert {
+                    tenant_id: request.tenant_id.clone(),
                     acting_as_superadmin: by.acting_as_superadmin,
                     ..kavach_storage::decision_audit(request, &action, &by.id, Some(reason))
                 },
