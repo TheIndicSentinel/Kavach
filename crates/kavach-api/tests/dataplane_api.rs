@@ -790,6 +790,7 @@ async fn references_resolve_in_the_gateway_and_fixtures_hold_only_synthetic_numb
         .await
         .unwrap();
     assert_eq!(d.expose(), "+910000000001");
+    assert!(resolver.describe().starts_with("synthetic fixture"));
     assert!(resolver
         .resolve("other", SUBJECT, "whatsapp")
         .await
@@ -811,6 +812,45 @@ async fn references_resolve_in_the_gateway_and_fixtures_hold_only_synthetic_numb
     );
     assert!(message.contains("synthetic"), "{message}");
     assert!(!message.contains("9876543210"), "{message}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn configured_postgres_reference_vault_selects_the_encrypted_resolver() {
+    use kavach_ports::ReferenceResolver;
+
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let key_dir =
+        std::env::temp_dir().join(format!("kavach-reference-api-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir(&key_dir).unwrap();
+    let key_file = key_dir.join("vault.key");
+    owner_only(&key_file, &hex::encode([37u8; 32]));
+
+    let mut config = config(
+        EvidenceStoreKind::Postgres {
+            database_url: runtime,
+        },
+        true,
+        50,
+    );
+    config.migration_database_url = Some(owner);
+    config.dataplane.as_mut().unwrap().reference_vault =
+        Some(kavach_api::dataplane::ReferenceVaultConfig {
+            key_file,
+            key_id: "reference-api-test".into(),
+            previous_keys: Vec::new(),
+        });
+
+    let state = AppState::from_config(&config)
+        .await
+        .expect("Postgres vault starts");
+    assert_eq!(
+        state.dataplane().unwrap().resolver().describe(),
+        "Postgres encrypted reference vault"
+    );
+    drop(state);
+    std::fs::remove_dir_all(key_dir).unwrap();
 }
 
 /// Development keys (`dev-…`) never sign production evidence or credentials.

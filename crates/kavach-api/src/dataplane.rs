@@ -49,13 +49,13 @@ use kavach_ports::chain_record::{
     AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
-use kavach_ports::CredentialBroker;
 use kavach_ports::ReviewApprovalStore as _;
 use kavach_ports::{
     ConsentSource, ContactPreferenceSource, ErrorClass, KeyAlgorithm, KeyProvider, MandateStore,
     PortError, PublicKey, ReplayGuard, RevocationCursor, StoredMandate, StoredRevocation,
     SyncStatus, TimeSource, TrustedNow,
 };
+use kavach_ports::{CredentialBroker, Destination, ReferenceResolver};
 use kavach_storage::{
     MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, PostgresMandateStore,
     PostgresReplayGuard, StoragePool,
@@ -120,13 +120,11 @@ pub struct DataplaneConfig {
     pub credential_key_id: String,
     /// Resource providers (JSON): each audience's X25519 encryption key.
     pub providers: PathBuf,
-    /// Reference fixture (JSON): capability references to destinations,
-    /// synthetic numbers only. Persistent destinations remain unavailable to
-    /// the gateway until runtime resolver selection is wired.
+    /// Reference fixture (JSON): capability references to synthetic
+    /// destinations for development or when no reference vault is selected.
     pub references: PathBuf,
     /// Optional persistent signed destination updates. When set, requires a
-    /// Postgres storage pool; gateway resolution remains on the fixture until
-    /// runtime resolver selection is wired.
+    /// Postgres storage pool and selects the encrypted Postgres resolver.
     pub reference_vault: Option<ReferenceVaultConfig>,
     /// Gateway → provider timeouts (no retries). Both stay below the
     /// credential lifetime.
@@ -839,6 +837,34 @@ pub enum ContactPreferenceBackend {
     Postgres(kavach_storage::PostgresContactPreferenceSource),
 }
 
+/// Runtime reference selection. Persistent resolution is enabled only with
+/// both Postgres and the explicitly configured encrypted vault.
+pub enum ReferenceBackend {
+    Fixture(FixtureResolver),
+    Postgres(kavach_storage::PostgresReferenceResolver),
+}
+
+impl ReferenceResolver for ReferenceBackend {
+    async fn resolve(
+        &self,
+        tenant_id: &str,
+        subject_ref: &str,
+        channel: &str,
+    ) -> Result<Destination, PortError> {
+        match self {
+            Self::Fixture(resolver) => resolver.resolve(tenant_id, subject_ref, channel).await,
+            Self::Postgres(resolver) => resolver.resolve(tenant_id, subject_ref, channel).await,
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Fixture(resolver) => resolver.describe(),
+            Self::Postgres(resolver) => resolver.describe(),
+        }
+    }
+}
+
 impl ContactPreferenceSource for ContactPreferenceBackend {
     async fn get(
         &self,
@@ -959,7 +985,7 @@ pub struct Dataplane {
     broker: Arc<Broker>,
     /// What only the build knows is relaxed (see `crate::relaxations`).
     relaxed: Vec<crate::relaxations::Relaxation>,
-    resolver: FixtureResolver,
+    resolver: ReferenceBackend,
     contact_preferences: ContactPreferenceBackend,
     authority_updates: Option<SignedAuthorityUpdates>,
     reference_destination_updates: Option<ReferenceDestinationUpdates>,
@@ -1055,8 +1081,13 @@ impl Dataplane {
                 &config.evidence_key_id,
             )
             .await?;
-        let resolver = FixtureResolver::from_file(&config.references)
-            .map_err(|e| format!("references: {}", e.message))?;
+        let resolver = match &reference_destination_updates {
+            Some(updates) => ReferenceBackend::Postgres(updates.store.resolver()),
+            None => ReferenceBackend::Fixture(
+                FixtureResolver::from_file(&config.references)
+                    .map_err(|e| format!("references: {}", e.message))?,
+            ),
+        };
         let contact_preferences = match pool {
             Some(pool) => ContactPreferenceBackend::Postgres(pool.contact_preference_source()),
             None => ContactPreferenceBackend::Fixture(
@@ -1170,7 +1201,7 @@ impl Dataplane {
     }
 
     /// Resolves capability references, after an allow, inside the gateway.
-    pub fn resolver(&self) -> &FixtureResolver {
+    pub fn resolver(&self) -> &ReferenceBackend {
         &self.resolver
     }
 

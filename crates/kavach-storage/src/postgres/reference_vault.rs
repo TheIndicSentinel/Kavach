@@ -107,6 +107,15 @@ impl PostgresReferenceDestinationStore {
         }
     }
 
+    /// Builds a read adapter sharing this store's active and previous keys.
+    #[must_use]
+    pub fn resolver(&self) -> PostgresReferenceResolver {
+        PostgresReferenceResolver {
+            pool: self.pool.clone(),
+            key: std::sync::Arc::clone(&self.key),
+        }
+    }
+
     pub async fn apply(
         &self,
         verified: &VerifiedAuthorityUpdate,
