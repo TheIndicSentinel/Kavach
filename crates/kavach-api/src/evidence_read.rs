@@ -375,6 +375,12 @@ pub async fn read_decision_event(
         Ok(reader) => reader,
         Err(refused) => return *refused,
     };
+    if state.ensure_runtime_pointer_current().await.is_err() {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runtime pointer unavailable",
+        );
+    }
     let Ok(event) = state.decision_event(&evidence_id).await else {
         return refuse(
             StatusCode::SERVICE_UNAVAILABLE,

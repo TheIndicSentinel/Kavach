@@ -211,8 +211,10 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     let replica_a = start(&root, &url, "v0.yaml").await.expect("replica a");
     let replica_b = start(&root, &url, "v0.yaml").await.expect("replica b");
     let replica_c = start(&root, &url, "v0.yaml").await.expect("replica c");
+    let replica_d = start(&root, &url, "v0.yaml").await.expect("replica d");
     let (app_a, app_b) = (router(replica_a.clone()), router(replica_b.clone()));
     let app_c = router(replica_c.clone());
+    let app_d = router(replica_d.clone());
 
     let (status, request) = propose(
         &app_a,
@@ -277,6 +279,45 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
         replica_c.runtime().expect("runtime").pointer_version,
         2,
         "retention route must converge the stale replica"
+    );
+
+    let active = if a.0 == StatusCode::OK {
+        &app_a
+    } else {
+        &app_b
+    };
+    let golden: serde_json::Value =
+        serde_json::from_str(include_str!("../../../golden/finance/v0/credit_clean.json"))
+            .expect("golden evaluate fixture");
+    let mut evaluate_body: EvaluateRequest =
+        serde_json::from_value(golden["request"].clone()).expect("golden request");
+    let now = Utc::now();
+    evaluate_body.decision_time = now;
+    evaluate_body.consent.as_mut().expect("consent").timestamp = now;
+    let (status, decision) = call(
+        active,
+        "POST",
+        "/v1/evaluate",
+        &as_principal("admin-1"),
+        Some(serde_json::to_value(evaluate_body).expect("serialize evaluate request")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{decision}");
+    let evidence_id = decision["evidence_id"].as_str().expect("evidence id");
+    let (status, event) = call(
+        &app_d,
+        "GET",
+        &format!("/v1/decision-events/{evidence_id}"),
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{event}");
+    assert_eq!(event["event"]["evidence_id"], evidence_id);
+    assert_eq!(
+        replica_d.runtime().expect("runtime").pointer_version,
+        2,
+        "decision-event read must converge the stale replica"
     );
 
     // The replica that did not apply detects the committed pointer and
