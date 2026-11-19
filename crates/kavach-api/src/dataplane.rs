@@ -48,8 +48,9 @@ use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::CredentialBroker;
 use kavach_ports::ReviewApprovalStore as _;
 use kavach_ports::{
-    ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey, ReplayGuard,
-    RevocationCursor, StoredMandate, StoredRevocation, SyncStatus, TimeSource, TrustedNow,
+    ConsentSource, ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey,
+    ReplayGuard, RevocationCursor, StoredMandate, StoredRevocation, SyncStatus, TimeSource,
+    TrustedNow,
 };
 use kavach_storage::{
     MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, PostgresMandateStore,
@@ -88,7 +89,8 @@ pub struct DataplaneConfig {
     pub checkpoint_stall_seconds: u64,
     /// 32-byte hex secret for subject pseudonyms and parameter MACs.
     pub subject_pseudonym_key: PathBuf,
-    /// Consent fixture (JSON list of consent records; PRD D7).
+    /// Consent fixture (JSON list) for no-database development; Postgres
+    /// runtimes use the persistent consent projection instead (PRD D7).
     pub consents: PathBuf,
     pub tenant_id: String,
     /// Serve the agent surfaces and the evidence reads only: no evaluate,
@@ -801,11 +803,31 @@ impl TimeSource for ClockBackend {
 pub type Mandates = MandateService<
     SigningKeys,
     ReplayBackend,
-    InMemoryConsentSource,
+    ConsentBackend,
     MandateStoreBackend,
     InMemoryEventBus,
     ClockBackend,
 >;
+
+/// Production reads use the tenant-scoped Postgres projection. The local
+/// fixture remains available only when the runtime has no database pool.
+pub enum ConsentBackend {
+    Fixture(InMemoryConsentSource),
+    Postgres(kavach_storage::PostgresConsentSource),
+}
+
+impl ConsentSource for ConsentBackend {
+    async fn get(
+        &self,
+        tenant_id: &str,
+        consent_id: &str,
+    ) -> Result<Option<ConsentRecord>, PortError> {
+        match self {
+            Self::Fixture(source) => source.get(tenant_id, consent_id).await,
+            Self::Postgres(source) => source.get(tenant_id, consent_id).await,
+        }
+    }
+}
 
 /// The system-of-record listener's limit and the operator stop limit.
 fn limiters(
@@ -834,7 +856,7 @@ fn mandate_service(
     deps: MandateDeps<
         SigningKeys,
         ReplayBackend,
-        InMemoryConsentSource,
+        ConsentBackend,
         MandateStoreBackend,
         InMemoryEventBus,
         ClockBackend,
@@ -963,14 +985,19 @@ impl Dataplane {
             .iter()
             .map(|issuer| issuer.key.kid.clone())
             .collect();
-        let consents = read_consents(&config.consents)?;
+        let consents = match pool {
+            Some(pool) => ConsentBackend::Postgres(pool.consent_source()),
+            None => ConsentBackend::Fixture(InMemoryConsentSource::new(read_consents(
+                &config.consents,
+            )?)),
+        };
         let evidence = Arc::new(evidence);
         let mandates = mandate_service(
             config,
             MandateDeps {
                 keys,
                 replay,
-                consents: InMemoryConsentSource::new(consents),
+                consents,
                 store,
                 events: InMemoryEventBus::new(),
                 clock: clock.clone(),
@@ -1260,7 +1287,7 @@ impl WhatIf {
                 MandateDeps {
                     keys,
                     replay: ReplayBackend::Dev(DevReplayGuard::default()),
-                    consents: InMemoryConsentSource::new(consents),
+                    consents: ConsentBackend::Fixture(InMemoryConsentSource::new(consents)),
                     store: MandateStoreBackend::Memory(InMemoryMandateStore::new()),
                     events: InMemoryEventBus::new(),
                     clock: clock.clone(),
