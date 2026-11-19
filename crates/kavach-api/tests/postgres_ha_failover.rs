@@ -10,7 +10,7 @@ async fn standby_promotes_after_active_stops_and_old_pool_is_fenced() {
         return;
     };
     let tls = DatabaseTls::development();
-    let _owner = kavach_storage::StoragePool::connect(&owner_url, &tls)
+    let owner = kavach_storage::StoragePool::connect(&owner_url, &tls)
         .await
         .expect("migrate isolated schema");
     let former_active_pool = connect_runtime(&runtime_url, &tls)
@@ -30,7 +30,7 @@ async fn standby_promotes_after_active_stops_and_old_pool_is_fenced() {
     .expect("start active lease lifecycle");
     assert_eq!(active_fence.status(), "active");
 
-    let (standby_stop_tx, standby_stop_rx) = watch::channel(false);
+    let (_standby_stop_tx, standby_stop_rx) = watch::channel(false);
     let (standby_fence, standby_task) = ha_lease::start(
         standby_pool.active_lease_store(),
         "tenant-ha-test".into(),
@@ -53,6 +53,12 @@ async fn standby_promotes_after_active_stops_and_old_pool_is_fenced() {
         promoted.is_ok(),
         "standby did not promote after lease expiry"
     );
+    let first_promoted_epoch: i64 =
+        sqlx::query_scalar("SELECT epoch FROM active_api_leases WHERE tenant_id = $1")
+            .bind("tenant-ha-test")
+            .fetch_one(&owner.pool)
+            .await
+            .expect("read first promoted epoch");
 
     let stale_write = sqlx::query(
         "INSERT INTO replay_guard (tenant_id, key, expires_at) \
@@ -69,8 +75,52 @@ async fn standby_promotes_after_active_stops_and_old_pool_is_fenced() {
         Some("55000")
     );
 
-    let _ = standby_stop_tx.send(true);
-    let _ = standby_task.await;
+    // A restarted API rejoins as standby while the promoted process owns the
+    // lease. If that active then fails, the rejoined process can take over.
+    let rejoined_pool = connect_runtime(&runtime_url, &tls)
+        .await
+        .expect("connect rejoined API");
+    let (rejoined_stop_tx, rejoined_stop_rx) = watch::channel(false);
+    let (rejoined_fence, rejoined_task) = ha_lease::start(
+        rejoined_pool.active_lease_store(),
+        "tenant-ha-test".into(),
+        rejoined_stop_rx,
+    )
+    .await
+    .expect("start rejoined API");
+    assert_eq!(rejoined_fence.status(), "standby");
+
+    standby_task.abort();
+    let recovered = tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while rejoined_fence.status() != "active" {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(
+        recovered.is_ok(),
+        "rejoined API did not take over after active process loss"
+    );
+
+    let rejoined_write = sqlx::query(
+        "INSERT INTO replay_guard (tenant_id, key, expires_at) \
+         VALUES ('tenant-ha-test', 'rejoined-active-write', clock_timestamp() + interval '1 minute')",
+    )
+    .execute(&rejoined_pool.pool)
+    .await
+    .expect("rejoined API may write after promotion");
+    assert_eq!(rejoined_write.rows_affected(), 1);
+    let current_epoch: i64 =
+        sqlx::query_scalar("SELECT epoch FROM active_api_leases WHERE tenant_id = $1")
+            .bind("tenant-ha-test")
+            .fetch_one(&owner.pool)
+            .await
+            .expect("read recovered epoch");
+    assert_eq!(current_epoch, first_promoted_epoch + 1);
+
+    let _ = active_task.await;
+    let _ = rejoined_stop_tx.send(true);
+    let _ = rejoined_task.await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
