@@ -12,19 +12,20 @@ use kavach_ports::{
 use kavach_storage::testing::isolated_database_urls;
 use kavach_storage::{connect_runtime, DatabaseTls, StoragePool};
 
-fn event(
+fn event_for_tenant(
+    tenant_id: &str,
     now: chrono::DateTime<Utc>,
     id: &str,
     status: ContactPreferenceStatus,
 ) -> AuthorityUpdateEvent {
     AuthorityUpdateEvent {
         update_id: id.into(),
-        tenant_id: "tenant-a".into(),
+        tenant_id: tenant_id.into(),
         system: "lms".into(),
         occurred_at: now,
         nonce: format!("nonce-{id}"),
         change: AuthorityChange::ContactPreference(ContactPreferenceRecord {
-            tenant_id: "tenant-a".into(),
+            tenant_id: tenant_id.into(),
             subject_ref: "ref:borrower:B-1".into(),
             channel: "sms".into(),
             status,
@@ -34,15 +35,15 @@ fn event(
     }
 }
 
-fn verifier(public_key: kavach_ports::PublicKey) -> AuthorityVerifier {
+fn make_verifier(tenant_id: &str, public_key: kavach_ports::PublicKey) -> AuthorityVerifier {
     AuthorityVerifier::new(
-        "tenant-a",
+        tenant_id,
         MandateConfig {
             issuer_id: "test".into(),
             signing_kid: "unused".into(),
             mandate_keys: KeySet::new([public_key.clone()]),
             sor_issuers: vec![SorIssuer {
-                tenant_id: "tenant-a".into(),
+                tenant_id: tenant_id.into(),
                 system: "lms".into(),
                 key: public_key,
             }],
@@ -73,8 +74,10 @@ async fn signed_preference_updates_are_atomic_idempotent_and_fail_closed() {
     };
     let mut signer = InMemoryKeyProvider::new();
     let public_key = signer.insert_seed("lms-1", [9; 32]).unwrap();
-    let verifier = verifier(public_key);
-    let initial = event(now, "pref-1", ContactPreferenceStatus::Allowed);
+    let other_tenant_key = signer.insert_seed("lms-b-1", [10; 32]).unwrap();
+    let verifier = make_verifier("tenant-a", public_key);
+    let other_tenant_verifier = make_verifier("tenant-b", other_tenant_key);
+    let initial = event_for_tenant("tenant-a", now, "pref-1", ContactPreferenceStatus::Allowed);
     let token = jws::sign(&signer, "lms-1", TYP_AUTHORITY_UPDATE, &initial)
         .await
         .unwrap();
@@ -94,13 +97,48 @@ async fn signed_preference_updates_are_atomic_idempotent_and_fail_closed() {
             .await
             .is_ok()
     );
-    assert!(source
+    let other_tenant_preference = event_for_tenant(
+        "tenant-b",
+        now,
+        "pref-b-1",
+        ContactPreferenceStatus::OptedOut,
+    );
+    let token = jws::sign(
+        &signer,
+        "lms-b-1",
+        TYP_AUTHORITY_UPDATE,
+        &other_tenant_preference,
+    )
+    .await
+    .unwrap();
+    let accepted_other = other_tenant_verifier.verify(&token, trusted).unwrap();
+    assert!(
+        !store
+            .apply_preference(&accepted_other)
+            .await
+            .unwrap()
+            .replayed
+    );
+    let other_current = source
         .get("tenant-b", "ref:borrower:B-1", "sms")
         .await
         .unwrap()
-        .is_none());
+        .expect("tenant B has its own preference");
+    assert_eq!(other_current.status, ContactPreferenceStatus::OptedOut);
+    assert!(
+        require_contact_permission(&source, "tenant-a", "ref:borrower:B-1", "sms", now)
+            .await
+            .is_ok()
+    );
+    assert_eq!(
+        require_contact_permission(&source, "tenant-b", "ref:borrower:B-1", "sms", now)
+            .await
+            .unwrap_err()
+            .class,
+        ErrorClass::Rejected
+    );
 
-    let mut changed = initial.clone();
+    let mut changed = event_for_tenant("tenant-a", now, "pref-1", ContactPreferenceStatus::Allowed);
     if let AuthorityChange::ContactPreference(record) = &mut changed.change {
         record.status = ContactPreferenceStatus::OptedOut;
     }
@@ -130,7 +168,8 @@ async fn assert_stop_and_no_reopen(
 ) {
     let store = runtime.authority_update_store();
     let source = runtime.contact_preference_source();
-    let mut stop = event(
+    let mut stop = event_for_tenant(
+        "tenant-a",
         now - Duration::days(10),
         "pref-2",
         ContactPreferenceStatus::OptedOut,
@@ -166,7 +205,7 @@ async fn assert_stop_and_no_reopen(
         .fetch_one(&runtime.pool)
         .await
         .unwrap();
-    assert_eq!(history_count, 1);
+    assert_eq!(history_count, 2);
     sqlx::query("GRANT UPDATE ON contact_preference_current TO kavach_runtime")
         .execute(&owner.pool)
         .await
@@ -201,7 +240,7 @@ async fn assert_stop_and_no_reopen(
     .unwrap();
     assert_eq!(version, 2);
 
-    let reopen = event(now, "pref-3", ContactPreferenceStatus::Allowed);
+    let reopen = event_for_tenant("tenant-a", now, "pref-3", ContactPreferenceStatus::Allowed);
     let token = jws::sign(signer, "lms-1", TYP_AUTHORITY_UPDATE, &reopen)
         .await
         .unwrap();
