@@ -59,7 +59,7 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`), plus Postgres tests, c
 - **Done:** pilot blocker HUMAN_REVIEW approval path (PRD D17 / FR-6, ADR-003), including exact-action step-up, one-use approval and agent handoff.
 - **Deferred:** external messaging-provider mode (ADR-015). Per the owner's decision, this work remains local-only; no paid provider is selected or enabled.
 - **Done:** consent and reference stores (PRD D7 / FR-8); implementation and rollout boundary are recorded in [CONSENT_REFERENCE_STORES_PLAN.md](docs/CONSENT_REFERENCE_STORES_PLAN.md).
-- **Next:** an HA reference, the reference-machine benchmark, and a DR drill; then a managed single-tenant SaaS foundation. Pre-alpha. Open core boundary: [OPEN_CORE.md](OPEN_CORE.md)
+- **In progress:** the approved active/passive HA reference; see [HA_REFERENCE_PLAN.md](docs/HA_REFERENCE_PLAN.md). The reference-machine benchmark and DR drill remain next; then a managed single-tenant SaaS foundation. Pre-alpha. Open core boundary: [OPEN_CORE.md](OPEN_CORE.md)
 - **Security claims:** [SECURITY_PROPERTIES.md](docs/SECURITY_PROPERTIES.md) — updated in the same PR as any guarantee change
 
 See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md), [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md), and [docs/PARTNER_PILOT.md](docs/PARTNER_PILOT.md).

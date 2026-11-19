@@ -31,7 +31,9 @@ A token wins over a certificate principal: the token names the acting principal,
 
 ### 3. HMAC v2 (integrity and anti-replay, not identity)
 
-For `/v1/evaluate` when `--hmac-secret` is set: `X-Kavach-Timestamp` (±300 s), single-use `X-Kavach-Nonce` (16–128 chars), and `X-Kavach-Signature: sha256=<hex>` over `v2\n{ts}\n{nonce}\n{METHOD}\n{path?query}\n` + body. Nonces are recorded only after the signature verifies; the cache fails closed when full. Body-only (v1) signatures are rejected.
+For `/v1/evaluate` when `--hmac-secret` is set: `X-Kavach-Timestamp` (±300 s), single-use `X-Kavach-Nonce` (16–128 chars), and `X-Kavach-Signature: sha256=<hex>` over `v2\n{ts}\n{nonce}\n{METHOD}\n{path?query}\n` + body. Nonces are recorded only after the signature verifies; Postgres-backed runtimes reserve them in the tenant-scoped shared replay guard and refuse the request if that reservation is unavailable. Memory-backed development uses a bounded process-local cache. Body-only (v1) signatures are rejected.
+
+*Amended (2026-11, HA reference first slice):* the HMAC nonce reservation is shared between database-backed API processes. This closes the cross-process replay gap for `/v1/evaluate`; it does not by itself enable multi-instance serving. See [HA_REFERENCE_PLAN.md](HA_REFERENCE_PLAN.md).
 
 *Scope decision:* HMAC stays on `/v1/evaluate` (the service-to-service ingestion path). Other routes are used by the console, which cannot hold a shared secret; they are authenticated by tokens or mTLS. gRPC does not support HMAC; it requires a bearer token in `authorization` metadata or mTLS.
 

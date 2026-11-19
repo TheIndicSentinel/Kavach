@@ -177,7 +177,7 @@ pub struct AppState {
     require_hardening: bool,
     relaxations: std::collections::BTreeSet<crate::relaxations::Relaxation>,
     mtls_principal_san: Option<crate::mtls::MtlsSanKind>,
-    nonces: crate::hmac_auth::NonceCache,
+    hmac_nonces: crate::hmac_auth::HmacNonceBackend,
     changes: ChangeRequestBackend,
     change_ttl: Duration,
     /// Operator role bindings and the principals directory (ADR-019).
@@ -342,7 +342,7 @@ impl AppState {
             insecure_dev: config.insecure_dev,
             require_hardening: config.require_hardening,
             mtls_principal_san: config.mtls_principal_san,
-            nonces: crate::hmac_auth::NonceCache::default(),
+            hmac_nonces: crate::hmac_auth::HmacNonceBackend::from_pool(pool.as_ref()),
             roles,
             seen: crate::auth::SeenThrottle::default(),
             tenant_id: config.roles.tenant_id.clone(),
@@ -458,8 +458,8 @@ impl AppState {
         self.mtls_principal_san
     }
 
-    pub fn nonces(&self) -> &crate::hmac_auth::NonceCache {
-        &self.nonces
+    pub fn hmac_nonces(&self) -> &crate::hmac_auth::HmacNonceBackend {
+        &self.hmac_nonces
     }
 
     pub fn metrics(&self) -> &Metrics {

@@ -235,15 +235,20 @@ async fn evaluate(
 ) -> Result<Json<kavach_domain::EvaluateResponse>, ApiError> {
     if let Some(secret) = state.hmac_secret() {
         let path = uri.path_and_query().map_or(uri.path(), |pq| pq.as_str());
+        let now = chrono::Utc::now();
         crate::hmac_auth::verify(
             secret,
-            state.nonces(),
-            &credentials.headers,
-            method.as_str(),
-            path,
-            &body,
-            chrono::Utc::now().timestamp(),
-        )?;
+            state.hmac_nonces(),
+            crate::hmac_auth::HmacVerification {
+                tenant_id: state.tenant_id(),
+                headers: &credentials.headers,
+                method: method.as_str(),
+                path_and_query: path,
+                body: &body,
+                now,
+            },
+        )
+        .await?;
     }
     authorize_credentials(state.as_ref(), &credentials, KavachAction::Evaluate).await?;
     if crate::strict_json::uses_raw_value_key(&body) {
