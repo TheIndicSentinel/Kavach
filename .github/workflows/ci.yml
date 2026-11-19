@@ -244,6 +244,9 @@ jobs:
           -f deploy/docker-compose.ha-reference.yml
           --profile ha-reference-gated config --quiet
 
+      - name: Exercise gated HA Compose promotion
+        run: scripts/test-ha-compose-acceptance.sh
+
       # The HSM goes away mid-run and comes back (calls BLOCK, /v1/runtime
       # unhealthy, recovery without a restart). It rewrites its token's
       # configuration, so it gets a token of its own.
