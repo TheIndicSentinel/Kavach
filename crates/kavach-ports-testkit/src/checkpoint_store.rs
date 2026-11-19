@@ -87,8 +87,52 @@ fn checkpoint(
 /// Runs the whole suite against an empty store.
 pub async fn conformance<S: AgentEvidenceStore + CheckpointStore + 'static>(store: Arc<S>) {
     append_read_and_list(&*store).await;
+    same_checkpoint_coordinates_are_tenant_scoped(&*store).await;
     refusals_leave_nothing_behind(&*store).await;
     two_writers_never_fork(store).await;
+}
+
+/// Two tenants may have a checkpoint at the same partition, chain and
+/// sequence without sharing a head or a stored checkpoint.
+async fn same_checkpoint_coordinates_are_tenant_scoped<S: AgentEvidenceStore + CheckpointStore>(
+    store: &S,
+) {
+    let tenant_a = "cp-tenant-a";
+    let tenant_b = "cp-tenant-b";
+    let records_a = records(store, tenant_a, 2).await;
+    let records_b = records(store, tenant_b, 2).await;
+    assert_ne!(records_a[1].hash, records_b[1].hash);
+
+    let signer = TestSigner::new(CHECKPOINT_KID, 12);
+    let checkpoint_a = checkpoint(tenant_a, &records_a, 2, None, &signer);
+    let checkpoint_b = checkpoint(tenant_b, &records_b, 2, None, &signer);
+    assert_eq!(
+        store.append(&checkpoint_a).await.unwrap(),
+        Appended::Written
+    );
+    assert_eq!(
+        store.append(&checkpoint_b).await.unwrap(),
+        Appended::Written,
+        "the same coordinates in tenant B are independent"
+    );
+
+    assert_eq!(
+        store.latest(scope(tenant_a)).await.unwrap(),
+        Some(checkpoint_a.clone())
+    );
+    assert_eq!(
+        store.latest(scope(tenant_b)).await.unwrap(),
+        Some(checkpoint_b.clone())
+    );
+    assert_eq!(
+        store.list(scope(tenant_a), 0, 10).await.unwrap(),
+        [checkpoint_a]
+    );
+    assert_eq!(
+        store.list(scope(tenant_b), 0, 10).await.unwrap(),
+        [checkpoint_b]
+    );
+    assert_eq!(store.latest(scope("cp-unrelated")).await.unwrap(), None);
 }
 
 async fn append_read_and_list<S: AgentEvidenceStore + CheckpointStore>(store: &S) {
