@@ -134,7 +134,7 @@ async fn signed_consent_and_preference_updates_use_the_postgres_writer() {
         occurred_at: now,
         nonce: "nonce-api-grant-1".into(),
         change: AuthorityChange::Consent(ConsentRecord {
-            consent_id: "C-API-1".into(),
+            consent_id: "C-7f3a".into(),
             tenant_id: "default".into(),
             subject_ref: SUBJECT.into(),
             purposes: set(&["loan_recovery"]),
@@ -192,7 +192,7 @@ async fn signed_consent_and_preference_updates_use_the_postgres_writer() {
         update_id: "api-consent-withdrawal-1".into(),
         tenant_id: "default".into(),
         system: "lms".into(),
-        occurred_at: now,
+        occurred_at: now + chrono::Duration::seconds(1),
         nonce: "nonce-api-withdraw-1".into(),
         change: AuthorityChange::Consent(ConsentRecord {
             consent_id: "C-7f3a".into(),
