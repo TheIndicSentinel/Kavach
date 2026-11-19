@@ -42,6 +42,7 @@ pub mod review_snapshot_key;
 pub mod revocation_audit;
 pub mod revocation_evidence;
 pub mod roles_api;
+pub mod runtime_pointer_sync;
 pub mod shutdown;
 pub mod signing;
 pub mod state;

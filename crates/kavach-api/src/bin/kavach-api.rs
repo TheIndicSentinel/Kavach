@@ -1029,6 +1029,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let _review_snapshot_cleanup =
         kavach_api::review_snapshot_cleanup::start(review_snapshot_store, stop_rx.clone());
+    let _runtime_pointer_sync =
+        kavach_api::runtime_pointer_sync::start(stopping.clone(), stop_rx.clone());
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stop| *stop).await;
     };
