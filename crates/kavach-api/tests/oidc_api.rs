@@ -362,8 +362,19 @@ async fn get_json(state: &Arc<AppState>, uri: &str, headers: &[(&str, String)]) 
 /// The value of one series in the metrics text.
 fn series(state: &Arc<AppState>, name: &str) -> i64 {
     let text = state.metrics().gather_text().unwrap();
+    let name = if let Some(labels) = name.strip_suffix('}') {
+        format!("{labels},tenant_id=\"default\"}}")
+    } else {
+        format!("{name}{{tenant_id=\"default\"}}")
+    };
     text.lines()
-        .find_map(|l| l.strip_prefix(name)?.strip_prefix(' ')?.trim().parse().ok())
+        .find_map(|l| {
+            l.strip_prefix(&name)?
+                .strip_prefix(' ')?
+                .trim()
+                .parse()
+                .ok()
+        })
         .unwrap_or_else(|| panic!("no series {name} in the metrics"))
 }
 

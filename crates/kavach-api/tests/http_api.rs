@@ -1584,7 +1584,10 @@ async fn ungoverned_models_and_pack_mismatch_are_visible() {
         .unwrap();
     let text =
         String::from_utf8(raw.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
-    assert!(text.contains("kavach_model_pack_mismatch 1"), "{text}");
+    assert!(
+        text.contains("kavach_model_pack_mismatch{tenant_id=\"default\"} 1"),
+        "{text}"
+    );
 
     // Supplier controls run at proposal: the vendor draft is in enforce.
     let admin = as_principal("admin-1");

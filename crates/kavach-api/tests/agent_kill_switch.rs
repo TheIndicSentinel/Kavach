@@ -495,7 +495,7 @@ async fn stops_are_rate_limited_and_counted_and_a_burst_is_audited() {
     let text = gw.state.metrics().gather_text().unwrap();
     assert!(
         text.contains(
-            "kavach_agent_state_changes_total{result=\"rate_limited\",to=\"quarantined\"}"
+            "kavach_agent_state_changes_total{result=\"rate_limited\",to=\"quarantined\",tenant_id=\"default\"}"
         ),
         "{text}"
     );

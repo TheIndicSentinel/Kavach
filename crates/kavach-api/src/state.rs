@@ -305,7 +305,11 @@ impl AppState {
             model_pack_mismatch: model.pack_id != pack.pack.id,
         };
 
-        let metrics = start_metrics(runtime.model_pack_mismatch, dataplane.as_ref())?;
+        let metrics = start_metrics(
+            runtime.model_pack_mismatch,
+            dataplane.as_ref(),
+            &config.roles.tenant_id,
+        )?;
         let service = EvaluateService::new(
             pack,
             model,
@@ -918,8 +922,10 @@ fn select_review_stores(
 fn start_metrics(
     model_pack_mismatch: bool,
     dataplane: Option<&crate::dataplane::Dataplane>,
+    tenant_id: &str,
 ) -> Result<Metrics, ApiError> {
-    let metrics = Metrics::new().map_err(|e| ApiError::Internal(format!("metrics: {e}")))?;
+    let metrics =
+        Metrics::new(tenant_id).map_err(|e| ApiError::Internal(format!("metrics: {e}")))?;
     metrics.set_model_pack_mismatch(model_pack_mismatch);
     crate::checkpoints::start(dataplane, &metrics);
     crate::revocation_evidence::start(dataplane, &metrics);

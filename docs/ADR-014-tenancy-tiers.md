@@ -43,6 +43,8 @@ Regulated lenders will ask for Tier 1's isolation and key ownership regardless, 
 4. **A tenant-isolation test suite** at the store level: two tenants in one database, every store trait, no read or count crosses. This is meaningful today and catches regressions.
 5. **The migration policy** (`MIGRATIONS.md`): constraints `NOT VALID`, then `VALIDATE`.
 
+**Progress (2026-11-19):** the metrics portion of item 3 is implemented: every process metric carries the configured `tenant_id` as a registry constant label. The admin-audit tenant column and the two-tenant isolation suite remain pending.
+
 ### 3. Tier 2 prerequisites (not built)
 - A **per-tenant configuration store with an API**: templates, passports, issuers, consents, references, providers. Files are not a control plane.
 - **Per-tenant keys**: key ids per tenant (HSM roles), so one compromise is one tenant, and destroying a tenant's pseudonym key makes its records unlinkable (tenant offboarding; whether that satisfies erasure is a legal question).

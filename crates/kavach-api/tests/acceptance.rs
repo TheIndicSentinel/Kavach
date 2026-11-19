@@ -511,7 +511,7 @@ async fn scenario09_partial_unregistered_tool_is_refused(store: Store) {
     assert!(record_for(&gw, "collections-agent", "s9").await.is_none());
     let metrics = gw.state.metrics().gather_text().unwrap();
     assert!(
-        metrics.contains("kavach_gateway_malformed_total 1"),
+        metrics.contains("kavach_gateway_malformed_total{tenant_id=\"default\"} 1"),
         "{metrics}"
     );
 }

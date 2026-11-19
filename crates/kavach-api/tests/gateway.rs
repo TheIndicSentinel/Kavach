@@ -375,7 +375,8 @@ async fn a_payment_event_stops_contact_for_that_loan() {
 /// Refusals and malformed calls never reach the provider.
 /// The count recorded for one stage in `kavach_gateway_stage_seconds`.
 fn stage_count(metrics: &str, stage: &str) -> u64 {
-    let series = format!("kavach_gateway_stage_seconds_count{{stage=\"{stage}\"}} ");
+    let series =
+        format!("kavach_gateway_stage_seconds_count{{stage=\"{stage}\",tenant_id=\"default\"}} ");
     metrics
         .lines()
         .find_map(|line| line.strip_prefix(&series))
@@ -482,7 +483,7 @@ async fn refusals_and_malformed_calls_never_reach_the_provider() {
     );
     let metrics = gw.state.metrics().gather_text().unwrap();
     assert!(
-        metrics.contains("kavach_gateway_malformed_total 3"),
+        metrics.contains("kavach_gateway_malformed_total{tenant_id=\"default\"} 3"),
         "{metrics}"
     );
 
@@ -504,7 +505,7 @@ async fn refusals_and_malformed_calls_never_reach_the_provider() {
     );
 
     assert_eq!(gw.provider.inbox().len(), 1, "only c-1 was delivered");
-    assert!(metrics.contains("kavach_gateway_calls_total{decision=\"BLOCK\",outcome=\"none\",tool=\"send_reminder\"}"), "{metrics}");
+    assert!(metrics.contains("kavach_gateway_calls_total{decision=\"BLOCK\",outcome=\"none\",tool=\"send_reminder\",tenant_id=\"default\"}"), "{metrics}");
 }
 
 /// The same flow on Postgres, as the least-privilege runtime role.
@@ -1500,9 +1501,14 @@ async fn an_unknown_outcome_is_resolved_by_asking_the_provider_never_by_sending(
 
 /// The value of one unlabelled or labelled series in the metrics text.
 fn series(metrics: &str, name: &str) -> Option<i64> {
+    let name = if let Some(labels) = name.strip_suffix('}') {
+        format!("{labels},tenant_id=\"default\"}}")
+    } else {
+        format!("{name}{{tenant_id=\"default\"}}")
+    };
     metrics
         .lines()
-        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' '))
+        .find_map(|line| line.strip_prefix(&name)?.strip_prefix(' '))
         .and_then(|n| n.parse().ok())
 }
 

@@ -176,7 +176,7 @@ async fn a_run_is_audited_by_counts_and_sets_the_gauge() {
     );
     let metrics = gw.state.metrics().gather_text().unwrap();
     assert!(
-        metrics.contains("kavach_snapshot_mismatches 1"),
+        metrics.contains("kavach_snapshot_mismatches{tenant_id=\"default\"} 1"),
         "{metrics}"
     );
 }
