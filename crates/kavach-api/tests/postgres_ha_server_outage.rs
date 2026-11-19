@@ -108,7 +108,7 @@ async fn apis_stay_fenced_during_shared_postgres_outage_and_recover_after_restar
     .await
     .expect("start active lease lifecycle");
     assert_eq!(active_fence.status(), "active");
-    let (standby_stop_tx, standby_stop_rx) = watch::channel(false);
+    let (_standby_stop_tx, standby_stop_rx) = watch::channel(false);
     let (standby_fence, standby_task) = ha_lease::start(
         standby_pool.active_lease_store(),
         "tenant-ha-server-outage".into(),
@@ -206,9 +206,65 @@ async fn apis_stay_fenced_during_shared_postgres_outage_and_recover_after_restar
     .expect("promoted standby can write after restart");
     assert_eq!(standby_write.rows_affected(), 1);
 
-    let _ = active_stop_tx.send(true);
-    let _ = standby_stop_tx.send(true);
-    let _ = active_task.await;
+    // The pre-outage active has permanently fenced itself. A restarted
+    // process may rejoin as standby, then take over if the recovered active
+    // fails; the old epoch remains unable to write after the second takeover.
+    let rejoined_pool = connect_runtime(&runtime_url, &tls)
+        .await
+        .expect("connect API restarted after Postgres recovery");
+    let (rejoined_stop_tx, rejoined_stop_rx) = watch::channel(false);
+    let (rejoined_fence, rejoined_task) = ha_lease::start(
+        rejoined_pool.active_lease_store(),
+        "tenant-ha-server-outage".into(),
+        rejoined_stop_rx,
+    )
+    .await
+    .expect("rejoin recovered HA group");
+    assert_eq!(rejoined_fence.status(), "standby");
+    standby_task.abort();
     let _ = standby_task.await;
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while rejoined_fence.status() != "active" {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("rejoined process must promote after recovered active loss");
+
+    let recovered_epoch: i64 =
+        sqlx::query_scalar("SELECT epoch FROM active_api_leases WHERE tenant_id = $1")
+            .bind("tenant-ha-server-outage")
+            .fetch_one(&owner.pool)
+            .await
+            .expect("read rejoined epoch");
+    assert_eq!(recovered_epoch, 3);
+    let rejoined_write = sqlx::query(
+        "INSERT INTO replay_guard (tenant_id, key, expires_at) \
+         VALUES ('tenant-ha-server-outage', 'rejoined-after-outage-write', clock_timestamp() + interval '1 minute')",
+    )
+    .execute(&rejoined_pool.pool)
+    .await
+    .expect("rejoined process may write under its new lease");
+    assert_eq!(rejoined_write.rows_affected(), 1);
+
+    let old_standby_write = sqlx::query(
+        "INSERT INTO replay_guard (tenant_id, key, expires_at) \
+         VALUES ('tenant-ha-server-outage', 'old-standby-after-rejoin-write', clock_timestamp() + interval '1 minute')",
+    )
+    .execute(&standby_pool.pool)
+    .await
+    .expect_err("former recovered active must be fenced after rejoin takeover");
+    assert_eq!(
+        old_standby_write
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("55000")
+    );
+
+    let _ = active_stop_tx.send(true);
+    let _ = rejoined_stop_tx.send(true);
+    let _ = active_task.await;
+    let _ = rejoined_task.await;
     drop(owner);
 }
