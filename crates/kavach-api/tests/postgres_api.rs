@@ -214,11 +214,13 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     let replica_d = start(&root, &url, "v0.yaml").await.expect("replica d");
     let replica_e = start(&root, &url, "v0.yaml").await.expect("replica e");
     let replica_f = start(&root, &url, "v0.yaml").await.expect("replica f");
+    let replica_g = start(&root, &url, "v0.yaml").await.expect("replica g");
     let (app_a, app_b) = (router(replica_a.clone()), router(replica_b.clone()));
     let app_c = router(replica_c.clone());
     let app_d = router(replica_d.clone());
     let app_e = router(replica_e.clone());
     let app_f = router(replica_f.clone());
+    let app_g = router(replica_g.clone());
 
     let (status, request) = propose(
         &app_a,
@@ -311,6 +313,20 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
         replica_f.runtime().expect("runtime").pointer_version,
         2,
         "incident route must converge the stale replica"
+    );
+    let (status, audit) = call(
+        &app_g,
+        "GET",
+        "/v1/admin/audit",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{audit}");
+    assert_eq!(
+        replica_g.runtime().expect("runtime").pointer_version,
+        2,
+        "audit route must converge the stale replica"
     );
 
     let active = if a.0 == StatusCode::OK {
