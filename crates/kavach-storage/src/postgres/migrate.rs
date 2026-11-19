@@ -1,5 +1,6 @@
 use sqlx::postgres::PgPoolOptions;
 
+use super::active_lease::LeaseConnectionContext;
 use super::tls::{connect_options, DatabaseTls};
 use super::StoragePool;
 
@@ -31,12 +32,29 @@ pub async fn connect_runtime_sized(
     pool_size: u32,
 ) -> Result<StoragePool, kavach_evidence::EvidenceError> {
     let options = connect_options(database_url, tls).map_err(|err| tls_err(&err))?;
+    let write_context = LeaseConnectionContext::default();
+    let on_connect = write_context.clone();
+    let before_acquire = write_context.clone();
     let pool = PgPoolOptions::new()
         .max_connections(pool_size.max(1))
+        .after_connect(move |connection, _| {
+            let context = on_connect.clone();
+            Box::pin(async move { context.bind(connection).await })
+        })
+        .before_acquire(move |connection, _| {
+            let context = before_acquire.clone();
+            Box::pin(async move {
+                context.bind(connection).await?;
+                Ok(true)
+            })
+        })
         .connect_with(options)
         .await
         .map_err(|err| io_err(&err))?;
-    Ok(StoragePool { pool })
+    Ok(StoragePool {
+        pool,
+        write_context,
+    })
 }
 
 /// Applies pending migrations as the owning role. Applied migrations are

@@ -62,6 +62,37 @@ async fn lease_claim_renewal_and_takeover_are_atomic() {
         .await
         .unwrap());
 
+    let unconfigured: Option<String> =
+        sqlx::query_scalar("SELECT current_setting('kavach.fencing_enabled', true)")
+            .fetch_one(&runtime.pool)
+            .await
+            .unwrap();
+    assert_eq!(unconfigured, None);
+
+    winner.enable_write_fencing().await;
+    winner
+        .bind_write_identity("tenant", winner_id, loser.epoch, &winner_token)
+        .await;
+    let (a, b, c) = tokio::join!(
+        write_settings(&runtime.pool),
+        write_settings(&runtime.pool),
+        write_settings(&runtime.pool)
+    );
+    for settings in [a, b, c] {
+        assert_eq!(settings.0, "on");
+        assert_eq!(settings.1, "tenant");
+        assert_eq!(settings.2, winner_id);
+        assert_eq!(settings.3, loser.epoch.to_string());
+        assert_eq!(settings.4, hex::encode(winner_token));
+    }
+    winner.clear_write_identity().await;
+    let cleared = write_settings(&runtime.pool).await;
+    assert_eq!(cleared.0, "on");
+    assert!(cleared.1.is_empty());
+    assert!(cleared.2.is_empty());
+    assert!(cleared.3.is_empty());
+    assert!(cleared.4.is_empty());
+
     // Runtime credentials can execute the narrow lease API but cannot inspect
     // or edit its underlying owner-controlled row.
     let access = sqlx::query_scalar::<_, bool>(
@@ -71,6 +102,19 @@ async fn lease_claim_renewal_and_takeover_are_atomic() {
     .await
     .unwrap();
     assert!(!access);
+}
+
+async fn write_settings(pool: &sqlx::PgPool) -> (String, String, String, String, String) {
+    sqlx::query_as(
+        "SELECT current_setting('kavach.fencing_enabled', true), \
+                current_setting('kavach.tenant_id', true), \
+                current_setting('kavach.holder_id', true), \
+                current_setting('kavach.lease_epoch', true), \
+                current_setting('kavach.token_hash', true)",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread")]

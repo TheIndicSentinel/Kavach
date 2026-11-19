@@ -1,6 +1,6 @@
 # HA active/passive fencing plan
 
-**Status:** Approved; implementation in progress (2026-11-19). The owner approved the Postgres epoch lease, token-hash write guards, self-fencing after renewal failure, and 3-second renewal/10-second expiry defaults. The first storage slice adds lease claim and renewal primitives; API activation and write guards remain gated on later slices.
+**Status:** Approved; implementation in progress (2026-11-19). The owner approved the Postgres epoch lease, token-hash write guards, self-fencing after renewal failure, and 3-second renewal/10-second expiry defaults. Lease storage, opt-in API lifecycle, readiness gates, and runtime connection identity binding are implemented; transactional write guards remain pending.
 
 ## Goal
 
@@ -48,8 +48,9 @@ Use a 3-second renewal interval and a 10-second expiry, both measured by Postgre
 
 2. **API lease lifecycle — implemented.** Opt in with `--ha-active-passive` or `KAVACH_HA_ACTIVE_PASSIVE=true`; it requires Postgres storage. Each process creates a cryptographically random 256-bit in-memory token, keeps its raw value only in zeroizing memory, and stores/sends only its SHA-256 hash. A process that finds an occupied lease stays standby and retries claims every three seconds. An active renews every three seconds with a ten-second TTL. Renewal error or refusal permanently changes that process to fenced; it does not reclaim during that run. `/health` remains liveness, `/ready` returns 503 until active, and HTTP operator/agent/SoR plus gRPC evaluate routes refuse standby/fenced traffic. Without the opt-in, the existing single-instance behavior is unchanged. `crates/kavach-api/tests/http_api.rs` covers standby health, readiness, and route refusal.
 
-   **Deployment gate remains closed:** transactional database write guards are not implemented yet. Do not enable multiple API replicas until slice 3 prevents already-running requests and pooled writes from committing after lease loss.
+   **Deployment gate remains closed:** transactional database write guards are not implemented yet. Do not enable multiple API replicas until slice 4 prevents already-running requests and pooled writes from committing after lease loss.
 
-3. **Write fencing — pending.** Bind lease identity to runtime connections and guard all runtime-writable tables transactionally; verify trigger inventory against grants.
-4. **Readiness and lifecycle integration — implemented with slice 2.** Standby/fenced HTTP and gRPC application traffic is refused, `/ready` is false unless active and converged, `/health` remains liveness, and the opt-out path preserves existing single-instance behavior. The write-fencing dependency in slice 3 remains required before replicas are enabled.
-5. **HA reference deployment and fault tests — pending.** Complete the scenarios and deployment example in `HA_REFERENCE_PLAN.md` before enabling replicas.
+3. **Connection identity binding — implemented.** The shared API Postgres pool binds the active tenant, holder, epoch, and token hash on new connections and every pool checkout. Standby/fenced states keep fencing enabled but clear identity fields on subsequent checkouts; non-HA mode leaves session settings untouched. The real-Postgres test checks identity on three concurrent pool connections and checks clearing. This establishes identity transport only; writes are not fenced until slice 4.
+4. **Transactional write guards — pending.** Guard every runtime-writable table and verify trigger inventory against grants. Promotion must wait for old write transactions, and a stale holder must fail writes from all storage adapters.
+5. **Readiness and lifecycle integration — implemented with slice 2.** Standby/fenced HTTP and gRPC application traffic is refused, `/ready` is false unless active and converged, `/health` remains liveness, and the opt-out path preserves existing single-instance behavior. The write-fencing dependency in slice 4 remains required before replicas are enabled.
+6. **HA reference deployment and fault tests — pending.** Complete the scenarios and deployment example in `HA_REFERENCE_PLAN.md` before enabling replicas.

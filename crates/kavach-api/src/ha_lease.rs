@@ -100,11 +100,15 @@ pub async fn start(
     let token_hash: [u8; 32] = Sha256::digest(raw_token.as_ref()).into();
     let holder_id = uuid::Uuid::new_v4().to_string();
     let fence = HaFence(Arc::new(AtomicU8::new(STANDBY)));
+    store.enable_write_fencing().await;
     let epoch = match store
         .claim(&tenant_id, &holder_id, &token_hash, LEASE_TTL)
         .await
     {
         Ok(Some(lease)) => {
+            store
+                .bind_write_identity(&tenant_id, &holder_id, lease.epoch, &token_hash)
+                .await;
             fence.set(ACTIVE);
             tracing::info!(epoch = lease.epoch, "active API lease acquired");
             Some(lease.epoch)
@@ -159,6 +163,7 @@ pub async fn start(
                         "active API lease renewal failed; process is fenced until restart"
                     ),
                 }
+                store.clear_write_identity().await;
                 task_fence.set(FENCED);
                 continue;
             }
@@ -167,6 +172,9 @@ pub async fn start(
                 .await
             {
                 Ok(Some(lease)) => {
+                    store
+                        .bind_write_identity(&tenant_id, &holder_id, lease.epoch, &token_hash)
+                        .await;
                     epoch = Some(lease.epoch);
                     task_fence.set(ACTIVE);
                     tracing::info!(epoch = lease.epoch, "standby promoted to active API");
