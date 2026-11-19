@@ -165,6 +165,7 @@ pub struct AppState {
     metrics: Metrics,
     runtime: Mutex<RuntimeResponse>,
     runtime_pointer_version: AtomicI64,
+    runtime_reload_lock: tokio::sync::Mutex<()>,
     packs_dir: PathBuf,
     models_dir: PathBuf,
     admin: AdminBackend,
@@ -333,6 +334,7 @@ impl AppState {
             metrics,
             runtime: Mutex::new(runtime),
             runtime_pointer_version: AtomicI64::new(pointer_version),
+            runtime_reload_lock: tokio::sync::Mutex::new(()),
             packs_dir,
             models_dir,
             admin,
@@ -477,23 +479,98 @@ impl AppState {
             .map_err(|_| RUNTIME_LOCK.poisoned())
     }
 
-    /// Refuse evaluations when another process has committed a newer
-    /// runtime pointer. Reload is added separately; until this process has
-    /// converged, serving a decision from stale policy would be unsafe.
+    /// Converge to another process's committed runtime pointer before an
+    /// evaluation. The assets are validated before the live evaluator swaps;
+    /// failed or backward convergence refuses the request.
     pub async fn ensure_runtime_pointer_current(&self) -> Result<(), ApiError> {
+        let _reload = self.runtime_reload_lock.lock().await;
+        let pointers = self
+            .admin
+            .get_runtime_pointers()
+            .await
+            .map_err(|_| ApiError::Unavailable("runtime pointer is unavailable".into()))?;
         let local_version = self.runtime_pointer_version.load(Ordering::Acquire);
-        let stored_version = self
+        let stored_version = pointers.as_ref().map_or(0, |p| p.version);
+        if stored_version == local_version {
+            return Ok(());
+        }
+        if stored_version < local_version {
+            return Err(ApiError::Unavailable(
+                "stored runtime pointer moved backwards; operator recovery is required".into(),
+            ));
+        }
+        let pointers = pointers.ok_or_else(|| {
+            ApiError::Unavailable(
+                "runtime pointer disappeared; operator recovery is required".into(),
+            )
+        })?;
+        self.reload_runtime_pointer(pointers).await
+    }
+
+    async fn reload_runtime_pointer(&self, pointers: RuntimePointers) -> Result<(), ApiError> {
+        let pack_path = std::path::Path::new(&pointers.pack_path);
+        let pack = PackLoader::load_from_path(pack_path).map_err(|_| {
+            ApiError::Unavailable("committed runtime pack could not be loaded".into())
+        })?;
+        pack.verify_pin(pointers.pack_sha256.as_deref())
+            .map_err(|_| ApiError::Unavailable("committed runtime pack digest mismatch".into()))?;
+        if let Some(signers) = &self.pack_signers {
+            verify_signed(&pack, pack_path, signers).map_err(|_| {
+                ApiError::Unavailable("committed runtime pack signature is invalid".into())
+            })?;
+        }
+
+        let model_path = std::path::Path::new(&pointers.model_path);
+        let (mut model, model_digest) = read_model_file(model_path, self.pack_signers.as_ref())
+            .map_err(|_| {
+                ApiError::Unavailable("committed runtime model could not be loaded".into())
+            })?;
+        if pointers.model_sha256.as_deref() != Some(model_digest.as_str()) {
+            return Err(ApiError::Unavailable(
+                "committed runtime model digest mismatch".into(),
+            ));
+        }
+        let governed = self
+            .admin
+            .get_model_state(&model.model_id)
+            .await
+            .map_err(|_| ApiError::Unavailable("governed model state is unavailable".into()))?
+            .ok_or_else(|| {
+                ApiError::Unavailable("committed runtime model has no governed state".into())
+            })?;
+        model.status = governed.status;
+        model.governance_mode = governed.governance_mode;
+        precheck_model(&model).map_err(|_| {
+            ApiError::Unavailable("committed runtime model failed validation".into())
+        })?;
+
+        let latest_version = self
             .admin
             .get_runtime_pointers()
             .await
             .map_err(|_| ApiError::Unavailable("runtime pointer is unavailable".into()))?
-            .map_or(0, |pointers| pointers.version);
-        if stored_version != local_version {
-            return Err(ApiError::Unavailable(format!(
-                "runtime pointer drift: process serves version {local_version}, stored version is {stored_version}"
-            )));
+            .map_or(0, |latest| latest.version);
+        if latest_version != pointers.version {
+            return Err(ApiError::Unavailable(
+                "runtime pointer changed during reload; retry after convergence".into(),
+            ));
         }
-        Ok(())
+
+        let runtime = RuntimeResponse {
+            pack_id: pack.pack.id.clone(),
+            pack_version: pack.pack.version.clone(),
+            model_id: model.model_id.clone(),
+            model_version: model.version.clone(),
+            sector: model.sector.clone(),
+            governance_mode: model.governance_mode,
+            pack_path: pointers.pack_path,
+            model_path: pointers.model_path,
+            pack_sha256: pack.digest.clone(),
+            pointer_version: pointers.version,
+            model_sha256: Some(model_digest),
+            model_pack_mismatch: model.pack_id != pack.pack.id,
+        };
+        self.swap_live(pack, model, &runtime)
     }
 
     pub fn packs_dir(&self) -> &std::path::Path {

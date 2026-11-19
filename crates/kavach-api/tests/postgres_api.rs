@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use chrono::Utc;
 use kavach_api::{AccessControlKind, ApiConfig, AppState, EvidenceStoreKind};
+use kavach_domain::EvaluateRequest;
 use kavach_storage::testing::isolated_database_url;
 use tower::ServiceExt;
 
@@ -250,7 +252,8 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
         .count();
     assert_eq!(activations, 1);
 
-    // The replica that did not apply reports drift until restarted.
+    // The replica that did not apply detects the committed pointer and
+    // validates/reloads the shared pack and governed model before serving.
     let lagging = if a.0 == StatusCode::OK {
         &app_b
     } else {
@@ -266,19 +269,35 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     .await;
     assert_eq!(runtime["pointer_drift"], true, "{runtime}");
 
-    let evaluate_body =
+    let golden: serde_json::Value =
         serde_json::from_str(include_str!("../../../golden/finance/v0/credit_clean.json"))
-            .expect("golden evaluate request");
+            .expect("golden evaluate fixture");
+    let mut evaluate_body: EvaluateRequest =
+        serde_json::from_value(golden["request"].clone()).expect("golden request");
+    let now = Utc::now();
+    evaluate_body.decision_time = now;
+    evaluate_body.consent.as_mut().expect("consent").timestamp = now;
     let (status, response) = call(
         lagging,
         "POST",
         "/v1/evaluate",
         &as_principal("viewer-1"),
-        Some(evaluate_body),
+        Some(serde_json::to_value(evaluate_body).expect("serialize evaluate request")),
     )
     .await;
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{response}");
-    assert_eq!(response["code"], "unavailable", "{response}");
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["returned_decision"], "PASS", "{response}");
+
+    let (_, converged) = call(
+        lagging,
+        "GET",
+        "/v1/runtime",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(converged["pointer_drift"], false, "{converged}");
+    assert_eq!(converged["pack_id"], "finance-v1", "{converged}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

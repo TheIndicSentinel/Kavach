@@ -149,7 +149,7 @@ Each becomes a guarantee only when its acceptance scenario passes in CI.
 - **Governed model state in memory mode.** Without Postgres (development), model state lives in memory and the YAML decides again at restart.
 - **Pack/model binding.** A model written for one pack can run under another; it is reported (`model_pack_mismatch`, metric, console banner, approver warning) but not blocked (ADR-010 §4).
 - **Downgrade protection at first baseline.** There is no prior version to compare against.
-- **Replica convergence.** Only the process that applies a change reloads. HTTP and gRPC evaluations now fail closed with 503 when the stored pointer version differs or cannot be read; `/v1/runtime` reports `pointer_drift`. Automatic cross-process reload and coverage of other governed routes remain part of the approved HA reference plan.
+- **Replica convergence.** HTTP and gRPC evaluations compare the stored runtime pointer and validate/reload a newer pointer's pinned assets before serving; a read failure, backward version, or invalid asset returns 503. `/v1/runtime` reports `pointer_drift`. Background polling and coverage of other governed routes remain part of the approved HA reference plan.
 - **Shadow sync when evidence *and* the incident both fail.** The caller still receives `PASS` (shadow must not disrupt the lender's flow); the failure is visible only through `kavach_incident_write_failures_total` and an `ALERT` log line. Monitor that metric.
 - **mTLS without `--mtls-principal-san`.** The certificate then only restricts who can connect; the principal comes from a token.
 - **Client-certificate revocation.** No CRL or OCSP checking; a certificate stays usable until it expires or its CA is removed (restart needed). Issue short-lived certificates.
