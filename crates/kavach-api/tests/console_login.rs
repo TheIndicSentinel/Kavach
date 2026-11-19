@@ -994,6 +994,18 @@ async fn logout_makes_the_old_cookie_useless() {
     );
 }
 
+#[tokio::test]
+async fn a_promoted_process_requires_console_sign_in_again() {
+    let active = harness(|_| {}).await;
+    let promoted = harness(|_| {}).await;
+    let cookie = sign_in(&active).await;
+
+    let response = session(&promoted, &cookie).await;
+    assert_problem(&response, StatusCode::UNAUTHORIZED, "unauthorized");
+    assert_eq!(active.login().session_count(), 1);
+    assert_eq!(promoted.login().session_count(), 0);
+}
+
 // ---- 5. IdP logout -----------------------------------------------------------
 
 #[tokio::test]
