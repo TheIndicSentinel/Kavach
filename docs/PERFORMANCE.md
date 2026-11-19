@@ -96,6 +96,18 @@ Run once, on a fixed cloud VM matching NFR-2, then whenever a release is tagged.
 5. **Also once with `--provider-delay-ms 50`,** to show the gateway behind a realistic provider.
 6. **Record** in this file: the commit, the date, the VM (provider, instance type, region), the three reports, and each NFR-2 target as met or not met.
 
+## Developer-host smoke diagnostic (not an NFR result)
+
+On 2026-11-19, `authorize` completed on commit `5250f9a` using the memory store on an Intel Core i5-5250U Mac (4 logical CPUs, x86_64). Command: `cargo run -p kavach-bench -- --scenarios authorize --concurrency 1,8,32 --duration-seconds 3 --warmup-seconds 1 --subjects 100`. All three runs had zero errors.
+
+| Concurrency | Requests | Req/s | p50 ms | p95 ms | p99 ms | max ms |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 764 | 254.7 | 3.67 | 4.75 | 6.64 | 10.37 |
+| 8 | 1,704 | 568.0 | 6.40 | 9.38 | 17.53 | 34.92 |
+| 32 | 1,745 | 581.7 | 6.35 | 8.90 | 12.24 | 38.12 |
+
+This short memory-store smoke run checks that the in-process measurement works; its host, storage, duration, and workload do not match the reference procedure above. It does not satisfy or fail any NFR-2 target, and these numbers are not performance claims. The reference-machine run with local Postgres 16 remains pending.
+
 ## CI trends
 
 The *Benchmarks* workflow runs on demand (`gh workflow run bench.yml --ref <branch>`), when a change or decision needs the data, on a shared GitHub runner. A pull request that changes the harness gets a short run that checks it still works. A full run is one run against Postgres with TLS (`verify-full`), every scenario at pool sizes 5, 16 and 32, and one without TLS (the baseline), the gateway scenarios at pool size 5. Each run's tables appear in its summary, and the JSON reports are kept for 90 days.
