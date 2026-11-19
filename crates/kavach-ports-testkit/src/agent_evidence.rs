@@ -167,6 +167,7 @@ fn committed(result: CommitResult) -> kavach_ports::agent_evidence::AgentDecisio
 pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     let signer = TestSigner::new(KID, 9);
     let clock = FakeClock::synced_at(t0());
+    tenant_isolation(&*store, &clock, &signer).await;
     allow_replay_conflict_and_outcome(&*store, &clock, &signer).await;
     execution_idempotency_preserves_original_request(&*store, &clock, &signer).await;
     commit_time_checks(&*store, &clock, &signer).await;
@@ -183,6 +184,96 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     revocations_in_the_chain(&*store, &clock, &signer).await;
     one_record_per_revocation_event(Arc::clone(&store)).await;
     cap_holds_under_concurrency(store, signer).await;
+}
+
+/// ADR-014 §2.3: primary keys and reads must remain tenant scoped even when
+/// two tenants use the same agent and request identifiers.
+async fn tenant_isolation<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+) {
+    const TENANT_A: &str = "ae-tenant-isolation-a";
+    const TENANT_B: &str = "ae-tenant-isolation-b";
+    const REQUEST_ID: &str = "shared-request";
+    const CREDENTIAL_ID: &str = "shared-credential";
+
+    let mut a = request(TENANT_A, REQUEST_ID, 1);
+    a.contact = None;
+    a.draft.send_by = None;
+    a.credential_id = CREDENTIAL_ID.into();
+    let mut b = request(TENANT_B, REQUEST_ID, 1);
+    b.contact = None;
+    b.draft.send_by = None;
+    b.credential_id = CREDENTIAL_ID.into();
+
+    let record_a = committed(
+        store
+            .commit(a, clock, signer)
+            .await
+            .expect("tenant A commit"),
+    );
+    let record_b = committed(
+        store
+            .commit(b, clock, signer)
+            .await
+            .expect("tenant B commit"),
+    );
+    assert_eq!(record_a.payload.request_id, REQUEST_ID);
+    assert_eq!(record_b.payload.request_id, REQUEST_ID);
+    assert_ne!(record_a.payload.tenant_id, record_b.payload.tenant_id);
+
+    for (tenant, expected) in [(TENANT_A, TENANT_A), (TENANT_B, TENANT_B)] {
+        let found = store
+            .get_by_request(tenant, "collections-agent", REQUEST_ID)
+            .await
+            .expect("tenant scoped request lookup")
+            .expect("record exists for its tenant");
+        assert_eq!(found.payload.tenant_id, expected);
+        assert_eq!(
+            store
+                .records(tenant, 0)
+                .await
+                .expect("tenant records")
+                .len(),
+            1
+        );
+    }
+    assert!(store
+        .get_by_request("ae-tenant-isolation-other", "collections-agent", REQUEST_ID)
+        .await
+        .expect("unrelated tenant lookup")
+        .is_none());
+    assert!(store
+        .records("ae-tenant-isolation-other", 0)
+        .await
+        .expect("unrelated tenant records")
+        .is_empty());
+
+    let outcome = sign_outcome(
+        TENANT_A,
+        CREDENTIAL_ID,
+        &record_a.hash,
+        Outcome::Delivered,
+        "provider_accepted",
+        clock.now().utc,
+        signer,
+    )
+    .expect("signed outcome");
+    store
+        .record_outcome(outcome)
+        .await
+        .expect("tenant A outcome");
+    assert!(store
+        .outcome(TENANT_A, CREDENTIAL_ID)
+        .await
+        .expect("tenant A outcome lookup")
+        .is_some());
+    assert!(store
+        .outcome(TENANT_B, CREDENTIAL_ID)
+        .await
+        .expect("tenant B outcome lookup")
+        .is_none());
 }
 
 /// A revocation by a system-of-record event (ADR-012 §7).

@@ -43,7 +43,7 @@ Regulated lenders will ask for Tier 1's isolation and key ownership regardless, 
 4. **A tenant-isolation test suite** at the store level: two tenants in one database, every store trait, no read or count crosses. This is meaningful today and catches regressions.
 5. **The migration policy** (`MIGRATIONS.md`): constraints `NOT VALID`, then `VALIDATE`.
 
-**Progress (2026-11-19):** item 3 is implemented for the current single-tenant default: every process metric carries the configured `tenant_id` as a registry constant label, and `admin_audit_log.tenant_id` is added with a constant `default` value so the append-only history is not rewritten. The two-tenant isolation suite remains pending.
+**Progress (2026-11-19):** item 3 is implemented for the current single-tenant default: every process metric carries the configured `tenant_id` as a registry constant label, and `admin_audit_log.tenant_id` is added with a constant `default` value so the append-only history is not rewritten. The two-tenant isolation suite is in progress: the shared `AgentEvidenceStore` conformance suite now verifies that identical request and credential identifiers remain isolated for memory and Postgres adapters; remaining store traits are pending.
 
 ### 3. Tier 2 prerequisites (not built)
 - A **per-tenant configuration store with an API**: templates, passports, issuers, consents, references, providers. Files are not a control plane.
