@@ -259,6 +259,7 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     } else {
         &app_a
     };
+
     let (_, runtime) = call(
         lagging,
         "GET",
@@ -268,6 +269,16 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     )
     .await;
     assert_eq!(runtime["pointer_drift"], true, "{runtime}");
+
+    let (status, changes) = call(
+        lagging,
+        "GET",
+        "/v1/change-requests",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{changes}");
 
     let (status, packs) = call(lagging, "GET", "/v1/packs", &as_principal("viewer-1"), None).await;
     assert_eq!(status, StatusCode::OK, "{packs}");

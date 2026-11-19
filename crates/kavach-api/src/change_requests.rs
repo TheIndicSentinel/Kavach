@@ -70,6 +70,16 @@ fn serves_agent_only(kind: ChangeKind) -> bool {
     )
 }
 
+async fn ensure_runtime_pointer_for_kind(
+    state: &AppState,
+    kind: ChangeKind,
+) -> Result<(), ApiError> {
+    if !serves_agent_only(kind) {
+        state.ensure_runtime_pointer_current().await?;
+    }
+    Ok(())
+}
+
 /// The role a pending or decided role-change request changes: a grant's
 /// from its parameters, a revoke's from the binding frozen at proposal.
 /// `None` for every other kind.
@@ -169,6 +179,7 @@ pub async fn propose(
     }
     let role = role_of_proposal(&state, &credentials, &proposal).await?;
     let proposer = authorize_for(&state, &credentials, propose_action(proposal.kind), role).await?;
+    ensure_runtime_pointer_for_kind(&state, proposal.kind).await?;
     let request = state.propose_change(&proposer, proposal).await?;
     Ok((StatusCode::CREATED, Json(request)))
 }
@@ -190,6 +201,12 @@ pub async fn list(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Vec<ChangeRequest>>, ApiError> {
     authorized_principal(&state, &credentials, KavachAction::ReadChangeRequests).await?;
+    if !state
+        .dataplane()
+        .is_some_and(crate::dataplane::Dataplane::agent_only)
+    {
+        state.ensure_runtime_pointer_current().await?;
+    }
     let status = match query.status.as_deref() {
         None => None,
         Some(value) => Some(
@@ -218,6 +235,7 @@ pub async fn get(
         .get(&id)
         .await
         .map_err(|_| ApiError::NotFound(format!("change request {id}")))?;
+    ensure_runtime_pointer_for_kind(&state, request.kind).await?;
     Ok(Json(with_display_status(request)))
 }
 
@@ -246,6 +264,7 @@ pub async fn approve(
 ) -> Result<Json<ChangeRequest>, ApiError> {
     let (kind, role) = kind_of(&state, &id).await?;
     let approver = authorize_for(&state, &credentials, approve_action(kind), role).await?;
+    ensure_runtime_pointer_for_kind(&state, kind).await?;
     Ok(Json(
         state
             .approve_change(&approver, &id, &body.change_digest)
@@ -267,6 +286,7 @@ pub async fn reject(
 ) -> Result<Json<ChangeRequest>, ApiError> {
     let (kind, role) = kind_of(&state, &id).await?;
     let checker = authorize_for(&state, &credentials, approve_action(kind), role).await?;
+    ensure_runtime_pointer_for_kind(&state, kind).await?;
     let reason = body.and_then(|Json(body)| body.reason);
     Ok(Json(state.reject_change(&checker, &id, reason).await?))
 }
@@ -278,5 +298,6 @@ pub async fn cancel(
 ) -> Result<Json<ChangeRequest>, ApiError> {
     let (kind, role) = kind_of(&state, &id).await?;
     let proposer = authorize_for(&state, &credentials, propose_action(kind), role).await?;
+    ensure_runtime_pointer_for_kind(&state, kind).await?;
     Ok(Json(state.cancel_change(&proposer, &id).await?))
 }
