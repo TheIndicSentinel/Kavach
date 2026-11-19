@@ -7,6 +7,7 @@ async fn batch_job_backend_lists_memory_records() {
     let store = Arc::new(MemoryBatchJobStore::default());
     store
         .insert(BatchJobRecord {
+            tenant_id: "default".into(),
             job_id: "job-1".into(),
             status: "completed".into(),
             input_path: "/tmp/in.ndjson".into(),
@@ -24,7 +25,7 @@ async fn batch_job_backend_lists_memory_records() {
             completed_at: Some(Utc::now()),
         })
         .expect("insert");
-    let backend = BatchJobBackend::Memory(store);
+    let backend = BatchJobBackend::Memory(store, "default".into());
     let listed = backend.list(10).await.expect("list");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].input_path, "in.ndjson");

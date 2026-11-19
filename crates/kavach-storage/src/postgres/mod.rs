@@ -116,6 +116,10 @@ impl StoragePool {
         PostgresBatchJobStore::new(self.pool.clone())
     }
 
+    pub fn batch_job_store_for_tenant(&self, tenant_id: &str) -> PostgresBatchJobStore {
+        PostgresBatchJobStore::new_for_tenant(self.pool.clone(), tenant_id)
+    }
+
     pub fn admin_store(&self) -> PostgresAdminStore {
         PostgresAdminStore::new(self.pool.clone())
     }

@@ -91,31 +91,37 @@ impl kavach_evaluate::IncidentRecorder for IncidentBackend {
 }
 
 pub enum BatchJobBackend {
-    Memory(Arc<MemoryBatchJobStore>),
+    Memory(Arc<MemoryBatchJobStore>, String),
     Postgres(PostgresBatchJobStore),
 }
 
 impl BatchJobBackend {
     pub fn memory() -> Self {
-        Self::Memory(Arc::new(MemoryBatchJobStore::default()))
+        Self::memory_for_tenant("default")
+    }
+
+    pub fn memory_for_tenant(tenant_id: &str) -> Self {
+        Self::Memory(Arc::new(MemoryBatchJobStore::default()), tenant_id.into())
     }
 
     pub async fn list(&self, limit: u32) -> Result<Vec<BatchJobRecord>, JobQueryError> {
         match self {
-            Self::Memory(store) => store.list(limit),
+            Self::Memory(store, tenant_id) => store.list(tenant_id, limit),
             Self::Postgres(store) => store.list(i64::from(limit)).await,
         }
     }
 
     pub async fn get(&self, job_id: &str) -> Result<BatchJobRecord, JobQueryError> {
         match self {
-            Self::Memory(store) => store.get(job_id),
+            Self::Memory(store, tenant_id) => store.get(tenant_id, job_id),
             Self::Postgres(store) => store.get(job_id).await,
         }
     }
 
     pub fn seed_test_job(&self, record: BatchJobRecord) {
-        if let Self::Memory(store) = self {
+        if let Self::Memory(store, tenant_id) = self {
+            let mut record = record;
+            record.tenant_id.clone_from(tenant_id);
             let _ = store.insert(record);
         }
     }

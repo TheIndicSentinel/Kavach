@@ -79,20 +79,29 @@ impl BatchJobStore for NoopBatchJobStore {
 #[derive(Clone)]
 pub struct PostgresBatchJobStore {
     pool: PgPool,
+    tenant_id: String,
 }
 
 impl PostgresBatchJobStore {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self::new_for_tenant(pool, "default")
+    }
+
+    pub fn new_for_tenant(pool: PgPool, tenant_id: &str) -> Self {
+        Self {
+            pool,
+            tenant_id: tenant_id.into(),
+        }
     }
 
     pub async fn list(&self, limit: i64) -> Result<Vec<BatchJobRecord>, JobQueryError> {
         let rows = sqlx::query_as::<_, BatchJobRow>(
-            "SELECT job_id, status, input_path, output_path, model_id, governance_mode, \
+            "SELECT tenant_id, job_id, status, input_path, output_path, model_id, governance_mode, \
             total_rows, processed_rows, succeeded_rows, failed_rows, skipped_rows, error_summary, \
             created_at, started_at, completed_at \
-            FROM batch_jobs ORDER BY created_at DESC LIMIT $1",
+            FROM batch_jobs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT $2",
         )
+        .bind(&self.tenant_id)
         .bind(limit)
         .fetch_all(&self.pool)
         .await
@@ -106,11 +115,12 @@ impl PostgresBatchJobStore {
 
     pub async fn get(&self, job_id: &str) -> Result<BatchJobRecord, JobQueryError> {
         let row = sqlx::query_as::<_, BatchJobRow>(
-            "SELECT job_id, status, input_path, output_path, model_id, governance_mode, \
+            "SELECT tenant_id, job_id, status, input_path, output_path, model_id, governance_mode, \
             total_rows, processed_rows, succeeded_rows, failed_rows, skipped_rows, error_summary, \
             created_at, started_at, completed_at \
-            FROM batch_jobs WHERE job_id = $1",
+            FROM batch_jobs WHERE tenant_id = $1 AND job_id = $2",
         )
+        .bind(&self.tenant_id)
         .bind(job_id)
         .fetch_optional(&self.pool)
         .await
@@ -125,6 +135,7 @@ impl BatchJobStore for PostgresBatchJobStore {
     fn create_pending(&mut self, create: &BatchJobCreate) -> Result<String, JobStoreError> {
         let job_id = Uuid::new_v4().to_string();
         let pool = self.pool.clone();
+        let tenant_id = self.tenant_id.clone();
         let job_id_clone = job_id.clone();
         let input_path = create.input_path.clone();
         let output_path = create.output_path.clone();
@@ -135,10 +146,11 @@ impl BatchJobStore for PostgresBatchJobStore {
                 sqlx::query(
                     r"
                     INSERT INTO batch_jobs (
-                        job_id, status, input_path, output_path, model_id, governance_mode
-                    ) VALUES ($1, 'pending', $2, $3, $4, $5)
+                        tenant_id, job_id, status, input_path, output_path, model_id, governance_mode
+                    ) VALUES ($1, $2, 'pending', $3, $4, $5, $6)
                     ",
                 )
+                .bind(tenant_id)
                 .bind(&job_id_clone)
                 .bind(input_path)
                 .bind(output_path)
@@ -154,16 +166,18 @@ impl BatchJobStore for PostgresBatchJobStore {
 
     fn mark_running(&mut self, job_id: &str, total_rows: usize) -> Result<(), JobStoreError> {
         let pool = self.pool.clone();
+        let tenant_id = self.tenant_id.clone();
         let job_id = job_id.to_string();
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async move {
                 sqlx::query(
                     r"
                     UPDATE batch_jobs
-                    SET status = 'running', started_at = $2, total_rows = $3, processed_rows = 0
-                    WHERE job_id = $1
+                    SET status = 'running', started_at = $3, total_rows = $4, processed_rows = 0
+                    WHERE tenant_id = $1 AND job_id = $2
                     ",
                 )
+                .bind(tenant_id)
                 .bind(job_id)
                 .bind(Utc::now())
                 .bind(i64::try_from(total_rows).unwrap_or(i64::MAX))
@@ -185,6 +199,7 @@ impl BatchJobStore for PostgresBatchJobStore {
     ) -> Result<(), JobStoreError> {
         update_final_status(
             &self.pool,
+            &self.tenant_id,
             &BatchJobFinalStatus {
                 job_id,
                 status: "completed",
@@ -208,6 +223,7 @@ impl BatchJobStore for PostgresBatchJobStore {
     ) -> Result<(), JobStoreError> {
         update_final_status(
             &self.pool,
+            &self.tenant_id,
             &BatchJobFinalStatus {
                 job_id,
                 status: "failed",
@@ -233,9 +249,11 @@ struct BatchJobFinalStatus<'a> {
 
 fn update_final_status(
     pool: &PgPool,
+    tenant_id: &str,
     update: &BatchJobFinalStatus<'_>,
 ) -> Result<(), JobStoreError> {
     let pool = pool.clone();
+    let tenant_id = tenant_id.to_string();
     let job_id = update.job_id.to_string();
     let status = update.status.to_string();
     let error_summary = update.error_summary.map(str::to_string);
@@ -248,17 +266,18 @@ fn update_final_status(
             sqlx::query(
                 r"
                 UPDATE batch_jobs
-                SET status = $2,
-                    completed_at = $3,
-                    total_rows = $4,
-                    processed_rows = $4,
-                    succeeded_rows = $5,
-                    failed_rows = $6,
-                    skipped_rows = $7,
-                    error_summary = $8
-                WHERE job_id = $1
+                SET status = $3,
+                    completed_at = $4,
+                    total_rows = $5,
+                    processed_rows = $5,
+                    succeeded_rows = $6,
+                    failed_rows = $7,
+                    skipped_rows = $8,
+                    error_summary = $9
+                WHERE tenant_id = $1 AND job_id = $2
                 ",
             )
+            .bind(tenant_id)
             .bind(job_id)
             .bind(status)
             .bind(Utc::now())
@@ -284,6 +303,7 @@ fn governance_mode_str(mode: GovernanceMode) -> &'static str {
 
 #[derive(sqlx::FromRow)]
 struct BatchJobRow {
+    tenant_id: String,
     job_id: String,
     status: String,
     input_path: String,
@@ -304,6 +324,7 @@ struct BatchJobRow {
 impl BatchJobRow {
     fn into_record(self) -> BatchJobRecord {
         BatchJobRecord {
+            tenant_id: self.tenant_id,
             job_id: self.job_id,
             status: self.status,
             input_path: self.input_path,

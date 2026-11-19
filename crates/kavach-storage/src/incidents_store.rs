@@ -6,6 +6,7 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IncidentRecord {
     pub id: i64,
+    #[serde(skip_serializing, default)]
     pub tenant_id: String,
     pub correlation_id: String,
     pub model_id: String,

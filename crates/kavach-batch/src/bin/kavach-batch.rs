@@ -66,6 +66,10 @@ enum Command {
         #[arg(long, value_enum, default_value = "memory")]
         evidence_store: EvidenceStoreArg,
 
+        /// Tenant served by this worker; must match the API's KAVACH_TENANT_ID.
+        #[arg(long, env = "KAVACH_TENANT_ID", default_value = "default")]
+        tenant_id: String,
+
         #[arg(long, env = "KAVACH_DATABASE_URL")]
         database_url: Option<String>,
 
@@ -142,6 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             decision_to,
             model,
             evidence_store,
+            tenant_id,
             database_url,
             migration_database_url,
             database_ca,
@@ -190,14 +195,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         governed_model: Some(governed_model(&pool, &config.model_path).await?),
                         ..config
                     };
-                    let mut job_store = pool.batch_job_store();
+                    let mut job_store = pool.batch_job_store_for_tenant(&tenant_id);
                     run_batch(
                         input_file,
                         &mut writer,
                         &config,
                         &context,
                         EvidenceBackend::Postgres(pool.evidence_store()),
-                        IncidentBackend::Postgres(pool.incident_store()),
+                        IncidentBackend::Postgres(pool.incident_store_for_tenant(&tenant_id)),
                         &mut job_store,
                     )?
                 }

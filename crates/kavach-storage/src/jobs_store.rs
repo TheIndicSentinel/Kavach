@@ -5,6 +5,8 @@ use std::sync::Mutex;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BatchJobRecord {
+    #[serde(skip_serializing, default)]
+    pub tenant_id: String,
     pub job_id: String,
     pub status: String,
     pub input_path: String,
@@ -53,26 +55,28 @@ pub struct MemoryBatchJobStore {
 }
 
 impl MemoryBatchJobStore {
-    pub fn list(&self, limit: u32) -> Result<Vec<BatchJobRecord>, JobQueryError> {
+    pub fn list(&self, tenant_id: &str, limit: u32) -> Result<Vec<BatchJobRecord>, JobQueryError> {
         let jobs = self
             .jobs
             .lock()
             .map_err(|_| JobQueryError::Io("lock poisoned".into()))?;
-        let start = jobs.len().saturating_sub(limit as usize);
-        Ok(jobs[start..]
+        Ok(jobs
             .iter()
+            .filter(|job| job.tenant_id == tenant_id)
+            .rev()
+            .take(limit as usize)
             .cloned()
             .map(BatchJobRecord::redacted_paths)
             .collect())
     }
 
-    pub fn get(&self, job_id: &str) -> Result<BatchJobRecord, JobQueryError> {
+    pub fn get(&self, tenant_id: &str, job_id: &str) -> Result<BatchJobRecord, JobQueryError> {
         let jobs = self
             .jobs
             .lock()
             .map_err(|_| JobQueryError::Io("lock poisoned".into()))?;
         jobs.iter()
-            .find(|job| job.job_id == job_id)
+            .find(|job| job.tenant_id == tenant_id && job.job_id == job_id)
             .cloned()
             .map(BatchJobRecord::redacted_paths)
             .ok_or_else(|| JobQueryError::NotFound(job_id.to_string()))

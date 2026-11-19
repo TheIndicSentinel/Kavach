@@ -848,6 +848,7 @@ async fn admin_batch_jobs_list_and_get() {
     state
         .batch_jobs()
         .seed_test_job(kavach_storage::BatchJobRecord {
+            tenant_id: "default".into(),
             job_id: "job-test-1".into(),
             status: "completed".into(),
             input_path: "/data/partner/credit_batch.ndjson".into(),
