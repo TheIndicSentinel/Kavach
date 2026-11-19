@@ -55,10 +55,11 @@ impl PostgresChangeStore {
         tx.commit().await.map_err(io)
     }
 
-    pub async fn get(&self, id: &str) -> Result<ChangeRequest, ChangeStoreError> {
+    pub async fn get(&self, tenant_id: &str, id: &str) -> Result<ChangeRequest, ChangeStoreError> {
         let row = sqlx::query_as::<_, Row>(&format!(
-            "SELECT {COLUMNS} FROM change_requests WHERE id = $1"
+            "SELECT {COLUMNS} FROM change_requests WHERE tenant_id = $1 AND id = $2"
         ))
+        .bind(tenant_id)
         .bind(id)
         .fetch_optional(&self.pool)
         .await
@@ -69,13 +70,16 @@ impl PostgresChangeStore {
 
     pub async fn list(
         &self,
+        tenant_id: &str,
         status: Option<ChangeStatus>,
         limit: i64,
     ) -> Result<Vec<ChangeRequest>, ChangeStoreError> {
         let rows = sqlx::query_as::<_, Row>(&format!(
             "SELECT {COLUMNS} FROM change_requests \
-            WHERE ($1::TEXT IS NULL OR status = $1) ORDER BY created_at DESC LIMIT $2"
+            WHERE tenant_id = $1 AND ($2::TEXT IS NULL OR status = $2) \
+            ORDER BY created_at DESC LIMIT $3"
         ))
+        .bind(tenant_id)
         .bind(status.map(ChangeStatus::as_str))
         .bind(limit)
         .fetch_all(&self.pool)
@@ -86,9 +90,10 @@ impl PostgresChangeStore {
 
     pub async fn close(&self, close: &CloseRequest) -> Result<ChangeRequest, ChangeStoreError> {
         let mut tx = self.pool.begin().await.map_err(io)?;
-        let request = lock_pending(&mut tx, &close.request_id).await?;
+        let request = lock_pending(&mut tx, &close.audit.tenant_id, &close.request_id).await?;
         let closed = decide(
             &mut tx,
+            &close.audit.tenant_id,
             &request.id,
             close.status,
             &close.by,
@@ -107,7 +112,7 @@ impl PostgresChangeStore {
         commit: ApprovalCommit,
     ) -> Result<ChangeRequest, ChangeStoreError> {
         let mut tx = self.pool.begin().await.map_err(io)?;
-        let request = lock_pending(&mut tx, &commit.request_id).await?;
+        let request = lock_pending(&mut tx, &commit.audit.tenant_id, &commit.request_id).await?;
         if request.change_digest != commit.change_digest {
             return Err(ChangeStoreError::DigestMismatch);
         }
@@ -162,6 +167,7 @@ impl PostgresChangeStore {
         insert_audit(&mut *tx, &commit.audit).await.map_err(io)?;
         let applied = decide(
             &mut tx,
+            &commit.audit.tenant_id,
             &request.id,
             ChangeStatus::Applied,
             &commit.approver,
@@ -185,6 +191,7 @@ impl PostgresChangeStore {
     ) -> Result<ChangeRequest, ChangeStoreError> {
         let closed = decide(
             &mut tx,
+            &commit.audit.tenant_id,
             &request.id,
             status,
             &commit.approver,
@@ -207,11 +214,13 @@ impl PostgresChangeStore {
 
 async fn lock_pending(
     tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
     id: &str,
 ) -> Result<ChangeRequest, ChangeStoreError> {
     let request = sqlx::query_as::<_, Row>(&format!(
-        "SELECT {COLUMNS} FROM change_requests WHERE id = $1 FOR UPDATE"
+        "SELECT {COLUMNS} FROM change_requests WHERE tenant_id = $1 AND id = $2 FOR UPDATE"
     ))
+    .bind(tenant_id)
     .bind(id)
     .fetch_optional(&mut **tx)
     .await
@@ -227,6 +236,7 @@ async fn lock_pending(
 
 async fn decide(
     tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
     id: &str,
     status: ChangeStatus,
     by: &str,
@@ -235,10 +245,11 @@ async fn decide(
     now: DateTime<Utc>,
 ) -> Result<ChangeRequest, ChangeStoreError> {
     sqlx::query_as::<_, Row>(&format!(
-        "UPDATE change_requests SET status = $2, decided_by = $3, decided_by_key = $4, \
-            outcome = $5, decided_at = $6 \
-        WHERE id = $1 AND status = 'pending' RETURNING {COLUMNS}"
+        "UPDATE change_requests SET status = $3, decided_by = $4, decided_by_key = $5, \
+            outcome = $6, decided_at = $7 \
+        WHERE tenant_id = $1 AND id = $2 AND status = 'pending' RETURNING {COLUMNS}"
     ))
+    .bind(tenant_id)
     .bind(id)
     .bind(status.as_str())
     .bind(by)

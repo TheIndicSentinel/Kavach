@@ -270,21 +270,22 @@ impl ChangeRequestBackend {
         }
     }
 
-    pub async fn get(&self, id: &str) -> Result<ChangeRequest, ChangeStoreError> {
+    pub async fn get(&self, tenant_id: &str, id: &str) -> Result<ChangeRequest, ChangeStoreError> {
         match self {
-            Self::Memory(store) => store.get(id),
-            Self::Postgres(store) => store.get(id).await,
+            Self::Memory(store) => store.get(tenant_id, id),
+            Self::Postgres(store) => store.get(tenant_id, id).await,
         }
     }
 
     pub async fn list(
         &self,
+        tenant_id: &str,
         status: Option<ChangeStatus>,
         limit: u32,
     ) -> Result<Vec<ChangeRequest>, ChangeStoreError> {
         match self {
-            Self::Memory(store) => store.list(status, limit),
-            Self::Postgres(store) => store.list(status, i64::from(limit)).await,
+            Self::Memory(store) => store.list(tenant_id, status, limit),
+            Self::Postgres(store) => store.list(tenant_id, status, i64::from(limit)).await,
         }
     }
 
@@ -344,16 +345,17 @@ impl MemoryChangeStore {
         Ok(())
     }
 
-    fn get(&self, id: &str) -> Result<ChangeRequest, ChangeStoreError> {
+    fn get(&self, tenant_id: &str, id: &str) -> Result<ChangeRequest, ChangeStoreError> {
         self.lock()?
             .iter()
-            .find(|request| request.id == id)
+            .find(|request| request.tenant_id == tenant_id && request.id == id)
             .cloned()
             .ok_or_else(|| ChangeStoreError::NotFound(id.into()))
     }
 
     fn list(
         &self,
+        tenant_id: &str,
         status: Option<ChangeStatus>,
         limit: u32,
     ) -> Result<Vec<ChangeRequest>, ChangeStoreError> {
@@ -361,7 +363,9 @@ impl MemoryChangeStore {
             .lock()?
             .iter()
             .rev()
-            .filter(|request| status.is_none_or(|s| request.status == s))
+            .filter(|request| {
+                request.tenant_id == tenant_id && status.is_none_or(|s| request.status == s)
+            })
             .take(limit as usize)
             .cloned()
             .collect())
@@ -385,7 +389,9 @@ impl MemoryChangeStore {
         let mut requests = self.lock()?;
         let request = requests
             .iter_mut()
-            .find(|request| request.id == close.request_id)
+            .find(|request| {
+                request.tenant_id == close.audit.tenant_id && request.id == close.request_id
+            })
             .ok_or_else(|| ChangeStoreError::NotFound(close.request_id.clone()))?;
         if request.status != ChangeStatus::Pending {
             return Err(ChangeStoreError::NotPending(Box::new(request.clone())));
@@ -398,7 +404,9 @@ impl MemoryChangeStore {
         let mut requests = self.lock()?;
         let request = requests
             .iter_mut()
-            .find(|request| request.id == commit.request_id)
+            .find(|request| {
+                request.tenant_id == commit.audit.tenant_id && request.id == commit.request_id
+            })
             .ok_or_else(|| ChangeStoreError::NotFound(commit.request_id.clone()))?;
         if request.status != ChangeStatus::Pending {
             return Err(ChangeStoreError::NotPending(Box::new(request.clone())));

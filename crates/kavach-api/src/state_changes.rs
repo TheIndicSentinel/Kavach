@@ -416,7 +416,11 @@ impl AppState {
         }
         let approver_key = approver.identity_key();
         let _guard = self.governance_lock.lock().await;
-        let request = self.changes.get(id).await.map_err(store_error)?;
+        let request = self
+            .changes
+            .get(self.tenant_id(), id)
+            .await
+            .map_err(store_error)?;
         if request.status == ChangeStatus::Applied
             && request.decided_by_key.as_deref() == Some(approver_key.as_str())
             && request.change_digest == echoed_digest
@@ -634,7 +638,11 @@ impl AppState {
     ) -> Result<ChangeRequest, ApiError> {
         let reason = validate_reason(reason)?;
         let _guard = self.governance_lock.lock().await;
-        let request = self.changes.get(id).await.map_err(store_error)?;
+        let request = self
+            .changes
+            .get(self.tenant_id(), id)
+            .await
+            .map_err(store_error)?;
         if checker.identity_key() == request.proposer_key || checker.id == request.proposer {
             return Err(ApiError::ForbiddenBecause(
                 "the proposer cancels a request; rejection is for another principal".into(),
@@ -656,7 +664,11 @@ impl AppState {
         id: &str,
     ) -> Result<ChangeRequest, ApiError> {
         let _guard = self.governance_lock.lock().await;
-        let request = self.changes.get(id).await.map_err(store_error)?;
+        let request = self
+            .changes
+            .get(self.tenant_id(), id)
+            .await
+            .map_err(store_error)?;
         if proposer.identity_key() != request.proposer_key {
             return Err(ApiError::ForbiddenBecause(
                 "only the proposer can cancel a change request".into(),

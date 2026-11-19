@@ -216,7 +216,7 @@ pub async fn list(
     };
     let requests = state
         .changes()
-        .list(status, query.limit.clamp(1, 200))
+        .list(state.tenant_id(), status, query.limit.clamp(1, 200))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     Ok(Json(
@@ -232,7 +232,7 @@ pub async fn get(
     authorized_principal(&state, &credentials, KavachAction::ReadChangeRequests).await?;
     let request = state
         .changes()
-        .get(&id)
+        .get(state.tenant_id(), &id)
         .await
         .map_err(|_| ApiError::NotFound(format!("change request {id}")))?;
     ensure_runtime_pointer_for_kind(&state, request.kind).await?;
@@ -243,7 +243,7 @@ pub async fn get(
 async fn kind_of(state: &AppState, id: &str) -> Result<(ChangeKind, Option<Role>), ApiError> {
     let request = state
         .changes()
-        .get(id)
+        .get(state.tenant_id(), id)
         .await
         .map_err(|_| ApiError::NotFound(format!("change request {id}")))?;
     Ok((request.kind, role_of_request(&request)?))

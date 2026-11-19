@@ -391,7 +391,7 @@ async fn review_rows(
         let (proposer, approver) = match binding.granted_by_change_request.as_deref() {
             None => (BOOTSTRAP_ACTOR.to_string(), String::new()),
             Some(id) => {
-                let request = state.changes().get(id).await.map_err(|_| {
+                let request = state.changes().get(tenant, id).await.map_err(|_| {
                     ApiError::Unavailable("the granting change request could not be read".into())
                 })?;
                 (request.proposer, request.decided_by.unwrap_or_default())
