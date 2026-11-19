@@ -1,8 +1,12 @@
 //! DEVELOPMENT ONLY: generate a Kavach dev bundle and drive a dev stack.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+use chrono::Utc;
 use clap::{Parser, Subcommand};
+use kavach_domain::authority::{AuthorityChange, AuthorityUpdateEvent};
+use kavach_domain::mandate::{ConsentRecord, ContactPreferenceRecord};
+use kavach_keys::LocalFileKeyProvider;
 
 #[derive(Parser)]
 #[command(
@@ -59,6 +63,15 @@ enum Command {
         /// mandate issued for that loan.
         #[arg(long)]
         revoke: Option<String>,
+    },
+    /// Sign and post this bundle's synthetic consent and contact preferences
+    /// to the development stack's persistent authority-update route.
+    SeedAuthority {
+        #[arg(long)]
+        bundle: PathBuf,
+        /// e.g. http://127.0.0.1:8090/v1/sor/authority-updates
+        #[arg(long)]
+        url: String,
     },
     /// The test agent's checks, run from inside the agent network: only the
     /// agent listener is reachable, the agent holds no key material, and
@@ -153,6 +166,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err(format!("SoR listener answered {status}").into());
             }
         }
+        Command::SeedAuthority { bundle, url } => {
+            seed_authority_updates(&bundle, &url).await?;
+        }
         Command::ProbeIsolation {
             agent_url,
             agent_listener,
@@ -179,5 +195,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+    Ok(())
+}
+
+async fn seed_authority_updates(
+    bundle: &Path,
+    url: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let kavach = bundle.join("kavach");
+    let consents: Vec<ConsentRecord> =
+        serde_json::from_slice(&std::fs::read(kavach.join("consents.json"))?)?;
+    let preferences: Vec<ContactPreferenceRecord> =
+        serde_json::from_slice(&std::fs::read(kavach.join("contact-preferences.json"))?)?;
+    if !consents.iter().any(|record| record.active) || preferences.is_empty() {
+        return Err("the development bundle needs active consent and explicit preferences".into());
+    }
+
+    let keys = LocalFileKeyProvider::new(bundle.join("sor"));
+    let client = reqwest::Client::new();
+    let mut posted = 0usize;
+    for (kind, changes) in [
+        (
+            "consent",
+            consents
+                .into_iter()
+                .filter(|record| record.active)
+                .map(AuthorityChange::Consent)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "preference",
+            preferences
+                .into_iter()
+                .map(AuthorityChange::ContactPreference)
+                .collect::<Vec<_>>(),
+        ),
+    ] {
+        for (index, change) in changes.into_iter().enumerate() {
+            let now = Utc::now();
+            let suffix = now.timestamp_micros();
+            let update_id = format!("demo-{kind}-{index}-{suffix}");
+            let event = AuthorityUpdateEvent {
+                update_id: update_id.clone(),
+                tenant_id: "default".into(),
+                system: "lms".into(),
+                occurred_at: now,
+                nonce: update_id,
+                change,
+            };
+            let token = kavach_mandate::jws::sign(
+                &keys,
+                kavach_devkit::SOR_KID,
+                kavach_mandate::jws::TYP_AUTHORITY_UPDATE,
+                &event,
+            )
+            .await?;
+            let response = client
+                .post(url)
+                .json(&serde_json::json!({ "event": token }))
+                .send()
+                .await?;
+            let status = response.status();
+            let body = response.text().await?;
+            if !status.is_success() {
+                return Err(format!("SoR {kind} update answered {status}: {body}").into());
+            }
+            posted += 1;
+        }
+    }
+    println!("seeded {posted} synthetic consent and preference authority updates");
     Ok(())
 }

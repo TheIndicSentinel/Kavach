@@ -179,9 +179,11 @@ This validates the basic schema backup/restore and offline agent-evidence verifi
 | Independent `kavach_verify.py` | Exit 0; same verified result |
 | Recovery point/time | End-to-end values not measured; this isolated snapshot had no later writes to lose |
 | Temporary artifacts | Removed from `/tmp` after verification |
-| Runbook/setup finding | Empty Postgres-backed demo startup rejects the seeded assignment with `unknown consent C-dev-1`: its generated consent fixture is not loaded into the persistent consent projection. The lab seeded synthetic consent and preference through signed authority updates in its temporary checkout before creating the agent evidence. Fixing the demo bootstrap is a separate planned follow-up; this run did not change application code. |
+| Runbook/setup finding | The initial empty-database demo attempt rejected its assignment with `unknown consent C-dev-1`: fixtures were not imported into Postgres projections. Resolved in the following slice by adding `kavach-dev seed-authority`; see the verification record below. |
 
 The actual drill still needs the deployment's backup, an off-host checkpoint copy, trusted public keys, and a scratch host. Repeat the procedure against those materials before recording SLO E-6 as rehearsed.
+
+**Demo bootstrap follow-up (2026-11-19):** `scripts/demo.sh` now applies the generated consent and contact-preference fixtures through `kavach-dev seed-authority`, using the bundle's registered SoR key and the existing signed-update route before the assignment event. A fresh disposable PostgreSQL 16.16 run of the unmodified demo start/seed/stop path passed: 8 authority updates (2 consent grants and 6 preferences), 5 agent decisions, and 1 outcome. The test used local loopback PostgreSQL and the demo's development credentials; it verifies the bootstrap path only and does not change the synthetic-only/non-qualifying status above.
 
 ## 7. After the drill
 

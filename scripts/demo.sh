@@ -208,6 +208,11 @@ agent_call() {
 # it, with a forged mandate and as another agent, revoke it, call again.
 seed() {
   local reply mandate
+  # The Postgres-backed consent and preference readers use persistent
+  # projections, so load the generated synthetic records through their
+  # signed SoR route before the assignment cites its consent.
+  "$BIN/kavach-dev" seed-authority --bundle "$STATE/bundle" \
+    --url "http://127.0.0.1:$SOR_PORT/v1/sor/authority-updates"
   reply=$(sor_event evt-demo-assign)
   mandate=$(printf '%s' "$reply" | sed -n 's/.*"mandate_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
   [[ -n "$mandate" ]] || fail "seeding: the system-of-record event issued no mandate"
