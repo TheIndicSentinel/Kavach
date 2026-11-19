@@ -9,7 +9,8 @@ info:
     - **operator**: decision evaluation, governance, change requests,
       evidence reads and administration;
     - **agent**: the agent data plane (`/v1/authorize`, `/v1/tools/{tool}`);
-    - **system of record (SoR)**: signed events that issue mandates.
+    - **system of record (SoR)**: signed events that issue mandates and
+      signed authority updates from the configured source system.
 
     Each path lists the listeners that serve it in `x-kavach-listeners`
     (the operator listener when absent).
@@ -1034,6 +1035,55 @@ paths:
                 oneOf:
                   - { $ref: "#/components/schemas/SorEventResponse" }
                   - { $ref: "#/components/schemas/SorRevocationResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/sor/authority-updates:
+    x-kavach-listeners: [sor]
+    servers:
+      - url: http://127.0.0.1:8090
+        description: system-of-record listener (backend network only)
+    post:
+      operationId: submitSignedAuthorityUpdate
+      tags: [sor]
+      summary: Submit a signed consent or contact-preference update.
+      description: |
+        Not authenticated by a token: the compact authority-update JWS must
+        be signed by the configured source key for this tenant and system.
+        Consent grants, withdrawals and preference changes are stored in
+        Postgres. A withdrawal revokes matching active mandates atomically;
+        the response returns only the number revoked. Reference destinations
+        use `/v1/sor/reference-destinations`. These writes do not switch
+        mandate issuance or gateway reads away from their current fixtures.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [event]
+              properties:
+                event: { type: string, description: A compact authority-update JWS. }
+      responses:
+        "201":
+          description: The signed authority update was stored.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthorityUpdateResponse" }
+        "200":
+          description: An exact retry of a previously stored update.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AuthorityUpdateResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "404": { $ref: "#/components/responses/NotFound" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -2602,3 +2652,11 @@ components:
       required: [replayed]
       properties:
         replayed: { type: boolean }
+
+    AuthorityUpdateResponse:
+      type: object
+      additionalProperties: false
+      required: [replayed]
+      properties:
+        replayed: { type: boolean }
+        revoked_count: { type: integer, minimum: 0 }

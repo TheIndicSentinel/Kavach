@@ -28,6 +28,7 @@ use kavach_dataplane::{
     Decided, FixtureResolver, GatewayDeps, GatewayError, GatewayReply, Mode, RegistryTrust,
     ToolRegistry, ToolRequest, WhatIfStore,
 };
+use kavach_domain::authority::AuthorityChange;
 use kavach_domain::mandate::{AgentPassport, ConsentRecord, MandateTemplate, RevocationReason};
 use kavach_domain::Decision;
 use kavach_keys::{SubjectKeys, TrustedSigners};
@@ -900,6 +901,7 @@ pub struct Dataplane {
     /// What only the build knows is relaxed (see `crate::relaxations`).
     relaxed: Vec<crate::relaxations::Relaxation>,
     resolver: FixtureResolver,
+    authority_updates: Option<SignedAuthorityUpdates>,
     reference_destination_updates: Option<ReferenceDestinationUpdates>,
     forwarder: Arc<crate::forward::HttpForwarder>,
     keys: KeySources,
@@ -914,6 +916,10 @@ pub struct Dataplane {
 
 struct ReferenceDestinationUpdates {
     store: kavach_storage::PostgresReferenceDestinationStore,
+}
+
+struct SignedAuthorityUpdates {
+    store: kavach_storage::PostgresAuthorityUpdateStore,
     verifier: AuthorityVerifier,
 }
 
@@ -950,8 +956,8 @@ impl Dataplane {
         for issuer in &mandate_config.sor_issuers {
             refuse_dev_key("system-of-record issuer", &issuer.key.kid, insecure_dev)?;
         }
-        let reference_destination_updates =
-            build_reference_destination_updates(config, pool, &mandate_config)?;
+        let authority_updates = build_signed_authority_updates(config, pool, &mandate_config)?;
+        let reference_destination_updates = build_reference_destination_updates(config, pool)?;
         let issuer_kids: Vec<String> = mandate_config
             .sor_issuers
             .iter()
@@ -1032,6 +1038,7 @@ impl Dataplane {
             reconcile_limiter,
             broker: Arc::new(broker),
             resolver,
+            authority_updates,
             reference_destination_updates,
             forwarder: Arc::new(forwarder),
             keys: sources,
@@ -1369,7 +1376,6 @@ fn build_relaxations(
 fn build_reference_destination_updates(
     config: &DataplaneConfig,
     pool: Option<&StoragePool>,
-    mandate_config: &MandateConfig,
 ) -> Result<Option<ReferenceDestinationUpdates>, String> {
     let Some(vault_config) = &config.reference_vault else {
         return Ok(None);
@@ -1383,10 +1389,23 @@ fn build_reference_destination_updates(
         let previous = kavach_storage::ReferenceVaultKey::from_file(path, key_id)?;
         key.add_previous(previous)?;
     }
-    let verifier = AuthorityVerifier::new(config.tenant_id.clone(), mandate_config.clone())
-        .map_err(|error| format!("reference destination update verifier: {}", error.message))?;
     Ok(Some(ReferenceDestinationUpdates {
         store: pool.reference_destination_store(key),
+    }))
+}
+
+fn build_signed_authority_updates(
+    config: &DataplaneConfig,
+    pool: Option<&StoragePool>,
+    mandate_config: &MandateConfig,
+) -> Result<Option<SignedAuthorityUpdates>, String> {
+    let Some(pool) = pool else {
+        return Ok(None);
+    };
+    let verifier = AuthorityVerifier::new(config.tenant_id.clone(), mandate_config.clone())
+        .map_err(|error| format!("authority update verifier: {}", error.message))?;
+    Ok(Some(SignedAuthorityUpdates {
+        store: pool.authority_update_store(),
         verifier,
     }))
 }
@@ -2001,6 +2020,13 @@ pub struct ReferenceDestinationUpdateResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub struct AuthorityUpdateResponse {
+    pub replayed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revoked_count: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SorEventResponse {
     pub mandate_id: String,
     pub exp: DateTime<Utc>,
@@ -2034,6 +2060,18 @@ fn event_refusal(err: &PortError) -> Refusal {
             err.message.clone(),
         ),
         ErrorClass::Unavailable => crate::problem::Problem::unavailable(&err.message),
+    }
+}
+
+fn authority_update_refusal(err: &PortError) -> Refusal {
+    if err.class == ErrorClass::Rejected && err.message.contains("different content") {
+        crate::problem::Problem::new(
+            StatusCode::CONFLICT,
+            "event_conflict",
+            "authority update conflicts with a previously accepted update",
+        )
+    } else {
+        event_refusal(err)
     }
 }
 
@@ -2096,6 +2134,80 @@ pub async fn sor_event(
     }
 }
 
+/// `POST /v1/sor/authority-updates`: persists signed consent grants,
+/// withdrawals and contact-preference changes. Runtime reads remain fixtures.
+pub async fn sor_authority_update(
+    State(state): State<Arc<AppState>>,
+    body: Result<StrictJson<SorEventBody>, StrictJsonRejection>,
+) -> Result<(StatusCode, Json<AuthorityUpdateResponse>), Refusal> {
+    let dp = dataplane(&state)?;
+    let allowed = dp.sor_limiter.lock().is_ok_and(|mut bucket| bucket.take());
+    if !allowed {
+        return Err(refuse(StatusCode::TOO_MANY_REQUESTS, "event rate limit"));
+    }
+    let updates = dp.authority_updates.as_ref().ok_or_else(|| {
+        refuse(
+            StatusCode::NOT_FOUND,
+            "authority update ingestion is disabled",
+        )
+    })?;
+    let StrictJson(body) = body.map_err(|_| {
+        refuse(
+            StatusCode::BAD_REQUEST,
+            "malformed body: expected JSON with a signed event",
+        )
+    })?;
+    let verified = updates
+        .verifier
+        .verify(&body.event, dp.clock.now())
+        .map_err(|error| authority_update_refusal(&error))?;
+    let (replayed, revoked_count) = match &verified.event().change {
+        AuthorityChange::Consent(record) if record.active => (
+            updates
+                .store
+                .apply_consent_grant(&verified)
+                .await
+                .map_err(|error| authority_update_refusal(&error))?
+                .replayed,
+            None,
+        ),
+        AuthorityChange::Consent(_) => {
+            let applied = updates
+                .store
+                .apply_consent_withdrawal(&verified)
+                .await
+                .map_err(|error| authority_update_refusal(&error))?;
+            (applied.replayed, Some(applied.revoked.len()))
+        }
+        AuthorityChange::ContactPreference(_) => (
+            updates
+                .store
+                .apply_preference(&verified)
+                .await
+                .map_err(|error| authority_update_refusal(&error))?
+                .replayed,
+            None,
+        ),
+        AuthorityChange::ReferenceDestination(_) => {
+            return Err(refuse(
+                StatusCode::BAD_REQUEST,
+                "reference destinations must use the reference-destinations route",
+            ));
+        }
+    };
+    Ok((
+        if replayed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(AuthorityUpdateResponse {
+            replayed,
+            revoked_count,
+        }),
+    ))
+}
+
 /// `POST /v1/sor/reference-destinations`: accepts the signed authority-update
 /// envelope and persists only encrypted destination bytes plus signed metadata.
 pub async fn sor_reference_destination(
@@ -2120,10 +2232,16 @@ pub async fn sor_reference_destination(
         )
     })?;
     let now = dp.clock.now();
-    let verified = updates
+    let authority = dp.authority_updates.as_ref().ok_or_else(|| {
+        refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authority update verifier is unavailable",
+        )
+    })?;
+    let verified = authority
         .verifier
         .verify(&body.event, now)
-        .map_err(|error| event_refusal(&error))?;
+        .map_err(|error| authority_update_refusal(&error))?;
     let applied = updates.store.apply(&verified).await.map_err(|error| {
         if error.class == ErrorClass::Rejected && error.message.contains("different content") {
             crate::problem::Problem::new(
@@ -2496,6 +2614,7 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
 pub fn sor_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/sor/events", post(sor_event))
+        .route("/v1/sor/authority-updates", post(sor_authority_update))
         .route(
             "/v1/sor/reference-destinations",
             post(sor_reference_destination),

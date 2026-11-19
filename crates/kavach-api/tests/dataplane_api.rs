@@ -14,6 +14,12 @@ use ed25519_dalek::SigningKey;
 
 use kavach_api::{ApiConfig, AppState, EvidenceStoreKind};
 use kavach_credential::{open_credential, DecryptionKey};
+use kavach_domain::authority::{AuthorityChange, AuthorityUpdateEvent};
+use kavach_domain::mandate::{
+    ConsentArtefactSubset, ConsentRecord, ConsentStatus, ContactPreferenceRecord,
+    ContactPreferenceStatus,
+};
+use kavach_keys::InMemoryKeyProvider;
 use kavach_ports::agent_evidence::AgentEvidenceStore;
 use serde_json::{json, Value};
 use tower::ServiceExt;
@@ -65,6 +71,15 @@ async fn sor_events_issue_once_and_retries_are_idempotent() {
 async fn signed_destination_updates_require_an_enabled_postgres_vault() {
     let s = state(50).await;
     let (status, _) = send(
+        sor_router(s.clone()),
+        "/v1/sor/authority-updates",
+        &[],
+        json!({ "event": "unused" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, _) = send(
         sor_router(s),
         "/v1/sor/reference-destinations",
         &[],
@@ -88,6 +103,133 @@ async fn signed_destination_updates_require_an_enabled_postgres_vault() {
         format!("{error:?}").contains("requires the Postgres evidence store"),
         "{error:?}"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[allow(clippy::too_many_lines)] // One Postgres API flow covers grants, opt-outs, and withdrawals.
+async fn signed_consent_and_preference_updates_use_the_postgres_writer() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let mut config = config(
+        EvidenceStoreKind::Postgres {
+            database_url: runtime,
+        },
+        true,
+        50,
+    );
+    config.migration_database_url = Some(owner);
+    let s = Arc::new(
+        AppState::from_config(&config)
+            .await
+            .expect("Postgres state"),
+    );
+    let now = chrono::Utc::now();
+    let expires_at = now + chrono::Duration::days(2);
+
+    let grant = AuthorityUpdateEvent {
+        update_id: "api-consent-grant-1".into(),
+        tenant_id: "default".into(),
+        system: "lms".into(),
+        occurred_at: now,
+        nonce: "nonce-api-grant-1".into(),
+        change: AuthorityChange::Consent(ConsentRecord {
+            consent_id: "C-API-1".into(),
+            tenant_id: "default".into(),
+            subject_ref: SUBJECT.into(),
+            purposes: set(&["loan_recovery"]),
+            expires_at,
+            active: true,
+            artefact: Some(ConsentArtefactSubset {
+                data_types: set(&["financial_information"]),
+                valid_from: now,
+                data_from: now,
+                data_to: expires_at,
+                status: ConsentStatus::Active,
+            }),
+        }),
+    };
+    let grant_jws = sign_authority_update(&grant).await;
+    let post = |token: String| {
+        send(
+            sor_router(s.clone()),
+            "/v1/sor/authority-updates",
+            &[],
+            json!({ "event": token }),
+        )
+    };
+    let (status, first) = post(grant_jws.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    assert_eq!(first["replayed"], false);
+    let (status, replay) = post(grant_jws).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["replayed"], true);
+
+    let preference = AuthorityUpdateEvent {
+        update_id: "api-preference-opt-out-1".into(),
+        tenant_id: "default".into(),
+        system: "lms".into(),
+        occurred_at: now,
+        nonce: "nonce-api-pref-1".into(),
+        change: AuthorityChange::ContactPreference(ContactPreferenceRecord {
+            tenant_id: "default".into(),
+            subject_ref: SUBJECT.into(),
+            channel: "whatsapp".into(),
+            status: ContactPreferenceStatus::OptedOut,
+            valid_from: now,
+            expires_at,
+        }),
+    };
+    let preference_jws = sign_authority_update(&preference).await;
+    let (status, first) = post(preference_jws.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    let (status, replay) = post(preference_jws).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["replayed"], true);
+
+    let _mandate = issue(&s, "api-consent-withdrawal-mandate").await;
+    let withdrawal = AuthorityUpdateEvent {
+        update_id: "api-consent-withdrawal-1".into(),
+        tenant_id: "default".into(),
+        system: "lms".into(),
+        occurred_at: now,
+        nonce: "nonce-api-withdraw-1".into(),
+        change: AuthorityChange::Consent(ConsentRecord {
+            consent_id: "C-7f3a".into(),
+            tenant_id: "default".into(),
+            subject_ref: SUBJECT.into(),
+            purposes: set(&["loan_recovery"]),
+            expires_at,
+            active: false,
+            artefact: Some(ConsentArtefactSubset {
+                data_types: set(&["financial_information"]),
+                valid_from: now,
+                data_from: now,
+                data_to: expires_at,
+                status: ConsentStatus::Revoked,
+            }),
+        }),
+    };
+    let withdrawal_jws = sign_authority_update(&withdrawal).await;
+    let (status, first) = post(withdrawal_jws.clone()).await;
+    assert_eq!(status, StatusCode::CREATED, "{first}");
+    assert_eq!(first["revoked_count"], 1);
+    let (status, replay) = post(withdrawal_jws).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay["revoked_count"], 1);
+}
+
+async fn sign_authority_update(event: &AuthorityUpdateEvent) -> String {
+    let mut issuer = InMemoryKeyProvider::new();
+    issuer.insert_seed("lms-issuer-1", [2u8; 32]).unwrap();
+    kavach_mandate::jws::sign(
+        &issuer,
+        "lms-issuer-1",
+        kavach_mandate::jws::TYP_AUTHORITY_UPDATE,
+        event,
+    )
+    .await
+    .expect("signed authority update")
 }
 
 #[tokio::test]
