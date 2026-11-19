@@ -202,6 +202,9 @@ pub struct AppState {
     review_snapshot_store: ReviewSnapshotBackend,
     /// Runtime-selected persistence for exact-action D17 approvals.
     review_approval_store: ReviewApprovalBackend,
+    /// Postgres lease ownership; disabled for existing single-instance mode.
+    ha_fence: crate::ha_lease::HaFence,
+    lease_store: Option<kavach_storage::PostgresActiveLeaseStore>,
     /// Console sign-in (ADR-018); `None` unless configured.
     console_login: Option<std::sync::Arc<crate::console_login::ConsoleLogin>>,
 }
@@ -326,6 +329,7 @@ impl AppState {
         };
 
         let relaxations = report_relaxations(config, dataplane.as_ref(), &metrics);
+        let lease_store = pool.as_ref().map(StoragePool::active_lease_store);
         Ok(Self {
             relaxations,
             service: Mutex::new(service),
@@ -361,6 +365,8 @@ impl AppState {
             review_snapshot_key,
             review_snapshot_store,
             review_approval_store,
+            ha_fence: crate::ha_lease::HaFence::default(),
+            lease_store,
             console_login: None,
         })
     }
@@ -406,6 +412,24 @@ impl AppState {
     ) -> Self {
         self.console_login = Some(login);
         self
+    }
+
+    #[must_use]
+    pub fn with_ha_fence(mut self, fence: crate::ha_lease::HaFence) -> Self {
+        self.ha_fence = fence;
+        self
+    }
+
+    #[must_use]
+    pub fn ha_fence(&self) -> &crate::ha_lease::HaFence {
+        &self.ha_fence
+    }
+
+    #[must_use]
+    pub fn active_lease_store(&self) -> Option<kavach_storage::PostgresActiveLeaseStore> {
+        // The configured persistence adapters share the same database pool;
+        // retain only the narrow lease API for HA lifecycle work.
+        self.lease_store.clone()
     }
 
     pub fn console_login(&self) -> Option<&std::sync::Arc<crate::console_login::ConsoleLogin>> {

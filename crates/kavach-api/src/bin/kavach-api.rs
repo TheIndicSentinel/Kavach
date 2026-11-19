@@ -562,6 +562,10 @@ struct Cli {
     #[arg(long, env = "KAVACH_DATABASE_URL")]
     database_url: Option<String>,
 
+    /// Enable active/passive Postgres lease ownership (HA reference plan).
+    #[arg(long, env = "KAVACH_HA_ACTIVE_PASSIVE")]
+    ha_active_passive: bool,
+
     /// Owner role that runs migrations. When set, `--database-url` should be
     /// the least-privilege `kavach_runtime` role and never migrates.
     #[arg(long, env = "KAVACH_MIGRATION_DATABASE_URL")]
@@ -876,6 +880,20 @@ mod review_snapshot_cli_tests {
     use super::*;
 
     #[test]
+    fn ha_active_passive_is_an_explicit_opt_in() {
+        let cli = Cli::try_parse_from([
+            "kavach-api",
+            "--pack",
+            "pack.yaml",
+            "--model",
+            "model.yaml",
+            "--ha-active-passive",
+        ])
+        .expect("parse HA opt-in");
+        assert!(cli.ha_active_passive);
+    }
+
+    #[test]
     fn parses_repeated_previous_snapshot_keys() {
         let cli = Cli::try_parse_from([
             "kavach-api",
@@ -946,6 +964,7 @@ mod review_snapshot_cli_tests {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
     kavach_telemetry::init(cli.log_format)?;
+    let ha_active_passive = cli.ha_active_passive;
     let http_listen = cli.listen;
     let grpc_listen = cli.grpc_listen;
     let sor_listen = cli.agents.sor_listen;
@@ -955,6 +974,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg);
     let limits = cli.listener_limits().map_err(invalid)?;
     let (config, console_login) = cli.into_config().map_err(invalid)?;
+    if ha_active_passive && !matches!(&config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
+        return Err(invalid("--ha-active-passive requires Postgres storage".into()).into());
+    }
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     validate_request_timeout(&limits, &config).map_err(invalid)?;
     let hardening_violations = |built: &[kavach_api::relaxations::Relaxation]| {
         let mut violations = kavach_api::hardening::violations(&config, built);
@@ -978,6 +1001,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
         state = state.with_console_login(Arc::new(login));
     }
+    let ha_lease_task = if ha_active_passive {
+        let lease_store = state
+            .active_lease_store()
+            .ok_or_else(|| invalid("HA lease store is unavailable".into()))?;
+        let (fence, task) = kavach_api::ha_lease::start(
+            lease_store,
+            config.roles.tenant_id.clone(),
+            stop_rx.clone(),
+        )
+        .await?;
+        state = state.with_ha_fence(fence);
+        Some(task)
+    } else {
+        None
+    };
     let state = Arc::new(state);
     if config.require_hardening {
         // What only the build knows (a relaxation of the agent surfaces).
@@ -1026,7 +1064,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tls_ref = config.tls.as_ref();
     // One signal stops every listener. A listener stops accepting at once
     // and lets its requests finish.
-    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let _ha_lease_task = ha_lease_task;
     let _review_snapshot_cleanup =
         kavach_api::review_snapshot_cleanup::start(review_snapshot_store, stop_rx.clone());
     let _runtime_pointer_sync =

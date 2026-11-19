@@ -60,6 +60,51 @@ async fn health_returns_ok() {
 }
 
 #[tokio::test]
+async fn standby_is_live_but_not_ready_and_does_not_serve_application_routes() {
+    let (pack, model) = fixture_paths();
+    let state = AppState::from_paths_for_tests(&pack, &model, None)
+        .await
+        .expect("state")
+        .with_ha_fence(kavach_api::ha_lease::HaFence::standby());
+    let app = router(Arc::new(state));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runtime")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn evaluate_golden_clean_request() {
     let (pack, model) = fixture_paths();
     let state = Arc::new(

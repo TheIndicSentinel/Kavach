@@ -86,6 +86,25 @@ fn sample_proto_request() -> EvaluateRequest {
 }
 
 #[tokio::test]
+async fn standby_refuses_grpc_evaluate() {
+    let (pack, model) = fixture_paths();
+    let state = Arc::new(
+        AppState::from_paths_for_tests(&pack, &model, None)
+            .await
+            .expect("state")
+            .with_ha_fence(kavach_api::ha_lease::HaFence::standby()),
+    );
+    let service = GrpcEvaluateService::new(state);
+    let error = kavach_api::proto::kavach::v1::evaluate_service_server::EvaluateService::evaluate(
+        &service,
+        tonic::Request::new(EvaluateRequest::default()),
+    )
+    .await
+    .expect_err("standby must refuse gRPC evaluate");
+    assert_eq!(error.code(), tonic::Code::Unavailable);
+}
+
+#[tokio::test]
 async fn grpc_evaluate_returns_pass() {
     let (addr, handle) = spawn_grpc_server().await;
     let endpoint = format!("http://{addr}");

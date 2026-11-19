@@ -163,6 +163,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
         .layer(api_security_headers())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::ha_lease::http_gate,
+        ))
         .with_state(state)
 }
 
@@ -214,6 +218,12 @@ async fn ready(
     credentials: Credentials,
 ) -> Result<Json<serde_json::Value>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadHealth).await?;
+    if !state.ha_fence().is_active() {
+        return Err(ApiError::Unavailable(format!(
+            "API process is {} and cannot accept traffic",
+            state.ha_fence().status()
+        )));
+    }
     state.ensure_runtime_pointer_current().await?;
     let runtime = state.runtime()?;
     Ok(Json(serde_json::json!({
