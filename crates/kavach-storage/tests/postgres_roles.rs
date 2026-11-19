@@ -31,6 +31,13 @@ async fn runtime_role_cannot_alter_evidence_or_governance_history() {
         })
         .await
         .expect("audit insert");
+    let audit_tenant: String = sqlx::query_scalar(
+        "SELECT tenant_id FROM admin_audit_log WHERE action = 'probe' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool.pool)
+    .await
+    .expect("audit tenant");
+    assert_eq!(audit_tenant, "default");
     admin
         .set_runtime_pointers(RuntimePointers {
             pack_path: "p".into(),
@@ -205,10 +212,13 @@ async fn migrations_apply_once_on_fresh_and_upgraded_databases() {
         StoragePool::connect_with_roles(&url, None, &kavach_storage::DatabaseTls::development())
             .await
             .unwrap();
-    let kept: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM admin_audit_log WHERE action = 'kept'")
+    let kept_tenant: String =
+        sqlx::query_scalar("SELECT tenant_id FROM admin_audit_log WHERE action = 'kept'")
             .fetch_one(&pool.pool)
             .await
             .unwrap();
-    assert_eq!(kept, 1, "existing data survives");
+    assert_eq!(
+        kept_tenant, "default",
+        "legacy row survives with its default tenant"
+    );
 }
