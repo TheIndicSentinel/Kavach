@@ -277,6 +277,34 @@ pub mod agent_state_store {
         // Another tenant's agent of the same name is untouched.
         let other = store.states("t-2", &ids(&["rogue"])).await.unwrap();
         assert_eq!(other["rogue"], AgentState::Active);
+        // A second tenant may use the same agent id without changing or
+        // exposing the first tenant's state.
+        store
+            .set(change(
+                "t-2",
+                "rogue",
+                AgentState::Restricted,
+                "ops-2",
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.states("t-1", &ids(&["rogue"])).await.unwrap()["rogue"],
+            AgentState::Quarantined
+        );
+        assert_eq!(
+            store.states("t-2", &ids(&["rogue"])).await.unwrap()["rogue"],
+            AgentState::Restricted
+        );
+        assert_eq!(
+            store.current("t-1", "rogue").await.unwrap().unwrap().state,
+            AgentState::Quarantined
+        );
+        assert_eq!(
+            store.current("t-2", "rogue").await.unwrap().unwrap().state,
+            AgentState::Restricted
+        );
     }
 
     async fn transitions_and_history<S: AgentStateStore>(store: &S) {
