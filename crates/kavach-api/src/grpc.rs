@@ -85,6 +85,10 @@ impl EvaluateService for GrpcEvaluateService {
         )
         .await
         .map_err(|e| status_from_api(&e))?;
+        self.state
+            .ensure_runtime_pointer_current()
+            .await
+            .map_err(|e| status_from_api(&e))?;
         let domain_request =
             proto_to_domain(request.into_inner()).map_err(|e| status_from_api(&e))?;
         let response = self

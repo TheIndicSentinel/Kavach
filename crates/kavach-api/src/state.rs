@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Mutex;
 
 use chrono::{Duration, Utc};
@@ -164,6 +164,7 @@ pub struct AppState {
     access_control: Option<KavachAuthorizer>,
     metrics: Metrics,
     runtime: Mutex<RuntimeResponse>,
+    runtime_pointer_version: AtomicI64,
     packs_dir: PathBuf,
     models_dir: PathBuf,
     admin: AdminBackend,
@@ -331,6 +332,7 @@ impl AppState {
             access_control,
             metrics,
             runtime: Mutex::new(runtime),
+            runtime_pointer_version: AtomicI64::new(pointer_version),
             packs_dir,
             models_dir,
             admin,
@@ -473,6 +475,25 @@ impl AppState {
             .lock()
             .map(|runtime| runtime.clone())
             .map_err(|_| RUNTIME_LOCK.poisoned())
+    }
+
+    /// Refuse evaluations when another process has committed a newer
+    /// runtime pointer. Reload is added separately; until this process has
+    /// converged, serving a decision from stale policy would be unsafe.
+    pub async fn ensure_runtime_pointer_current(&self) -> Result<(), ApiError> {
+        let local_version = self.runtime_pointer_version.load(Ordering::Acquire);
+        let stored_version = self
+            .admin
+            .get_runtime_pointers()
+            .await
+            .map_err(|_| ApiError::Unavailable("runtime pointer is unavailable".into()))?
+            .map_or(0, |pointers| pointers.version);
+        if stored_version != local_version {
+            return Err(ApiError::Unavailable(format!(
+                "runtime pointer drift: process serves version {local_version}, stored version is {stored_version}"
+            )));
+        }
+        Ok(())
     }
 
     pub fn packs_dir(&self) -> &std::path::Path {
@@ -628,6 +649,8 @@ impl AppState {
             .reload_pack_and_model(loaded_pack, model)
             .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
         *self.runtime.lock().map_err(|_| RUNTIME_LOCK.poisoned())? = runtime.clone();
+        self.runtime_pointer_version
+            .store(runtime.pointer_version, Ordering::Release);
         Ok(())
     }
 
@@ -1152,7 +1175,9 @@ mod poisoned_lock_tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use chrono::Utc;
     use http_body_util::BodyExt;
+    use kavach_storage::RuntimePointers;
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
@@ -1170,6 +1195,42 @@ mod poisoned_lock_tests {
             .await
             .expect("state"),
         )
+    }
+
+    #[tokio::test]
+    async fn evaluate_refuses_when_stored_runtime_pointer_is_newer() {
+        let state = state().await;
+        state
+            .admin()
+            .set_runtime_pointers(RuntimePointers {
+                pack_path: "packs/finance/v1.yaml".into(),
+                model_path: "models/finance/model.yaml".into(),
+                previous_pack_path: None,
+                pack_sha256: Some("sha256:new".into()),
+                previous_pack_sha256: None,
+                model_sha256: Some("sha256:model".into()),
+                updated_at: Utc::now(),
+                updated_by: "test-proposer".into(),
+                approved_by: "test-approver".into(),
+                version: 0,
+            })
+            .await
+            .unwrap();
+
+        let (status, body) = send(
+            &state,
+            "POST",
+            "/v1/evaluate",
+            None,
+            Some(json!({"correlation_id":"drift-test"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["code"], "unavailable", "{body}");
+        assert!(matches!(
+            state.ensure_runtime_pointer_current().await,
+            Err(ApiError::Unavailable(_))
+        ));
     }
 
     /// Panics in another thread while holding `lock`, which poisons it.

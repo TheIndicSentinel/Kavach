@@ -251,6 +251,7 @@ async fn evaluate(
         .await?;
     }
     authorize_credentials(state.as_ref(), &credentials, KavachAction::Evaluate).await?;
+    state.ensure_runtime_pointer_current().await?;
     if crate::strict_json::uses_raw_value_key(&body) {
         return Err(ApiError::BadRequest(crate::strict_json::refusal_message()));
     }

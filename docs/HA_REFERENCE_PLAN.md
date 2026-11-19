@@ -25,7 +25,7 @@ The API standby must not accept traffic until it is promoted. Once promoted, an 
 
 1. **Shared HMAC replay guard — implemented in this slice.** Use the existing tenant-scoped Postgres `ReplayGuard` for database-backed `/v1/evaluate`; namespace HMAC keys; retain the bounded in-memory cache only without Postgres. Fail closed if the database reservation fails. Purge expired reservations opportunistically on a bounded interval.
 2. **Session and step-up failover semantics — verified in this slice.** A promoted process returns 401 for a session cookie it did not issue; operators sign in again. In-progress callback secrets and verified step-up proofs stay bound to the original process session and cannot be used after promotion. The durable challenge may remain until its short expiry, but cannot authorize without those secrets and that session. Completed approvals/releases remain shared and single use in Postgres. Do not persist OIDC tokens.
-3. **Runtime-pointer convergence.** Add bounded cross-process detection and validated reload of committed pack/model pointers. Refuse governed requests while local versions drift or reload fails. Keep maker-checker pointer-version checks authoritative.
+3. **Runtime-pointer convergence — in progress.** This slice makes HTTP and gRPC evaluations fail closed with 503 when the stored pointer version differs from the process version or cannot be read. The process that applies a change still swaps its evaluator immediately. Bounded polling, validated reload on other processes, and gating the remaining governed routes are pending. Keep maker-checker pointer-version checks authoritative.
 4. **Active/passive fencing and readiness.** Ensure only the promoted process serves application traffic and that a former active cannot continue writing after promotion. Provide a readiness signal that includes the dependencies needed for safe serving; liveness remains separate.
 5. **Reference deployment and fault tests.** Supply an on-prem, free/open-source active/passive example and exercise active failure, promotion, stale process fencing, database loss, pointer change, and recovery. Record observed failover and data-loss behavior; make no unmeasured SLO claims.
 
@@ -34,6 +34,8 @@ The API standby must not accept traffic until it is promoted. Once promoted, an 
 `crates/kavach-api/tests/hmac_postgres.rs` races two independently selected HMAC stores against one Postgres database using the same signed nonce. Exactly one request succeeds and the other receives 401. API unit coverage verifies signature binding, timestamp bounds, and replay refusal in memory mode. Postgres failure maps to 503 rather than accepting the request without replay protection.
 
 The console-login tests also send a valid active-process cookie to a fresh API state and assert 401, and prove that a new process cannot read the old session, pending step-up callback secrets, or verified proof. Existing Postgres human-review tests verify that completed releases remain durable under concurrent retries and retain one exact execution record.
+
+The runtime-pointer drift test advances the stored in-memory pointer and confirms `/v1/evaluate` returns 503 without evaluating. The HTTP and gRPC paths call the same asynchronous guard; automatic reload and the Postgres cross-process fault test are still pending.
 
 ## References
 
