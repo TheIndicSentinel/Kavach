@@ -269,6 +269,46 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     .await;
     assert_eq!(runtime["pointer_drift"], true, "{runtime}");
 
+    let (status, packs) = call(lagging, "GET", "/v1/packs", &as_principal("viewer-1"), None).await;
+    assert_eq!(status, StatusCode::OK, "{packs}");
+    assert!(packs
+        .as_array()
+        .is_some_and(|items| items.iter().any(|pack| pack["id"] == "finance-v1")));
+    let (status, pack) = call(
+        lagging,
+        "GET",
+        "/v1/packs/finance-v1",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pack}");
+    assert_eq!(pack["id"], "finance-v1");
+    let (status, models) = call(
+        lagging,
+        "GET",
+        "/v1/models",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{models}");
+    assert!(models
+        .as_array()
+        .is_some_and(|items| items.iter().any(|model| {
+            model["model_id"] == "credit-underwriting-v1" && model["active"].as_bool() == Some(true)
+        })));
+    let (status, model) = call(
+        lagging,
+        "GET",
+        "/v1/models/credit-underwriting-v1",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{model}");
+    assert_eq!(model["model_id"], "credit-underwriting-v1");
+
     let golden: serde_json::Value =
         serde_json::from_str(include_str!("../../../golden/finance/v0/credit_clean.json"))
             .expect("golden evaluate fixture");
