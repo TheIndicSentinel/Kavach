@@ -1,11 +1,9 @@
 use kavach_evaluate::IncidentRecorder;
-use kavach_storage::{IncidentBackend, MemoryIncidentStore};
-use std::sync::Arc;
+use kavach_storage::IncidentBackend;
 
 #[tokio::test]
 async fn incident_backend_lists_memory_records() {
-    let store = Arc::new(MemoryIncidentStore::default());
-    let mut backend = IncidentBackend::Memory(Arc::clone(&store));
+    let mut backend = IncidentBackend::memory();
     backend
         .record(kavach_evaluate::EvaluateIncident {
             correlation_id: "corr-1".into(),

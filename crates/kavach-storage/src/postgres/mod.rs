@@ -108,6 +108,10 @@ impl StoragePool {
         PostgresIncidentStore::new(self.pool.clone())
     }
 
+    pub fn incident_store_for_tenant(&self, tenant_id: &str) -> PostgresIncidentStore {
+        PostgresIncidentStore::new_for_tenant(self.pool.clone(), tenant_id)
+    }
+
     pub fn batch_job_store(&self) -> PostgresBatchJobStore {
         PostgresBatchJobStore::new(self.pool.clone())
     }

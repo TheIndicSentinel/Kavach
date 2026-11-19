@@ -46,18 +46,22 @@ impl EvidenceStore for EvidenceBackend {
 }
 
 pub enum IncidentBackend {
-    Memory(Arc<MemoryIncidentStore>),
+    Memory(Arc<MemoryIncidentStore>, String),
     Postgres(PostgresIncidentStore),
 }
 
 impl IncidentBackend {
     pub fn memory() -> Self {
-        Self::Memory(Arc::new(MemoryIncidentStore::default()))
+        Self::memory_for_tenant("default")
+    }
+
+    pub fn memory_for_tenant(tenant_id: &str) -> Self {
+        Self::Memory(Arc::new(MemoryIncidentStore::default()), tenant_id.into())
     }
 
     pub async fn list(&self, limit: u32) -> Result<Vec<IncidentRecord>, IncidentStoreError> {
         match self {
-            Self::Memory(store) => store.list(limit),
+            Self::Memory(store, tenant_id) => store.list(tenant_id, limit),
             Self::Postgres(store) => store.list(i64::from(limit)).await,
         }
     }
@@ -66,7 +70,7 @@ impl IncidentBackend {
 impl Clone for IncidentBackend {
     fn clone(&self) -> Self {
         match self {
-            Self::Memory(store) => Self::Memory(Arc::clone(store)),
+            Self::Memory(store, tenant_id) => Self::Memory(Arc::clone(store), tenant_id.clone()),
             Self::Postgres(store) => Self::Postgres(store.clone()),
         }
     }
@@ -78,8 +82,8 @@ impl kavach_evaluate::IncidentRecorder for IncidentBackend {
         incident: kavach_evaluate::EvaluateIncident,
     ) -> Result<(), kavach_evaluate::IncidentWriteError> {
         match self {
-            Self::Memory(store) => store
-                .record_incident(incident)
+            Self::Memory(store, tenant_id) => store
+                .record_incident_for_tenant(tenant_id, incident)
                 .map_err(|e| kavach_evaluate::IncidentWriteError(e.to_string())),
             Self::Postgres(store) => store.record(incident),
         }

@@ -6,6 +6,7 @@ use std::sync::Mutex;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IncidentRecord {
     pub id: i64,
+    pub tenant_id: String,
     pub correlation_id: String,
     pub model_id: String,
     pub reason: String,
@@ -25,16 +26,33 @@ pub struct MemoryIncidentStore {
 }
 
 impl MemoryIncidentStore {
-    pub fn list(&self, limit: u32) -> Result<Vec<IncidentRecord>, IncidentStoreError> {
+    pub fn list(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> Result<Vec<IncidentRecord>, IncidentStoreError> {
         let incidents = self
             .incidents
             .lock()
             .map_err(|_| IncidentStoreError::Io("lock poisoned".into()))?;
-        let start = incidents.len().saturating_sub(limit as usize);
-        Ok(incidents[start..].to_vec())
+        Ok(incidents
+            .iter()
+            .filter(|incident| incident.tenant_id == tenant_id)
+            .rev()
+            .take(limit as usize)
+            .cloned()
+            .collect())
     }
 
     pub fn record_incident(&self, incident: EvaluateIncident) -> Result<(), IncidentStoreError> {
+        self.record_incident_for_tenant("default", incident)
+    }
+
+    pub fn record_incident_for_tenant(
+        &self,
+        tenant_id: &str,
+        incident: EvaluateIncident,
+    ) -> Result<(), IncidentStoreError> {
         let mut next_id = self
             .next_id
             .lock()
@@ -42,6 +60,7 @@ impl MemoryIncidentStore {
         *next_id += 1;
         let record = IncidentRecord {
             id: *next_id,
+            tenant_id: tenant_id.into(),
             correlation_id: incident.correlation_id,
             model_id: incident.model_id,
             reason: incident.reason,
