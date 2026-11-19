@@ -108,7 +108,22 @@ On 2026-11-19, `authorize` completed on commit `5250f9a` using the memory store 
 
 This short memory-store smoke run checks that the in-process measurement works; its host, storage, duration, and workload do not match the reference procedure above. It does not satisfy or fail any NFR-2 target, and these numbers are not performance claims. The reference-machine run with local Postgres 16 remains pending.
 
-**Local Postgres diagnostic attempt (2026-11-19, no measurements):** The available host exposes 4 logical CPUs and runs macOS; Homebrew PostgreSQL 16.16 is installed, but Docker is unavailable. A short, plaintext Postgres diagnostic was attempted with `delivered`, `precheck`, `commit` and `authorize` at concurrency 1 and 8, 2-second runs and a 1-second warm-up. The first optimized `kavach-bench` build exhausted the filesystem before the benchmark started, so it produced no results and says nothing about NFR-2. The partial release artifacts and disposable database files were removed. A qualifying run still requires the fixed Ubuntu 24.04, 4-vCPU/16-GB machine and TLS PostgreSQL described above; no paid resource was provisioned.
+**Local Postgres diagnostic (2026-11-19, not an NFR result):** The available host is macOS with 4 logical CPUs (Intel Core i5-5250U); Homebrew PostgreSQL 16.16 ran locally without TLS. After the initial optimized build exhausted disk space, the partial release artifacts were removed and the already-built debug harness was used. It exposed and fixed a Postgres setup gap: benchmark fixtures were not being applied to the persistent consent and preference projections. The harness now sends those synthetic records through the signed authority-update route before issuing benchmark mandates.
+
+The diagnostic ran `delivered`, `precheck`, `commit` and `authorize`, pool size 5, concurrency 1 and 8, 100 subjects, no warm-up and 1 second per run. Every row had zero errors. These short, plaintext, single-pool results are local diagnostics only; they do not meet the fixed-host/TLS procedure or establish any NFR-2 target.
+
+| Scenario | Concurrency | Requests/s | p50 ms | p99 ms |
+|---|---:|---:|---:|---:|
+| delivered | 1 | 35 | 26.74 | 60.99 |
+| delivered | 8 | 93 | 79.98 | 173.58 |
+| precheck | 1 | 90 | 10.51 | 32.87 |
+| precheck | 8 | 219 | 34.76 | 58.07 |
+| commit | 1 | 203 | 4.52 | 8.72 |
+| commit | 8 | 280 | 27.90 | 60.65 |
+| authorize | 1 | 125 | 7.43 | 15.55 |
+| authorize | 8 | 265 | 29.10 | 48.61 |
+
+A qualifying run still requires the fixed Ubuntu 24.04, 4-vCPU/16-GB machine and TLS PostgreSQL described above. No paid resource was provisioned.
 
 ## CI trends
 
