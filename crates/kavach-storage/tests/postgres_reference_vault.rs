@@ -31,6 +31,7 @@ fn key_file() -> std::path::PathBuf {
 }
 
 fn event(
+    tenant_id: &str,
     occurred_at: chrono::DateTime<Utc>,
     update_id: &str,
     system: &str,
@@ -38,12 +39,12 @@ fn event(
 ) -> AuthorityUpdateEvent {
     AuthorityUpdateEvent {
         update_id: update_id.into(),
-        tenant_id: TENANT.into(),
+        tenant_id: tenant_id.into(),
         system: system.into(),
         occurred_at,
         nonce: format!("nonce-{update_id}"),
         change: AuthorityChange::ReferenceDestination(ReferenceDestinationRecord {
-            tenant_id: TENANT.into(),
+            tenant_id: tenant_id.into(),
             subject_ref: SUBJECT.into(),
             channel: "sms".into(),
             destination: SensitiveDestination::new(destination),
@@ -76,35 +77,39 @@ async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
     let mut signer = InMemoryKeyProvider::new();
     let lms_key = signer.insert_seed("lms-1", [9; 32]).unwrap();
     let crm_key = signer.insert_seed("crm-1", [10; 32]).unwrap();
-    let verifier = AuthorityVerifier::new(
-        TENANT,
-        MandateConfig {
-            issuer_id: "test".into(),
-            signing_kid: "unused".into(),
-            mandate_keys: KeySet::new([lms_key.clone(), crm_key.clone()]),
-            sor_issuers: vec![
-                SorIssuer {
-                    tenant_id: TENANT.into(),
-                    system: "lms".into(),
-                    key: lms_key,
-                },
-                SorIssuer {
-                    tenant_id: TENANT.into(),
-                    system: "crm".into(),
-                    key: crm_key,
-                },
-            ],
-            templates: Vec::new(),
-            passports: Vec::new(),
-            event_freshness_seconds: 300,
-            replay_window_seconds: 3600,
-            max_clock_error_ms: 500,
-        },
-    )
-    .unwrap();
+    let other_tenant_key = signer.insert_seed("lms-b-1", [11; 32]).unwrap();
+    let config = MandateConfig {
+        issuer_id: "test".into(),
+        signing_kid: "unused".into(),
+        mandate_keys: KeySet::new([lms_key.clone(), crm_key.clone(), other_tenant_key.clone()]),
+        sor_issuers: vec![
+            SorIssuer {
+                tenant_id: TENANT.into(),
+                system: "lms".into(),
+                key: lms_key,
+            },
+            SorIssuer {
+                tenant_id: TENANT.into(),
+                system: "crm".into(),
+                key: crm_key,
+            },
+            SorIssuer {
+                tenant_id: "tenant-b".into(),
+                system: "lms".into(),
+                key: other_tenant_key,
+            },
+        ],
+        templates: Vec::new(),
+        passports: Vec::new(),
+        event_freshness_seconds: 300,
+        replay_window_seconds: 3600,
+        max_clock_error_ms: 500,
+    };
+    let verifier = AuthorityVerifier::new(TENANT, config.clone()).unwrap();
+    let other_tenant_verifier = AuthorityVerifier::new("tenant-b", config).unwrap();
     let now = Utc::now();
 
-    let first = event(now, "destination-1", "lms", "+910000000001");
+    let first = event(TENANT, now, "destination-1", "lms", "+910000000001");
     let token = jws::sign(&signer, "lms-1", TYP_AUTHORITY_UPDATE, &first)
         .await
         .unwrap();
@@ -112,11 +117,25 @@ async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
     assert!(!writer.apply(&verified).await.unwrap().replayed);
     assert!(writer.apply(&verified).await.unwrap().replayed);
 
+    let other_tenant_update = event("tenant-b", now, "destination-b-1", "lms", "+910000000010");
+    let token = jws::sign(
+        &signer,
+        "lms-b-1",
+        TYP_AUTHORITY_UPDATE,
+        &other_tenant_update,
+    )
+    .await
+    .unwrap();
+    let verified = other_tenant_verifier
+        .verify(&token, trusted_now(now))
+        .unwrap();
+    assert!(!writer.apply(&verified).await.unwrap().replayed);
+
     let history_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM authority_updates")
         .fetch_one(&runtime.pool)
         .await
         .unwrap();
-    assert_eq!(history_count, 1);
+    assert_eq!(history_count, 2);
     let history_record: serde_json::Value = sqlx::query_scalar(
         "SELECT record FROM authority_updates WHERE update_id = 'destination-1'",
     )
@@ -149,9 +168,9 @@ async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
         resolver
             .resolve("tenant-b", SUBJECT, "sms")
             .await
-            .unwrap_err()
-            .class,
-        ErrorClass::Rejected
+            .unwrap()
+            .expose(),
+        "+910000000010"
     );
     assert_eq!(
         resolver
@@ -162,7 +181,7 @@ async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
         ErrorClass::Rejected
     );
 
-    let conflicting_replay = event(now, "destination-1", "lms", "+910000000002");
+    let conflicting_replay = event(TENANT, now, "destination-1", "lms", "+910000000002");
     let token = jws::sign(&signer, "lms-1", TYP_AUTHORITY_UPDATE, &conflicting_replay)
         .await
         .unwrap();
@@ -173,6 +192,7 @@ async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
     );
 
     let stale = event(
+        TENANT,
         now - Duration::seconds(1),
         "destination-stale",
         "lms",
@@ -188,6 +208,7 @@ async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
     );
 
     let other_source = event(
+        TENANT,
         now + Duration::seconds(1),
         "destination-crm",
         "crm",
@@ -203,6 +224,7 @@ async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
     );
 
     let newer = event(
+        TENANT,
         now + Duration::seconds(1),
         "destination-2",
         "lms",
@@ -236,6 +258,7 @@ async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
         .await
         .unwrap();
     let atomicity_probe = event(
+        TENANT,
         now + Duration::seconds(2),
         "destination-3",
         "lms",

@@ -32,6 +32,11 @@ pub fn seed() -> Vec<SeedEntry> {
             subject_ref: "ref:borrower:B-9",
             destinations: &[("whatsapp", "+910000000009")],
         },
+        SeedEntry {
+            tenant_id: "other-tenant",
+            subject_ref: "ref:borrower:B-1",
+            destinations: &[("whatsapp", "+910000000010")],
+        },
     ]
 }
 
@@ -73,6 +78,13 @@ pub async fn conformance<R: ReferenceResolver>(resolver: &R) {
         .await
         .expect("resolves");
     assert_eq!(d.expose(), "+910000000001");
+    // The same capability reference is valid independently in another
+    // tenant and resolves only to that tenant's destination.
+    let other = resolver
+        .resolve("other-tenant", "ref:borrower:B-1", "whatsapp")
+        .await
+        .expect("the reference may exist in another tenant");
+    assert_eq!(other.expose(), "+910000000010");
     assert_eq!(format!("{d:?}"), "Destination(<redacted>)");
     let d = resolver
         .resolve(TENANT, "ref:borrower:B-1", "voice")
