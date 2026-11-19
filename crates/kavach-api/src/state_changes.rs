@@ -1479,7 +1479,7 @@ impl AppState {
             .await?;
         if self
             .admin
-            .get_model_state(&model.model_id)
+            .get_model_state(self.tenant_id(), &model.model_id)
             .await
             .map_err(|e| ApiError::Internal(format!("model state: {e}")))?
             .is_none()
@@ -1587,7 +1587,7 @@ impl AppState {
 
         let governed = self
             .admin
-            .get_model_state(&yaml.model_id)
+            .get_model_state(self.tenant_id(), &yaml.model_id)
             .await
             .map_err(|e| ApiError::Internal(format!("model state: {e}")))?;
         let model = match &governed {

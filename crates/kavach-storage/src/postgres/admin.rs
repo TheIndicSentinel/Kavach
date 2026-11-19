@@ -134,12 +134,14 @@ impl PostgresAdminStore {
 
     pub async fn get_model_state(
         &self,
+        tenant_id: &str,
         model_id: &str,
     ) -> Result<Option<ModelState>, AdminStoreError> {
         let row = sqlx::query_as::<_, ModelStateRow>(
             "SELECT model_id, status, governance_mode, updated_at, updated_by, approved_by \
-            FROM model_state WHERE tenant_id = 'default' AND model_id = $1",
+            FROM model_state WHERE tenant_id = $1 AND model_id = $2",
         )
+        .bind(tenant_id)
         .bind(model_id)
         .fetch_optional(&self.pool)
         .await
@@ -147,11 +149,15 @@ impl PostgresAdminStore {
         row.map(ModelStateRow::into_state).transpose()
     }
 
-    pub async fn list_model_states(&self) -> Result<Vec<ModelState>, AdminStoreError> {
+    pub async fn list_model_states(
+        &self,
+        tenant_id: &str,
+    ) -> Result<Vec<ModelState>, AdminStoreError> {
         let rows = sqlx::query_as::<_, ModelStateRow>(
             "SELECT model_id, status, governance_mode, updated_at, updated_by, approved_by \
-            FROM model_state WHERE tenant_id = 'default' ORDER BY model_id",
+            FROM model_state WHERE tenant_id = $1 ORDER BY model_id",
         )
+        .bind(tenant_id)
         .fetch_all(&self.pool)
         .await
         .map_err(|err| AdminStoreError::Io(err.to_string()))?;
@@ -162,13 +168,15 @@ impl PostgresAdminStore {
     /// whether this call inserted it.
     pub async fn insert_model_state_if_absent(
         &self,
+        tenant_id: &str,
         state: &ModelState,
     ) -> Result<bool, AdminStoreError> {
         let result = sqlx::query(
-            "INSERT INTO model_state (model_id, status, governance_mode, updated_at, updated_by, \
-                approved_by) VALUES ($1, $2, $3, $4, $5, $6) \
+            "INSERT INTO model_state (tenant_id, model_id, status, governance_mode, updated_at, updated_by, \
+                approved_by) VALUES ($1, $2, $3, $4, $5, $6, $7) \
             ON CONFLICT (tenant_id, model_id) DO NOTHING",
         )
+        .bind(tenant_id)
         .bind(&state.model_id)
         .bind(status_str(state.status))
         .bind(mode_str(state.governance_mode))
@@ -205,15 +213,17 @@ impl PostgresAdminStore {
 /// Upserts a model's governed state (inside the approval transaction).
 pub(crate) async fn upsert_model_state<'e>(
     executor: impl sqlx::PgExecutor<'e>,
+    tenant_id: &str,
     state: &ModelState,
 ) -> Result<(), AdminStoreError> {
     sqlx::query(
-        "INSERT INTO model_state (model_id, status, governance_mode, updated_at, updated_by, \
-            approved_by) VALUES ($1, $2, $3, $4, $5, $6) \
+        "INSERT INTO model_state (tenant_id, model_id, status, governance_mode, updated_at, updated_by, \
+            approved_by) VALUES ($1, $2, $3, $4, $5, $6, $7) \
         ON CONFLICT (tenant_id, model_id) DO UPDATE SET status = EXCLUDED.status, \
             governance_mode = EXCLUDED.governance_mode, updated_at = EXCLUDED.updated_at, \
             updated_by = EXCLUDED.updated_by, approved_by = EXCLUDED.approved_by",
     )
+    .bind(tenant_id)
     .bind(&state.model_id)
     .bind(status_str(state.status))
     .bind(mode_str(state.governance_mode))

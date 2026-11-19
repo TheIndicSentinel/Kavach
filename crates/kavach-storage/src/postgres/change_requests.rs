@@ -156,6 +156,7 @@ impl PostgresChangeStore {
         }
 
         let applying = Applying {
+            tenant_id: &request.tenant_id,
             request_id: &request.id,
             proposer: &request.proposer,
             approver: &commit.approver,
@@ -335,7 +336,10 @@ async fn apply_effect(
     applying: Applying<'_>,
 ) -> Result<(), ChangeStoreError> {
     let Applying {
-        proposer, approver, ..
+        tenant_id,
+        proposer,
+        approver,
+        ..
     } = applying;
     match effect {
         GovernanceEffect::None => {}
@@ -343,7 +347,9 @@ async fn apply_effect(
             upsert_pointers(&mut **tx, pointers).await.map_err(io)?;
         }
         GovernanceEffect::SetModelState(state) => {
-            upsert_model_state(&mut **tx, state).await.map_err(io)?;
+            upsert_model_state(&mut **tx, tenant_id, state)
+                .await
+                .map_err(io)?;
         }
         GovernanceEffect::SetRetentionDays { days, .. } => {
             sqlx::query(

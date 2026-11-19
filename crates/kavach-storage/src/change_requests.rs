@@ -195,6 +195,7 @@ pub enum GovernanceEffect {
 /// The request an effect is applied for.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Applying<'a> {
+    pub tenant_id: &'a str,
     pub request_id: &'a str,
     pub proposer: &'a str,
     pub approver: &'a str,
@@ -462,6 +463,7 @@ impl MemoryChangeStore {
         }
 
         let applying = Applying {
+            tenant_id: &request.tenant_id,
             request_id: &request.id,
             proposer: &request.proposer,
             approver: &commit.approver,
@@ -489,7 +491,10 @@ impl MemoryChangeStore {
         applying: Applying<'_>,
     ) -> Result<(), ChangeStoreError> {
         let Applying {
-            proposer, approver, ..
+            tenant_id,
+            proposer,
+            approver,
+            ..
         } = applying;
         match effect {
             GovernanceEffect::None => {}
@@ -499,7 +504,9 @@ impl MemoryChangeStore {
                     .map_err(io)?;
             }
             GovernanceEffect::SetModelState(state) => {
-                self.admin.set_model_state(state.clone()).map_err(io)?;
+                self.admin
+                    .set_model_state(tenant_id, state.clone())
+                    .map_err(io)?;
             }
             GovernanceEffect::SetRetentionDays { days, .. } => {
                 self.retention

@@ -76,9 +76,9 @@ fn describe(status: ModelStatus, mode: GovernanceMode) -> String {
     format!("status {}, mode {}", status_str(status), mode_str(mode))
 }
 
-fn audit(action: &str, model_id: &str, payload: serde_json::Value) -> AuditInsert {
+fn audit(tenant_id: &str, action: &str, model_id: &str, payload: serde_json::Value) -> AuditInsert {
     AuditInsert {
-        tenant_id: "default".into(),
+        tenant_id: tenant_id.into(),
         acting_as_superadmin: false,
         action: action.into(),
         resource_type: "model_record".into(),
@@ -93,13 +93,14 @@ fn audit(action: &str, model_id: &str, payload: serde_json::Value) -> AuditInser
 /// `digest`). Postgres mode; the pack pointer must already exist.
 pub async fn govern_model(
     admin: &AdminBackend,
+    tenant_id: &str,
     path: &Path,
     yaml: ModelRecord,
     digest: &str,
     role: ModelStartupRole,
 ) -> Result<GovernedModel, ModelStartupError> {
-    pin_model_file(admin, path, &yaml.model_id, digest, role).await?;
-    let state = governed_state(admin, &yaml, role).await?;
+    pin_model_file(admin, tenant_id, path, &yaml.model_id, digest, role).await?;
+    let state = governed_state(admin, tenant_id, &yaml, role).await?;
 
     let yaml_divergence =
         (yaml.status != state.status || yaml.governance_mode != state.governance_mode).then(|| {
@@ -123,6 +124,7 @@ pub async fn govern_model(
 
 async fn pin_model_file(
     admin: &AdminBackend,
+    tenant_id: &str,
     path: &Path,
     model_id: &str,
     digest: &str,
@@ -158,6 +160,7 @@ async fn pin_model_file(
                 .map_err(store)?;
             admin
                 .append_audit(audit(
+                    tenant_id,
                     "startup_model_baseline",
                     model_id,
                     serde_json::json!({ "model_path": path_str, "model_sha256": digest }),
@@ -194,6 +197,7 @@ async fn pin_model_file(
         .map_err(store)?;
     admin
         .append_audit(audit(
+            tenant_id,
             "startup_model_bootstrap_override",
             model_id,
             serde_json::json!({
@@ -214,10 +218,11 @@ async fn pin_model_file(
 /// audit log has one.
 async fn approved_history(
     admin: &AdminBackend,
+    tenant_id: &str,
     model_id: &str,
 ) -> Result<Option<(ModelStatus, GovernanceMode)>, ModelStartupError> {
     let Some(entry) = admin
-        .last_audit("default", "update_model", model_id)
+        .last_audit(tenant_id, "update_model", model_id)
         .await
         .map_err(store)?
     else {
@@ -237,10 +242,15 @@ async fn approved_history(
 
 async fn governed_state(
     admin: &AdminBackend,
+    tenant_id: &str,
     yaml: &ModelRecord,
     role: ModelStartupRole,
 ) -> Result<ModelState, ModelStartupError> {
-    if let Some(state) = admin.get_model_state(&yaml.model_id).await.map_err(store)? {
+    if let Some(state) = admin
+        .get_model_state(tenant_id, &yaml.model_id)
+        .await
+        .map_err(store)?
+    {
         return Ok(state);
     }
     let ModelStartupRole::Api { bootstrap_model } = role else {
@@ -252,7 +262,7 @@ async fn governed_state(
 
     // An approved change that was never persisted (H3a) must not silently
     // revert to the YAML.
-    let (status, mode, action) = match approved_history(admin, &yaml.model_id).await? {
+    let (status, mode, action) = match approved_history(admin, tenant_id, &yaml.model_id).await? {
         Some((status, mode)) if (status, mode) != (yaml.status, yaml.governance_mode) => {
             if !bootstrap_model {
                 return Err(ModelStartupError::DivergentHistory {
@@ -278,12 +288,13 @@ async fn governed_state(
         approved_by: STARTUP_PRINCIPAL.into(),
     };
     if admin
-        .insert_model_state_if_absent(state)
+        .insert_model_state_if_absent(tenant_id, state)
         .await
         .map_err(store)?
     {
         admin
             .append_audit(audit(
+                tenant_id,
                 action,
                 &yaml.model_id,
                 serde_json::json!({
@@ -296,7 +307,7 @@ async fn governed_state(
     }
     // Re-read: a concurrent start may have inserted first.
     admin
-        .get_model_state(&yaml.model_id)
+        .get_model_state(tenant_id, &yaml.model_id)
         .await
         .map_err(store)?
         .ok_or_else(|| ModelStartupError::Store("model state vanished after insert".into()))

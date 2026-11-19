@@ -380,6 +380,7 @@ async fn batch_never_baselines_and_refuses_a_changed_model_file() {
     // Nothing governed yet: batch refuses and writes nothing.
     let err = govern_model(
         &admin,
+        "default",
         &path,
         yaml.clone(),
         &digest,
@@ -409,7 +410,7 @@ async fn batch_never_baselines_and_refuses_a_changed_model_file() {
     let api = ModelStartupRole::Api {
         bootstrap_model: false,
     };
-    govern_model(&admin, &path, yaml.clone(), &digest, api)
+    govern_model(&admin, "default", &path, yaml.clone(), &digest, api)
         .await
         .unwrap();
 
@@ -420,6 +421,7 @@ async fn batch_never_baselines_and_refuses_a_changed_model_file() {
         .unwrap();
     let governed = govern_model(
         &admin,
+        "default",
         &path,
         yaml.clone(),
         &digest,
@@ -433,6 +435,7 @@ async fn batch_never_baselines_and_refuses_a_changed_model_file() {
     // A changed file is refused; batch has no override.
     let err = govern_model(
         &admin,
+        "default",
         &path,
         yaml,
         "sha256:changed",

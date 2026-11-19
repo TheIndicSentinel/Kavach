@@ -192,7 +192,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let pool = connect(&database_url, owner, &database_tls).await?;
                     check_governed_pack(&pool, &config.pack_path).await?;
                     let config = BatchConfig {
-                        governed_model: Some(governed_model(&pool, &config.model_path).await?),
+                        governed_model: Some(
+                            governed_model(&pool, &tenant_id, &config.model_path).await?,
+                        ),
                         ..config
                     };
                     let mut job_store = pool.batch_job_store_for_tenant(&tenant_id);
@@ -311,12 +313,14 @@ async fn check_governed_pack(
 /// status and mode (ADR-010). Batch never records a baseline.
 async fn governed_model(
     pool: &StoragePool,
+    tenant_id: &str,
     model_path: &std::path::Path,
 ) -> Result<kavach_domain::ModelRecord, Box<dyn std::error::Error>> {
     let bytes = std::fs::read(model_path)?;
     let yaml: kavach_domain::ModelRecord = serde_yaml::from_slice(&bytes)?;
     let governed = kavach_storage::govern_model(
         &kavach_storage::AdminBackend::Postgres(pool.admin_store()),
+        tenant_id,
         model_path,
         yaml,
         &kavach_policy::pack_digest(&bytes),

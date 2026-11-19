@@ -197,28 +197,33 @@ impl AdminBackend {
 
     pub async fn get_model_state(
         &self,
+        tenant_id: &str,
         model_id: &str,
     ) -> Result<Option<ModelState>, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.get_model_state(model_id),
-            Self::Postgres(store) => store.get_model_state(model_id).await,
+            Self::Memory(store) => store.get_model_state(tenant_id, model_id),
+            Self::Postgres(store) => store.get_model_state(tenant_id, model_id).await,
         }
     }
 
-    pub async fn list_model_states(&self) -> Result<Vec<ModelState>, AdminStoreError> {
+    pub async fn list_model_states(
+        &self,
+        tenant_id: &str,
+    ) -> Result<Vec<ModelState>, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.list_model_states(),
-            Self::Postgres(store) => store.list_model_states().await,
+            Self::Memory(store) => store.list_model_states(tenant_id),
+            Self::Postgres(store) => store.list_model_states(tenant_id).await,
         }
     }
 
     pub async fn insert_model_state_if_absent(
         &self,
+        tenant_id: &str,
         state: ModelState,
     ) -> Result<bool, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.insert_model_state_if_absent(state),
-            Self::Postgres(store) => store.insert_model_state_if_absent(&state).await,
+            Self::Memory(store) => store.insert_model_state_if_absent(tenant_id, state),
+            Self::Postgres(store) => store.insert_model_state_if_absent(tenant_id, &state).await,
         }
     }
 

@@ -562,7 +562,7 @@ impl AppState {
         }
         let governed = self
             .admin
-            .get_model_state(&model.model_id)
+            .get_model_state(self.tenant_id(), &model.model_id)
             .await
             .map_err(|_| ApiError::Unavailable("governed model state is unavailable".into()))?
             .ok_or_else(|| {
@@ -655,7 +655,7 @@ impl AppState {
 
     pub async fn model_states(&self) -> Result<Vec<kavach_storage::ModelState>, ApiError> {
         self.admin
-            .list_model_states()
+            .list_model_states(self.tenant_id())
             .await
             .map_err(|e| ApiError::Internal(format!("model states: {e}")))
     }
@@ -1114,20 +1114,24 @@ async fn startup_model(
             ));
         }
         admin
-            .insert_model_state_if_absent(kavach_storage::ModelState {
-                model_id: yaml.model_id.clone(),
-                status: yaml.status,
-                governance_mode: yaml.governance_mode,
-                updated_at: Utc::now(),
-                updated_by: STARTUP_PRINCIPAL.into(),
-                approved_by: STARTUP_PRINCIPAL.into(),
-            })
+            .insert_model_state_if_absent(
+                &config.roles.tenant_id,
+                kavach_storage::ModelState {
+                    model_id: yaml.model_id.clone(),
+                    status: yaml.status,
+                    governance_mode: yaml.governance_mode,
+                    updated_at: Utc::now(),
+                    updated_by: STARTUP_PRINCIPAL.into(),
+                    approved_by: STARTUP_PRINCIPAL.into(),
+                },
+            )
             .await
             .map_err(|e| ApiError::Internal(format!("model state: {e}")))?;
         return Ok(yaml);
     }
     let governed = kavach_storage::govern_model(
         admin,
+        &config.roles.tenant_id,
         config.model_path(),
         yaml,
         digest,

@@ -9,6 +9,7 @@ use kavach_domain::{GovernanceMode, ModelStatus};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
     pub id: i64,
+    #[serde(skip_serializing, default)]
     pub tenant_id: String,
     pub action: String,
     pub resource_type: String,
@@ -117,7 +118,7 @@ pub struct MemoryAdminStore {
     once: Mutex<std::collections::HashSet<String>>,
     pointers: Mutex<Option<RuntimePointers>>,
     next_id: Mutex<i64>,
-    models: Mutex<HashMap<String, ModelState>>,
+    models: Mutex<HashMap<(String, String), ModelState>>,
 }
 
 fn poisoned<T>(_: T) -> AdminStoreError {
@@ -224,35 +225,55 @@ impl MemoryAdminStore {
         Ok(true)
     }
 
-    pub fn get_model_state(&self, model_id: &str) -> Result<Option<ModelState>, AdminStoreError> {
-        Ok(self.models.lock().map_err(poisoned)?.get(model_id).cloned())
-    }
-
-    pub fn list_model_states(&self) -> Result<Vec<ModelState>, AdminStoreError> {
+    pub fn get_model_state(
+        &self,
+        tenant_id: &str,
+        model_id: &str,
+    ) -> Result<Option<ModelState>, AdminStoreError> {
         Ok(self
             .models
             .lock()
             .map_err(poisoned)?
-            .values()
+            .get(&(tenant_id.into(), model_id.into()))
+            .cloned())
+    }
+
+    pub fn list_model_states(&self, tenant_id: &str) -> Result<Vec<ModelState>, AdminStoreError> {
+        Ok(self
+            .models
+            .lock()
+            .map_err(poisoned)?
+            .iter()
+            .filter(|((tenant, _), _)| tenant == tenant_id)
+            .map(|(_, state)| state)
             .cloned()
             .collect())
     }
 
     /// Inserts unless a state exists; returns whether it inserted.
-    pub fn insert_model_state_if_absent(&self, state: ModelState) -> Result<bool, AdminStoreError> {
+    pub fn insert_model_state_if_absent(
+        &self,
+        tenant_id: &str,
+        state: ModelState,
+    ) -> Result<bool, AdminStoreError> {
         let mut models = self.models.lock().map_err(poisoned)?;
-        if models.contains_key(&state.model_id) {
+        let key = (tenant_id.into(), state.model_id.clone());
+        if models.contains_key(&key) {
             return Ok(false);
         }
-        models.insert(state.model_id.clone(), state);
+        models.insert(key, state);
         Ok(true)
     }
 
-    pub fn set_model_state(&self, state: ModelState) -> Result<(), AdminStoreError> {
+    pub fn set_model_state(
+        &self,
+        tenant_id: &str,
+        state: ModelState,
+    ) -> Result<(), AdminStoreError> {
         self.models
             .lock()
             .map_err(poisoned)?
-            .insert(state.model_id.clone(), state);
+            .insert((tenant_id.into(), state.model_id.clone()), state);
         Ok(())
     }
 
@@ -313,5 +334,47 @@ mod tests {
             .last_audit("tenant-c", "review", "shared")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn model_state_reads_and_inserts_are_tenant_scoped() {
+        let store = MemoryAdminStore::default();
+        let state = |mode| ModelState {
+            model_id: "shared-model".into(),
+            status: ModelStatus::Production,
+            governance_mode: mode,
+            updated_at: Utc::now(),
+            updated_by: "operator".into(),
+            approved_by: "approver".into(),
+        };
+
+        assert!(store
+            .insert_model_state_if_absent("tenant-a", state(GovernanceMode::Shadow))
+            .unwrap());
+        assert!(store
+            .insert_model_state_if_absent("tenant-b", state(GovernanceMode::Enforce))
+            .unwrap());
+        assert_eq!(
+            store
+                .get_model_state("tenant-a", "shared-model")
+                .unwrap()
+                .unwrap()
+                .governance_mode,
+            GovernanceMode::Shadow
+        );
+        assert_eq!(
+            store
+                .get_model_state("tenant-b", "shared-model")
+                .unwrap()
+                .unwrap()
+                .governance_mode,
+            GovernanceMode::Enforce
+        );
+        assert!(store
+            .get_model_state("tenant-c", "shared-model")
+            .unwrap()
+            .is_none());
+        assert_eq!(store.list_model_states("tenant-a").unwrap().len(), 1);
+        assert!(store.list_model_states("tenant-c").unwrap().is_empty());
     }
 }
