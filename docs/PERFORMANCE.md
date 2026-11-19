@@ -108,6 +108,8 @@ On 2026-11-19, `authorize` completed on commit `5250f9a` using the memory store 
 
 This short memory-store smoke run checks that the in-process measurement works; its host, storage, duration, and workload do not match the reference procedure above. It does not satisfy or fail any NFR-2 target, and these numbers are not performance claims. The reference-machine run with local Postgres 16 remains pending.
 
+**Local Postgres diagnostic attempt (2026-11-19, no measurements):** The available host exposes 4 logical CPUs and runs macOS; Homebrew PostgreSQL 16.16 is installed, but Docker is unavailable. A short, plaintext Postgres diagnostic was attempted with `delivered`, `precheck`, `commit` and `authorize` at concurrency 1 and 8, 2-second runs and a 1-second warm-up. The first optimized `kavach-bench` build exhausted the filesystem before the benchmark started, so it produced no results and says nothing about NFR-2. The partial release artifacts and disposable database files were removed. A qualifying run still requires the fixed Ubuntu 24.04, 4-vCPU/16-GB machine and TLS PostgreSQL described above; no paid resource was provisioned.
+
 ## CI trends
 
 The *Benchmarks* workflow runs on demand (`gh workflow run bench.yml --ref <branch>`), when a change or decision needs the data, on a shared GitHub runner. A pull request that changes the harness gets a short run that checks it still works. A full run is one run against Postgres with TLS (`verify-full`), every scenario at pool sizes 5, 16 and 32, and one without TLS (the baseline), the gateway scenarios at pool size 5. Each run's tables appear in its summary, and the JSON reports are kept for 90 days.
