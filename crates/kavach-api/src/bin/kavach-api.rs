@@ -83,6 +83,9 @@ struct AgentArgs {
     /// Consent fixture JSON (PRD D7).
     #[arg(long, env = "KAVACH_CONSENTS")]
     consents: Option<PathBuf>,
+    /// Optional explicit contact-preference fixture for no-database development.
+    #[arg(long, env = "KAVACH_CONTACT_PREFERENCES")]
+    contact_preferences: Option<PathBuf>,
     #[arg(long, env = "KAVACH_TENANT_ID", default_value = "default")]
     tenant_id: String,
     /// System-of-record events accepted per second.
@@ -263,6 +266,7 @@ impl AgentArgs {
             checkpoint_stall_seconds: self.checkpoint_stall_seconds,
             subject_pseudonym_key: need(self.subject_pseudonym_key, "--subject-pseudonym-key")?,
             consents: need(self.consents, "--consents")?,
+            contact_preferences: self.contact_preferences,
             tenant_id: self.tenant_id,
             agent_only: self.agent_only,
             sor_rate_per_second: self.sor_rate_per_second,

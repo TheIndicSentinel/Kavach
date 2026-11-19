@@ -22,8 +22,8 @@ use kavach_api::{
 };
 use kavach_credential::DecryptionKey;
 use kavach_domain::mandate::{
-    AgentPassport, ConsentRecord, ContactWindow, DelegationRules, MandateTemplate, SorEvent,
-    TimeZoneId,
+    AgentPassport, ConsentRecord, ContactPreferenceRecord, ContactPreferenceStatus, ContactWindow,
+    DelegationRules, MandateTemplate, SorEvent, TimeZoneId,
 };
 use kavach_jws::KeySet;
 use kavach_keys::InMemoryKeyProvider;
@@ -180,6 +180,20 @@ pub fn credential_files(dir: &Path, keys: &Path) {
         .to_string(),
     )
     .unwrap();
+    let now = Utc::now();
+    let preferences = ["whatsapp", "sms", "voice"].map(|channel| ContactPreferenceRecord {
+        tenant_id: "default".into(),
+        subject_ref: SUBJECT.into(),
+        channel: channel.into(),
+        status: ContactPreferenceStatus::Allowed,
+        valid_from: now - Duration::days(1),
+        expires_at: now + Duration::days(30),
+    });
+    std::fs::write(
+        dir.join("contact-preferences.json"),
+        serde_json::to_string(&preferences).unwrap(),
+    )
+    .unwrap();
     owner_only(
         &keys.join("kavach-credential-1.ed25519"),
         &hex::encode([5u8; 32]),
@@ -329,6 +343,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         checkpoint_stall_seconds: 600,
         subject_pseudonym_key: dir.join("pseudonym.key"),
         consents: dir.join("consents.json"),
+        contact_preferences: Some(dir.join("contact-preferences.json")),
         tenant_id: "default".into(),
         agent_only: false,
         sor_rate_per_second: rate,

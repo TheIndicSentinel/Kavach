@@ -8,7 +8,7 @@
 //! |---|---|---|
 //! | `kavach/keys/` | kavach-api | `dev-mandate-1`, `dev-evidence-1`, `dev-checkpoint-1`, `dev-credential-1` (owner-only) |
 //! | `kavach/pseudonym.key` | kavach-api | subject pseudonym secret (owner-only) |
-//! | `kavach/*.json`, `kavach/tools/` | kavach-api | mandate config, consents, references (synthetic numbers), providers, JWKS, signed tool registry, tool signers |
+//! | `kavach/*.json`, `kavach/tools/` | kavach-api | mandate config, consents, explicit development contact preferences, references (synthetic numbers), providers, JWKS, signed tool registry, tool signers |
 //! | `kavach/tls/ca.pem` | kavach-api | the dev CA the gateway trusts for providers and for Postgres |
 //! | `postgres/` | Postgres | its TLS certificate and key (`server.crt`, `server.key`) |
 //! | `kavach/kavach.env` | kavach-api | every setting, as environment variables |
@@ -33,8 +33,8 @@ use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
 use kavach_credential::DecryptionKey;
 use kavach_domain::mandate::{
-    AgentPassport, ConsentArtefactSubset, ConsentRecord, ConsentStatus, ContactWindow,
-    DelegationRules, MandateTemplate, SorEvent, TimeZoneId,
+    AgentPassport, ConsentArtefactSubset, ConsentRecord, ConsentStatus, ContactPreferenceRecord,
+    ContactPreferenceStatus, ContactWindow, DelegationRules, MandateTemplate, SorEvent, TimeZoneId,
 };
 use kavach_keys::{sign_tool_registry, LocalFileKeyProvider};
 use serde_json::{json, Value};
@@ -582,6 +582,26 @@ fn write_kavach_config(
         })).collect::<Vec<_>>() }),
     )?;
     write_json(
+        &kavach.join("contact-preferences.json"),
+        &serde_json::to_value(
+            world
+                .borrowers
+                .iter()
+                .flat_map(|borrower| {
+                    ["whatsapp", "sms", "voice"].map(|channel| ContactPreferenceRecord {
+                        tenant_id: TENANT.into(),
+                        subject_ref: borrower.subject_ref.clone(),
+                        channel: channel.into(),
+                        status: ContactPreferenceStatus::Allowed,
+                        valid_from: Utc::now() - Duration::days(1),
+                        expires_at: Utc::now() + Duration::days(30),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default(),
+    )?;
+    write_json(
         &kavach.join("providers.json"),
         &json!({ "providers": [
             { "audience": PROVIDER_AUDIENCE, "kid": PROVIDER_KID,
@@ -614,6 +634,7 @@ fn env_file(m: &str, issuer: &str) -> String {
          KAVACH_CREDENTIAL_KEY_ID={CREDENTIAL_KID}\n\
          KAVACH_SUBJECT_PSEUDONYM_KEY={m}/pseudonym.key\n\
          KAVACH_CONSENTS={m}/consents.json\n\
+         KAVACH_CONTACT_PREFERENCES={m}/contact-preferences.json\n\
          KAVACH_REFERENCES={m}/references.json\n\
          KAVACH_PROVIDERS={m}/providers.json\n\
          KAVACH_PROVIDER_CA={m}/tls/ca.pem\n\
@@ -879,6 +900,13 @@ mod tests {
                   "destinations": { "whatsapp": "+910000000003", "sms": "+910000000003", "voice": "+910000000004" } }
             ] })
         );
+        let preferences = read(&k.join("contact-preferences.json"));
+        assert_eq!(preferences.as_array().unwrap().len(), 6);
+        assert!(preferences
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|record| record["status"] == "allowed"));
         for agent in AGENTS {
             assert!(out.join(format!("agents/{agent}.jwt")).is_file());
         }

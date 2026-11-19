@@ -245,6 +245,7 @@ pub(crate) fn dataplane_config(project: &Project, clock: Option<Arc<DevClock>>) 
         checkpoint_stall_seconds: 600,
         subject_pseudonym_key: kavach.join("pseudonym.key"),
         consents: kavach.join("consents.json"),
+        contact_preferences: Some(kavach.join("contact-preferences.json")),
         tenant_id: kavach_devkit::TENANT.into(),
         agent_only: false,
         sor_rate_per_second: 20,

@@ -18,7 +18,9 @@ use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig, TestClock
 use kavach_api::{
     AccessControlKind, ApiConfig, AppState, DatabaseTls, EvidenceStoreKind, JwksSource, OidcConfig,
 };
-use kavach_domain::mandate::{ConsentRecord, SorEvent};
+use kavach_domain::mandate::{
+    ConsentRecord, ContactPreferenceRecord, ContactPreferenceStatus, SorEvent,
+};
 use kavach_ports::{KeyAlgorithm, PublicKey, TimeSource};
 use kavach_ports_testkit::FakeClock;
 use serde_json::{json, Value};
@@ -137,6 +139,22 @@ fn write_workload(kavach: &Path, n: usize, provider_url: &str) -> Result<(), Str
         &kavach.join("consents.json"),
         &serde_json::to_value(consents).map_err(|e| e.to_string())?,
     )?;
+    let preferences: Vec<ContactPreferenceRecord> = (0..n)
+        .flat_map(|i| {
+            ["whatsapp", "sms"].map(move |channel| ContactPreferenceRecord {
+                tenant_id: TENANT.into(),
+                subject_ref: subject_ref(i),
+                channel: channel.into(),
+                status: ContactPreferenceStatus::Allowed,
+                valid_from: Utc::now() - chrono::Duration::days(1),
+                expires_at: Utc::now() + chrono::Duration::days(30),
+            })
+        })
+        .collect();
+    write_json(
+        &kavach.join("contact-preferences.json"),
+        &serde_json::to_value(preferences).map_err(|e| e.to_string())?,
+    )?;
     let references: Vec<Value> = (0..=n)
         .map(|i| {
             json!({ "tenant_id": TENANT, "subject_ref": subject_ref(i),
@@ -211,6 +229,7 @@ fn api_config(
             checkpoint_stall_seconds: 600,
             subject_pseudonym_key: kavach.join("pseudonym.key"),
             consents: kavach.join("consents.json"),
+            contact_preferences: Some(kavach.join("contact-preferences.json")),
             tenant_id: TENANT.into(),
             agent_only: false,
             sor_rate_per_second: 1_000_000,

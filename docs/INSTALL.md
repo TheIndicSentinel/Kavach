@@ -402,6 +402,7 @@ A certificate with no SAN, or several SANs, of the configured type gets 401. A b
 | `--checkpoint-stall-seconds` / `KAVACH_CHECKPOINT_STALL_SECONDS` | Records without a checkpoint for this long raise an alert (default 600; must exceed the interval) |
 | `--subject-pseudonym-key` / `KAVACH_SUBJECT_PSEUDONYM_KEY` | Owner-only file with a 32-byte hex secret (`openssl rand -hex 32`). Pseudonymises borrowers in evidence and counters. Treat it like a signing key. Rotating it resets the day's contact counters, so rotate only at IST midnight |
 | `--consents` / `KAVACH_CONSENTS` | Consent fixture JSON (list of consent records; PRD D7) |
+| `--contact-preferences` / `KAVACH_CONTACT_PREFERENCES` | Optional no-database development fixture; missing preference records fail closed before gateway destination resolution |
 | `--sor-rate-per-second` | System-of-record events accepted per second (default 20); excess gets 429. Bodies over 16 KiB get 413 |
 | `--tool-registry` / `KAVACH_TOOL_REGISTRY` | The agent tool registry (`tools/agent-tools.yaml`): which tools exist, which parameters are reference-only, which values are allowed. **Must be signed** unless `--insecure-dev` |
 | `--tool-signers` / `KAVACH_TOOL_SIGNERS` | Trusted signers for the registry (signer role `tool`). Defaults to `--pack-signers` |

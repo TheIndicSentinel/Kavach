@@ -29,13 +29,17 @@ use kavach_dataplane::{
     ToolRegistry, ToolRequest, WhatIfStore,
 };
 use kavach_domain::authority::AuthorityChange;
-use kavach_domain::mandate::{AgentPassport, ConsentRecord, MandateTemplate, RevocationReason};
+use kavach_domain::mandate::{
+    AgentPassport, ConsentRecord, ContactPreferenceRecord, MandateTemplate, RevocationReason,
+};
 use kavach_domain::Decision;
 use kavach_keys::{SubjectKeys, TrustedSigners};
 
 use crate::signing::{HsmConfig, HsmRole, HsmStatus, KeySources, SigningKeys};
 use kavach_mandate::jws::KeySet;
-use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus, InMemoryMandateStore};
+use kavach_mandate::memory::{
+    InMemoryConsentSource, InMemoryContactPreferenceSource, InMemoryEventBus, InMemoryMandateStore,
+};
 use kavach_mandate::{AuthorityVerifier, MandateConfig, MandateDeps, MandateService, SorIssuer};
 use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
@@ -48,9 +52,9 @@ use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::CredentialBroker;
 use kavach_ports::ReviewApprovalStore as _;
 use kavach_ports::{
-    ConsentSource, ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey,
-    ReplayGuard, RevocationCursor, StoredMandate, StoredRevocation, SyncStatus, TimeSource,
-    TrustedNow,
+    ConsentSource, ContactPreferenceSource, ErrorClass, KeyAlgorithm, KeyProvider, MandateStore,
+    PortError, PublicKey, ReplayGuard, RevocationCursor, StoredMandate, StoredRevocation,
+    SyncStatus, TimeSource, TrustedNow,
 };
 use kavach_storage::{
     MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, PostgresMandateStore,
@@ -92,6 +96,9 @@ pub struct DataplaneConfig {
     /// Consent fixture (JSON list) for no-database development; Postgres
     /// runtimes use the persistent consent projection instead (PRD D7).
     pub consents: PathBuf,
+    /// Optional explicit development contact-preference fixture. An absent
+    /// file means no contact is permitted; database runtimes use Postgres.
+    pub contact_preferences: Option<PathBuf>,
     pub tenant_id: String,
     /// Serve the agent surfaces and the evidence reads only: no evaluate,
     /// pack, model, retention, incident or batch routes, no console, no
@@ -115,11 +122,11 @@ pub struct DataplaneConfig {
     pub providers: PathBuf,
     /// Reference fixture (JSON): capability references to destinations,
     /// synthetic numbers only. Persistent destinations remain unavailable to
-    /// the gateway until current contact-preference enforcement is wired.
+    /// the gateway until runtime resolver selection is wired.
     pub references: PathBuf,
     /// Optional persistent signed destination updates. When set, requires a
     /// Postgres storage pool; gateway resolution remains on the fixture until
-    /// current contact-preference enforcement is wired.
+    /// runtime resolver selection is wired.
     pub reference_vault: Option<ReferenceVaultConfig>,
     /// Gateway → provider timeouts (no retries). Both stay below the
     /// credential lifetime.
@@ -223,6 +230,14 @@ fn read_consents(path: &Path) -> Result<Vec<ConsentRecord>, String> {
         consent.validate().map_err(str::to_owned)?;
     }
     Ok(consents)
+}
+
+fn read_contact_preferences(path: &Path) -> Result<Vec<ContactPreferenceRecord>, String> {
+    let records: Vec<ContactPreferenceRecord> = read_json(path, "contact preferences")?;
+    for record in &records {
+        record.validate().map_err(str::to_owned)?;
+    }
+    Ok(records)
 }
 
 #[cfg(test)]
@@ -816,6 +831,28 @@ pub enum ConsentBackend {
     Postgres(kavach_storage::PostgresConsentSource),
 }
 
+/// Current contact preferences are read from Postgres in database-backed
+/// runtimes. The no-database development backend starts empty and fails
+/// closed until an explicit preference fixture is wired.
+pub enum ContactPreferenceBackend {
+    Fixture(InMemoryContactPreferenceSource),
+    Postgres(kavach_storage::PostgresContactPreferenceSource),
+}
+
+impl ContactPreferenceSource for ContactPreferenceBackend {
+    async fn get(
+        &self,
+        tenant_id: &str,
+        subject_ref: &str,
+        channel: &str,
+    ) -> Result<Option<ContactPreferenceRecord>, PortError> {
+        match self {
+            Self::Fixture(source) => source.get(tenant_id, subject_ref, channel).await,
+            Self::Postgres(source) => source.get(tenant_id, subject_ref, channel).await,
+        }
+    }
+}
+
 impl ConsentSource for ConsentBackend {
     async fn get(
         &self,
@@ -923,6 +960,7 @@ pub struct Dataplane {
     /// What only the build knows is relaxed (see `crate::relaxations`).
     relaxed: Vec<crate::relaxations::Relaxation>,
     resolver: FixtureResolver,
+    contact_preferences: ContactPreferenceBackend,
     authority_updates: Option<SignedAuthorityUpdates>,
     reference_destination_updates: Option<ReferenceDestinationUpdates>,
     forwarder: Arc<crate::forward::HttpForwarder>,
@@ -1019,6 +1057,16 @@ impl Dataplane {
             .await?;
         let resolver = FixtureResolver::from_file(&config.references)
             .map_err(|e| format!("references: {}", e.message))?;
+        let contact_preferences = match pool {
+            Some(pool) => ContactPreferenceBackend::Postgres(pool.contact_preference_source()),
+            None => ContactPreferenceBackend::Fixture(
+                InMemoryContactPreferenceSource::new(match &config.contact_preferences {
+                    Some(path) => read_contact_preferences(path)?,
+                    None => Vec::new(),
+                })
+                .map_err(|error| format!("contact preferences: {}", error.message))?,
+            ),
+        };
         let forwarder = build_forwarder(config, &tools)?;
         let broker = build_broker(config, &tools, &mandate_kid, insecure_dev, &sources).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
@@ -1065,6 +1113,7 @@ impl Dataplane {
             reconcile_limiter,
             broker: Arc::new(broker),
             resolver,
+            contact_preferences,
             authority_updates,
             reference_destination_updates,
             forwarder: Arc::new(forwarder),
@@ -2162,7 +2211,7 @@ pub async fn sor_event(
 }
 
 /// `POST /v1/sor/authority-updates`: persists signed consent grants,
-/// withdrawals and contact-preference changes. Runtime reads remain fixtures.
+/// withdrawals and contact-preference changes to the selected Postgres stores.
 pub async fn sor_authority_update(
     State(state): State<Arc<AppState>>,
     body: Result<StrictJson<SorEventBody>, StrictJsonRejection>,
@@ -2455,6 +2504,7 @@ pub async fn tool_call(
         let deps = GatewayDeps {
             core: &dp.core,
             resolver: &dp.resolver,
+            contact_preferences: &dp.contact_preferences,
             broker: &*dp.broker,
             forwarder: &*dp.forwarder,
             gateway_held: None,
