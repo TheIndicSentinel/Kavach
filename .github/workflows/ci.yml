@@ -223,6 +223,15 @@ jobs:
           KAVACH_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
         run: cargo test --workspace --verbose
 
+      # This scenario must be allowed to stop Postgres, so it provisions and
+      # controls its own disposable cluster instead of touching the shared CI service.
+      - name: HA shared-Postgres outage and recovery
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-16
+          sudo pg_ctlcluster 16 main stop || true
+          PATH="/usr/lib/postgresql/16/bin:$PATH" scripts/test-ha-postgres-outage.sh
+
       # The HSM goes away mid-run and comes back (calls BLOCK, /v1/runtime
       # unhealthy, recovery without a restart). It rewrites its token's
       # configuration, so it gets a token of its own.

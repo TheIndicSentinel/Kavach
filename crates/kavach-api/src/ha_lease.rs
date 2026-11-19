@@ -20,6 +20,7 @@ use zeroize::Zeroizing;
 
 pub const RENEW_INTERVAL: time::Duration = time::Duration::from_secs(3);
 pub const LEASE_TTL: Duration = Duration::seconds(10);
+const MONOTONIC_LEASE_TTL: time::Duration = time::Duration::from_secs(10);
 
 const DISABLED: u8 = 0;
 const STANDBY: u8 = 1;
@@ -101,11 +102,15 @@ pub async fn start(
     let holder_id = uuid::Uuid::new_v4().to_string();
     let fence = HaFence(Arc::new(AtomicU8::new(STANDBY)));
     store.enable_write_fencing().await;
-    let epoch = match store
-        .claim(&tenant_id, &holder_id, &token_hash, LEASE_TTL)
-        .await
+    let initial_claim_started = time::Instant::now();
+    let initial_lease_deadline = initial_claim_started + MONOTONIC_LEASE_TTL;
+    let epoch = match time::timeout(
+        RENEW_INTERVAL,
+        store.claim(&tenant_id, &holder_id, &token_hash, LEASE_TTL),
+    )
+    .await
     {
-        Ok(Some(lease)) => {
+        Ok(Ok(Some(lease))) if time::Instant::now() < initial_lease_deadline => {
             store
                 .bind_write_identity(&tenant_id, &holder_id, lease.epoch, &token_hash)
                 .await;
@@ -113,21 +118,36 @@ pub async fn start(
             tracing::info!(epoch = lease.epoch, "active API lease acquired");
             Some(lease.epoch)
         }
-        Ok(None) => {
+        Ok(Ok(Some(lease))) => {
+            tracing::warn!(
+                epoch = lease.epoch,
+                "active API lease expired before local claim confirmation; remaining standby"
+            );
+            None
+        }
+        Ok(Ok(None)) => {
             tracing::info!("API is standby; waiting for active lease expiry");
             None
         }
-        Err(error) => {
+        Ok(Err(error)) => {
             tracing::warn!(error = %error, "API lease unavailable; starting not-ready standby");
             None
         }
+        Err(_) => {
+            tracing::warn!(
+                "API lease claim exceeded the standby retry interval; starting not-ready standby"
+            );
+            None
+        }
     };
+    let mut lease_deadline = epoch.map(|_| initial_lease_deadline);
     let task_fence = fence.clone();
     let task = tokio::spawn(async move {
         let _raw_token = raw_token;
         let mut epoch = epoch;
         let mut stop = stop;
         let mut interval = time::interval(RENEW_INTERVAL);
+        interval.set_missed_tick_behavior(time::MissedTickBehavior::Delay);
         interval.tick().await;
         loop {
             tokio::select! {
@@ -142,45 +162,73 @@ pub async fn start(
                 return;
             }
             if let Some(current_epoch) = epoch {
-                match store
-                    .renew(
+                let renewal_started = time::Instant::now();
+                let deadline = lease_deadline.expect("active lease has a local deadline");
+                match time::timeout_at(
+                    deadline,
+                    store.renew(
                         &tenant_id,
                         &holder_id,
                         current_epoch,
                         &token_hash,
                         LEASE_TTL,
-                    )
-                    .await
+                    ),
+                )
+                .await
                 {
-                    Ok(true) => continue,
-                    Ok(false) => tracing::error!(
+                    Ok(Ok(true)) => {
+                        // Start the local bound before the request so network
+                        // and pool delay can only make this fence conservative.
+                        lease_deadline = Some(renewal_started + MONOTONIC_LEASE_TTL);
+                        continue;
+                    }
+                    Ok(Ok(false)) => tracing::error!(
                         epoch = current_epoch,
                         "active API lease was lost; process is fenced until restart"
                     ),
-                    Err(error) => tracing::error!(
+                    Ok(Err(error)) => tracing::error!(
                         epoch = current_epoch,
                         error = %error,
                         "active API lease renewal failed; process is fenced until restart"
+                    ),
+                    Err(_) => tracing::error!(
+                        epoch = current_epoch,
+                        "active API lease renewal did not finish before its local lease deadline; process is fenced until restart"
                     ),
                 }
                 store.clear_write_identity().await;
                 task_fence.set(FENCED);
                 continue;
             }
-            match store
-                .claim(&tenant_id, &holder_id, &token_hash, LEASE_TTL)
-                .await
+            let claim_started = time::Instant::now();
+            let claim_deadline = claim_started + MONOTONIC_LEASE_TTL;
+            match time::timeout(
+                RENEW_INTERVAL,
+                store.claim(&tenant_id, &holder_id, &token_hash, LEASE_TTL),
+            )
+            .await
             {
-                Ok(Some(lease)) => {
+                Ok(Ok(Some(lease))) => {
+                    if time::Instant::now() >= claim_deadline {
+                        tracing::warn!(
+                            epoch = lease.epoch,
+                            "standby lease expired before local claim confirmation; retrying"
+                        );
+                        continue;
+                    }
                     store
                         .bind_write_identity(&tenant_id, &holder_id, lease.epoch, &token_hash)
                         .await;
                     epoch = Some(lease.epoch);
+                    lease_deadline = Some(claim_deadline);
                     task_fence.set(ACTIVE);
                     tracing::info!(epoch = lease.epoch, "standby promoted to active API");
                 }
-                Ok(None) => {}
-                Err(error) => tracing::debug!(error = %error, "standby lease claim unavailable"),
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => {
+                    tracing::debug!(error = %error, "standby lease claim unavailable");
+                }
+                Err(_) => tracing::debug!("standby lease claim exceeded retry interval"),
             }
         }
     });
