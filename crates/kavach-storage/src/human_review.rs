@@ -140,6 +140,14 @@ mod tests {
         }
     }
 
+    fn record_for_tenant(tenant_id: &str, credential_id: &str) -> ReviewApprovalRecord {
+        let mut approval = record("shared-approval", ReviewDecision::Approve);
+        approval.tenant_id = tenant_id.into();
+        approval.review_record_id = format!("adr:{tenant_id}:0:1");
+        approval.single_use_credential_id = Some(credential_id.into());
+        approval
+    }
+
     fn now() -> DateTime<Utc> {
         Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap()
     }
@@ -241,6 +249,55 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn identical_approval_ids_are_isolated_between_tenants() {
+        let store = MemoryReviewApprovalStore::default();
+        let tenant_1 = record_for_tenant("tenant-1", "credential-1");
+        let tenant_2 = record_for_tenant("tenant-2", "credential-2");
+        let hash = tenant_1.action_hash.clone();
+        store.insert(tenant_1).await.unwrap();
+        store.insert(tenant_2).await.unwrap();
+
+        let tenant_1_release = store
+            .release(
+                "tenant-1",
+                "shared-approval",
+                "execution-shared-approval",
+                &hash,
+                now(),
+            )
+            .await
+            .unwrap()
+            .expect("tenant 1 release");
+        assert_eq!(tenant_1_release.tenant_id, "tenant-1");
+        assert_eq!(tenant_1_release.single_use_credential_id, "credential-1");
+        assert!(store
+            .release(
+                "tenant-1",
+                "shared-approval",
+                "execution-shared-approval",
+                &hash,
+                now()
+            )
+            .await
+            .unwrap()
+            .is_some());
+
+        let tenant_2_release = store
+            .release(
+                "tenant-2",
+                "shared-approval",
+                "execution-shared-approval",
+                &hash,
+                now(),
+            )
+            .await
+            .unwrap()
+            .expect("tenant 2 release remains available");
+        assert_eq!(tenant_2_release.tenant_id, "tenant-2");
+        assert_eq!(tenant_2_release.single_use_credential_id, "credential-2");
     }
 
     #[tokio::test]
