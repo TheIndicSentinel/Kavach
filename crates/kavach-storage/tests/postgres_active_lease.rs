@@ -68,6 +68,13 @@ async fn lease_claim_renewal_and_takeover_are_atomic() {
             .await
             .unwrap();
     assert_eq!(unconfigured, None);
+    sqlx::query(
+        "INSERT INTO replay_guard (tenant_id, key, expires_at) \
+         VALUES ('tenant', 'single-instance-write', clock_timestamp() + interval '1 minute')",
+    )
+    .execute(&runtime.pool)
+    .await
+    .expect("unconfigured single-instance writes remain unchanged");
 
     winner.enable_write_fencing().await;
     winner
@@ -92,6 +99,20 @@ async fn lease_claim_renewal_and_takeover_are_atomic() {
     assert!(cleared.2.is_empty());
     assert!(cleared.3.is_empty());
     assert!(cleared.4.is_empty());
+    let blank_identity_write = sqlx::query(
+        "INSERT INTO replay_guard (tenant_id, key, expires_at) \
+         VALUES ('tenant', 'blank-identity-write', clock_timestamp() + interval '1 minute')",
+    )
+    .execute(&runtime.pool)
+    .await
+    .expect_err("standby/fenced identity must fail closed");
+    assert_eq!(
+        blank_identity_write
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("55000")
+    );
 
     // Runtime credentials can execute the narrow lease API but cannot inspect
     // or edit its underlying owner-controlled row.
@@ -147,4 +168,86 @@ async fn expired_lease_takeover_advances_epoch_and_old_holder_cannot_renew() {
         )
         .await
         .unwrap());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn promotion_waits_for_guarded_writes_and_rejects_the_old_holder() {
+    let Some((owner, runtime)) = pools().await else {
+        return;
+    };
+    let lease_store = runtime.active_lease_store();
+    let old_token = [0x51; 32];
+    let new_token = [0x62; 32];
+    lease_store.enable_write_fencing().await;
+    let old_lease = lease_store
+        .claim("tenant", "old-holder", &old_token, Duration::seconds(2))
+        .await
+        .unwrap()
+        .expect("initial owner");
+    lease_store
+        .bind_write_identity("tenant", "old-holder", old_lease.epoch, &old_token)
+        .await;
+
+    let mut transaction = runtime.pool.begin().await.unwrap();
+    sqlx::query(
+        "INSERT INTO replay_guard (tenant_id, key, expires_at) \
+         VALUES ('tenant', 'held-write', clock_timestamp() + interval '1 minute')",
+    )
+    .execute(&mut *transaction)
+    .await
+    .expect("current active may write");
+    tokio::time::sleep(std::time::Duration::from_millis(2100)).await;
+
+    let promotion_store = lease_store.clone();
+    let mut promotion = tokio::spawn(async move {
+        promotion_store
+            .claim("tenant", "new-holder", &new_token, Duration::seconds(5))
+            .await
+    });
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(100), &mut promotion)
+            .await
+            .is_err()
+    );
+
+    transaction.commit().await.unwrap();
+    let promoted = promotion
+        .await
+        .expect("promotion task")
+        .unwrap()
+        .expect("expired lease takeover");
+    assert_eq!(promoted.epoch, old_lease.epoch + 1);
+
+    let stale_write = sqlx::query(
+        "INSERT INTO replay_guard (tenant_id, key, expires_at) \
+         VALUES ('tenant', 'stale-write', clock_timestamp() + interval '1 minute')",
+    )
+    .execute(&runtime.pool)
+    .await
+    .expect_err("former holder must be fenced by the trigger");
+    assert_eq!(
+        stale_write
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::code)
+            .as_deref(),
+        Some("55000")
+    );
+
+    let owner_epoch: i64 =
+        sqlx::query_scalar("SELECT epoch FROM active_api_leases WHERE tenant_id = 'tenant'")
+            .fetch_one(&owner.pool)
+            .await
+            .unwrap();
+    assert_eq!(owner_epoch, promoted.epoch);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn every_runtime_writable_table_has_a_complete_fencing_trigger() {
+    let Some((owner, _runtime)) = pools().await else {
+        return;
+    };
+    sqlx::query("SELECT kavach_assert_active_write_guards()")
+        .execute(&owner.pool)
+        .await
+        .expect("migration guard inventory assertion");
 }
