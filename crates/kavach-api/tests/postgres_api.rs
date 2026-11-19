@@ -265,6 +265,20 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     )
     .await;
     assert_eq!(runtime["pointer_drift"], true, "{runtime}");
+
+    let evaluate_body =
+        serde_json::from_str(include_str!("../../../golden/finance/v0/credit_clean.json"))
+            .expect("golden evaluate request");
+    let (status, response) = call(
+        lagging,
+        "POST",
+        "/v1/evaluate",
+        &as_principal("viewer-1"),
+        Some(evaluate_body),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{response}");
+    assert_eq!(response["code"], "unavailable", "{response}");
 }
 
 #[tokio::test(flavor = "multi_thread")]
