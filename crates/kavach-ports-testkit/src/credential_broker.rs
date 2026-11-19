@@ -101,6 +101,66 @@ where
     refuses_after_send_by_and_expiry(broker, &base).await;
     issues_once_and_honours_revocation(broker, &base).await;
     refuses_malformed_requests(broker, &base).await;
+    same_credential_id_is_scoped_to_tenant(broker, &inspect, &base).await;
+}
+
+async fn same_credential_id_is_scoped_to_tenant<B, F>(
+    broker: &B,
+    inspect: &F,
+    base: &CredentialRequest<'_>,
+) where
+    B: CredentialBroker,
+    F: Fn(&TokenSecret, &CredentialRequest<'_>) -> Result<ClaimsView, PortError>,
+{
+    let destination = Destination::new(DESTINATION);
+    let tenant_a = CredentialRequest {
+        credential_id: "cred-shared-tenant-id",
+        mandate_id: "m-tenant-isolation",
+        destination: &destination,
+        ..base.clone()
+    };
+    let tenant_b = CredentialRequest {
+        tenant_id: "conformance-other",
+        ..tenant_a.clone()
+    };
+
+    let issued_a = broker.issue(&tenant_a).await.expect("tenant A credential");
+    assert_eq!(
+        inspect(&issued_a.token, &tenant_a).unwrap().tenant_id,
+        "conformance"
+    );
+    let issued_b = broker
+        .issue(&tenant_b)
+        .await
+        .expect("same credential id in tenant B is independent");
+    assert_eq!(
+        inspect(&issued_b.token, &tenant_b).unwrap().tenant_id,
+        "conformance-other"
+    );
+
+    refused(broker, &tenant_a, ErrorClass::Rejected).await;
+    refused(broker, &tenant_b, ErrorClass::Rejected).await;
+
+    broker
+        .revoke_by_mandate("conformance", "m-tenant-isolation")
+        .await
+        .expect("tenant A revocation");
+    refused(
+        broker,
+        &CredentialRequest {
+            credential_id: "cred-shared-tenant-a-revoked",
+            ..tenant_a
+        },
+        ErrorClass::Rejected,
+    )
+    .await;
+    broker
+        .issue(&CredentialRequest {
+            credential_id: "cred-shared-tenant-b-live",
+            ..tenant_b
+        })
+        .await
+        .expect("tenant A revocation does not affect tenant B");
 }
 
 async fn binds_decision_audience_and_request<B, F>(

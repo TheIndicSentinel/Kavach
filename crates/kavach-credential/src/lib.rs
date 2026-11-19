@@ -262,8 +262,8 @@ pub fn verify_credential(
 
 #[derive(Default)]
 struct State {
-    /// `jti` → when it may be forgotten.
-    issued: HashMap<String, DateTime<Utc>>,
+    /// `(tenant_id, jti)` → when it may be forgotten.
+    issued: HashMap<(String, String), DateTime<Utc>>,
     revoked: BTreeSet<(String, String)>,
 }
 
@@ -404,22 +404,27 @@ impl<K: KeyProvider> JoseCredentialBroker<K> {
         }
         let now = request.now;
         state.issued.retain(|_, forget_at| *forget_at > now);
-        if state.issued.contains_key(request.credential_id) {
+        let key = (
+            request.tenant_id.to_string(),
+            request.credential_id.to_string(),
+        );
+        if state.issued.contains_key(&key) {
             return Err(PortError::rejected("credential_id already issued"));
         }
         if state.issued.len() >= MAX_REMEMBERED_JTIS {
             return Err(PortError::unavailable("credential broker jti store full"));
         }
-        state.issued.insert(
-            request.credential_id.to_string(),
-            now + Duration::hours(JTI_RETENTION_HOURS),
-        );
+        state
+            .issued
+            .insert(key, now + Duration::hours(JTI_RETENTION_HOURS));
         Ok(())
     }
 
-    fn release(&self, credential_id: &str) {
+    fn release(&self, tenant_id: &str, credential_id: &str) {
         if let Ok(mut state) = self.state.lock() {
-            state.issued.remove(credential_id);
+            state
+                .issued
+                .remove(&(tenant_id.to_string(), credential_id.to_string()));
         }
     }
 
@@ -492,7 +497,7 @@ impl<K: KeyProvider> CredentialBroker for JoseCredentialBroker<K> {
                 expires_at: exp,
             }),
             Err(err) => {
-                self.release(request.credential_id);
+                self.release(request.tenant_id, request.credential_id);
                 Err(err)
             }
         }
@@ -543,7 +548,7 @@ impl<K: KeyProvider> InternalCredentialBroker for JoseCredentialBroker<K> {
                     })
                 }
                 Err(err) => {
-                    self.release(request.credential_id);
+                    self.release(request.tenant_id, request.credential_id);
                     Err(err)
                 }
             }
