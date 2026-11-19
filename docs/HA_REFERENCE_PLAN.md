@@ -27,7 +27,25 @@ The API standby must not accept traffic until it is promoted. Once promoted, an 
 2. **Session and step-up failover semantics — verified in this slice.** A promoted process returns 401 for a session cookie it did not issue; operators sign in again. In-progress callback secrets and verified step-up proofs stay bound to the original process session and cannot be used after promotion. The durable challenge may remain until its short expiry, but cannot authorize without those secrets and that session. Completed approvals/releases remain shared and single use in Postgres. Do not persist OIDC tokens.
 3. **Runtime-pointer convergence — implemented.** A one-second background watcher and runtime-dependent pack/model catalog, change-request, retention, batch-job, incident, audit, decision-event, and evaluation routes compare the shared pointer version. A newer pointer triggers validation of the pinned pack/model bytes, configured signatures, and governed model state before swapping the evaluator. Backward movement, read errors, or invalid assets refuse the request. Postgres-backed replica coverage verifies lagging processes reload after an approved pack activation. Agent evidence/revocation reads remain on their independent data plane; agent-only audit remains available without the credit pointer. `/v1/runtime`, health, metrics, development clock, and the independent agent/role routes do not consume the credit runtime pointer. Keep maker-checker pointer-version checks authoritative.
 4. **Active/passive fencing and readiness — implemented.** `/ready` checks runtime-pointer availability, convergence, and lease ownership; `/health` remains a liveness signal. Migration 039 supplies shared claim/renewal primitives, migration 040 guards every runtime-writable table, and `--ha-active-passive` enables standby claim retries plus active renewal/self-fencing across HTTP and gRPC routes. The Postgres tests prove an in-flight guarded write delays promotion and stale-holder writes fail afterwards. Reference deployment and full failover/recovery tests remain pending; do not enable replicas before step 5 is complete.
-5. **Reference deployment and fault tests — in progress.** Real-Postgres API integration tests simulate abrupt active-process loss, active and both-API Postgres connection-path loss, process rejoin after failover, a committed pack change before promotion, and an actual shared-Postgres process outage/restart on a disposable cluster. They verify active self-fencing by the 10-second local lease deadline, lease-expiry-gated promotion, refusal to promote while Postgres is down, stale-writer rejection, successful writes after recovery, and a restarted API rejoining after database recovery before a second promotion. A promoted process remains not-ready until `/ready` converges its runtime pointer and validates the committed pack/model. The on-prem deployment example and remaining recovery scenarios are pending. Do not enable replicas until every scenario is exercised and observed failover/data-loss behavior is recorded; make no unmeasured SLO claims.
+5. **Reference deployment and fault tests — in progress.** Real-Postgres API integration tests simulate abrupt active-process loss, active and both-API Postgres connection-path loss, process rejoin after failover, a committed pack change before promotion, and an actual shared-Postgres process outage/restart on a disposable cluster. They verify active self-fencing by the 10-second local lease deadline, lease-expiry-gated promotion, refusal to promote while Postgres is down, stale-writer rejection, successful writes after recovery, and a restarted API rejoining after database recovery before a second promotion. A gated Compose overlay now defines one API active and one opt-in standby sharing the existing Postgres service; it exposes separate loopback ports and leaves endpoint switching to the operator. The remaining recovery scenarios and deployment acceptance run are pending. Do not enable replicas until every scenario is exercised and observed failover/data-loss behavior is recorded; make no unmeasured SLO claims.
+
+### Gated Compose reference
+
+`deploy/docker-compose.ha-reference.yml` overlays the existing pilot stack. The active API listens on the pilot ports (HTTP 8080, gRPC 50051); the standby is in the `ha-reference-gated` profile and defaults to HTTP 8081 and gRPC 50052. Both use the same Postgres writer, governed files, OIDC configuration, and TLS material. Both set `KAVACH_HA_ACTIVE_PASSIVE=true`.
+
+The traffic switch is manual between the two addresses. Check `/ready` with an operator credential before directing application traffic to an address. The standby returns 503 for `/ready` and application routes until it acquires the lease. After promotion, the operator must direct traffic to the standby address and sign in again because console sessions remain process-local. This example adds no automatic load balancer behavior and does not make Postgres, the host, or the IdP highly available.
+
+The replica deployment gate remains closed until the remaining recovery scenarios and acceptance run are complete. For now, validate the merged configuration without starting containers:
+
+```bash
+POSTGRES_PASSWORD=compose-check \
+KAVACH_RUNTIME_DB_PASSWORD=compose-check \
+KAVACH_OIDC_ISSUER=https://issuer.example.test \
+KAVACH_OIDC_AUDIENCE=kavach-api \
+docker compose -f deploy/docker-compose.pilot.yml \
+  -f deploy/docker-compose.ha-reference.yml \
+  --profile ha-reference-gated config --quiet
+```
 
 ### Failover test record
 
@@ -39,6 +57,7 @@ The API standby must not accept traffic until it is promoted. Once promoted, an 
 - **Postgres API integration target:** all 16 tests passed on 2026-11-19 in 25.50 seconds against the temporary Postgres cluster after monotonic lease-deadline fencing was added.
 - **Focused HA failover suite:** all three tests passed on 2026-11-19 in 26.40 seconds against the temporary Postgres cluster after bounded standby claim retries were added.
 - **Shared Postgres outage, restart, and process rejoin:** passed using `scripts/test-ha-postgres-outage.sh` on a dedicated disposable cluster. The active fenced itself 9.990 seconds after the server stopped. The standby stayed standby during the outage, then promoted after Postgres restarted. A restarted API rejoined as standby, promoted after the recovered active stopped, advanced the epoch to 3, and wrote successfully; both older holders' writes were rejected. The test completed in 27.68 seconds. The harness verifies a test-only marker and exact data-directory match, is included in CI, and removes its temporary cluster on exit.
+- **Gated Compose reference:** merged pilot and HA overlay configuration passed `docker compose config --quiet` on 2026-11-19. This validates service/profile/port composition only; no containers or replicas were started.
 
 ## First slice verification
 

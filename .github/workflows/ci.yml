@@ -232,6 +232,18 @@ jobs:
           sudo pg_ctlcluster 16 main stop || true
           PATH="/usr/lib/postgresql/16/bin:$PATH" scripts/test-ha-postgres-outage.sh
 
+      - name: Validate gated HA Compose reference
+        env:
+          POSTGRES_PASSWORD: compose-check
+          KAVACH_RUNTIME_DB_PASSWORD: compose-check
+          KAVACH_OIDC_ISSUER: https://issuer.example.test
+          KAVACH_OIDC_AUDIENCE: kavach-api
+        run: >
+          docker compose
+          -f deploy/docker-compose.pilot.yml
+          -f deploy/docker-compose.ha-reference.yml
+          --profile ha-reference-gated config --quiet
+
       # The HSM goes away mid-run and comes back (calls BLOCK, /v1/runtime
       # unhealthy, recovery without a restart). It rewrites its token's
       # configuration, so it gets a token of its own.
