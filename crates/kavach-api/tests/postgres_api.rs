@@ -210,7 +210,9 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     let root = registry();
     let replica_a = start(&root, &url, "v0.yaml").await.expect("replica a");
     let replica_b = start(&root, &url, "v0.yaml").await.expect("replica b");
+    let replica_c = start(&root, &url, "v0.yaml").await.expect("replica c");
     let (app_a, app_b) = (router(replica_a.clone()), router(replica_b.clone()));
+    let app_c = router(replica_c.clone());
 
     let (status, request) = propose(
         &app_a,
@@ -251,6 +253,31 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
         .filter(|a| a == "activate_pack")
         .count();
     assert_eq!(activations, 1);
+
+    // A separate stale replica converges through the retention API.
+    let (status, retention) = call(
+        &app_c,
+        "GET",
+        "/v1/admin/retention",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{retention}");
+    let (status, tombstones) = call(
+        &app_c,
+        "GET",
+        "/v1/admin/tombstones",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tombstones}");
+    assert_eq!(
+        replica_c.runtime().expect("runtime").pointer_version,
+        2,
+        "retention route must converge the stale replica"
+    );
 
     // The replica that did not apply detects the committed pointer and
     // validates/reloads the shared pack and governed model before serving.
