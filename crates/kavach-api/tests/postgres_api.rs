@@ -203,6 +203,111 @@ async fn evaluate_writes_postgres_evidence_and_replays() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn promoted_standby_converges_runtime_pointer_before_readiness() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let active_state = start(&root, &url, "v0.yaml").await.expect("active process");
+    let standby_state = start(&root, &url, "v0.yaml")
+        .await
+        .expect("standby process");
+
+    let (active_stop_tx, active_stop_rx) = tokio::sync::watch::channel(false);
+    let (active_fence, active_task) = kavach_api::ha_lease::start(
+        active_state
+            .active_lease_store()
+            .expect("Postgres lease store"),
+        "default".into(),
+        active_stop_rx,
+    )
+    .await
+    .expect("start active lease");
+    let active_state = match Arc::try_unwrap(active_state) {
+        Ok(state) => Arc::new(state.with_ha_fence(active_fence)),
+        Err(_) => panic!("active state unexpectedly shared during setup"),
+    };
+
+    let (standby_stop_tx, standby_stop_rx) = tokio::sync::watch::channel(false);
+    let (standby_fence, standby_task) = kavach_api::ha_lease::start(
+        standby_state
+            .active_lease_store()
+            .expect("Postgres lease store"),
+        "default".into(),
+        standby_stop_rx,
+    )
+    .await
+    .expect("start standby lease");
+    let standby_state = match Arc::try_unwrap(standby_state) {
+        Ok(state) => Arc::new(state.with_ha_fence(standby_fence.clone())),
+        Err(_) => panic!("standby state unexpectedly shared during setup"),
+    };
+    let active_app = router(active_state.clone());
+    let standby_app = router(standby_state.clone());
+    assert_eq!(standby_fence.status(), "standby");
+    assert_eq!(standby_state.runtime().unwrap().pointer_version, 1);
+
+    let (not_ready, _) = call(
+        &standby_app,
+        "GET",
+        "/ready",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(not_ready, StatusCode::SERVICE_UNAVAILABLE);
+
+    assert_eq!(
+        apply_as_admins(
+            &active_app,
+            "activate_pack",
+            json!({ "pack_id": "finance-v1" }),
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(active_state.runtime().unwrap().pointer_version, 2);
+    assert_eq!(
+        standby_state.runtime().unwrap().pointer_version,
+        1,
+        "standby has not synchronized the committed pointer yet"
+    );
+
+    // Simulate active-process loss. Promotion alone is insufficient for
+    // readiness: /ready must first load the committed pointer and its assets.
+    active_task.abort();
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while standby_fence.status() != "active" {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("standby did not promote after lease expiry");
+    assert_eq!(
+        standby_state.runtime().unwrap().pointer_version,
+        1,
+        "the route performs convergence before reporting readiness"
+    );
+
+    let (ready, body) = call(
+        &standby_app,
+        "GET",
+        "/ready",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(ready, StatusCode::OK, "{body}");
+    assert_eq!(body["runtime_pointer_version"], 2, "{body}");
+    assert_eq!(standby_state.runtime().unwrap().pack_id, "finance-v1");
+
+    let _ = active_stop_tx.send(true);
+    let _ = standby_stop_tx.send(true);
+    let _ = active_task.await;
+    let _ = standby_task.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_approvals_on_two_replicas_apply_once() {
     let Some(url) = isolated_database_url().await else {
         return;
