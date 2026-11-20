@@ -20,20 +20,25 @@ async fn credit_auditor_is_read_only_and_separate_from_agent_auditor() {
         .await
         .expect("connect as credit auditor");
 
-    let allowed: (bool, bool, bool, bool) = sqlx::query_as(
+    let allowed: (bool, bool, bool, bool, bool) = sqlx::query_as(
         "SELECT has_table_privilege(current_user, 'decision_events', 'SELECT'), \
                 has_table_privilege(current_user, 'evidence_chains', 'SELECT'), \
                 has_table_privilege(current_user, 'decision_events', 'INSERT'), \
+                has_table_privilege(current_user, 'evidence_checkpoints', 'SELECT'), \
                 has_table_privilege(current_user, 'agent_decisions', 'SELECT')",
     )
     .fetch_one(&pool)
     .await
     .expect("check role privileges");
-    assert_eq!(allowed, (true, true, false, false));
+    assert_eq!(allowed, (true, true, false, true, false));
     sqlx::query("SELECT count(*) FROM decision_events")
         .fetch_one(&pool)
         .await
         .expect("credit auditor can read credit events");
+    sqlx::query("SELECT count(*) FROM evidence_checkpoints")
+        .fetch_one(&pool)
+        .await
+        .expect("credit auditor can read checkpoint rows");
     assert!(sqlx::query("SELECT count(*) FROM agent_decisions")
         .fetch_one(&pool)
         .await

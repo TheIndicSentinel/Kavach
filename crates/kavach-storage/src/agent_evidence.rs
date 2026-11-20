@@ -478,6 +478,11 @@ impl MemoryAgentEvidenceStore {
     fn append_sync(&self, checkpoint: &Checkpoint) -> Result<Appended, PortError> {
         check_storable(checkpoint)?;
         let p = &checkpoint.payload;
+        if p.chain != CHAIN_AGENT_DECISIONS {
+            return Err(PortError::rejected(
+                "agent evidence store accepts only agent decision checkpoints",
+            ));
+        }
         let mut state = self.state.lock().map_err(poisoned)?;
         let covered = state.records.iter().any(|r| {
             r.payload.tenant_id == p.tenant_id

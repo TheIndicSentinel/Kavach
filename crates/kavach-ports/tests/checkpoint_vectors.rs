@@ -16,9 +16,9 @@ use chrono::{DateTime, TimeZone, Utc};
 use ed25519_dalek::{Signer, SigningKey};
 use kavach_ports::agent_evidence::{DevKeys, EvidenceSigner, SegmentStart, TimeSync};
 use kavach_ports::checkpoint::{
-    canonical_payload, checkpoint_hash, checkpoint_signing_message, sign_checkpoint,
-    verify_checkpoints, ChainSegment, Checkpoint, Head, Scope, CHAIN_AGENT_DECISIONS,
-    CHECKPOINT_HASH_PREFIX, CHECKPOINT_SIG_PREFIX,
+    canonical_payload, check_storable, checkpoint_hash, checkpoint_signing_message,
+    sign_checkpoint, verify_checkpoints, ChainSegment, Checkpoint, Head, Scope,
+    CHAIN_AGENT_DECISIONS, CHAIN_DECISION_EVENTS, CHECKPOINT_HASH_PREFIX, CHECKPOINT_SIG_PREFIX,
 };
 use kavach_ports::{KeyAlgorithm, PortError, PublicKey};
 use serde_json::{json, Value};
@@ -188,4 +188,35 @@ fn the_checked_in_checkpoints_have_the_documented_bytes() {
         vector["public_key"]["public_key"],
         hex::encode(key().0.verifying_key().to_bytes())
     );
+}
+
+#[test]
+fn v1_decision_events_accept_the_shared_signed_checkpoint_format() {
+    let scope = Scope {
+        tenant_id: "credit-tenant",
+        partition_id: 3,
+        chain: CHAIN_DECISION_EVENTS,
+    };
+    let records = record_hashes();
+    let checkpoint = sign_checkpoint(
+        Head {
+            scope,
+            seq: 1,
+            hash: &records[0],
+        },
+        None,
+        at(0),
+        TimeSync {
+            status: "synced".into(),
+            max_error_ms: Some(12),
+        },
+        &key(),
+    )
+    .unwrap();
+    check_storable(&checkpoint).unwrap();
+    let segment = ChainSegment::new(SegmentStart::GENESIS, vec![records[0].as_str()]);
+    let report =
+        verify_checkpoints(&[checkpoint], scope, &segment, &keys(), DevKeys::Refuse).unwrap();
+    assert_eq!(report.checkpoints, 1);
+    assert_eq!(report.records_after_last, 0);
 }

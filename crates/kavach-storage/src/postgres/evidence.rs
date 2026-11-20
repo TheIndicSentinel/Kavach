@@ -3,6 +3,11 @@ use kavach_evaluate::EvidenceStore;
 use kavach_evidence::{
     at_storage_precision, compute_event_hash, verify_event_hash, AppendDecisionEvent, EvidenceError,
 };
+use kavach_ports::checkpoint::{
+    check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
+    CHAIN_DECISION_EVENTS,
+};
+use kavach_ports::PortError;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
@@ -138,6 +143,150 @@ impl DecisionEventSnapshot {
 
     pub async fn close(self) -> Result<(), EvidenceError> {
         self.tx.commit().await.map_err(|err| io_err(&err))
+    }
+}
+
+fn checkpoint_from_row(row: &sqlx::postgres::PgRow) -> Result<Checkpoint, PortError> {
+    let payload: serde_json::Value = row
+        .try_get("payload")
+        .map_err(|e| PortError::unavailable(e.to_string()))?;
+    Ok(Checkpoint {
+        payload: serde_json::from_value(payload)
+            .map_err(|e| PortError::invalid(format!("stored checkpoint: {e}")))?,
+        hash: row
+            .try_get("hash")
+            .map_err(|e| PortError::unavailable(e.to_string()))?,
+        sig: row
+            .try_get("sig")
+            .map_err(|e| PortError::unavailable(e.to_string()))?,
+    })
+}
+
+impl CheckpointStore for PostgresEvidenceStore {
+    async fn head(&self, scope: Scope<'_>) -> Result<Option<(i64, String)>, PortError> {
+        if scope.chain != CHAIN_DECISION_EVENTS || scope.tenant_id != self.tenant_id {
+            return Ok(None);
+        }
+        let row = sqlx::query(
+            "SELECT head_seq, head_hash FROM evidence_chains \
+             WHERE tenant_id = $1 AND partition_id = $2 AND head_seq > 0",
+        )
+        .bind(scope.tenant_id)
+        .bind(scope.partition_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| PortError::unavailable(e.to_string()))?;
+        row.map(|row| {
+            Ok((
+                row.try_get("head_seq")
+                    .map_err(|e| PortError::unavailable(e.to_string()))?,
+                row.try_get("head_hash")
+                    .map_err(|e| PortError::unavailable(e.to_string()))?,
+            ))
+        })
+        .transpose()
+    }
+
+    async fn latest(&self, scope: Scope<'_>) -> Result<Option<Checkpoint>, PortError> {
+        if scope.chain != CHAIN_DECISION_EVENTS || scope.tenant_id != self.tenant_id {
+            return Ok(None);
+        }
+        let row = sqlx::query(
+            "SELECT payload, hash, sig FROM evidence_checkpoints \
+             WHERE tenant_id = $1 AND partition_id = $2 AND chain = $3 \
+             ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(scope.tenant_id)
+        .bind(scope.partition_id)
+        .bind(scope.chain)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| PortError::unavailable(e.to_string()))?;
+        row.as_ref().map(checkpoint_from_row).transpose()
+    }
+
+    async fn append(&self, checkpoint: &Checkpoint) -> Result<Appended, PortError> {
+        check_storable(checkpoint)?;
+        let payload = &checkpoint.payload;
+        if payload.chain != CHAIN_DECISION_EVENTS || payload.tenant_id != self.tenant_id {
+            return Err(PortError::rejected(
+                "credit evidence store accepts only its tenant's decision-event checkpoints",
+            ));
+        }
+        let record_hash: Option<String> = sqlx::query_scalar(
+            "SELECT hash FROM decision_events WHERE tenant_id = $1 \
+             AND partition_id = $2 AND seq = $3",
+        )
+        .bind(&payload.tenant_id)
+        .bind(payload.partition_id)
+        .bind(payload.seq)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| PortError::unavailable(e.to_string()))?;
+        if record_hash.as_deref() != Some(payload.head_hash.as_str()) {
+            return Err(PortError::rejected(
+                "no decision event with this seq and hash to checkpoint",
+            ));
+        }
+        let scope = Scope {
+            tenant_id: &payload.tenant_id,
+            partition_id: payload.partition_id,
+            chain: &payload.chain,
+        };
+        let latest = self.latest(scope).await?;
+        if check_follows(checkpoint, latest.as_ref())? == Appended::Superseded {
+            return Ok(Appended::Superseded);
+        }
+        let inserted = sqlx::query(
+            "INSERT INTO evidence_checkpoints (tenant_id, partition_id, chain, seq, head_hash, \
+             prev_checkpoint_hash, key_id, ts, hash, sig, payload) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(&payload.tenant_id)
+        .bind(payload.partition_id)
+        .bind(&payload.chain)
+        .bind(payload.seq)
+        .bind(&payload.head_hash)
+        .bind(&payload.prev_checkpoint_hash)
+        .bind(&payload.key_id)
+        .bind(payload.ts)
+        .bind(&checkpoint.hash)
+        .bind(&checkpoint.sig)
+        .bind(serde_json::to_value(checkpoint).map_err(|e| PortError::invalid(e.to_string()))?)
+        .execute(&self.pool)
+        .await;
+        match inserted {
+            Ok(_) => Ok(Appended::Written),
+            Err(sqlx::Error::Database(err)) if err.code().as_deref() == Some("23505") => {
+                Ok(Appended::Superseded)
+            }
+            Err(err) => Err(PortError::unavailable(err.to_string())),
+        }
+    }
+
+    async fn list(
+        &self,
+        scope: Scope<'_>,
+        after_seq: i64,
+        limit: u32,
+    ) -> Result<Vec<Checkpoint>, PortError> {
+        if scope.chain != CHAIN_DECISION_EVENTS || scope.tenant_id != self.tenant_id {
+            return Ok(Vec::new());
+        }
+        let rows = sqlx::query(
+            "SELECT payload, hash, sig FROM evidence_checkpoints \
+             WHERE tenant_id = $1 AND partition_id = $2 AND chain = $3 AND seq > $4 \
+             ORDER BY seq LIMIT $5",
+        )
+        .bind(scope.tenant_id)
+        .bind(scope.partition_id)
+        .bind(scope.chain)
+        .bind(after_seq)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| PortError::unavailable(e.to_string()))?;
+        rows.iter().map(checkpoint_from_row).collect()
     }
 }
 

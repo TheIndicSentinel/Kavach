@@ -32,6 +32,8 @@ pub const KIND_CHECKPOINT: &str = "evidence_checkpoint";
 pub const CHECKPOINT_VERSION: u32 = 1;
 /// The chain of Agent Decision Records (`agent_decisions`).
 pub const CHAIN_AGENT_DECISIONS: &str = "agent_decisions";
+/// The legacy v1 credit decision-event chain.
+pub const CHAIN_DECISION_EVENTS: &str = "decision_events";
 pub const CHECKPOINT_HASH_PREFIX: &[u8] = b"kavach-evidence-checkpoint-v1";
 pub const CHECKPOINT_SIG_PREFIX: &[u8] = b"kavach-evidence-checkpoint-v1:";
 
@@ -218,7 +220,7 @@ pub fn check_storable(checkpoint: &Checkpoint) -> Result<(), PortError> {
     if p.kind != KIND_CHECKPOINT || p.version != CHECKPOINT_VERSION {
         return Err(PortError::rejected("not a version 1 evidence checkpoint"));
     }
-    if p.chain != CHAIN_AGENT_DECISIONS {
+    if p.chain != CHAIN_AGENT_DECISIONS && p.chain != CHAIN_DECISION_EVENTS {
         return Err(PortError::rejected(format!("unknown chain {}", p.chain)));
     }
     if p.seq < 1 || !is_hash(&p.head_hash) || !is_hash(&p.prev_checkpoint_hash) {

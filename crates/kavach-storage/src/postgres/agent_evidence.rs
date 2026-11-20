@@ -1022,6 +1022,11 @@ impl CheckpointStore for PostgresAgentEvidenceStore {
     async fn append(&self, checkpoint: &Checkpoint) -> Result<Appended, PortError> {
         check_storable(checkpoint)?;
         let p = &checkpoint.payload;
+        if p.chain != CHAIN_AGENT_DECISIONS {
+            return Err(PortError::rejected(
+                "agent evidence store accepts only agent decision checkpoints",
+            ));
+        }
         let record_hash: Option<String> = sqlx::query_scalar(
             "SELECT hash FROM agent_decisions \
             WHERE tenant_id = $1 AND partition_id = $2 AND seq = $3",
