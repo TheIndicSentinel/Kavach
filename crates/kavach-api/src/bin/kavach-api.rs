@@ -52,7 +52,7 @@ struct AgentArgs {
     )]
     evidence_key_id: String,
     /// Directory with the checkpoint signing key (signs evidence checkpoints
-    /// only). Required with the agent surfaces.
+    /// only). Required with Postgres agent surfaces or in credit-only mode.
     #[arg(long, env = "KAVACH_CHECKPOINT_KEYS_DIR")]
     checkpoint_keys_dir: Option<PathBuf>,
     #[arg(
@@ -188,6 +188,37 @@ struct AgentArgs {
 }
 
 impl AgentArgs {
+    fn credit_checkpoint_config(
+        &self,
+        postgres: bool,
+    ) -> Result<Option<kavach_api::dataplane::CreditCheckpointConfig>, String> {
+        if !postgres || self.agent_oidc_audience.is_some() {
+            return Ok(None);
+        }
+        let hsm = self.hsm_config()?;
+        if let Some(hsm) = &hsm {
+            if hsm.roles.iter().any(|role| *role != HsmRole::Checkpoint) {
+                return Err(
+                    "credit-only deployments may use --hsm-keys checkpoint only; other HSM roles require agent surfaces".into(),
+                );
+            }
+        }
+        let keys_dir = match &self.checkpoint_keys_dir {
+            Some(dir) => dir.clone(),
+            None if hsm.as_ref().is_some_and(|h| h.roles.contains(&HsmRole::Checkpoint)) => {
+                PathBuf::new()
+            }
+            None => return Err("Postgres credit-only deployments need --checkpoint-keys-dir (or --hsm-keys checkpoint)".into()),
+        };
+        Ok(Some(kavach_api::dataplane::CreditCheckpointConfig {
+            keys_dir,
+            key_id: self.checkpoint_key_id.clone(),
+            interval_seconds: self.checkpoint_interval_seconds,
+            stall_seconds: self.checkpoint_stall_seconds,
+            hsm,
+        }))
+    }
+
     fn into_config(
         self,
         operator: Option<&OidcConfig>,
@@ -800,6 +831,10 @@ impl Cli {
                 EvidenceStoreKind::Postgres { database_url }
             }
         };
+        let credit_checkpoint = self.agents.credit_checkpoint_config(matches!(
+            &evidence_store,
+            EvidenceStoreKind::Postgres { .. }
+        ))?;
 
         let mode = match self.access_control {
             AccessControlArg::None => AccessControlMode::None,
@@ -856,6 +891,7 @@ impl Cli {
             database_tls: kavach_api::DatabaseTls::new(self.insecure_dev, self.database_ca),
             database_pool_size: self.database_pool_size,
             dataplane,
+            credit_checkpoint,
             require_hardening: self.require_hardening,
             review_snapshot_key_file: self.review_snapshot_key_file,
             review_snapshot_key_id: self.review_snapshot_key_id,
@@ -922,6 +958,54 @@ mod review_snapshot_cli_tests {
         for value in ["", "no-separator", "=path", "id="] {
             assert!(parse_review_snapshot_previous_key(value).is_err());
         }
+    }
+
+    #[test]
+    fn postgres_credit_only_requires_a_checkpoint_key() {
+        let cli =
+            Cli::try_parse_from(["kavach-api", "--pack", "pack.yaml", "--model", "model.yaml"])
+                .expect("parse defaults");
+        assert!(cli.agents.credit_checkpoint_config(true).is_err());
+
+        let cli = Cli::try_parse_from([
+            "kavach-api",
+            "--pack",
+            "pack.yaml",
+            "--model",
+            "model.yaml",
+            "--checkpoint-keys-dir",
+            "/keys/checkpoint",
+        ])
+        .expect("parse checkpoint config");
+        let checkpoint = cli
+            .agents
+            .credit_checkpoint_config(true)
+            .expect("valid config")
+            .expect("credit-only writer");
+        assert_eq!(checkpoint.keys_dir, PathBuf::from("/keys/checkpoint"));
+        assert_eq!(checkpoint.key_id, "kavach-checkpoint-1");
+    }
+
+    #[test]
+    fn standalone_checkpoint_is_not_added_for_memory_or_agent_deployments() {
+        let cli = Cli::try_parse_from([
+            "kavach-api",
+            "--pack",
+            "pack.yaml",
+            "--model",
+            "model.yaml",
+            "--checkpoint-keys-dir",
+            "/keys/checkpoint",
+            "--agent-oidc-audience",
+            "agents",
+        ])
+        .expect("parse agent config");
+        assert!(cli.agents.credit_checkpoint_config(true).unwrap().is_none());
+        assert!(cli
+            .agents
+            .credit_checkpoint_config(false)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1135,9 +1219,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         return Ok(());
     }
 
-    shutdown::stop_and_checkpoint(servers.as_mut(), &stop_tx, grace, stopping.dataplane())
-        .await
-        .map_err(Into::into)
+    shutdown::stop_and_checkpoint_with_credit(
+        servers.as_mut(),
+        &stop_tx,
+        grace,
+        stopping.dataplane(),
+        stopping
+            .credit_checkpointer()
+            .filter(|_| stopping.dataplane().is_none()),
+    )
+    .await
+    .map_err(Into::into)
 }
 
 /// Prints every violation and exits with `EX_CONFIG`; returns when there is

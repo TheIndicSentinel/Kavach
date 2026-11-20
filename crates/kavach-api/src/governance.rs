@@ -94,8 +94,8 @@ pub async fn runtime(
             .dataplane()
             .map(|dp| crate::checkpoints::CheckpointView::of(dp.checkpointer())),
         credit_checkpoints: state
-            .dataplane()
-            .map(|dp| crate::checkpoints::CheckpointView::of(dp.credit_checkpointer())),
+            .credit_checkpointer()
+            .map(|checkpointer| crate::checkpoints::CheckpointView::of(checkpointer)),
         dev_clock: state
             .dataplane()
             .and_then(|dp| dp.dev_clock())

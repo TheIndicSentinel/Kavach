@@ -114,6 +114,7 @@ async fn state_with_roles(insecure_dev: bool, roles: kavach_api::RolesConfig) ->
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
+        credit_checkpoint: None,
         dataplane: None,
     };
     Arc::new(AppState::from_config(&config).await.expect("state"))
@@ -325,6 +326,7 @@ fn cedar_without_an_authenticated_source_is_refused() {
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
+        credit_checkpoint: None,
         dataplane: None,
     };
     assert!(kavach_api::validate_principal_sources(&config).is_err());

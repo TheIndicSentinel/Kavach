@@ -118,26 +118,44 @@ pub async fn drain_and_checkpoint(
     dataplane: Option<&crate::dataplane::Dataplane>,
     deadline: Duration,
 ) -> Stopped {
-    let Some(dp) = dataplane else {
+    drain_and_checkpoint_with_credit(dataplane, None, deadline).await
+}
+
+pub async fn drain_and_checkpoint_with_credit(
+    dataplane: Option<&crate::dataplane::Dataplane>,
+    standalone_credit: Option<
+        &Arc<kavach_dataplane::Checkpointer<crate::dataplane::EvidenceBackend>>,
+    >,
+    deadline: Duration,
+) -> Stopped {
+    if let Some(dp) = dataplane {
+        let still_in_flight = dp.in_flight().drain(deadline).await;
+        let report = dp
+            .checkpointer()
+            .checkpoint_now(std::time::Instant::now())
+            .await;
+        let credit_report = dp
+            .credit_checkpointer()
+            .checkpoint_now(std::time::Instant::now())
+            .await;
+        return Stopped {
+            still_in_flight,
+            checkpoint: Some(report.tick),
+            credit_checkpoint: Some(credit_report.tick),
+        };
+    }
+    if let Some(checkpointer) = standalone_credit {
+        let report = checkpointer.checkpoint_now(std::time::Instant::now()).await;
         return Stopped {
             still_in_flight: 0,
             checkpoint: None,
-            credit_checkpoint: None,
+            credit_checkpoint: Some(report.tick),
         };
-    };
-    let still_in_flight = dp.in_flight().drain(deadline).await;
-    let report = dp
-        .checkpointer()
-        .checkpoint_now(std::time::Instant::now())
-        .await;
-    let credit_report = dp
-        .credit_checkpointer()
-        .checkpoint_now(std::time::Instant::now())
-        .await;
+    }
     Stopped {
-        still_in_flight,
-        checkpoint: Some(report.tick),
-        credit_checkpoint: Some(credit_report.tick),
+        still_in_flight: 0,
+        checkpoint: None,
+        credit_checkpoint: None,
     }
 }
 
@@ -147,10 +165,25 @@ pub async fn drain_and_checkpoint(
 /// drained, every call finished and the evidence is covered; otherwise an
 /// `ALERT` is logged and the error says so (the process exits non-zero).
 pub async fn stop_and_checkpoint<F, T, E>(
+    servers: std::pin::Pin<&mut F>,
+    stop: &tokio::sync::watch::Sender<bool>,
+    grace: Duration,
+    dataplane: Option<&crate::dataplane::Dataplane>,
+) -> Result<(), String>
+where
+    F: std::future::Future<Output = Result<T, E>>,
+{
+    stop_and_checkpoint_with_credit(servers, stop, grace, dataplane, None).await
+}
+
+pub async fn stop_and_checkpoint_with_credit<F, T, E>(
     mut servers: std::pin::Pin<&mut F>,
     stop: &tokio::sync::watch::Sender<bool>,
     grace: Duration,
     dataplane: Option<&crate::dataplane::Dataplane>,
+    standalone_credit: Option<
+        &Arc<kavach_dataplane::Checkpointer<crate::dataplane::EvidenceBackend>>,
+    >,
 ) -> Result<(), String>
 where
     F: std::future::Future<Output = Result<T, E>>,
@@ -166,7 +199,7 @@ where
     let drained = tokio::time::timeout(grace, servers.as_mut()).await;
     let listeners_drained = matches!(drained, Ok(Ok(_)));
     let left = grace.saturating_sub(began.elapsed());
-    let stopped = drain_and_checkpoint(dataplane, left).await;
+    let stopped = drain_and_checkpoint_with_credit(dataplane, standalone_credit, left).await;
     if listeners_drained && stopped.clean() {
         tracing::info!(
             "shutdown complete in {} ms: every gateway call finished; final agent checkpoint {:?}, final credit checkpoint {:?}",

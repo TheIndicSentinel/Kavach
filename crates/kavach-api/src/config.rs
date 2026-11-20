@@ -49,6 +49,8 @@ pub struct ApiConfig {
     pub review_snapshot_previous_keys: Vec<(String, PathBuf)>,
     /// Agent surfaces (`/v1/authorize`, `/v1/sor/events`; ADR-007, H5a-5).
     pub dataplane: Option<crate::dataplane::DataplaneConfig>,
+    /// Credit decision-event checkpoint writer when agent surfaces are off.
+    pub credit_checkpoint: Option<crate::dataplane::CreditCheckpointConfig>,
     /// Operator roles (ADR-019).
     pub roles: RolesConfig,
 }

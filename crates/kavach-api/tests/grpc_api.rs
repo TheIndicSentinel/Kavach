@@ -171,6 +171,7 @@ async fn spawn_cedar_grpc_server() -> (SocketAddr, tokio::task::JoinHandle<()>) 
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
+        credit_checkpoint: None,
         dataplane: None,
     };
     let state = Arc::new(AppState::from_config(&config).await.expect("cedar state"));

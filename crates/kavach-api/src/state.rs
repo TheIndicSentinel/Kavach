@@ -196,6 +196,8 @@ pub struct AppState {
     /// live-swap order agree.
     governance_lock: tokio::sync::Mutex<()>,
     dataplane: Option<crate::dataplane::Dataplane>,
+    standalone_credit_checkpointer:
+        Option<std::sync::Arc<kavach_dataplane::Checkpointer<crate::dataplane::EvidenceBackend>>>,
     /// One-use D17 step-up challenge state (PRD D17).
     step_up_challenges: StepUpChallengeBackend,
     /// Active and decrypt-only previous keys for encrypted D17 review projections.
@@ -280,6 +282,32 @@ impl AppState {
         let review_snapshot_key = load_review_snapshot_key(config)?;
         bootstrap_superadmins(&roles, &config.roles).await?;
         let dataplane = build_dataplane(config, pool.as_ref()).await?;
+        let standalone_credit_checkpointer = match (
+            &config.credit_checkpoint,
+            &dataplane,
+            pool.as_ref(),
+        ) {
+            (Some(_), Some(_), _) => return Err(ApiError::Internal(
+                "standalone credit checkpoint configuration cannot be combined with agent surfaces"
+                    .into(),
+            )),
+            (Some(_), None, None) => {
+                return Err(ApiError::Internal(
+                    "credit-only checkpointing requires the Postgres evidence store".into(),
+                ))
+            }
+            (Some(checkpoint), None, Some(pool)) => Some(
+                crate::dataplane::build_credit_checkpointer(
+                    checkpoint,
+                    pool,
+                    &config.roles.tenant_id,
+                    config.insecure_dev,
+                )
+                .await
+                .map_err(|e| ApiError::Internal(format!("credit checkpoint writer: {e}")))?,
+            ),
+            (None, _, _) => None,
+        };
 
         if matches!(config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
             enforce_startup_pointer(&admin, config, pack.digest.as_deref(), &model_sha256).await?;
@@ -310,6 +338,7 @@ impl AppState {
         let metrics = start_metrics(
             runtime.model_pack_mismatch,
             dataplane.as_ref(),
+            standalone_credit_checkpointer.as_ref(),
             &config.roles.tenant_id,
         )?;
         let service = EvaluateService::new(
@@ -367,6 +396,7 @@ impl AppState {
             ),
             governance_lock: tokio::sync::Mutex::new(()),
             dataplane,
+            standalone_credit_checkpointer,
             step_up_challenges,
             review_snapshot_key,
             review_snapshot_store,
@@ -401,6 +431,7 @@ impl AppState {
             migration_database_url: None,
             database_tls: kavach_storage::DatabaseTls::default(),
             database_pool_size: kavach_storage::DEFAULT_POOL_SIZE,
+            credit_checkpoint: None,
             dataplane: None,
             require_hardening: false,
             review_snapshot_key_file: None,
@@ -629,6 +660,16 @@ impl AppState {
 
     pub fn dataplane(&self) -> Option<&crate::dataplane::Dataplane> {
         self.dataplane.as_ref()
+    }
+
+    pub fn credit_checkpointer(
+        &self,
+    ) -> Option<&std::sync::Arc<kavach_dataplane::Checkpointer<crate::dataplane::EvidenceBackend>>>
+    {
+        self.dataplane
+            .as_ref()
+            .map(crate::dataplane::Dataplane::credit_checkpointer)
+            .or(self.standalone_credit_checkpointer.as_ref())
     }
 
     pub fn changes(&self) -> &ChangeRequestBackend {
@@ -927,12 +968,23 @@ fn select_review_stores(
 fn start_metrics(
     model_pack_mismatch: bool,
     dataplane: Option<&crate::dataplane::Dataplane>,
+    standalone_credit_checkpointer: Option<
+        &std::sync::Arc<kavach_dataplane::Checkpointer<crate::dataplane::EvidenceBackend>>,
+    >,
     tenant_id: &str,
 ) -> Result<Metrics, ApiError> {
     let metrics =
         Metrics::new(tenant_id).map_err(|e| ApiError::Internal(format!("metrics: {e}")))?;
     metrics.set_model_pack_mismatch(model_pack_mismatch);
     crate::checkpoints::start(dataplane, &metrics);
+    if dataplane.is_none() {
+        if let Some(checkpointer) = standalone_credit_checkpointer {
+            crate::checkpoints::spawn_credit_writer(
+                std::sync::Arc::clone(checkpointer),
+                metrics.clone(),
+            );
+        }
+    }
     crate::revocation_evidence::start(dataplane, &metrics);
     crate::outcome_reconciler::start(dataplane, &metrics);
     crate::agent_state_evidence::start(dataplane, &metrics);

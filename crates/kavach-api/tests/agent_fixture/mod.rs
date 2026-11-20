@@ -393,6 +393,7 @@ pub fn config(store: EvidenceStoreKind, insecure_dev: bool, rate: u32) -> ApiCon
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
+        credit_checkpoint: None,
         dataplane: Some(dataplane),
     }
 }

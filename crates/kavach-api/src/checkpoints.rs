@@ -18,7 +18,7 @@ use crate::metrics::Metrics;
 const TICK: Duration = Duration::from_secs(1);
 const RESTART_DELAY: Duration = Duration::from_secs(1);
 
-/// Checkpoint health, in `/v1/runtime` when the agent surfaces are on.
+/// Checkpoint health, in `/v1/runtime` when the corresponding writer is on.
 /// Informational: it never affects `/health` or decisions.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 pub struct CheckpointView {

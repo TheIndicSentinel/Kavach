@@ -152,6 +152,16 @@ pub struct ReferenceVaultConfig {
     pub previous_keys: Vec<(String, PathBuf)>,
 }
 
+/// Standalone credit-chain checkpointing for deployments without agent APIs.
+#[derive(Debug, Clone)]
+pub struct CreditCheckpointConfig {
+    pub keys_dir: PathBuf,
+    pub key_id: String,
+    pub interval_seconds: u64,
+    pub stall_seconds: u64,
+    pub hsm: Option<HsmConfig>,
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProvidersFile {
@@ -774,6 +784,46 @@ impl CheckpointStore for EvidenceBackend {
             Self::Postgres(s) => s.list(scope, after_seq, limit).await,
         }
     }
+}
+
+/// Builds the writer for a Postgres credit-only deployment. It deliberately
+/// uses the same tenant-scoped evidence adapter, trusted clock and checkpoint
+/// chain as the writer enabled alongside the agent surfaces.
+pub async fn build_credit_checkpointer(
+    config: &CreditCheckpointConfig,
+    pool: &StoragePool,
+    tenant_id: &str,
+    insecure_dev: bool,
+) -> Result<Arc<Checkpointer<EvidenceBackend>>, String> {
+    if !(1..=3600).contains(&config.interval_seconds)
+        || config.stall_seconds <= config.interval_seconds
+    {
+        return Err("the checkpoint interval must be 1 to 3600 seconds, and the stall threshold longer than the interval".into());
+    }
+    refuse_dev_key("checkpoint", &config.key_id, insecure_dev)?;
+    let sources = match &config.hsm {
+        Some(hsm) => KeySources::open(hsm, |_| config.key_id.clone(), insecure_dev)?,
+        None => KeySources::files(),
+    };
+    let signer = sources.evidence_signer(HsmRole::Checkpoint, &config.keys_dir, &config.key_id)?;
+    let clock = select_clock(insecure_dev)?;
+    let store = Arc::new(EvidenceBackend::Postgres(
+        pool.agent_evidence_store_for_tenant(tenant_id),
+    ));
+    Ok(Arc::new(Checkpointer::new_for_chain(
+        store,
+        signer,
+        Box::new(clock),
+        tenant_id,
+        0,
+        kavach_ports::checkpoint::CHAIN_DECISION_EVENTS,
+        CheckpointPolicy {
+            every: std::time::Duration::from_secs(config.interval_seconds),
+            stall_after: std::time::Duration::from_secs(config.stall_seconds),
+            ..CheckpointPolicy::default()
+        },
+        Instant::now(),
+    )))
 }
 
 /// Trusted time: the kernel clock, or — only with `--insecure-dev` — the

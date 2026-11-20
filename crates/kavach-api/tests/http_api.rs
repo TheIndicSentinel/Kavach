@@ -361,6 +361,7 @@ async fn cedar_test_state() -> Arc<AppState> {
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
+        credit_checkpoint: None,
         dataplane: None,
     };
     Arc::new(AppState::from_config(&config).await.expect("cedar state"))
@@ -716,6 +717,7 @@ async fn change_requests_can_be_cancelled_rejected_and_expire() {
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
+        credit_checkpoint: None,
         dataplane: None,
     };
     let app = router(Arc::new(
@@ -1370,6 +1372,7 @@ async fn signed_packs_required_when_signers_configured() {
         migration_database_url: None,
         database_tls: kavach_api::DatabaseTls::development(),
         database_pool_size: kavach_api::DEFAULT_POOL_SIZE,
+        credit_checkpoint: None,
         dataplane: None,
     };
 
