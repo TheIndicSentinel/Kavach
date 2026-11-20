@@ -19,6 +19,8 @@ use crate::agent_evidence::{
 use crate::error::PortError;
 use crate::time::TrustedNow;
 
+pub const KIND_EVIDENCE_TRANSITION: &str = "evidence_transition";
+
 /// Mandates revoked by a system-of-record event (ADR-012). It names the
 /// event and the mandates, never the borrower or the loan reference.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -448,6 +450,135 @@ impl ChainEntry for AgentStateRecord {
     }
 }
 
+/// Signed cutover record preserving both pre-M2 chain tips without rewriting
+/// either history. It extends the legacy credit chain; the old agent tip is
+/// committed as an independently verifiable branch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceTransitionPayload {
+    pub record_id: String,
+    pub tenant_id: String,
+    pub partition_id: i32,
+    pub seq: i64,
+    pub prev_hash: String,
+    pub kind: String,
+    pub hash_alg: String,
+    pub key_id: String,
+    pub decision_event_head_seq: i64,
+    pub decision_event_head_hash: String,
+    pub legacy_agent_head_seq: i64,
+    pub legacy_agent_head_hash: String,
+    pub time_sync: TimeSync,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceTransitionRecord {
+    #[serde(flatten)]
+    pub payload: EvidenceTransitionPayload,
+    pub hash: String,
+    pub sig: String,
+}
+
+/// Hashes and signs the migration transition using the regular v2 evidence
+/// domain and dedicated evidence signer.
+pub fn seal_evidence_transition(
+    payload: EvidenceTransitionPayload,
+    signer: &dyn EvidenceSigner,
+) -> Result<EvidenceTransitionRecord, PortError> {
+    if payload.key_id != signer.key_id() {
+        return Err(PortError::invalid("payload key_id differs from the signer"));
+    }
+    let hash = content_hash(&payload.prev_hash, &payload)?;
+    let sig = hex::encode(signer.sign(&signing_message(&hash))?);
+    Ok(EvidenceTransitionRecord { payload, hash, sig })
+}
+
+fn is_hash(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn is_chain_tip(seq: i64, hash: &str) -> bool {
+    if seq == 0 {
+        hash == crate::agent_evidence::GENESIS
+    } else {
+        seq > 0 && is_hash(hash)
+    }
+}
+
+impl ChainEntry for EvidenceTransitionRecord {
+    fn kind(&self) -> &str {
+        &self.payload.kind
+    }
+    fn hash_alg(&self) -> &str {
+        &self.payload.hash_alg
+    }
+    fn form(&self) -> Result<(), &'static str> {
+        let p = &self.payload;
+        if p.record_id.is_empty()
+            || p.record_id.len() > 128
+            || p.record_id.chars().any(char::is_control)
+        {
+            return Err("record_id must be a plain identifier of 1 to 128 characters");
+        }
+        if p.tenant_id.is_empty()
+            || p.tenant_id.len() > 128
+            || p.tenant_id.chars().any(char::is_control)
+        {
+            return Err("tenant_id must be a plain identifier of 1 to 128 characters");
+        }
+        if p.partition_id < 0 || p.seq < 1 || !is_hash(&p.prev_hash) {
+            return Err("transition chain coordinates or previous hash are invalid");
+        }
+        if p.decision_event_head_seq.checked_add(1) != Some(p.seq)
+            || p.decision_event_head_hash != p.prev_hash
+        {
+            return Err("transition must extend the recorded decision-event head");
+        }
+        if !is_chain_tip(p.decision_event_head_seq, &p.decision_event_head_hash)
+            || !is_chain_tip(p.legacy_agent_head_seq, &p.legacy_agent_head_hash)
+        {
+            return Err("legacy chain tip must have a valid sequence and hash");
+        }
+        Ok(())
+    }
+    fn expected_kind(&self) -> &'static str {
+        KIND_EVIDENCE_TRANSITION
+    }
+    fn tenant_id(&self) -> &str {
+        &self.payload.tenant_id
+    }
+    fn partition_id(&self) -> i32 {
+        self.payload.partition_id
+    }
+    fn seq(&self) -> i64 {
+        self.payload.seq
+    }
+    fn ts(&self) -> DateTime<Utc> {
+        self.payload.recorded_at
+    }
+    fn prev_hash(&self) -> &str {
+        &self.payload.prev_hash
+    }
+    fn key_id(&self) -> &str {
+        &self.payload.key_id
+    }
+    fn time_sync(&self) -> &TimeSync {
+        &self.payload.time_sync
+    }
+    fn hash(&self) -> &str {
+        &self.hash
+    }
+    fn sig(&self) -> &str {
+        &self.sig
+    }
+    fn content_hash(&self) -> Option<String> {
+        content_hash(&self.payload.prev_hash, &self.payload).ok()
+    }
+    fn as_decision(&self) -> Option<&AgentDecisionRecord> {
+        None
+    }
+}
+
 /// A record of the agent chain, of any kind this build knows. Read by its
 /// signed `kind`; any other kind is refused, never skipped.
 // Decisions are nearly every record of a chain: boxing them to shrink the
@@ -459,6 +590,7 @@ pub enum ChainRecord {
     Decision(AgentDecisionRecord),
     Revocation(RevocationRecord),
     AgentState(AgentStateRecord),
+    EvidenceTransition(EvidenceTransitionRecord),
 }
 
 impl ChainRecord {
@@ -467,7 +599,7 @@ impl ChainRecord {
     pub fn into_decision(self) -> Option<AgentDecisionRecord> {
         match self {
             Self::Decision(record) => Some(record),
-            Self::Revocation(_) | Self::AgentState(_) => None,
+            Self::Revocation(_) | Self::AgentState(_) | Self::EvidenceTransition(_) => None,
         }
     }
 }
@@ -490,6 +622,9 @@ impl<'de> Deserialize<'de> for ChainRecord {
             KIND_AGENT_STATE => serde_json::from_value(value)
                 .map(Self::AgentState)
                 .map_err(D::Error::custom),
+            KIND_EVIDENCE_TRANSITION => serde_json::from_value(value)
+                .map(Self::EvidenceTransition)
+                .map_err(D::Error::custom),
             other => Err(D::Error::custom(format!(
                 "a record of kind {other}, which this build does not know: refused"
             ))),
@@ -503,6 +638,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.kind(),
             Self::Revocation(r) => r.kind(),
             Self::AgentState(r) => r.kind(),
+            Self::EvidenceTransition(r) => r.kind(),
         }
     }
     fn hash_alg(&self) -> &str {
@@ -510,6 +646,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.hash_alg(),
             Self::Revocation(r) => r.hash_alg(),
             Self::AgentState(r) => r.hash_alg(),
+            Self::EvidenceTransition(r) => r.hash_alg(),
         }
     }
     fn form(&self) -> Result<(), &'static str> {
@@ -517,6 +654,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.form(),
             Self::Revocation(r) => r.form(),
             Self::AgentState(r) => r.form(),
+            Self::EvidenceTransition(r) => r.form(),
         }
     }
     fn expected_kind(&self) -> &'static str {
@@ -524,6 +662,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.expected_kind(),
             Self::Revocation(r) => r.expected_kind(),
             Self::AgentState(r) => r.expected_kind(),
+            Self::EvidenceTransition(r) => r.expected_kind(),
         }
     }
     fn tenant_id(&self) -> &str {
@@ -531,6 +670,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.tenant_id(),
             Self::Revocation(r) => r.tenant_id(),
             Self::AgentState(r) => r.tenant_id(),
+            Self::EvidenceTransition(r) => r.tenant_id(),
         }
     }
     fn partition_id(&self) -> i32 {
@@ -538,6 +678,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.partition_id(),
             Self::Revocation(r) => r.partition_id(),
             Self::AgentState(r) => r.partition_id(),
+            Self::EvidenceTransition(r) => r.partition_id(),
         }
     }
     fn seq(&self) -> i64 {
@@ -545,6 +686,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.seq(),
             Self::Revocation(r) => r.seq(),
             Self::AgentState(r) => r.seq(),
+            Self::EvidenceTransition(r) => r.seq(),
         }
     }
     fn ts(&self) -> DateTime<Utc> {
@@ -552,6 +694,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.ts(),
             Self::Revocation(r) => r.ts(),
             Self::AgentState(r) => r.ts(),
+            Self::EvidenceTransition(r) => r.ts(),
         }
     }
     fn prev_hash(&self) -> &str {
@@ -559,6 +702,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.prev_hash(),
             Self::Revocation(r) => r.prev_hash(),
             Self::AgentState(r) => r.prev_hash(),
+            Self::EvidenceTransition(r) => r.prev_hash(),
         }
     }
     fn key_id(&self) -> &str {
@@ -566,6 +710,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.key_id(),
             Self::Revocation(r) => r.key_id(),
             Self::AgentState(r) => r.key_id(),
+            Self::EvidenceTransition(r) => r.key_id(),
         }
     }
     fn time_sync(&self) -> &TimeSync {
@@ -573,6 +718,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.time_sync(),
             Self::Revocation(r) => r.time_sync(),
             Self::AgentState(r) => r.time_sync(),
+            Self::EvidenceTransition(r) => r.time_sync(),
         }
     }
     fn hash(&self) -> &str {
@@ -580,6 +726,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.hash(),
             Self::Revocation(r) => r.hash(),
             Self::AgentState(r) => r.hash(),
+            Self::EvidenceTransition(r) => r.hash(),
         }
     }
     fn sig(&self) -> &str {
@@ -587,6 +734,7 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => r.sig(),
             Self::Revocation(r) => r.sig(),
             Self::AgentState(r) => r.sig(),
+            Self::EvidenceTransition(r) => r.sig(),
         }
     }
     fn content_hash(&self) -> Option<String> {
@@ -594,12 +742,108 @@ impl ChainEntry for ChainRecord {
             Self::Decision(r) => ChainEntry::content_hash(r),
             Self::Revocation(r) => ChainEntry::content_hash(r),
             Self::AgentState(r) => ChainEntry::content_hash(r),
+            Self::EvidenceTransition(r) => ChainEntry::content_hash(r),
         }
     }
     fn as_decision(&self) -> Option<&AgentDecisionRecord> {
         match self {
             Self::Decision(r) => Some(r),
-            Self::Revocation(_) | Self::AgentState(_) => None,
+            Self::Revocation(_) | Self::AgentState(_) | Self::EvidenceTransition(_) => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod evidence_transition_tests {
+    use super::*;
+    use crate::agent_evidence::{verify_segment, DevKeys, EvidenceSigner, SegmentStart, GENESIS};
+    use crate::{KeyAlgorithm, PublicKey};
+    use ed25519_dalek::{Signer, SigningKey};
+    use std::collections::BTreeMap;
+
+    struct TestSigner(SigningKey);
+
+    impl EvidenceSigner for TestSigner {
+        fn key_id(&self) -> &'static str {
+            "evidence-m2"
+        }
+        fn sign(&self, message: &[u8]) -> Result<Vec<u8>, PortError> {
+            Ok(self.0.sign(message).to_bytes().to_vec())
+        }
+    }
+
+    fn transition_payload() -> EvidenceTransitionPayload {
+        EvidenceTransitionPayload {
+            record_id: "m2-transition-default-0".into(),
+            tenant_id: "default".into(),
+            partition_id: 0,
+            seq: 8,
+            prev_hash: "a".repeat(64),
+            kind: KIND_EVIDENCE_TRANSITION.into(),
+            hash_alg: HASH_ALG_V2.into(),
+            key_id: "evidence-m2".into(),
+            decision_event_head_seq: 7,
+            decision_event_head_hash: "a".repeat(64),
+            legacy_agent_head_seq: 5,
+            legacy_agent_head_hash: "b".repeat(64),
+            time_sync: crate::SyncStatus::Synced { max_error_ms: 2 }.into(),
+            recorded_at: DateTime::from_timestamp(1_795_000_000, 0).unwrap(),
+        }
+    }
+
+    #[test]
+    fn transition_binds_both_legacy_tips_and_verifies_as_a_chain_record() {
+        let signer = TestSigner(SigningKey::from_bytes(&[7; 32]));
+        let record = seal_evidence_transition(transition_payload(), &signer).unwrap();
+        let key = PublicKey {
+            kid: "evidence-m2".into(),
+            algorithm: KeyAlgorithm::Ed25519,
+            bytes: signer.0.verifying_key().to_bytes(),
+        };
+        let keys = BTreeMap::from([(key.kid.clone(), key)]);
+        let credit_head = "a".repeat(64);
+        let report = verify_segment(
+            std::slice::from_ref(&record),
+            SegmentStart {
+                seq: 7,
+                hash: &credit_head,
+            },
+            &keys,
+            Some((record.payload.seq, &record.hash)),
+            &[],
+            record.payload.recorded_at,
+            DevKeys::Refuse,
+        )
+        .unwrap();
+        assert_eq!(report.head_seq, 8);
+        assert_eq!(report.head_hash, record.hash);
+
+        let parsed: ChainRecord =
+            serde_json::from_value(serde_json::to_value(record).unwrap()).unwrap();
+        assert!(matches!(parsed, ChainRecord::EvidenceTransition(_)));
+    }
+
+    #[test]
+    fn transition_refuses_a_tip_that_does_not_match_its_chain_predecessor() {
+        let signer = TestSigner(SigningKey::from_bytes(&[7; 32]));
+        let mut payload = transition_payload();
+        payload.decision_event_head_hash = GENESIS.into();
+        let record = seal_evidence_transition(payload, &signer).unwrap();
+        assert_eq!(
+            record.form(),
+            Err("transition must extend the recorded decision-event head")
+        );
+    }
+
+    #[test]
+    fn transition_supports_an_empty_legacy_agent_chain() {
+        let signer = TestSigner(SigningKey::from_bytes(&[7; 32]));
+        let mut payload = transition_payload();
+        payload.legacy_agent_head_seq = 0;
+        payload.legacy_agent_head_hash = GENESIS.into();
+        assert!(seal_evidence_transition(payload, &signer)
+            .unwrap()
+            .form()
+            .is_ok());
     }
 }
