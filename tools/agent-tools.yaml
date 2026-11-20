@@ -58,3 +58,19 @@ tools:
       subject_ref: { kind: capability_ref }
       # Required: 0 means no waiver (H4 carry-over).
       waiver_bps: { kind: integer, min: 0, max: 10000 }
+
+  # Fixed model roles are registered here, but remain non-forwardable through
+  # the generic tool gateway until the signed invocation/outcome path lands.
+  - name: invoke_collections_model
+    action: invoke_collections_model
+    trust: read_only
+    model_role: collections
+    params:
+      subject_ref: { kind: capability_ref }
+
+  - name: invoke_translation_model
+    action: invoke_translation_model
+    trust: read_only
+    model_role: translation
+    params:
+      subject_ref: { kind: capability_ref }

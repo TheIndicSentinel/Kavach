@@ -41,3 +41,4 @@ Owner approved the recommended design on 2026-11-20. Prompts and completions rem
 ### Implementation record
 
 - Slice 1: added distinct `invoke_collections_model` and `invoke_translation_model` Cedar actions. Each action requires the authenticated mandate holder and its exact action grant. Restricted, quarantined, and revoked agents are denied model invocation. The formal Cedar property set and scenario tests cover action separation. This slice does not expose a model tool or change proxy routing.
+- Slice 2: registered fixed `collections` and `translation` model roles against their matching Cedar actions. The registry rejects mismatched role/action bindings. Both tools remain read-only/non-forwardable through the generic gateway until the signed invocation/outcome execution path is complete. The registry edit must be signed by each deployment's trusted `tool` signer before secure startup.

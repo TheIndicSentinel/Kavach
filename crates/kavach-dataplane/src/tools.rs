@@ -59,6 +59,24 @@ pub enum Trust {
     ExternalEffect,
 }
 
+/// Fixed model role bound to a registered model-invocation action. Model IDs
+/// remain server configuration; agents can select only this role.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelRole {
+    Collections,
+    Translation,
+}
+
+impl ModelRole {
+    pub const fn action(self) -> &'static str {
+        match self {
+            Self::Collections => "invoke_collections_model",
+            Self::Translation => "invoke_translation_model",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParamKind {
@@ -106,6 +124,9 @@ pub struct ToolSpec {
     /// The Cedar agent action this tool performs.
     pub action: String,
     pub trust: Trust,
+    /// Present only for fixed-role model invocation tools.
+    #[serde(default)]
+    pub model_role: Option<ModelRole>,
     /// The resource provider an `external_effect` tool is forwarded to
     /// (the credential audience); required for those, refused otherwise.
     pub provider: Option<String>,
@@ -539,6 +560,18 @@ fn validate_tool(tool: &ToolSpec) -> Result<(), PortError> {
     let Some(action) = AgentAction::from_name(&tool.action) else {
         return fail(format!("unknown action {:?}", tool.action));
     };
+    let model_action = matches!(
+        action,
+        AgentAction::InvokeCollectionsModel | AgentAction::InvokeTranslationModel
+    );
+    if model_action != tool.model_role.is_some()
+        || tool
+            .model_role
+            .is_some_and(|role| role.action() != tool.action)
+        || (tool.model_role.is_some() && tool.trust != Trust::ReadOnly)
+    {
+        return fail("model_role must match a read_only model invocation action".into());
+    }
     match (&tool.provider, tool.trust) {
         (Some(provider), Trust::ExternalEffect) if is_allowlist_value(provider) => {}
         (None, Trust::ExternalEffect) => {
@@ -796,6 +829,26 @@ mod tests {
             r.providers().into_iter().collect::<Vec<_>>(),
             vec!["mock-messaging", "mock-voice"]
         );
+    }
+
+    #[test]
+    fn model_tools_are_fixed_to_their_matching_action_and_remain_non_forwardable() {
+        let registry = registry();
+        let collections = registry.tool("invoke_collections_model").unwrap();
+        assert_eq!(collections.model_role, Some(ModelRole::Collections));
+        assert_eq!(collections.action, "invoke_collections_model");
+        assert_eq!(collections.trust, Trust::ReadOnly);
+
+        let translation = registry.tool("invoke_translation_model").unwrap();
+        assert_eq!(translation.model_role, Some(ModelRole::Translation));
+        assert_eq!(translation.action, "invoke_translation_model");
+        assert_eq!(translation.trust, Trust::ReadOnly);
+    }
+
+    #[test]
+    fn model_role_cannot_be_rebound_to_another_action() {
+        let yaml = b"version: 1\ntools:\n- name: invoke_collections_model\n  action: invoke_translation_model\n  trust: read_only\n  model_role: collections\n  params:\n    subject_ref: { kind: capability_ref }\n";
+        assert!(ToolRegistry::from_bytes(yaml).is_err());
     }
 
     #[test]
