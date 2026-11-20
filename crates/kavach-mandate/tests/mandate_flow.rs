@@ -26,6 +26,49 @@ async fn event_to_mandate_happy_path() {
     ));
 }
 
+#[test]
+fn passport_action_grants_are_exact_and_tenant_scoped() {
+    let default = fixture();
+    assert!(default
+        .service
+        .passport_allows_action(TENANT, "collections-agent", "read_fields"));
+    assert!(!default.service.passport_allows_action(
+        TENANT,
+        "collections-agent",
+        "invoke_collections_model"
+    ));
+    assert!(!default.service.passport_allows_action(
+        "other-tenant",
+        "collections-agent",
+        "read_fields"
+    ));
+    assert!(!default.service.passport_allows_action(
+        TENANT,
+        "translator-agent",
+        "invoke_collections_model"
+    ));
+
+    let mut grants = passports();
+    grants[0].actions.insert("invoke_collections_model".into());
+    grants[1].actions.insert("invoke_translation_model".into());
+    let configured = try_fixture(vec![consent(t0())], vec![template()], grants).unwrap();
+    assert!(configured.service.passport_allows_action(
+        TENANT,
+        "collections-agent",
+        "invoke_collections_model"
+    ));
+    assert!(configured.service.passport_allows_action(
+        TENANT,
+        "translator-agent",
+        "invoke_translation_model"
+    ));
+    assert!(!configured.service.passport_allows_action(
+        TENANT,
+        "collections-agent",
+        "invoke_translation_model"
+    ));
+}
+
 #[tokio::test]
 async fn replayed_stale_or_misattributed_events_are_rejected() {
     let f = fixture();

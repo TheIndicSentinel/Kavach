@@ -252,6 +252,16 @@ where
         self.config.passport(tenant_id, agent_id).is_some()
     }
 
+    /// Whether the agent's exact tenant-scoped passport grants an action.
+    /// This is an additional ceiling: callers must also verify an active
+    /// mandate and authorize the action under Cedar.
+    #[must_use]
+    pub fn passport_allows_action(&self, tenant_id: &str, agent_id: &str, action: &str) -> bool {
+        self.config
+            .passport(tenant_id, agent_id)
+            .is_some_and(|passport| passport.actions.contains(action))
+    }
+
     /// Creates a mandate from a signed system-of-record event (ADR-004 §4–5).
     /// Every field comes from the verified event or the governed template.
     pub async fn issue_from_event(&self, event_token: &str) -> Result<IssuedMandate, PortError> {
