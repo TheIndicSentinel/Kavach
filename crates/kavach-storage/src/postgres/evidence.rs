@@ -9,11 +9,19 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct PostgresEvidenceStore {
     pool: PgPool,
+    tenant_id: String,
 }
 
 impl PostgresEvidenceStore {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self::new_for_tenant(pool, "default")
+    }
+
+    pub fn new_for_tenant(pool: PgPool, tenant_id: &str) -> Self {
+        Self {
+            pool,
+            tenant_id: tenant_id.into(),
+        }
     }
 
     pub fn pool(&self) -> &PgPool {
@@ -35,25 +43,46 @@ impl PostgresEvidenceStore {
         input: AppendDecisionEvent,
     ) -> Result<DecisionEvent, EvidenceError> {
         // Fast path without the chain lock.
-        if let Some(existing) =
-            fetch_by_idempotency(&self.pool, &input.model_id, &input.correlation_id).await?
+        if let Some(existing) = fetch_by_idempotency(
+            &self.pool,
+            &self.tenant_id,
+            &input.model_id,
+            &input.correlation_id,
+        )
+        .await?
         {
             kavach_evidence::check_idempotent_replay(&existing, &input)?;
             return Ok(existing);
         }
 
         let mut tx = self.pool.begin().await.map_err(|err| io_err(&err))?;
-        let head_hash: String =
-            sqlx::query_scalar("SELECT head_hash FROM evidence_chain_meta WHERE id = 1 FOR UPDATE")
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|err| io_err(&err))?;
+        sqlx::query(
+            "INSERT INTO evidence_chain_meta (tenant_id, id, head_hash) \
+            VALUES ($1, 1, $2) ON CONFLICT (tenant_id, id) DO NOTHING",
+        )
+        .bind(&self.tenant_id)
+        .bind(kavach_evidence::GENESIS_HASH)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| io_err(&err))?;
+        let head_hash: String = sqlx::query_scalar(
+            "SELECT head_hash FROM evidence_chain_meta WHERE tenant_id = $1 AND id = 1 FOR UPDATE",
+        )
+        .bind(&self.tenant_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| io_err(&err))?;
 
         // The chain lock serializes appends: a concurrent request with the same
         // key that committed while we waited is visible now, and is replayed
         // (or refused as a conflict) instead of failing on the unique key.
-        if let Some(existing) =
-            fetch_by_idempotency(&mut *tx, &input.model_id, &input.correlation_id).await?
+        if let Some(existing) = fetch_by_idempotency(
+            &mut *tx,
+            &self.tenant_id,
+            &input.model_id,
+            &input.correlation_id,
+        )
+        .await?
         {
             kavach_evidence::check_idempotent_replay(&existing, &input)?;
             return Ok(existing);
@@ -92,13 +121,16 @@ impl PostgresEvidenceStore {
         event.hash = compute_event_hash(&event.prev_hash, &event).map_err(EvidenceError::Json)?;
         verify_event_hash(&event)?;
 
-        insert_event(&mut tx, &event).await?;
+        insert_event(&mut tx, &self.tenant_id, &event).await?;
 
-        sqlx::query("UPDATE evidence_chain_meta SET head_hash = $1 WHERE id = 1")
-            .bind(&event.hash)
-            .execute(&mut *tx)
-            .await
-            .map_err(|err| io_err(&err))?;
+        sqlx::query(
+            "UPDATE evidence_chain_meta SET head_hash = $1 WHERE tenant_id = $2 AND id = 1",
+        )
+        .bind(&event.hash)
+        .bind(&self.tenant_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| io_err(&err))?;
 
         tx.commit().await.map_err(|err| io_err(&err))?;
         Ok(event)
@@ -107,6 +139,7 @@ impl PostgresEvidenceStore {
 
 async fn insert_event(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
     event: &DecisionEvent,
 ) -> Result<(), EvidenceError> {
     let reason_codes = serde_json::to_value(&event.reason_codes).map_err(EvidenceError::Json)?;
@@ -116,20 +149,21 @@ async fn insert_event(
     sqlx::query(
         r"
         INSERT INTO decision_events (
-            evidence_id, event_id, schema_version, prev_hash, hash,
+            tenant_id, evidence_id, event_id, schema_version, prev_hash, hash,
             pack_id, pack_version, sector, model_id, model_version,
             model_origin, governance_mode, policy_decision, returned_decision,
             reason_codes, policy_hits, pii_tokens, input_digest, latency_ms,
             decision_time, evaluated_at, service_identity_id, correlation_id, idempotency_key
         ) VALUES (
-            $1, $2, $3, $4, $5,
-            $6, $7, $8, $9, $10,
-            $11, $12, $13, $14,
-            $15, $16, $17, $18, $19,
-            $20, $21, $22, $23, $24
+            $1, $2, $3, $4, $5, $6,
+            $7, $8, $9, $10, $11,
+            $12, $13, $14, $15,
+            $16, $17, $18, $19, $20,
+            $21, $22, $23, $24, $25
         )
         ",
     )
+    .bind(tenant_id)
     .bind(&event.evidence_id)
     .bind(&event.event_id)
     .bind(&event.schema_version)
@@ -163,22 +197,26 @@ async fn insert_event(
 impl PostgresEvidenceStore {
     /// One decision event by its evidence id (operator reads; `kavach why`).
     pub async fn event(&self, evidence_id: &str) -> Result<Option<DecisionEvent>, EvidenceError> {
-        let row = sqlx::query("SELECT * FROM decision_events WHERE evidence_id = $1")
-            .bind(evidence_id)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|err| io_err(&err))?;
+        let row =
+            sqlx::query("SELECT * FROM decision_events WHERE tenant_id = $1 AND evidence_id = $2")
+                .bind(&self.tenant_id)
+                .bind(evidence_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|err| io_err(&err))?;
         row.as_ref().map(row_to_event).transpose()
     }
 }
 
 async fn fetch_by_idempotency<'e>(
     executor: impl sqlx::PgExecutor<'e>,
+    tenant_id: &str,
     model_id: &str,
     correlation_id: &str,
 ) -> Result<Option<DecisionEvent>, EvidenceError> {
     let row =
-        sqlx::query("SELECT * FROM decision_events WHERE model_id = $1 AND correlation_id = $2")
+        sqlx::query("SELECT * FROM decision_events WHERE tenant_id = $1 AND model_id = $2 AND correlation_id = $3")
+            .bind(tenant_id)
             .bind(model_id)
             .bind(correlation_id)
             .fetch_optional(executor)

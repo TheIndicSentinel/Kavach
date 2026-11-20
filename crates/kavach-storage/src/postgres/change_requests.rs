@@ -137,7 +137,7 @@ impl PostgresChangeStore {
             _ => {
                 let mut reason = None;
                 for effect in &commit.effects {
-                    reason = check_effect(&mut tx, effect).await?;
+                    reason = check_effect(&mut tx, &request.tenant_id, effect).await?;
                     if reason.is_some() {
                         break;
                     }
@@ -266,27 +266,31 @@ async fn decide(
 /// Reads only; returns a reason when the effect can no longer apply as bound.
 async fn check_effect(
     tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
     effect: &GovernanceEffect,
 ) -> Result<Option<String>, ChangeStoreError> {
     match effect {
         GovernanceEffect::SetRetentionDays {
             expected_current, ..
         } => {
-            let current: i32 = sqlx::query_scalar(
-                "SELECT evidence_retention_days FROM tenant_settings WHERE id = 1 FOR UPDATE",
+            let current: Option<i32> = sqlx::query_scalar(
+                "SELECT evidence_retention_days FROM tenant_settings WHERE tenant_id = $1 AND id = 1 FOR UPDATE",
             )
-            .fetch_one(&mut **tx)
+            .bind(tenant_id)
+            .fetch_optional(&mut **tx)
             .await
             .map_err(io)?;
+            let current = current.unwrap_or(365);
             Ok((i64::from(current) != i64::from(*expected_current)).then(|| {
                 format!("retention changed: now {current} days, request bound to {expected_current}")
             }))
         }
         GovernanceEffect::Tombstone { evidence_id, .. } => {
             let (exists, tombstoned): (bool, bool) = sqlx::query_as(
-                "SELECT EXISTS(SELECT 1 FROM decision_events WHERE evidence_id = $1), \
-                    EXISTS(SELECT 1 FROM evidence_tombstones WHERE evidence_id = $1)",
+                "SELECT EXISTS(SELECT 1 FROM decision_events WHERE tenant_id = $1 AND evidence_id = $2), \
+                    EXISTS(SELECT 1 FROM evidence_tombstones WHERE tenant_id = $1 AND evidence_id = $2)",
             )
+            .bind(tenant_id)
             .bind(evidence_id)
             .fetch_one(&mut **tx)
             .await
@@ -301,7 +305,7 @@ async fn check_effect(
             cutoff,
             evidence_ids,
         } => {
-            let current = retention_candidates(&mut **tx, *cutoff).await?;
+            let current = retention_candidates(&mut **tx, tenant_id, *cutoff).await?;
             let mut expected = evidence_ids.clone();
             expected.sort();
             Ok((current != expected).then(|| {
@@ -353,9 +357,12 @@ async fn apply_effect(
         }
         GovernanceEffect::SetRetentionDays { days, .. } => {
             sqlx::query(
-                "UPDATE tenant_settings SET evidence_retention_days = $1, updated_at = NOW(), \
-                    updated_by = $2, approved_by = $3 WHERE id = 1",
+                "INSERT INTO tenant_settings (tenant_id, id, evidence_retention_days, updated_at, updated_by, approved_by) \
+                 VALUES ($1, 1, $2, NOW(), $3, $4) ON CONFLICT (tenant_id, id) DO UPDATE \
+                 SET evidence_retention_days = EXCLUDED.evidence_retention_days, updated_at = NOW(), \
+                     updated_by = EXCLUDED.updated_by, approved_by = EXCLUDED.approved_by",
             )
+            .bind(tenant_id)
             .bind(i32::try_from(*days).unwrap_or(i32::MAX))
             .bind(proposer)
             .bind(approver)
@@ -369,6 +376,7 @@ async fn apply_effect(
         } => {
             insert_tombstones(
                 tx,
+                tenant_id,
                 std::slice::from_ref(evidence_id),
                 reason.as_str(),
                 proposer,
@@ -377,7 +385,7 @@ async fn apply_effect(
             .await?;
         }
         GovernanceEffect::TombstoneSet { evidence_ids, .. } => {
-            insert_tombstones(tx, evidence_ids, "retention", proposer, approver).await?;
+            insert_tombstones(tx, tenant_id, evidence_ids, "retention", proposer, approver).await?;
         }
         GovernanceEffect::GrantRole {
             binding_id,
@@ -410,15 +418,17 @@ async fn apply_effect(
 
 async fn insert_tombstones(
     tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
     evidence_ids: &[String],
     reason: &str,
     proposer: &str,
     approver: &str,
 ) -> Result<(), ChangeStoreError> {
     sqlx::query(
-        "INSERT INTO evidence_tombstones (evidence_id, reason, actor_principal, approver_principal) \
-        SELECT id, $2, $3, $4 FROM UNNEST($1::TEXT[]) AS id",
+        "INSERT INTO evidence_tombstones (tenant_id, evidence_id, reason, actor_principal, approver_principal) \
+        SELECT $1, id, $3, $4, $5 FROM UNNEST($2::TEXT[]) AS id",
     )
+    .bind(tenant_id)
     .bind(evidence_ids)
     .bind(reason)
     .bind(proposer)
@@ -432,14 +442,16 @@ async fn insert_tombstones(
 /// Untombstoned evidence evaluated before `cutoff`, sorted by id.
 pub(crate) async fn retention_candidates<'e>(
     executor: impl sqlx::PgExecutor<'e>,
+    tenant_id: &str,
     cutoff: DateTime<Utc>,
 ) -> Result<Vec<String>, ChangeStoreError> {
     sqlx::query_scalar(
         "SELECT de.evidence_id FROM decision_events de \
-        WHERE de.evaluated_at < $1 \
-          AND NOT EXISTS (SELECT 1 FROM evidence_tombstones t WHERE t.evidence_id = de.evidence_id) \
+        WHERE de.tenant_id = $1 AND de.evaluated_at < $2 \
+          AND NOT EXISTS (SELECT 1 FROM evidence_tombstones t WHERE t.tenant_id = de.tenant_id AND t.evidence_id = de.evidence_id) \
         ORDER BY de.evidence_id",
     )
+    .bind(tenant_id)
     .bind(cutoff)
     .fetch_all(executor)
     .await

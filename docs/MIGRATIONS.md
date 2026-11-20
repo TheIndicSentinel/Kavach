@@ -8,6 +8,7 @@ How schema changes are made. Operators: how migrations run is in [INSTALL.md](IN
 - Each applied migration is tracked with its checksum in `_sqlx_migrations`. **Never edit a migration that has shipped.** Add a new one.
 - D17 migrations 029–031 replace the colliding later 026–028 filenames. Migration 032 restores snapshot and challenge grants in the complete `kavach_grant_runtime()` helper; check an existing database's `_sqlx_migrations` history before upgrading if it was created from the colliding pre-alpha files.
 - Migration 038 expands signed authority-update history for destination metadata and grants only the required runtime insert and ciphertext/version column updates. It is security relevant and requires independent review; the runtime role cannot update the pinned `source_system` or delete destination rows.
+- Migration 044 adds tenant attribution to existing credit evidence, chain heads and retention rows. It preserves legacy rows under `default` and v1 event hashes; the existing per-tenant v1 head is an intermediate step, while ADR-005 partition IDs and sequence numbers remain pending. The migration adds no table; its two runtime `INSERT` grants allow lazy initialization of tenant-scoped heads/settings and remain protected by the active-write guards.
 - Postgres tests (`crates/kavach-storage/tests/`) run every migration on a fresh database and on one built by the older runner (`migrations_apply_once_on_fresh_and_upgraded_databases`). They need `KAVACH_TEST_DATABASE_URL`, and CI sets it.
 
 ## Rules every migration follows

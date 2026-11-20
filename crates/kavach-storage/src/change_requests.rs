@@ -447,7 +447,7 @@ impl MemoryChangeStore {
             _ => commit
                 .effects
                 .iter()
-                .map(|effect| self.check_effect(effect))
+                .map(|effect| self.check_effect(&request.tenant_id, effect))
                 .collect::<Result<Vec<_>, _>>()?
                 .into_iter()
                 .flatten()
@@ -510,7 +510,7 @@ impl MemoryChangeStore {
             }
             GovernanceEffect::SetRetentionDays { days, .. } => {
                 self.retention
-                    .set_settings(*days, proposer, approver)
+                    .set_settings(tenant_id, *days, proposer, approver)
                     .map_err(io)?;
             }
             GovernanceEffect::Tombstone {
@@ -518,13 +518,19 @@ impl MemoryChangeStore {
                 reason,
             } => {
                 self.retention
-                    .tombstone(evidence_id, *reason, proposer, approver)
+                    .tombstone(tenant_id, evidence_id, *reason, proposer, approver)
                     .map_err(io)?;
             }
             GovernanceEffect::TombstoneSet { evidence_ids, .. } => {
                 for evidence_id in evidence_ids {
                     self.retention
-                        .tombstone(evidence_id, TombstoneReason::Retention, proposer, approver)
+                        .tombstone(
+                            tenant_id,
+                            evidence_id,
+                            TombstoneReason::Retention,
+                            proposer,
+                            approver,
+                        )
                         .map_err(io)?;
                 }
             }
@@ -554,14 +560,18 @@ impl MemoryChangeStore {
 
     /// Memory mode cannot re-derive retention candidates (the API holds the
     /// events); it checks that nothing in the set was tombstoned meanwhile.
-    fn check_effect(&self, effect: &GovernanceEffect) -> Result<Option<String>, ChangeStoreError> {
+    fn check_effect(
+        &self,
+        tenant_id: &str,
+        effect: &GovernanceEffect,
+    ) -> Result<Option<String>, ChangeStoreError> {
         let ids: Vec<&String> = match effect {
             GovernanceEffect::SetRetentionDays {
                 expected_current, ..
             } => {
                 let current = self
                     .retention
-                    .get_settings()
+                    .get_settings(tenant_id)
                     .map_err(io)?
                     .evidence_retention_days;
                 return Ok((current != *expected_current).then(|| {
@@ -588,7 +598,7 @@ impl MemoryChangeStore {
             _ => return Ok(None),
         };
         for id in ids {
-            if self.retention.is_tombstoned(id).map_err(io)? {
+            if self.retention.is_tombstoned(tenant_id, id).map_err(io)? {
                 return Ok(Some(format!("evidence already tombstoned: {id}")));
             }
         }

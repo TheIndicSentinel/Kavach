@@ -242,18 +242,22 @@ impl AdminBackend {
 }
 
 pub enum RetentionBackend {
-    Memory(Arc<MemoryRetentionStore>),
+    Memory(Arc<MemoryRetentionStore>, String),
     Postgres(PostgresRetentionStore),
 }
 
 impl RetentionBackend {
     pub fn memory() -> Self {
-        Self::Memory(Arc::new(MemoryRetentionStore::default()))
+        Self::memory_for_tenant("default")
+    }
+
+    pub fn memory_for_tenant(tenant_id: &str) -> Self {
+        Self::Memory(Arc::new(MemoryRetentionStore::default()), tenant_id.into())
     }
 
     pub async fn get_settings(&self) -> Result<RetentionSettings, RetentionStoreError> {
         match self {
-            Self::Memory(store) => store.get_settings(),
+            Self::Memory(store, tenant_id) => store.get_settings(tenant_id),
             Self::Postgres(store) => store.get_settings().await,
         }
     }
@@ -265,7 +269,9 @@ impl RetentionBackend {
         approver: &str,
     ) -> Result<RetentionSettings, RetentionStoreError> {
         match self {
-            Self::Memory(store) => store.set_settings(evidence_retention_days, actor, approver),
+            Self::Memory(store, tenant_id) => {
+                store.set_settings(tenant_id, evidence_retention_days, actor, approver)
+            }
             Self::Postgres(store) => {
                 store
                     .set_settings(evidence_retention_days, actor, approver)
@@ -282,7 +288,9 @@ impl RetentionBackend {
         approver: &str,
     ) -> Result<TombstoneRecord, RetentionStoreError> {
         match self {
-            Self::Memory(store) => store.tombstone(evidence_id, reason, actor, approver),
+            Self::Memory(store, tenant_id) => {
+                store.tombstone(tenant_id, evidence_id, reason, actor, approver)
+            }
             Self::Postgres(store) => store.tombstone(evidence_id, reason, actor, approver).await,
         }
     }
@@ -294,14 +302,14 @@ impl RetentionBackend {
         cutoff: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<Vec<String>>, RetentionStoreError> {
         match self {
-            Self::Memory(_) => Ok(None),
+            Self::Memory(_, _) => Ok(None),
             Self::Postgres(store) => store.candidates(cutoff).await.map(Some),
         }
     }
 
     pub async fn is_tombstoned(&self, evidence_id: &str) -> Result<bool, RetentionStoreError> {
         match self {
-            Self::Memory(store) => store.is_tombstoned(evidence_id),
+            Self::Memory(store, tenant_id) => store.is_tombstoned(tenant_id, evidence_id),
             Self::Postgres(store) => store.is_tombstoned(evidence_id).await,
         }
     }
@@ -311,7 +319,7 @@ impl RetentionBackend {
         limit: u32,
     ) -> Result<Vec<TombstoneRecord>, RetentionStoreError> {
         match self {
-            Self::Memory(store) => store.list_tombstones(limit),
+            Self::Memory(store, tenant_id) => store.list_tombstones(tenant_id, limit),
             Self::Postgres(store) => store.list_tombstones(i64::from(limit)).await,
         }
     }
@@ -323,13 +331,13 @@ impl RetentionBackend {
         approver: &str,
     ) -> Result<RetentionApplyReport, RetentionStoreError> {
         match self {
-            Self::Memory(store) => {
+            Self::Memory(store, tenant_id) => {
                 let candidates = memory_candidates.ok_or_else(|| {
                     RetentionStoreError::Io(
                         "memory retention requires candidate evidence ids".into(),
                     )
                 })?;
-                store.apply_retention(candidates, actor, approver)
+                store.apply_retention(tenant_id, candidates, actor, approver)
             }
             Self::Postgres(store) => store.apply_retention(actor, approver).await,
         }

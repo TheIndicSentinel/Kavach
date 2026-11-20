@@ -94,6 +94,55 @@ async fn evidence_appends_form_a_chain_and_replay_idempotently() {
     assert_linear_chain(&pool, 2).await;
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn evidence_and_retention_are_scoped_to_tenant() {
+    let Some(pool) = pool().await else { return };
+    let mut tenant_a = pool.evidence_store_for_tenant("retention-a");
+    let mut tenant_b = pool.evidence_store_for_tenant("retention-b");
+    let a = tenant_a
+        .append(event("shared-correlation", "digest-a", 0))
+        .unwrap();
+    let b = tenant_b
+        .append(event("shared-correlation", "digest-b", 0))
+        .unwrap();
+    assert_eq!(a.prev_hash, "0".repeat(64));
+    assert_eq!(b.prev_hash, "0".repeat(64));
+    assert!(tenant_a.event(&b.evidence_id).await.unwrap().is_none());
+    assert!(tenant_b.event(&a.evidence_id).await.unwrap().is_none());
+
+    let retention_a = pool.retention_store_for_tenant("retention-a");
+    let retention_b = pool.retention_store_for_tenant("retention-b");
+    retention_a.set_settings(30, "a", "b").await.unwrap();
+    assert_eq!(
+        retention_a
+            .get_settings()
+            .await
+            .unwrap()
+            .evidence_retention_days,
+        30
+    );
+    assert_eq!(
+        retention_b
+            .get_settings()
+            .await
+            .unwrap()
+            .evidence_retention_days,
+        365
+    );
+
+    retention_a
+        .tombstone(&a.evidence_id, TombstoneReason::DpdpErasure, "a", "b")
+        .await
+        .unwrap();
+    assert!(retention_a.is_tombstoned(&a.evidence_id).await.unwrap());
+    assert!(!retention_b.is_tombstoned(&a.evidence_id).await.unwrap());
+    assert!(retention_b
+        .candidates(Utc::now())
+        .await
+        .unwrap()
+        .contains(&b.evidence_id));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_appends_stay_linear() {
     let Some(pool) = pool().await else { return };

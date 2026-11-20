@@ -104,6 +104,10 @@ impl StoragePool {
         PostgresEvidenceStore::new(self.pool.clone())
     }
 
+    pub fn evidence_store_for_tenant(&self, tenant_id: &str) -> PostgresEvidenceStore {
+        PostgresEvidenceStore::new_for_tenant(self.pool.clone(), tenant_id)
+    }
+
     pub fn incident_store(&self) -> PostgresIncidentStore {
         PostgresIncidentStore::new(self.pool.clone())
     }
@@ -130,6 +134,10 @@ impl StoragePool {
 
     pub fn retention_store(&self) -> PostgresRetentionStore {
         PostgresRetentionStore::new(self.pool.clone())
+    }
+
+    pub fn retention_store_for_tenant(&self, tenant_id: &str) -> PostgresRetentionStore {
+        PostgresRetentionStore::new_for_tenant(self.pool.clone(), tenant_id)
     }
 
     pub fn agent_evidence_store(&self) -> PostgresAgentEvidenceStore {

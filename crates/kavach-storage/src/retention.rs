@@ -48,6 +48,8 @@ impl Default for RetentionSettings {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TombstoneRecord {
+    #[serde(skip_serializing, default)]
+    pub tenant_id: String,
     pub evidence_id: String,
     pub reason: TombstoneReason,
     pub actor_principal: String,
@@ -75,28 +77,30 @@ pub enum RetentionStoreError {
 
 #[derive(Default)]
 pub struct MemoryRetentionStore {
-    settings: Mutex<RetentionSettings>,
-    tombstones: Mutex<HashMap<String, TombstoneRecord>>,
+    settings: Mutex<HashMap<String, RetentionSettings>>,
+    tombstones: Mutex<HashMap<(String, String), TombstoneRecord>>,
 }
 
 impl MemoryRetentionStore {
-    pub fn get_settings(&self) -> Result<RetentionSettings, RetentionStoreError> {
+    pub fn get_settings(&self, tenant_id: &str) -> Result<RetentionSettings, RetentionStoreError> {
         self.settings
             .lock()
             .map_err(|_| RetentionStoreError::Io("lock poisoned".into()))
-            .map(|settings| settings.clone())
+            .map(|settings| settings.get(tenant_id).cloned().unwrap_or_default())
     }
 
     pub fn set_settings(
         &self,
+        tenant_id: &str,
         evidence_retention_days: u32,
         actor: &str,
         approver: &str,
     ) -> Result<RetentionSettings, RetentionStoreError> {
-        let mut settings = self
+        let mut all_settings = self
             .settings
             .lock()
             .map_err(|_| RetentionStoreError::Io("lock poisoned".into()))?;
+        let settings = all_settings.entry(tenant_id.into()).or_default();
         settings.evidence_retention_days = evidence_retention_days;
         settings.updated_at = Utc::now();
         settings.updated_by = Some(actor.into());
@@ -106,6 +110,7 @@ impl MemoryRetentionStore {
 
     pub fn tombstone(
         &self,
+        tenant_id: &str,
         evidence_id: &str,
         reason: TombstoneReason,
         actor: &str,
@@ -115,34 +120,48 @@ impl MemoryRetentionStore {
             .tombstones
             .lock()
             .map_err(|_| RetentionStoreError::Io("lock poisoned".into()))?;
-        if tombstones.contains_key(evidence_id) {
+        let key = (tenant_id.to_owned(), evidence_id.to_owned());
+        if tombstones.contains_key(&key) {
             return Err(RetentionStoreError::AlreadyTombstoned(evidence_id.into()));
         }
         let record = TombstoneRecord {
+            tenant_id: tenant_id.into(),
             evidence_id: evidence_id.into(),
             reason,
             actor_principal: actor.into(),
             approver_principal: approver.into(),
             tombstoned_at: Utc::now(),
         };
-        tombstones.insert(evidence_id.into(), record.clone());
+        tombstones.insert(key, record.clone());
         Ok(record)
     }
 
-    pub fn is_tombstoned(&self, evidence_id: &str) -> Result<bool, RetentionStoreError> {
+    pub fn is_tombstoned(
+        &self,
+        tenant_id: &str,
+        evidence_id: &str,
+    ) -> Result<bool, RetentionStoreError> {
         let tombstones = self
             .tombstones
             .lock()
             .map_err(|_| RetentionStoreError::Io("lock poisoned".into()))?;
-        Ok(tombstones.contains_key(evidence_id))
+        Ok(tombstones.contains_key(&(tenant_id.into(), evidence_id.into())))
     }
 
-    pub fn list_tombstones(&self, limit: u32) -> Result<Vec<TombstoneRecord>, RetentionStoreError> {
+    pub fn list_tombstones(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> Result<Vec<TombstoneRecord>, RetentionStoreError> {
         let tombstones = self
             .tombstones
             .lock()
             .map_err(|_| RetentionStoreError::Io("lock poisoned".into()))?;
-        let mut records: Vec<_> = tombstones.values().cloned().collect();
+        let mut records: Vec<_> = tombstones
+            .values()
+            .filter(|r| r.tenant_id == tenant_id)
+            .cloned()
+            .collect();
         records.sort_by_key(|record| std::cmp::Reverse(record.tombstoned_at));
         records.truncate(limit as usize);
         Ok(records)
@@ -150,6 +169,7 @@ impl MemoryRetentionStore {
 
     pub fn apply_retention(
         &self,
+        tenant_id: &str,
         candidate_ids: &[String],
         actor: &str,
         approver: &str,
@@ -159,7 +179,8 @@ impl MemoryRetentionStore {
             .lock()
             .map_err(|_| RetentionStoreError::Io("lock poisoned".into()))?
             .keys()
-            .cloned()
+            .filter(|(tenant, _)| tenant == tenant_id)
+            .map(|(_, id)| id.clone())
             .collect();
 
         let mut evidence_ids = Vec::new();
@@ -167,7 +188,13 @@ impl MemoryRetentionStore {
             if existing.contains(evidence_id) {
                 continue;
             }
-            self.tombstone(evidence_id, TombstoneReason::Retention, actor, approver)?;
+            self.tombstone(
+                tenant_id,
+                evidence_id,
+                TombstoneReason::Retention,
+                actor,
+                approver,
+            )?;
             evidence_ids.push(evidence_id.clone());
         }
 
