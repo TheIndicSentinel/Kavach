@@ -11,6 +11,8 @@ What Kavach's gateway path costs, how it is measured, and which figures may be q
 
 Until the reference run exists, quote only CI trends, and say that they are trends.
 
+**Owner-directed hold (2026-11-20):** the qualifying reference-machine run is on hold under the owner's free-resource-only constraint. It requires a dedicated Ubuntu 24.04 VM with 4 vCPUs and 16 GB RAM plus local TLS Postgres 16; the documented Mac diagnostics are non-qualifying. Resume when a matching free machine is available or the owner changes this constraint. Do not provision a paid VM or report the existing diagnostics as NFR results.
+
 ## The targets (PRD NFR-2)
 
 On the reference hardware (ADR-003 §10: 4 CPU cores, 16 GB RAM, local PostgreSQL 16):

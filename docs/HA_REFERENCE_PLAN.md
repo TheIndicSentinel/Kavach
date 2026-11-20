@@ -37,6 +37,8 @@ The traffic switch is manual between the two addresses. Check `/ready` with an o
 
 The replica deployment gate remains closed until CI has successfully run the acceptance harness. To run it locally, use `scripts/test-ha-compose-acceptance.sh`; it requires Docker Compose, Rust, OpenSSL, and curl. It builds and starts a separate temporary stack and removes its uniquely named volume on exit. The API container image is built by Compose. To validate only the merged configuration without starting containers:
 
+**Owner-directed hold (2026-11-20):** the containerized failover acceptance is on hold because the local Docker daemon is unavailable and CI cannot currently be queried from this environment. The owner previously asked to skip Docker work for now. Keep the replica deployment gate closed; resume only when the owner requests Docker acceptance or supplies a successful CI result. Local PostgreSQL fault tests and Compose configuration validation remain runnable and do not clear this gate.
+
 ```bash
 POSTGRES_PASSWORD=compose-check \
 KAVACH_RUNTIME_DB_PASSWORD=compose-check \

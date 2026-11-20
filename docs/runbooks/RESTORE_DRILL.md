@@ -1,6 +1,6 @@
 # Runbook: Restore Drill
 
-**Status: Draft.** A synthetic-only local rehearsal passed on 2026-11-19 (recorded below); the deployment restore drill has not been run. The synthetic rehearsal does not measure deployment recovery objectives or satisfy SLO E-6.
+**Status: Draft; deployment drill on hold.** A synthetic-only local rehearsal passed on 2026-11-19 (recorded below); the deployment restore drill has not been run. The owner has asked to keep it on hold until deployment materials are available: a real backup, off-host checkpoint copy, trusted public-key set, and separate scratch host. The synthetic rehearsal does not measure deployment recovery objectives or satisfy SLO E-6. Resume only with those materials; do not treat the synthetic rehearsal as a qualifying drill.
 
 **For:** the operator of a single-instance `kavach-api` with Postgres. **Goal:** show that a backup of the deployment's database can be restored into a scratch instance, that the restored evidence chain verifies against a checkpoint kept off-host, and how much was lost (recovery point) and how long it took (recovery time).
 
