@@ -215,6 +215,30 @@ fn scenario7_delegated_read_only_mandate_cannot_update() {
 }
 
 #[test]
+fn model_actions_are_separate_and_require_the_matching_mandate_grant() {
+    let mut m = mandate();
+    m.actions = set(&["invoke_collections_model"]);
+    assert_eq!(
+        decide(&request(&m, AgentAction::InvokeCollectionsModel)).0,
+        Decision::Pass
+    );
+    assert_eq!(
+        decide(&request(&m, AgentAction::InvokeTranslationModel)).0,
+        Decision::Block
+    );
+
+    m.actions = set(&["invoke_translation_model"]);
+    assert_eq!(
+        decide(&request(&m, AgentAction::InvokeCollectionsModel)).0,
+        Decision::Block
+    );
+    assert_eq!(
+        decide(&request(&m, AgentAction::InvokeTranslationModel)).0,
+        Decision::Pass
+    );
+}
+
+#[test]
 fn a_restricted_agent_reads_and_does_nothing_with_an_effect() {
     let m = mandate();
     let mut r = request(&m, AgentAction::ReadFields);

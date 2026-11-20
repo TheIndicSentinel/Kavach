@@ -50,15 +50,19 @@ pub enum AgentAction {
     PlaceCall,
     ProposePlan,
     UpdateStatus,
+    InvokeCollectionsModel,
+    InvokeTranslationModel,
 }
 
 impl AgentAction {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::ReadFields,
         Self::SendReminder,
         Self::PlaceCall,
         Self::ProposePlan,
         Self::UpdateStatus,
+        Self::InvokeCollectionsModel,
+        Self::InvokeTranslationModel,
     ];
 
     /// Name used in the Cedar schema and in `Mandate::actions`.
@@ -69,6 +73,8 @@ impl AgentAction {
             Self::PlaceCall => "place_call",
             Self::ProposePlan => "propose_plan",
             Self::UpdateStatus => "update_status",
+            Self::InvokeCollectionsModel => "invoke_collections_model",
+            Self::InvokeTranslationModel => "invoke_translation_model",
         }
     }
 

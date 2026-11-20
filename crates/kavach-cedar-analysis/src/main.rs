@@ -21,7 +21,7 @@ use kavach_auth::{API_POLICIES, API_SCHEMA};
 use kavach_authz::{AGENT_POLICIES, AGENT_SCHEMA};
 
 /// (name, policy permitting exactly the requests the property forbids).
-const PROPERTIES: [(&str, &str); 18] = [
+const PROPERTIES: [(&str, &str); 20] = [
     (
         "no waiver above the mandate ceiling is allowed without an action-bound approval",
         r#"permit (principal, action == Kavach::Agent::Action::"propose_plan", resource)
@@ -67,6 +67,16 @@ const PROPERTIES: [(&str, &str); 18] = [
            when { !context.mandate_actions.contains("update_status") };"#,
     ),
     (
+        "collections model invocation requires its exact mandate action",
+        r#"permit (principal, action == Kavach::Agent::Action::"invoke_collections_model", resource)
+           when { !context.mandate_actions.contains("invoke_collections_model") };"#,
+    ),
+    (
+        "translation model invocation requires its exact mandate action",
+        r#"permit (principal, action == Kavach::Agent::Action::"invoke_translation_model", resource)
+           when { !context.mandate_actions.contains("invoke_translation_model") };"#,
+    ),
+    (
         "no action is allowed for anyone but the mandate holder",
         r"permit (principal, action, resource)
            when { principal != context.mandate_holder };",
@@ -103,7 +113,7 @@ const PROPERTIES: [(&str, &str); 18] = [
     ),
     (
         "a restricted agent is allowed nothing but reading fields",
-        r#"permit (principal, action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call", Kavach::Agent::Action::"propose_plan", Kavach::Agent::Action::"update_status"], resource)
+        r#"permit (principal, action in [Kavach::Agent::Action::"send_reminder", Kavach::Agent::Action::"place_call", Kavach::Agent::Action::"propose_plan", Kavach::Agent::Action::"update_status", Kavach::Agent::Action::"invoke_collections_model", Kavach::Agent::Action::"invoke_translation_model"], resource)
            when { context.agent_restricted };"#,
     ),
     (

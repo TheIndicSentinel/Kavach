@@ -527,6 +527,7 @@ fn required_for(action: AgentAction) -> &'static [&'static str] {
         AgentAction::SendReminder | AgentAction::PlaceCall => &["channel"],
         AgentAction::ProposePlan => &["waiver_bps"],
         AgentAction::UpdateStatus => &[],
+        AgentAction::InvokeCollectionsModel | AgentAction::InvokeTranslationModel => &[],
     }
 }
 

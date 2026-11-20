@@ -31,6 +31,7 @@ namespace Kavach::Agent {
     approval_valid: Bool,
   };
 
-  action read_fields, send_reminder, place_call, propose_plan, update_status
+  action read_fields, send_reminder, place_call, propose_plan, update_status,
+    invoke_collections_model, invoke_translation_model
     appliesTo { principal: [Agent], resource: [Subject], context: AuthzContext };
 }

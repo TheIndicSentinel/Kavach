@@ -41,6 +41,20 @@ when {
   context.mandate_actions.contains("update_status")
 };
 
+@id("permit-invoke-collections-model")
+permit (principal, action == Kavach::Agent::Action::"invoke_collections_model", resource)
+when {
+  principal == context.mandate_holder &&
+  context.mandate_actions.contains("invoke_collections_model")
+};
+
+@id("permit-invoke-translation-model")
+permit (principal, action == Kavach::Agent::Action::"invoke_translation_model", resource)
+when {
+  principal == context.mandate_holder &&
+  context.mandate_actions.contains("invoke_translation_model")
+};
+
 @id("subject-binding")
 forbid (principal, action, resource)
 when { resource != context.mandate_subject };
@@ -135,7 +149,9 @@ forbid (
     Kavach::Agent::Action::"send_reminder",
     Kavach::Agent::Action::"place_call",
     Kavach::Agent::Action::"propose_plan",
-    Kavach::Agent::Action::"update_status"
+    Kavach::Agent::Action::"update_status",
+    Kavach::Agent::Action::"invoke_collections_model",
+    Kavach::Agent::Action::"invoke_translation_model"
   ],
   resource
 )
