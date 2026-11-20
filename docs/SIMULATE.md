@@ -2,6 +2,8 @@
 
 `kavach simulate` runs synthetic agents over simulated days against a real development stack, and judges every decision with a small oracle that shares nothing with the agents. It shows that these synthetic scenarios behave as expected on this machine. **It is not a security assessment**, and it proves nothing about real providers, networks or data. Every report lists what it does not cover first.
 
+**Validation record (2026-11-20):** `mixed-week --seed 42` passed after the simulator aligned its generated consent and preference fixtures to the fixed scenario calendar. The run reported 200 synthetic calls; its ledger, evidence and mock-provider inbox reconciled consistently, with 0 violations, 0 mismatches and 0 leaks. This is synthetic local validation, not a security assessment.
+
 ```bash
 kavach simulate list                                   # the built-in scenarios; nothing runs
 kavach simulate run                                    # normal-day
@@ -14,6 +16,7 @@ kavach simulate run my-scenario.yaml --seed 42 --report report.json --keep
 1. **A throwaway project** in a temporary directory, made the way `kavach init` makes one but holding the scenario's world:
    - **borrowers:** opaque `ref:borrower:S-0001` references, synthetic `+910…` destinations, and one consent each;
    - **agents:** each with its own token and passport, all eligible under the mandate template.
+   - Consent and contact-preference validity dates are aligned to the simulator's fixed calendar, so runs remain valid regardless of the host's current date.
 
    It is deleted afterwards, also on Ctrl-C, unless `--keep`. A run never attaches to a running stack.
 2. **Its own stack:** `kavach dev up --clock <first slot> --export-on-exit <dir>`, on distinct free loopback ports, with a fixed development clock.

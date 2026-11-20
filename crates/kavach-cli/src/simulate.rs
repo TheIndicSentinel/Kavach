@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use kavach_sim::driver::{self, Issued, Stack};
 use kavach_sim::oracle::Rules;
 use kavach_sim::reconcile::{
@@ -108,9 +108,10 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
         evidence.display().to_string(),
     ]);
     crate::init::create(&scene.dir, &world.devkit()).await?;
+    let project = Project::find(&scene.dir)?;
+    align_authority_fixture_times(&project.kavach_dir(), &scenario, start)?;
     scene.start_stack()?;
 
-    let project = Project::find(&scene.dir)?;
     let live = Live::new(&project, start)?;
     let ledger = driver::run(&live, &scenario, &world).await;
     // The provider's own record, read before the stack (and its inbox) stops.
@@ -191,6 +192,62 @@ pub async fn run(ui: &Ui, ask: &Ask<'_>) -> Result<i32, CliError> {
     let code = ui.finish("simulate run", status, &data, &human);
     // 2 is "inconclusive" here (no evidence to judge by), as Status maps it.
     Ok(code)
+}
+
+/// The simulator uses a fixed calendar (starting 2026-10-01), while the
+/// generic devkit fixtures are dated relative to the host clock. Give only
+/// this throwaway world consent and preference windows that cover its run.
+fn align_authority_fixture_times(
+    kavach_dir: &Path,
+    scenario: &Scenario,
+    start: DateTime<Utc>,
+) -> Result<(), CliError> {
+    let slots = scenario
+        .slots()
+        .map_err(|e| CliError::new("the scenario schedule is invalid", e))?;
+    let last_slot = *slots
+        .last()
+        .ok_or_else(|| CliError::new("the scenario schedule is empty", "no time slots"))?;
+    let last_at = kavach_sim::calendar::slot(scenario.days, last_slot);
+    let valid_from = (start - ChronoDuration::days(1)).to_rfc3339();
+    let data_from = (start - ChronoDuration::days(30)).to_rfc3339();
+    let valid_until = (last_at + ChronoDuration::days(1)).to_rfc3339();
+
+    let consents_path = kavach_dir.join("consents.json");
+    let consent_text = std::fs::read_to_string(&consents_path)
+        .map_err(|e| CliError::new("cannot read consents.json", e))?;
+    let mut consents: Value = serde_json::from_str(&consent_text)
+        .map_err(|e| CliError::new("consents.json is not valid", e))?;
+    let consent_rows = consents
+        .as_array_mut()
+        .ok_or_else(|| CliError::new("consents.json is not a list", "expected array"))?;
+    for consent in consent_rows {
+        consent["expires_at"] = json!(valid_until);
+        consent["artefact"]["valid_from"] = json!(valid_from);
+        consent["artefact"]["data_from"] = json!(data_from);
+        consent["artefact"]["data_to"] = json!(valid_until);
+    }
+    let consents = serde_json::to_vec_pretty(&consents)
+        .map_err(|e| CliError::new("cannot format synthetic consent dates", e))?;
+    std::fs::write(&consents_path, consents)
+        .map_err(|e| CliError::new("cannot align synthetic consent dates", e))?;
+
+    let preferences_path = kavach_dir.join("contact-preferences.json");
+    let preference_text = std::fs::read_to_string(&preferences_path)
+        .map_err(|e| CliError::new("cannot read contact-preferences.json", e))?;
+    let mut preferences: Value = serde_json::from_str(&preference_text)
+        .map_err(|e| CliError::new("contact-preferences.json is not valid", e))?;
+    let preference_rows = preferences
+        .as_array_mut()
+        .ok_or_else(|| CliError::new("contact-preferences.json is not a list", "expected array"))?;
+    for preference in preference_rows {
+        preference["valid_from"] = json!(valid_from);
+        preference["expires_at"] = json!(valid_until);
+    }
+    let preferences = serde_json::to_vec_pretty(&preferences)
+        .map_err(|e| CliError::new("cannot format synthetic contact-preference dates", e))?;
+    std::fs::write(&preferences_path, preferences)
+        .map_err(|e| CliError::new("cannot align synthetic contact-preference dates", e))
 }
 
 /// The bundle's decisions, outcomes, revocation records and agent-state

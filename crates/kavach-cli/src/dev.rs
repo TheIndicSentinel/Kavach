@@ -127,10 +127,14 @@ fn api_config(project: &Project, clock: Option<Arc<DevClock>>) -> ApiConfig {
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
         roles: kavach_api::RolesConfig::default(),
+        review_snapshot_key_file: None,
+        review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
+        review_snapshot_previous_keys: Vec::new(),
         migration_database_url: None,
         database_tls: DatabaseTls::development(),
         database_pool_size: DEFAULT_POOL_SIZE,
         dataplane: Some(dataplane_config(project, clock)),
+        credit_checkpoint: None,
     }
 }
 
