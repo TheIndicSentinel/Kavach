@@ -89,6 +89,8 @@ pub struct Stopped {
     pub still_in_flight: usize,
     /// The final checkpoint's result; `None` without agent surfaces.
     pub checkpoint: Option<kavach_dataplane::checkpointer::Tick>,
+    /// The final credit chain checkpoint result; `None` without agent surfaces.
+    pub credit_checkpoint: Option<kavach_dataplane::checkpointer::Tick>,
 }
 
 impl Stopped {
@@ -100,6 +102,10 @@ impl Stopped {
         self.still_in_flight == 0
             && self
                 .checkpoint
+                .as_ref()
+                .is_none_or(|t| matches!(t, Tick::Covered | Tick::Written { .. }))
+            && self
+                .credit_checkpoint
                 .as_ref()
                 .is_none_or(|t| matches!(t, Tick::Covered | Tick::Written { .. }))
     }
@@ -116,6 +122,7 @@ pub async fn drain_and_checkpoint(
         return Stopped {
             still_in_flight: 0,
             checkpoint: None,
+            credit_checkpoint: None,
         };
     };
     let still_in_flight = dp.in_flight().drain(deadline).await;
@@ -123,9 +130,14 @@ pub async fn drain_and_checkpoint(
         .checkpointer()
         .checkpoint_now(std::time::Instant::now())
         .await;
+    let credit_report = dp
+        .credit_checkpointer()
+        .checkpoint_now(std::time::Instant::now())
+        .await;
     Stopped {
         still_in_flight,
         checkpoint: Some(report.tick),
+        credit_checkpoint: Some(credit_report.tick),
     }
 }
 
@@ -157,19 +169,21 @@ where
     let stopped = drain_and_checkpoint(dataplane, left).await;
     if listeners_drained && stopped.clean() {
         tracing::info!(
-            "shutdown complete in {} ms: every gateway call finished; final checkpoint {:?}",
+            "shutdown complete in {} ms: every gateway call finished; final agent checkpoint {:?}, final credit checkpoint {:?}",
             began.elapsed().as_millis(),
-            stopped.checkpoint
+            stopped.checkpoint,
+            stopped.credit_checkpoint
         );
         return Ok(());
     }
     tracing::error!(
         "ALERT shutdown was not clean after {}s: listeners drained={listeners_drained}, {} \
-         gateway call(s) still in flight, final checkpoint {:?}. A call cut off between send \
+         gateway call(s) still in flight, final agent checkpoint {:?}, final credit checkpoint {:?}. A call cut off between send \
          and outcome is reported as outcome_missing",
         grace.as_secs(),
         stopped.still_in_flight,
-        stopped.checkpoint
+        stopped.checkpoint,
+        stopped.credit_checkpoint
     );
     Err("shutdown was not clean (see the ALERT above)".into())
 }

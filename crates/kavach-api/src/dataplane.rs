@@ -973,6 +973,7 @@ pub struct Dataplane {
     mandates: Arc<Mandates>,
     core: Arc<AuthorizeCore<Arc<Mandates>, EvidenceBackend>>,
     checkpointer: Arc<Checkpointer<EvidenceBackend>>,
+    credit_checkpointer: Arc<Checkpointer<EvidenceBackend>>,
     agents: Arc<OidcVerifier>,
     passports: BTreeSet<(String, String)>,
     tenant: String,
@@ -1028,7 +1029,7 @@ impl Dataplane {
         refuse_dev_key("credential", &config.credential_key_id, insecure_dev)?;
         let tools = Arc::new(load_tools(config, pack_signers, insecure_dev)?);
         let clock = dataplane_clock(config, insecure_dev)?;
-        let (store, replay, evidence) = select_stores(pool, insecure_dev)?;
+        let (store, replay, evidence) = select_stores(pool, insecure_dev, &config.tenant_id)?;
 
         let sources = open_key_sources(config, insecure_dev)?;
         let keys = sources.keys(HsmRole::Mandate, &config.mandate_keys_dir);
@@ -1112,6 +1113,15 @@ impl Dataplane {
             checkpoint_signer(config, &mandate_kid, &sources).await?,
             &clock,
             &authorize,
+            kavach_ports::checkpoint::CHAIN_AGENT_DECISIONS,
+        ));
+        let credit_checkpointer = Arc::new(build_checkpointer(
+            config,
+            &evidence,
+            checkpoint_signer(config, &mandate_kid, &sources).await?,
+            &clock,
+            &authorize,
+            kavach_ports::checkpoint::CHAIN_DECISION_EVENTS,
         ));
         let core = AuthorizeCore::new(
             Arc::clone(&mandates),
@@ -1136,6 +1146,7 @@ impl Dataplane {
             mandates,
             core: Arc::new(core),
             checkpointer,
+            credit_checkpointer,
             agents,
             passports,
             tenant: config.tenant_id.clone(),
@@ -1253,6 +1264,11 @@ impl Dataplane {
     /// The checkpoint writer's state (the background task ticks it).
     pub fn checkpointer(&self) -> &Arc<Checkpointer<EvidenceBackend>> {
         &self.checkpointer
+    }
+
+    /// The credit decision-event checkpoint writer's state.
+    pub fn credit_checkpointer(&self) -> &Arc<Checkpointer<EvidenceBackend>> {
+        &self.credit_checkpointer
     }
 
     pub fn mandates(&self) -> &Arc<Mandates> {
@@ -1647,13 +1663,15 @@ fn build_checkpointer(
     signer: Box<dyn EvidenceSigner>,
     clock: &ClockBackend,
     authorize: &AuthorizeConfig,
+    chain: &str,
 ) -> Checkpointer<EvidenceBackend> {
-    Checkpointer::new(
+    Checkpointer::new_for_chain(
         Arc::clone(evidence),
         signer,
         Box::new(clock.clone()),
         &authorize.tenant_id,
         authorize.partition_id,
+        chain,
         CheckpointPolicy {
             every: std::time::Duration::from_secs(config.checkpoint_interval_seconds),
             stall_after: std::time::Duration::from_secs(config.checkpoint_stall_seconds),
@@ -1861,12 +1879,13 @@ fn select_clock(insecure_dev: bool) -> Result<ClockBackend, String> {
 fn select_stores(
     pool: Option<&StoragePool>,
     insecure_dev: bool,
+    tenant_id: &str,
 ) -> Result<(MandateStoreBackend, ReplayBackend, EvidenceBackend), String> {
     Ok(match pool {
         Some(pool) => (
             MandateStoreBackend::Postgres(pool.mandate_store()),
             ReplayBackend::Postgres(pool.replay_guard()),
-            EvidenceBackend::Postgres(pool.agent_evidence_store()),
+            EvidenceBackend::Postgres(pool.agent_evidence_store_for_tenant(tenant_id)),
         ),
         None if insecure_dev => (
             MandateStoreBackend::Memory(InMemoryMandateStore::new()),

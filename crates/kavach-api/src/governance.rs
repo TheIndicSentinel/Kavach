@@ -48,6 +48,9 @@ pub struct RuntimeView {
     /// Evidence checkpoint health; present when the agent surfaces are on.
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     pub checkpoints: Option<crate::checkpoints::CheckpointView>,
+    /// Credit decision-event checkpoint health, when the agent surfaces are on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credit_checkpoints: Option<crate::checkpoints::CheckpointView>,
     /// The development clock (`kavach dev up --at` / `--clock`), when the
     /// stack runs with one: its kind and time. Never present in production.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -90,6 +93,9 @@ pub async fn runtime(
         checkpoints: state
             .dataplane()
             .map(|dp| crate::checkpoints::CheckpointView::of(dp.checkpointer())),
+        credit_checkpoints: state
+            .dataplane()
+            .map(|dp| crate::checkpoints::CheckpointView::of(dp.credit_checkpointer())),
         dev_clock: state
             .dataplane()
             .and_then(|dp| dp.dev_clock())

@@ -1004,6 +1004,13 @@ export interface components {
             model_pack_mismatch: boolean;
             stored_pointer_version: number;
             pointer_drift: boolean;
+            /** @description Credit decision-event checkpoint health when agent surfaces are configured. */
+            credit_checkpoints?: {
+                checkpoint_lag_seconds: number;
+                checkpoint_stalled: boolean;
+                checkpoint_last_seq: number | null;
+                checkpoint_uncovered_records: number;
+            };
             /** @description The process runs with `--insecure-dev` (local development only). */
             insecure_dev: boolean;
             /** @description The process was started with `--require-hardening`: it refused to start unless every guarantee was on, and `POST /v1/dev/clock` is not mounted. */

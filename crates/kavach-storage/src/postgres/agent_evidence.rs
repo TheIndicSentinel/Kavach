@@ -57,6 +57,7 @@ fn decision_str(decision: Decision) -> String {
 #[derive(Clone)]
 pub struct PostgresAgentEvidenceStore {
     pool: PgPool,
+    credit_checkpoints: super::evidence::PostgresEvidenceStore,
 }
 
 type Existing = (AgentDecisionRecord, RequestBinding);
@@ -196,7 +197,18 @@ async fn find<'e>(
 impl PostgresAgentEvidenceStore {
     #[must_use]
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self::new_for_tenant(pool, "default")
+    }
+
+    #[must_use]
+    pub fn new_for_tenant(pool: PgPool, tenant_id: &str) -> Self {
+        Self {
+            credit_checkpoints: super::evidence::PostgresEvidenceStore::new_for_tenant(
+                pool.clone(),
+                tenant_id,
+            ),
+            pool,
+        }
     }
 
     /// Locks the partition head and returns it. One round trip on every
@@ -985,6 +997,9 @@ fn row_to_checkpoint(row: &sqlx::postgres::PgRow) -> Result<Checkpoint, PortErro
 /// writers run.
 impl CheckpointStore for PostgresAgentEvidenceStore {
     async fn head(&self, scope: Scope<'_>) -> Result<Option<(i64, String)>, PortError> {
+        if scope.chain == kavach_ports::checkpoint::CHAIN_DECISION_EVENTS {
+            return self.credit_checkpoints.head(scope).await;
+        }
         if scope.chain != CHAIN_AGENT_DECISIONS {
             return Ok(None);
         }
@@ -1005,6 +1020,9 @@ impl CheckpointStore for PostgresAgentEvidenceStore {
     }
 
     async fn latest(&self, scope: Scope<'_>) -> Result<Option<Checkpoint>, PortError> {
+        if scope.chain == kavach_ports::checkpoint::CHAIN_DECISION_EVENTS {
+            return self.credit_checkpoints.latest(scope).await;
+        }
         let row = sqlx::query(
             "SELECT payload, hash, sig FROM evidence_checkpoints \
             WHERE tenant_id = $1 AND partition_id = $2 AND chain = $3 \
@@ -1020,6 +1038,9 @@ impl CheckpointStore for PostgresAgentEvidenceStore {
     }
 
     async fn append(&self, checkpoint: &Checkpoint) -> Result<Appended, PortError> {
+        if checkpoint.payload.chain == kavach_ports::checkpoint::CHAIN_DECISION_EVENTS {
+            return self.credit_checkpoints.append(checkpoint).await;
+        }
         check_storable(checkpoint)?;
         let p = &checkpoint.payload;
         if p.chain != CHAIN_AGENT_DECISIONS {
@@ -1083,6 +1104,9 @@ impl CheckpointStore for PostgresAgentEvidenceStore {
         after_seq: i64,
         limit: u32,
     ) -> Result<Vec<Checkpoint>, PortError> {
+        if scope.chain == kavach_ports::checkpoint::CHAIN_DECISION_EVENTS {
+            return self.credit_checkpoints.list(scope, after_seq, limit).await;
+        }
         let rows = sqlx::query(
             "SELECT payload, hash, sig FROM evidence_checkpoints \
             WHERE tenant_id = $1 AND partition_id = $2 AND chain = $3 AND seq > $4 \

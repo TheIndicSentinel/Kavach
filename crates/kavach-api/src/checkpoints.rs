@@ -51,24 +51,35 @@ fn observe<S: CheckpointStore>(
     report: &TickReport,
     checkpointer: &Checkpointer<S>,
     metrics: &Metrics,
+    chain: &str,
 ) {
     match &report.tick {
         Tick::Covered | Tick::Waiting => {}
         Tick::Written { seq } => {
-            metrics.observe_checkpoint_written();
-            tracing::info!(seq, "evidence checkpoint written");
+            if chain == kavach_ports::checkpoint::CHAIN_DECISION_EVENTS {
+                metrics.observe_credit_checkpoint_written();
+            } else {
+                metrics.observe_checkpoint_written();
+            }
+            tracing::info!(seq, chain, "evidence checkpoint written");
         }
         Tick::Skipped { reason, detail } => {
-            metrics.observe_checkpoint_skipped(reason.as_str());
+            if chain == kavach_ports::checkpoint::CHAIN_DECISION_EVENTS {
+                metrics.observe_credit_checkpoint_skipped(reason.as_str());
+            } else {
+                metrics.observe_checkpoint_skipped(reason.as_str());
+            }
             match reason {
                 // Another replica wrote it: nothing is wrong.
                 Skip::Superseded => tracing::debug!(reason = reason.as_str(), "{detail}"),
                 Skip::ChainBehindCheckpoint => tracing::error!(
                     reason = reason.as_str(),
+                    chain,
                     "ALERT evidence checkpoint: {detail}"
                 ),
                 _ => tracing::warn!(
                     reason = reason.as_str(),
+                    chain,
                     "evidence checkpoint not written: {detail}"
                 ),
             }
@@ -77,22 +88,31 @@ fn observe<S: CheckpointStore>(
     match report.stall {
         Some(StallChange::Began { lag_seconds }) => tracing::error!(
             lag_seconds,
+            chain,
             "ALERT evidence checkpoints stalled: records have had no checkpoint for \
              {lag_seconds} seconds"
         ),
-        Some(StallChange::Ended) => tracing::info!("evidence checkpoints recovered"),
+        Some(StallChange::Ended) => tracing::info!(chain, "evidence checkpoints recovered"),
         None => {}
     }
-    metrics.set_checkpoint_status(&checkpointer.status(Instant::now()));
+    if chain == kavach_ports::checkpoint::CHAIN_DECISION_EVENTS {
+        metrics.set_credit_checkpoint_status(&checkpointer.status(Instant::now()));
+    } else {
+        metrics.set_checkpoint_status(&checkpointer.status(Instant::now()));
+    }
 }
 
-async fn run<S: CheckpointStore>(checkpointer: Arc<Checkpointer<S>>, metrics: Metrics) {
+async fn run<S: CheckpointStore>(
+    checkpointer: Arc<Checkpointer<S>>,
+    metrics: Metrics,
+    chain: &'static str,
+) {
     let mut interval = tokio::time::interval(TICK);
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
         let report = checkpointer.tick(Instant::now()).await;
-        observe(&report, &checkpointer, &metrics);
+        observe(&report, &checkpointer, &metrics, chain);
     }
 }
 
@@ -133,8 +153,29 @@ pub fn spawn_writer<S: CheckpointStore + 'static>(
     metrics: Metrics,
 ) -> tokio::task::JoinHandle<()> {
     supervise("evidence checkpoint writer", RESTART_DELAY, move || {
-        run(Arc::clone(&checkpointer), metrics.clone())
+        run(
+            Arc::clone(&checkpointer),
+            metrics.clone(),
+            kavach_ports::checkpoint::CHAIN_AGENT_DECISIONS,
+        )
     })
+}
+
+pub fn spawn_credit_writer<S: CheckpointStore + 'static>(
+    checkpointer: Arc<Checkpointer<S>>,
+    metrics: Metrics,
+) -> tokio::task::JoinHandle<()> {
+    supervise(
+        "credit evidence checkpoint writer",
+        RESTART_DELAY,
+        move || {
+            run(
+                Arc::clone(&checkpointer),
+                metrics.clone(),
+                kavach_ports::checkpoint::CHAIN_DECISION_EVENTS,
+            )
+        },
+    )
 }
 
 /// Starts the writer when the agent surfaces are on. It runs for the life
@@ -142,6 +183,7 @@ pub fn spawn_writer<S: CheckpointStore + 'static>(
 pub fn start(dataplane: Option<&crate::dataplane::Dataplane>, metrics: &Metrics) {
     if let Some(dataplane) = dataplane {
         spawn_writer(Arc::clone(dataplane.checkpointer()), metrics.clone());
+        spawn_credit_writer(Arc::clone(dataplane.credit_checkpointer()), metrics.clone());
     }
 }
 

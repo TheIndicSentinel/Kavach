@@ -148,6 +148,10 @@ impl StoragePool {
         PostgresAgentEvidenceStore::new(self.pool.clone())
     }
 
+    pub fn agent_evidence_store_for_tenant(&self, tenant_id: &str) -> PostgresAgentEvidenceStore {
+        PostgresAgentEvidenceStore::new_for_tenant(self.pool.clone(), tenant_id)
+    }
+
     pub fn mandate_store(&self) -> PostgresMandateStore {
         PostgresMandateStore::new(self.pool.clone())
     }

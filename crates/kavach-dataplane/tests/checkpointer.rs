@@ -12,7 +12,7 @@ use kavach_dataplane::{CheckpointPolicy, Checkpointer, Skip, StallChange, Tick};
 use kavach_ports::agent_evidence::{AgentEvidenceStore, CommitResult, DevKeys, SegmentStart};
 use kavach_ports::checkpoint::{
     verify_checkpoints, Appended, ChainSegment, Checkpoint, CheckpointStore, Scope,
-    CHAIN_AGENT_DECISIONS,
+    CHAIN_AGENT_DECISIONS, CHAIN_DECISION_EVENTS,
 };
 use kavach_ports::{PortError, SyncStatus, TimeSource};
 use kavach_ports_testkit::agent_evidence::{request, TestSigner};
@@ -273,13 +273,16 @@ struct Scripted {
     latest: Mutex<Option<Checkpoint>>,
     append: Mutex<Option<Result<Appended, PortError>>>,
     fail_reads: Mutex<bool>,
+    scope_chain: Mutex<Option<String>>,
+    written: Mutex<Option<Checkpoint>>,
 }
 
 impl CheckpointStore for Scripted {
     fn head(
         &self,
-        _: Scope<'_>,
+        scope: Scope<'_>,
     ) -> impl Future<Output = Result<Option<(i64, String)>, PortError>> + Send {
+        *self.scope_chain.lock().unwrap() = Some(scope.chain.to_owned());
         ready(if *self.fail_reads.lock().unwrap() {
             Err(PortError::unavailable("database down"))
         } else {
@@ -292,7 +295,11 @@ impl CheckpointStore for Scripted {
     ) -> impl Future<Output = Result<Option<Checkpoint>, PortError>> + Send {
         ready(Ok(self.latest.lock().unwrap().clone()))
     }
-    fn append(&self, _: &Checkpoint) -> impl Future<Output = Result<Appended, PortError>> + Send {
+    fn append(
+        &self,
+        checkpoint: &Checkpoint,
+    ) -> impl Future<Output = Result<Appended, PortError>> + Send {
+        *self.written.lock().unwrap() = Some(checkpoint.clone());
         let scripted = self.append.lock().unwrap().clone();
         ready(scripted.unwrap_or(Ok(Appended::Written)))
     }
@@ -304,6 +311,42 @@ impl CheckpointStore for Scripted {
     ) -> impl Future<Output = Result<Vec<Checkpoint>, PortError>> + Send {
         ready(Ok(Vec::new()))
     }
+}
+
+#[tokio::test]
+async fn a_writer_can_target_the_credit_decision_event_chain() {
+    let rig = Rig::new();
+    let store = Arc::new(Scripted::default());
+    *store.head.lock().unwrap() = Some((1, "ab".repeat(32)));
+    let writer = Checkpointer::new_for_chain(
+        Arc::clone(&store),
+        Box::new(key()),
+        Box::new(common::Clock(Arc::clone(&rig.clock))),
+        TENANT,
+        0,
+        CHAIN_DECISION_EVENTS,
+        policy(),
+        rig.start,
+    );
+    assert_eq!(
+        writer.checkpoint_now(rig.at(0)).await.tick,
+        Tick::Written { seq: 1 }
+    );
+    assert_eq!(
+        store.scope_chain.lock().unwrap().as_deref(),
+        Some(CHAIN_DECISION_EVENTS)
+    );
+    assert_eq!(
+        store
+            .written
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .payload
+            .chain,
+        CHAIN_DECISION_EVENTS
+    );
 }
 
 #[tokio::test]

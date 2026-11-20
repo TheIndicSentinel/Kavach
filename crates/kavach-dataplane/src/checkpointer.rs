@@ -130,6 +130,7 @@ pub struct Checkpointer<S> {
     clock: Box<dyn TimeSource>,
     tenant_id: String,
     partition_id: i32,
+    chain: String,
     policy: CheckpointPolicy,
     state: Mutex<State>,
 }
@@ -145,6 +146,30 @@ impl<S: CheckpointStore> Checkpointer<S> {
         policy: CheckpointPolicy,
         started: Instant,
     ) -> Self {
+        Self::new_for_chain(
+            store,
+            signer,
+            clock,
+            tenant_id,
+            partition_id,
+            CHAIN_AGENT_DECISIONS,
+            policy,
+            started,
+        )
+    }
+
+    /// Creates a checkpoint writer for a supported chain in the shared
+    /// evidence checkpoint store.
+    pub fn new_for_chain(
+        store: Arc<S>,
+        signer: Box<dyn EvidenceSigner>,
+        clock: Box<dyn TimeSource>,
+        tenant_id: &str,
+        partition_id: i32,
+        chain: &str,
+        policy: CheckpointPolicy,
+        started: Instant,
+    ) -> Self {
         let last_covered_at = clock.now().utc;
         Self {
             store,
@@ -152,6 +177,7 @@ impl<S: CheckpointStore> Checkpointer<S> {
             clock,
             tenant_id: tenant_id.into(),
             partition_id,
+            chain: chain.into(),
             policy,
             state: Mutex::new(State {
                 last_covered: started,
@@ -168,7 +194,7 @@ impl<S: CheckpointStore> Checkpointer<S> {
         Scope {
             tenant_id: &self.tenant_id,
             partition_id: self.partition_id,
-            chain: CHAIN_AGENT_DECISIONS,
+            chain: &self.chain,
         }
     }
 

@@ -25,6 +25,7 @@ pub struct Metrics {
     agent_state_changes: IntCounterVec,
     gateway_stage_seconds: HistogramVec,
     checkpoints: CheckpointMetrics,
+    credit_checkpoints: CreditCheckpointMetrics,
     revocation_evidence: RevocationEvidenceMetrics,
     agent_state_evidence: AgentStateEvidenceMetrics,
     outcomes: OutcomeMetrics,
@@ -59,6 +60,57 @@ struct CheckpointMetrics {
     uncovered_records: prometheus::IntGauge,
     last_covered: prometheus::IntGauge,
     stalled: prometheus::IntGauge,
+}
+
+#[derive(Clone)]
+struct CreditCheckpointMetrics {
+    written: prometheus::IntCounter,
+    skipped: IntCounterVec,
+    last_seq: prometheus::IntGauge,
+    uncovered_records: prometheus::IntGauge,
+    last_covered: prometheus::IntGauge,
+    stalled: prometheus::IntGauge,
+}
+
+impl CreditCheckpointMetrics {
+    fn register(registry: &Registry) -> Result<Self, prometheus::Error> {
+        let metrics = Self {
+            written: prometheus::IntCounter::new(
+                "kavach_credit_checkpoints_written_total",
+                "Credit decision-event checkpoints written by this process",
+            )?,
+            skipped: IntCounterVec::new(
+                Opts::new(
+                    "kavach_credit_checkpoints_skipped_total",
+                    "Due credit decision-event checkpoints not written, by reason",
+                ),
+                &["reason"],
+            )?,
+            last_seq: prometheus::IntGauge::new(
+                "kavach_credit_checkpoint_last_seq",
+                "seq of the newest credit decision-event checkpoint (0: none)",
+            )?,
+            uncovered_records: prometheus::IntGauge::new(
+                "kavach_credit_checkpoint_uncovered_records",
+                "Credit decision events newer than the newest checkpoint",
+            )?,
+            last_covered: prometheus::IntGauge::new(
+                "kavach_credit_checkpoint_last_covered_timestamp_seconds",
+                "Unix time when every credit decision event was last covered by a checkpoint",
+            )?,
+            stalled: prometheus::IntGauge::new(
+                "kavach_credit_checkpoint_stalled",
+                "1 when credit decision events have been uncovered longer than the stall threshold",
+            )?,
+        };
+        registry.register(Box::new(metrics.written.clone()))?;
+        registry.register(Box::new(metrics.skipped.clone()))?;
+        registry.register(Box::new(metrics.last_seq.clone()))?;
+        registry.register(Box::new(metrics.uncovered_records.clone()))?;
+        registry.register(Box::new(metrics.last_covered.clone()))?;
+        registry.register(Box::new(metrics.stalled.clone()))?;
+        Ok(metrics)
+    }
 }
 
 impl CheckpointMetrics {
@@ -436,6 +488,7 @@ impl Metrics {
         registry.register(Box::new(gateway_jti_conflicts.clone()))?;
         registry.register(Box::new(gateway_outcome_write_failures.clone()))?;
         let checkpoints = CheckpointMetrics::register(&registry)?;
+        let credit_checkpoints = CreditCheckpointMetrics::register(&registry)?;
         let revocation_evidence = RevocationEvidenceMetrics::register(&registry)?;
         let gateway_stage_seconds = gateway_stage_histogram(&registry)?;
         let (outcomes, relaxations) = (
@@ -457,6 +510,7 @@ impl Metrics {
             agent_state_changes,
             gateway_stage_seconds,
             checkpoints,
+            credit_checkpoints,
             revocation_evidence,
             outcomes,
             relaxations,
@@ -535,6 +589,27 @@ impl Metrics {
 
     pub fn set_checkpoint_status(&self, status: &kavach_dataplane::CheckpointStatus) {
         let checkpoints = &self.checkpoints;
+        checkpoints.last_seq.set(status.last_seq.unwrap_or(0));
+        checkpoints.uncovered_records.set(status.uncovered_records);
+        checkpoints
+            .last_covered
+            .set(status.last_covered_at.timestamp());
+        checkpoints.stalled.set(i64::from(status.stalled));
+    }
+
+    pub fn observe_credit_checkpoint_written(&self) {
+        self.credit_checkpoints.written.inc();
+    }
+
+    pub fn observe_credit_checkpoint_skipped(&self, reason: &str) {
+        self.credit_checkpoints
+            .skipped
+            .with_label_values(&[reason])
+            .inc();
+    }
+
+    pub fn set_credit_checkpoint_status(&self, status: &kavach_dataplane::CheckpointStatus) {
+        let checkpoints = &self.credit_checkpoints;
         checkpoints.last_seq.set(status.last_seq.unwrap_or(0));
         checkpoints.uncovered_records.set(status.uncovered_records);
         checkpoints

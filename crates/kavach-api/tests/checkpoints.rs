@@ -99,6 +99,14 @@ async fn the_running_writer_covers_new_records_and_reports_it() {
     assert_eq!(view["checkpoint_uncovered_records"], 0);
     assert_eq!(view["checkpoint_stalled"], false);
     assert!(view["checkpoint_lag_seconds"].as_u64().unwrap() < 600);
+    assert_eq!(
+        view["credit_checkpoints"]["checkpoint_last_seq"],
+        Value::Null
+    );
+    assert_eq!(
+        view["credit_checkpoints"]["checkpoint_uncovered_records"],
+        0
+    );
 
     let (status, reply) = gw.remind("ckpt-1").await;
     assert_eq!(
@@ -167,6 +175,7 @@ async fn the_running_writer_covers_new_records_and_reports_it() {
     assert!(
         metrics.contains("kavach_checkpoint_last_covered_timestamp_seconds{tenant_id=\"default\"}")
     );
+    assert!(metrics.contains("kavach_credit_checkpoint_stalled{tenant_id=\"default\"} 0"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
