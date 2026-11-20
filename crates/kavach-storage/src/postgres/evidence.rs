@@ -57,16 +57,17 @@ impl PostgresEvidenceStore {
 
         let mut tx = self.pool.begin().await.map_err(|err| io_err(&err))?;
         sqlx::query(
-            "INSERT INTO evidence_chain_meta (tenant_id, id, head_hash) \
-            VALUES ($1, 1, $2) ON CONFLICT (tenant_id, id) DO NOTHING",
+            "INSERT INTO evidence_chains (tenant_id, partition_id, head_hash, head_seq) \
+            VALUES ($1, 0, $2, 0) ON CONFLICT (tenant_id, partition_id) DO NOTHING",
         )
         .bind(&self.tenant_id)
         .bind(kavach_evidence::GENESIS_HASH)
         .execute(&mut *tx)
         .await
         .map_err(|err| io_err(&err))?;
-        let head_hash: String = sqlx::query_scalar(
-            "SELECT head_hash FROM evidence_chain_meta WHERE tenant_id = $1 AND id = 1 FOR UPDATE",
+        let (head_hash, head_seq): (String, i64) = sqlx::query_as(
+            "SELECT head_hash, head_seq FROM evidence_chains \
+            WHERE tenant_id = $1 AND partition_id = 0 FOR UPDATE",
         )
         .bind(&self.tenant_id)
         .fetch_one(&mut *tx)
@@ -121,12 +122,19 @@ impl PostgresEvidenceStore {
         event.hash = compute_event_hash(&event.prev_hash, &event).map_err(EvidenceError::Json)?;
         verify_event_hash(&event)?;
 
-        insert_event(&mut tx, &self.tenant_id, &event).await?;
+        let seq = head_seq.checked_add(1).ok_or_else(|| {
+            EvidenceError::Domain(kavach_domain::DomainError::Golden(
+                "evidence sequence exhausted".into(),
+            ))
+        })?;
+        insert_event(&mut tx, &self.tenant_id, 0, seq, &event).await?;
 
         sqlx::query(
-            "UPDATE evidence_chain_meta SET head_hash = $1 WHERE tenant_id = $2 AND id = 1",
+            "UPDATE evidence_chains SET head_hash = $1, head_seq = $2 \
+            WHERE tenant_id = $3 AND partition_id = 0",
         )
         .bind(&event.hash)
+        .bind(seq)
         .bind(&self.tenant_id)
         .execute(&mut *tx)
         .await
@@ -140,6 +148,8 @@ impl PostgresEvidenceStore {
 async fn insert_event(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     tenant_id: &str,
+    partition_id: i32,
+    seq: i64,
     event: &DecisionEvent,
 ) -> Result<(), EvidenceError> {
     let reason_codes = serde_json::to_value(&event.reason_codes).map_err(EvidenceError::Json)?;
@@ -149,21 +159,22 @@ async fn insert_event(
     sqlx::query(
         r"
         INSERT INTO decision_events (
-            tenant_id, evidence_id, event_id, schema_version, prev_hash, hash,
+            tenant_id, partition_id, seq, evidence_id, event_id, schema_version, prev_hash, hash,
             pack_id, pack_version, sector, model_id, model_version,
             model_origin, governance_mode, policy_decision, returned_decision,
             reason_codes, policy_hits, pii_tokens, input_digest, latency_ms,
             decision_time, evaluated_at, service_identity_id, correlation_id, idempotency_key
         ) VALUES (
-            $1, $2, $3, $4, $5, $6,
-            $7, $8, $9, $10, $11,
-            $12, $13, $14, $15,
-            $16, $17, $18, $19, $20,
-            $21, $22, $23, $24, $25
+            $1, $2, $3, $4, $5, $6, $7, $8, $9,
+            $10, $11, $12, $13, $14, $15, $16,
+            $17, $18, $19, $20, $21, $22,
+            $23, $24, $25, $26, $27
         )
         ",
     )
     .bind(tenant_id)
+    .bind(partition_id)
+    .bind(seq)
     .bind(&event.evidence_id)
     .bind(&event.event_id)
     .bind(&event.schema_version)

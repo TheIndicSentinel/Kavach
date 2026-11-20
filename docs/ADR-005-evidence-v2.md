@@ -31,7 +31,7 @@ Adopt `sqlx` migrations (MIT/Apache-2.0) with a tracking table. The existing `00
 
 Add `tenant_id TEXT NOT NULL DEFAULT 'default'` to every table. Singleton tables (`evidence_chain_meta`, `runtime_pointers`, `tenant_settings`) are re-keyed by `tenant_id`. The MVP runs one tenant (`default`); no code path assumes a single tenant.
 
-**Implementation progress (2026-11-20):** migrations 044–045 and the credit evidence/retention/admin adapters add tenant attribution to `decision_events`, chain heads, settings, tombstones and runtime pointers. Existing v1 event hashes and fields remain unchanged; legacy rows and singleton values stay under `default`. Each tenant now has an independent v1 chain head and governed runtime pointer. The accepted partitioned `evidence_chains` schema, `partition_id`/`seq`, and chain verification/export per partition remain pending; this implementation does not claim those ADR-005 requirements are complete.
+**Implementation progress (2026-11-20):** migrations 044–046 and the credit evidence/retention/admin adapters add tenant attribution to `decision_events`, chain heads, settings, tombstones and runtime pointers. Migration 046 backfills partition `0` and sequence numbers by walking each tenant's existing hash links, refuses forked/disconnected chains or a mismatched head, and creates one independently locked head per `(tenant_id, partition_id)`. Existing v1 event hashes and fields remain unchanged; legacy rows and singleton values stay under `default`. Decision-event chain verification/export per partition and the ADR-005 merge of agent records into the same chain remain pending; this implementation does not claim those requirements are complete.
 
 ### 3. Partitioned chains
 

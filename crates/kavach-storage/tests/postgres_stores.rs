@@ -47,7 +47,7 @@ fn event(correlation_id: &str, input_digest: &str, age_days: i64) -> AppendDecis
 
 async fn chain(pool: &StoragePool) -> Vec<(String, String)> {
     sqlx::query_as::<_, (String, String)>(
-        "SELECT prev_hash, hash FROM decision_events ORDER BY created_at, prev_hash",
+        "SELECT prev_hash, hash FROM decision_events WHERE tenant_id = 'default' ORDER BY seq",
     )
     .fetch_all(&pool.pool)
     .await
@@ -69,11 +69,24 @@ async fn assert_linear_chain(pool: &StoragePool, expected_len: usize) {
     for _ in 0..expected_len {
         cursor = next.get(&cursor).expect("broken chain").clone();
     }
-    let head: String = sqlx::query_scalar("SELECT head_hash FROM evidence_chain_meta WHERE id = 1")
+    let (head, head_seq): (String, i64) = sqlx::query_as(
+        "SELECT head_hash, head_seq FROM evidence_chains WHERE tenant_id = 'default' AND partition_id = 0",
+    )
         .fetch_one(&pool.pool)
         .await
         .unwrap();
     assert_eq!(head, cursor);
+    assert_eq!(head_seq, i64::try_from(expected_len).unwrap());
+    let stored_seq: Vec<i64> = sqlx::query_scalar(
+        "SELECT seq FROM decision_events WHERE tenant_id = 'default' AND partition_id = 0 ORDER BY seq",
+    )
+    .fetch_all(&pool.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        stored_seq,
+        (1..=i64::try_from(expected_len).unwrap()).collect::<Vec<_>>()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -107,6 +120,21 @@ async fn evidence_and_retention_are_scoped_to_tenant() {
         .unwrap();
     assert_eq!(a.prev_hash, "0".repeat(64));
     assert_eq!(b.prev_hash, "0".repeat(64));
+    let a_seq: i64 = sqlx::query_scalar(
+        "SELECT seq FROM decision_events WHERE tenant_id = 'retention-a' AND evidence_id = $1",
+    )
+    .bind(&a.evidence_id)
+    .fetch_one(&pool.pool)
+    .await
+    .unwrap();
+    let b_seq: i64 = sqlx::query_scalar(
+        "SELECT seq FROM decision_events WHERE tenant_id = 'retention-b' AND evidence_id = $1",
+    )
+    .bind(&b.evidence_id)
+    .fetch_one(&pool.pool)
+    .await
+    .unwrap();
+    assert_eq!((a_seq, b_seq), (1, 1));
     assert!(tenant_a.event(&b.evidence_id).await.unwrap().is_none());
     assert!(tenant_b.event(&a.evidence_id).await.unwrap().is_none());
 
