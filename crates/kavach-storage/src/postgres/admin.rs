@@ -9,11 +9,19 @@ use crate::admin::{
 #[derive(Clone)]
 pub struct PostgresAdminStore {
     pool: PgPool,
+    tenant_id: String,
 }
 
 impl PostgresAdminStore {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self::new_for_tenant(pool, "default")
+    }
+
+    pub fn new_for_tenant(pool: PgPool, tenant_id: &str) -> Self {
+        Self {
+            pool,
+            tenant_id: tenant_id.into(),
+        }
     }
 
     pub async fn append_audit(&self, insert: AuditInsert) -> Result<AuditEntry, AdminStoreError> {
@@ -90,8 +98,9 @@ impl PostgresAdminStore {
         let row = sqlx::query_as::<_, PointerRow>(
             "SELECT pack_path, model_path, previous_pack_path, pack_sha256, previous_pack_sha256, \
             model_sha256, updated_at, updated_by, approved_by, version \
-            FROM runtime_pointers WHERE id = 1",
+            FROM runtime_pointers WHERE tenant_id = $1 AND id = 1",
         )
+        .bind(&self.tenant_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(|err| AdminStoreError::Io(err.to_string()))?;
@@ -103,7 +112,7 @@ impl PostgresAdminStore {
         &self,
         pointers: RuntimePointers,
     ) -> Result<(), AdminStoreError> {
-        upsert_pointers(&self.pool, &pointers).await
+        upsert_pointers(&self.pool, &self.tenant_id, &pointers).await
     }
 
     /// Writes the pointer only if none exists (concurrent first starts);
@@ -113,12 +122,13 @@ impl PostgresAdminStore {
         pointers: &RuntimePointers,
     ) -> Result<bool, AdminStoreError> {
         let result = sqlx::query(
-            "INSERT INTO runtime_pointers (id, pack_path, model_path, previous_pack_path, \
+            "INSERT INTO runtime_pointers (tenant_id, id, pack_path, model_path, previous_pack_path, \
                 pack_sha256, previous_pack_sha256, model_sha256, updated_at, updated_by, \
                 approved_by, version) \
-            VALUES (1, $1, $2, NULL, $3, NULL, $4, $5, $6, $7, 1) \
-            ON CONFLICT (id) DO NOTHING",
+            VALUES ($1, 1, $2, $3, NULL, $4, NULL, $5, $6, $7, $8, 1) \
+            ON CONFLICT (tenant_id, id) DO NOTHING",
         )
+        .bind(&self.tenant_id)
         .bind(&pointers.pack_path)
         .bind(&pointers.model_path)
         .bind(&pointers.pack_sha256)
@@ -265,14 +275,15 @@ impl ModelStateRow {
 /// Writes the singleton pointer row and increments its version.
 pub(crate) async fn upsert_pointers<'e>(
     executor: impl sqlx::PgExecutor<'e>,
+    tenant_id: &str,
     pointers: &RuntimePointers,
 ) -> Result<(), AdminStoreError> {
     sqlx::query(
-        "INSERT INTO runtime_pointers (id, pack_path, model_path, previous_pack_path, \
+        "INSERT INTO runtime_pointers (tenant_id, id, pack_path, model_path, previous_pack_path, \
                 pack_sha256, previous_pack_sha256, updated_at, updated_by, approved_by, version, \
                 model_sha256) \
-            VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, 1, $9) \
-            ON CONFLICT (id) DO UPDATE SET \
+            VALUES ($1, 1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10) \
+            ON CONFLICT (tenant_id, id) DO UPDATE SET \
                 pack_path = EXCLUDED.pack_path, \
                 model_path = EXCLUDED.model_path, \
                 previous_pack_path = EXCLUDED.previous_pack_path, \
@@ -284,6 +295,7 @@ pub(crate) async fn upsert_pointers<'e>(
                 model_sha256 = EXCLUDED.model_sha256, \
                 version = runtime_pointers.version + 1",
     )
+    .bind(tenant_id)
     .bind(&pointers.pack_path)
     .bind(&pointers.model_path)
     .bind(&pointers.previous_pack_path)

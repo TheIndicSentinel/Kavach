@@ -280,6 +280,44 @@ async fn runtime_pointers_and_audit_round_trip() {
     assert_eq!(listed[0].payload["n"], "third");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn runtime_pointers_are_scoped_to_tenant() {
+    let Some(pool) = pool().await else { return };
+    let pointer = |pack_path: &str| RuntimePointers {
+        pack_path: pack_path.into(),
+        model_path: "models/model.yaml".into(),
+        previous_pack_path: None,
+        pack_sha256: None,
+        previous_pack_sha256: None,
+        model_sha256: None,
+        updated_at: Utc::now(),
+        updated_by: "operator".into(),
+        approved_by: "approver".into(),
+        version: 0,
+    };
+    let tenant_a = pool.admin_store_for_tenant("runtime-a");
+    let tenant_b = pool.admin_store_for_tenant("runtime-b");
+    tenant_a
+        .set_runtime_pointers(pointer("packs/a.yaml"))
+        .await
+        .unwrap();
+    tenant_b
+        .set_runtime_pointers(pointer("packs/b.yaml"))
+        .await
+        .unwrap();
+    let a = tenant_a.get_runtime_pointers().await.unwrap().unwrap();
+    let b = tenant_b.get_runtime_pointers().await.unwrap().unwrap();
+    assert_eq!(a.pack_path, "packs/a.yaml");
+    assert_eq!(b.pack_path, "packs/b.yaml");
+    assert_eq!((a.version, b.version), (1, 1));
+    assert!(pool
+        .admin_store_for_tenant("runtime-c")
+        .get_runtime_pointers()
+        .await
+        .unwrap()
+        .is_none());
+}
+
 /// S3: an entry derived from stored state is written once per key; entries
 /// without a key are unaffected (NULLs are distinct in the unique index).
 #[tokio::test(flavor = "multi_thread")]

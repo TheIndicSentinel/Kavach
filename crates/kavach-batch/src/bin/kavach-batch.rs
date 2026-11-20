@@ -190,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // (Batch refuses an ungoverned database.)
                     let owner = migration_database_url.as_deref();
                     let pool = connect(&database_url, owner, &database_tls).await?;
-                    check_governed_pack(&pool, &config.pack_path).await?;
+                    check_governed_pack(&pool, &tenant_id, &config.pack_path).await?;
                     let config = BatchConfig {
                         governed_model: Some(
                             governed_model(&pool, &tenant_id, &config.model_path).await?,
@@ -301,10 +301,14 @@ fn write_fairness_report(
 /// records governance state, so any mismatch is refused (no bootstrap).
 async fn check_governed_pack(
     pool: &StoragePool,
+    tenant_id: &str,
     pack_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let digest = kavach_policy::pack_digest(&std::fs::read(pack_path)?);
-    let pointers = pool.admin_store().get_runtime_pointers().await?;
+    let pointers = pool
+        .admin_store_for_tenant(tenant_id)
+        .get_runtime_pointers()
+        .await?;
     kavach_storage::check_startup_pack(pointers.as_ref(), pack_path, Some(&digest))?;
     Ok(())
 }
@@ -319,7 +323,7 @@ async fn governed_model(
     let bytes = std::fs::read(model_path)?;
     let yaml: kavach_domain::ModelRecord = serde_yaml::from_slice(&bytes)?;
     let governed = kavach_storage::govern_model(
-        &kavach_storage::AdminBackend::Postgres(pool.admin_store()),
+        &kavach_storage::AdminBackend::Postgres(pool.admin_store_for_tenant(tenant_id)),
         tenant_id,
         model_path,
         yaml,

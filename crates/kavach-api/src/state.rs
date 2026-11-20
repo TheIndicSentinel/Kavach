@@ -1011,7 +1011,7 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
                 EvidenceBackend::Memory(MemoryChain::new()),
                 IncidentBackend::memory_for_tenant(&config.roles.tenant_id),
                 BatchJobBackend::memory_for_tenant(&config.roles.tenant_id),
-                AdminBackend::Memory(admin.clone()),
+                AdminBackend::Memory(admin.clone(), config.roles.tenant_id.clone()),
                 RetentionBackend::Memory(retention.clone(), config.roles.tenant_id.clone()),
                 ChangeRequestBackend::Memory(std::sync::Arc::new(MemoryChangeStore::new(
                     admin.clone(),
@@ -1035,7 +1035,7 @@ async fn storage_backends(config: &ApiConfig) -> Result<Backends, ApiError> {
                 EvidenceBackend::Postgres(pool.evidence_store_for_tenant(&config.roles.tenant_id)),
                 IncidentBackend::Postgres(pool.incident_store_for_tenant(&config.roles.tenant_id)),
                 BatchJobBackend::Postgres(pool.batch_job_store_for_tenant(&config.roles.tenant_id)),
-                AdminBackend::Postgres(pool.admin_store()),
+                AdminBackend::Postgres(pool.admin_store_for_tenant(&config.roles.tenant_id)),
                 RetentionBackend::Postgres(
                     pool.retention_store_for_tenant(&config.roles.tenant_id),
                 ),

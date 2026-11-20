@@ -116,7 +116,7 @@ pub struct MemoryAdminStore {
     audit: Mutex<Vec<AuditEntry>>,
     /// Idempotency keys of entries written with `append_audit_once`.
     once: Mutex<std::collections::HashSet<String>>,
-    pointers: Mutex<Option<RuntimePointers>>,
+    pointers: Mutex<HashMap<String, RuntimePointers>>,
     next_id: Mutex<i64>,
     models: Mutex<HashMap<(String, String), ModelState>>,
 }
@@ -189,23 +189,39 @@ impl MemoryAdminStore {
     }
 
     pub fn get_runtime_pointers(&self) -> Result<Option<RuntimePointers>, AdminStoreError> {
+        self.get_runtime_pointers_for_tenant("default")
+    }
+
+    pub fn get_runtime_pointers_for_tenant(
+        &self,
+        tenant_id: &str,
+    ) -> Result<Option<RuntimePointers>, AdminStoreError> {
         Ok(self
             .pointers
             .lock()
-            .map_err(|_| AdminStoreError::Io("lock poisoned".into()))?
-            .clone())
+            .map_err(poisoned)?
+            .get(tenant_id)
+            .cloned())
     }
 
     pub fn set_runtime_pointers(&self, pointers: RuntimePointers) -> Result<(), AdminStoreError> {
-        let mut current = self
-            .pointers
-            .lock()
-            .map_err(|_| AdminStoreError::Io("lock poisoned".into()))?;
-        let version = current.as_ref().map_or(0, |p| p.version) + 1;
-        *current = Some(RuntimePointers {
-            version,
-            ..pointers
-        });
+        self.set_runtime_pointers_for_tenant("default", pointers)
+    }
+
+    pub fn set_runtime_pointers_for_tenant(
+        &self,
+        tenant_id: &str,
+        pointers: RuntimePointers,
+    ) -> Result<(), AdminStoreError> {
+        let mut all = self.pointers.lock().map_err(poisoned)?;
+        let version = all.get(tenant_id).map_or(0, |p| p.version) + 1;
+        all.insert(
+            tenant_id.into(),
+            RuntimePointers {
+                version,
+                ..pointers
+            },
+        );
         Ok(())
     }
 
@@ -214,14 +230,25 @@ impl MemoryAdminStore {
         &self,
         pointers: RuntimePointers,
     ) -> Result<bool, AdminStoreError> {
-        let mut current = self.pointers.lock().map_err(poisoned)?;
-        if current.is_some() {
+        self.insert_pointers_if_absent_for_tenant("default", pointers)
+    }
+
+    pub fn insert_pointers_if_absent_for_tenant(
+        &self,
+        tenant_id: &str,
+        pointers: RuntimePointers,
+    ) -> Result<bool, AdminStoreError> {
+        let mut all = self.pointers.lock().map_err(poisoned)?;
+        if all.contains_key(tenant_id) {
             return Ok(false);
         }
-        *current = Some(RuntimePointers {
-            version: 1,
-            ..pointers
-        });
+        all.insert(
+            tenant_id.into(),
+            RuntimePointers {
+                version: 1,
+                ..pointers
+            },
+        );
         Ok(true)
     }
 
@@ -376,5 +403,43 @@ mod tests {
             .is_none());
         assert_eq!(store.list_model_states("tenant-a").unwrap().len(), 1);
         assert!(store.list_model_states("tenant-c").unwrap().is_empty());
+    }
+
+    #[test]
+    fn runtime_pointers_are_tenant_scoped_and_versions_are_independent() {
+        let store = MemoryAdminStore::default();
+        let pointers = |path: &str| RuntimePointers {
+            pack_path: path.into(),
+            model_path: "models/model.yaml".into(),
+            previous_pack_path: None,
+            pack_sha256: None,
+            previous_pack_sha256: None,
+            model_sha256: None,
+            updated_at: Utc::now(),
+            updated_by: "operator".into(),
+            approved_by: "approver".into(),
+            version: 0,
+        };
+        assert!(store
+            .get_runtime_pointers_for_tenant("tenant-a")
+            .unwrap()
+            .is_none());
+        store
+            .set_runtime_pointers_for_tenant("tenant-a", pointers("packs/a.yaml"))
+            .unwrap();
+        store
+            .set_runtime_pointers_for_tenant("tenant-b", pointers("packs/b.yaml"))
+            .unwrap();
+        let a = store
+            .get_runtime_pointers_for_tenant("tenant-a")
+            .unwrap()
+            .unwrap();
+        let b = store
+            .get_runtime_pointers_for_tenant("tenant-b")
+            .unwrap()
+            .unwrap();
+        assert_eq!(a.pack_path, "packs/a.yaml");
+        assert_eq!(b.pack_path, "packs/b.yaml");
+        assert_eq!((a.version, b.version), (1, 1));
     }
 }

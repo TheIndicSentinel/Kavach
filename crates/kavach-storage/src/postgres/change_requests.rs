@@ -124,12 +124,14 @@ impl PostgresChangeStore {
         }
 
         // Lock order: change request row, then the pointer row.
-        let version: i64 =
-            sqlx::query_scalar("SELECT version FROM runtime_pointers WHERE id = 1 FOR UPDATE")
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(io)?
-                .unwrap_or(0);
+        let version: i64 = sqlx::query_scalar(
+            "SELECT version FROM runtime_pointers WHERE tenant_id = $1 AND id = 1 FOR UPDATE",
+        )
+        .bind(&request.tenant_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(io)?
+        .unwrap_or(0);
         let stale = match commit.expected_pointer_version {
             Some(expected) if expected != version => Some(format!(
                 "stale_baseline: runtime pointer version {version}, request bound to {expected}"
@@ -348,7 +350,9 @@ async fn apply_effect(
     match effect {
         GovernanceEffect::None => {}
         GovernanceEffect::SetPointers(pointers) => {
-            upsert_pointers(&mut **tx, pointers).await.map_err(io)?;
+            upsert_pointers(&mut **tx, tenant_id, pointers)
+                .await
+                .map_err(io)?;
         }
         GovernanceEffect::SetModelState(state) => {
             upsert_model_state(&mut **tx, tenant_id, state)

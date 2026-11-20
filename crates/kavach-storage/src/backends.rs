@@ -128,18 +128,22 @@ impl BatchJobBackend {
 }
 
 pub enum AdminBackend {
-    Memory(Arc<MemoryAdminStore>),
+    Memory(Arc<MemoryAdminStore>, String),
     Postgres(PostgresAdminStore),
 }
 
 impl AdminBackend {
     pub fn memory() -> Self {
-        Self::Memory(Arc::new(MemoryAdminStore::default()))
+        Self::memory_for_tenant("default")
+    }
+
+    pub fn memory_for_tenant(tenant_id: &str) -> Self {
+        Self::Memory(Arc::new(MemoryAdminStore::default()), tenant_id.into())
     }
 
     pub async fn append_audit(&self, insert: AuditInsert) -> Result<AuditEntry, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.append_audit(insert),
+            Self::Memory(store, _) => store.append_audit(insert),
             Self::Postgres(store) => store.append_audit(insert).await,
         }
     }
@@ -151,7 +155,7 @@ impl AdminBackend {
         insert: AuditInsert,
     ) -> Result<bool, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.append_audit_once(key, insert),
+            Self::Memory(store, _) => store.append_audit_once(key, insert),
             Self::Postgres(store) => store.append_audit_once(key, insert).await,
         }
     }
@@ -162,14 +166,14 @@ impl AdminBackend {
         limit: u32,
     ) -> Result<Vec<AuditEntry>, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.list_audit(tenant_id, limit),
+            Self::Memory(store, _) => store.list_audit(tenant_id, limit),
             Self::Postgres(store) => store.list_audit(tenant_id, i64::from(limit)).await,
         }
     }
 
     pub async fn get_runtime_pointers(&self) -> Result<Option<RuntimePointers>, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.get_runtime_pointers(),
+            Self::Memory(store, tenant_id) => store.get_runtime_pointers_for_tenant(tenant_id),
             Self::Postgres(store) => store.get_runtime_pointers().await,
         }
     }
@@ -179,7 +183,9 @@ impl AdminBackend {
         pointers: RuntimePointers,
     ) -> Result<(), AdminStoreError> {
         match self {
-            Self::Memory(store) => store.set_runtime_pointers(pointers),
+            Self::Memory(store, tenant_id) => {
+                store.set_runtime_pointers_for_tenant(tenant_id, pointers)
+            }
             Self::Postgres(store) => store.set_runtime_pointers(pointers).await,
         }
     }
@@ -190,7 +196,9 @@ impl AdminBackend {
         pointers: RuntimePointers,
     ) -> Result<bool, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.insert_pointers_if_absent(pointers),
+            Self::Memory(store, tenant_id) => {
+                store.insert_pointers_if_absent_for_tenant(tenant_id, pointers)
+            }
             Self::Postgres(store) => store.insert_pointers_if_absent(&pointers).await,
         }
     }
@@ -201,7 +209,7 @@ impl AdminBackend {
         model_id: &str,
     ) -> Result<Option<ModelState>, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.get_model_state(tenant_id, model_id),
+            Self::Memory(store, _) => store.get_model_state(tenant_id, model_id),
             Self::Postgres(store) => store.get_model_state(tenant_id, model_id).await,
         }
     }
@@ -211,7 +219,7 @@ impl AdminBackend {
         tenant_id: &str,
     ) -> Result<Vec<ModelState>, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.list_model_states(tenant_id),
+            Self::Memory(store, _) => store.list_model_states(tenant_id),
             Self::Postgres(store) => store.list_model_states(tenant_id).await,
         }
     }
@@ -222,7 +230,7 @@ impl AdminBackend {
         state: ModelState,
     ) -> Result<bool, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.insert_model_state_if_absent(tenant_id, state),
+            Self::Memory(store, _) => store.insert_model_state_if_absent(tenant_id, state),
             Self::Postgres(store) => store.insert_model_state_if_absent(tenant_id, &state).await,
         }
     }
@@ -235,7 +243,7 @@ impl AdminBackend {
         resource_id: &str,
     ) -> Result<Option<AuditEntry>, AdminStoreError> {
         match self {
-            Self::Memory(store) => store.last_audit(tenant_id, action, resource_id),
+            Self::Memory(store, _) => store.last_audit(tenant_id, action, resource_id),
             Self::Postgres(store) => store.last_audit(tenant_id, action, resource_id).await,
         }
     }

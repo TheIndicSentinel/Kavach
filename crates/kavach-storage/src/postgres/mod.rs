@@ -128,6 +128,10 @@ impl StoragePool {
         PostgresAdminStore::new(self.pool.clone())
     }
 
+    pub fn admin_store_for_tenant(&self, tenant_id: &str) -> PostgresAdminStore {
+        PostgresAdminStore::new_for_tenant(self.pool.clone(), tenant_id)
+    }
+
     pub fn active_lease_store(&self) -> PostgresActiveLeaseStore {
         PostgresActiveLeaseStore::new(self.pool.clone(), self.write_context.clone())
     }

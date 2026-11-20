@@ -437,7 +437,7 @@ impl MemoryChangeStore {
 
         let version = self
             .admin
-            .get_runtime_pointers()
+            .get_runtime_pointers_for_tenant(&request.tenant_id)
             .map_err(io)?
             .map_or(0, |p| p.version);
         let stale = match commit.expected_pointer_version {
@@ -500,7 +500,7 @@ impl MemoryChangeStore {
             GovernanceEffect::None => {}
             GovernanceEffect::SetPointers(pointers) => {
                 self.admin
-                    .set_runtime_pointers(pointers.clone())
+                    .set_runtime_pointers_for_tenant(tenant_id, pointers.clone())
                     .map_err(io)?;
             }
             GovernanceEffect::SetModelState(state) => {
