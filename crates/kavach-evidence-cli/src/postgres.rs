@@ -10,6 +10,7 @@ use kavach_ports::bundle::{is_export_key, Exporter, EXPORT_KEY_PREFIX};
 use kavach_ports::chain_record::ChainRecord;
 use kavach_ports::checkpoint::{Checkpoint, Scope, CHAIN_AGENT_DECISIONS};
 use kavach_ports::PortError;
+use kavach_storage::DecisionEventSnapshot;
 use kavach_storage::EvidenceSnapshot;
 
 use crate::export::{
@@ -91,6 +92,127 @@ pub enum CommandError {
     WriteRole,
     #[error("export key: {0}")]
     Key(String),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DecisionEventExportError {
+    #[error("database: {0}")]
+    Database(String),
+    #[error("the database role can change credit evidence; use kavach_credit_auditor (or pass --allow-write-role on a development stack)")]
+    WriteRole,
+    #[error("credit partition {tenant}/{partition} is empty or has no chain head")]
+    Empty { tenant: String, partition: i32 },
+    #[error("credit partition sequence gap: expected {expected}, got {actual}")]
+    SequenceGap { expected: i64, actual: i64 },
+    #[error("credit partition head does not match its event chain")]
+    HeadMismatch,
+    #[error(transparent)]
+    Evidence(#[from] kavach_evidence::EvidenceError),
+    #[error("export file: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("serialize event: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+/// Stream and verify one entire v1 decision-event partition to NDJSON.
+/// The output is installed atomically and never overwrites an existing file.
+pub async fn run_decision_event_export(
+    target: &Target,
+    out: &Path,
+) -> Result<kavach_evidence::VerifyReport, DecisionEventExportError> {
+    use kavach_evidence::ChainVerifier;
+    use std::fs::{self, OpenOptions};
+    use std::io::{BufWriter, Write};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let mut snapshot = DecisionEventSnapshot::open(
+        &target.database_url,
+        &target.tls,
+        &target.tenant_id,
+        target.partition_id,
+    )
+    .await
+    .map_err(|e| DecisionEventExportError::Database(e.to_string()))?;
+    if snapshot.can_write() && !target.allow_write_role {
+        return Err(DecisionEventExportError::WriteRole);
+    }
+    let head = snapshot
+        .head()
+        .await
+        .map_err(|e| DecisionEventExportError::Database(e.to_string()))?
+        .ok_or_else(|| DecisionEventExportError::Empty {
+            tenant: target.tenant_id.clone(),
+            partition: target.partition_id,
+        })?;
+    if head.0 <= 0 {
+        return Err(DecisionEventExportError::Empty {
+            tenant: target.tenant_id.clone(),
+            partition: target.partition_id,
+        });
+    }
+
+    let parent = out
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent)?;
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp = parent.join(format!(
+        ".kavach-credit-export-{}-{nonce}.tmp",
+        std::process::id()
+    ));
+    let file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)?;
+    let result = async {
+        let mut writer = BufWriter::new(file);
+        let mut verifier = ChainVerifier::new();
+        let mut after = 0_i64;
+        while after < head.0 {
+            let events = snapshot
+                .events(after, 1_000)
+                .await
+                .map_err(|e| DecisionEventExportError::Database(e.to_string()))?;
+            if events.is_empty() {
+                return Err(DecisionEventExportError::SequenceGap {
+                    expected: after + 1,
+                    actual: head.0,
+                });
+            }
+            for (seq, event) in events {
+                let expected = after + 1;
+                if seq != expected {
+                    return Err(DecisionEventExportError::SequenceGap {
+                        expected,
+                        actual: seq,
+                    });
+                }
+                verifier.push(&event)?;
+                serde_json::to_writer(&mut writer, &event)?;
+                writer.write_all(b"\n")?;
+                after = seq;
+            }
+        }
+        let report = verifier.finish()?;
+        if report.events_checked as i64 != head.0 || report.head_hash != head.1 {
+            return Err(DecisionEventExportError::HeadMismatch);
+        }
+        writer.flush()?;
+        writer.get_ref().sync_all()?;
+        drop(writer);
+        fs::hard_link(&temp, out)?;
+        fs::remove_file(&temp)?;
+        Ok(report)
+    }
+    .await;
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
+    result
 }
 
 async fn open(target: &Target) -> Result<EvidenceSnapshot, CommandError> {

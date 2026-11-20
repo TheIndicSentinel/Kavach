@@ -6,9 +6,10 @@
 //!   `kavach_ports::bundle`.
 //! - [`verify`]: `verify-bundle`, the offline check of a bundle with keys
 //!   the operator supplies. No database, no network.
-//! - [`export`]: reads one consistent snapshot of a chain and writes it as
-//!   a bundle. With the `export` feature (default), the `export` and
-//!   `checkpoints` commands read Postgres as a read-only role.
+//! - [`export`]: reads one consistent snapshot of the agent chain and writes
+//!   a bundle. With the `export` feature, agent export/checkpoints use the
+//!   agent-only auditor; `export-decision-events` streams a partition-scoped
+//!   v1 credit chain through its separate read-only role.
 //!
 //! The binary lives here rather than in the `kavach-evidence` library
 //! because the ports and storage crates depend on that library.

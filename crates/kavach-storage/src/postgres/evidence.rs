@@ -3,7 +3,8 @@ use kavach_evaluate::EvidenceStore;
 use kavach_evidence::{
     at_storage_precision, compute_event_hash, verify_event_hash, AppendDecisionEvent, EvidenceError,
 };
-use sqlx::{PgPool, Row};
+use sqlx::postgres::PgPoolOptions;
+use sqlx::{PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -26,6 +27,117 @@ impl PostgresEvidenceStore {
 
     pub fn pool(&self) -> &PgPool {
         &self.pool
+    }
+}
+
+/// One repeatable-read, read-only view of a single decision-event partition.
+/// The export CLI pages through this snapshot so writes that happen during an
+/// export cannot produce a mixed chain.
+pub struct DecisionEventSnapshot {
+    tx: Transaction<'static, Postgres>,
+    tenant_id: String,
+    partition_id: i32,
+    can_write: bool,
+}
+
+impl DecisionEventSnapshot {
+    pub async fn open(
+        database_url: &str,
+        tls: &super::DatabaseTls,
+        tenant_id: &str,
+        partition_id: i32,
+    ) -> Result<Self, EvidenceError> {
+        if tenant_id.is_empty() || partition_id < 0 {
+            return Err(EvidenceError::Domain(kavach_domain::DomainError::Golden(
+                "decision-event export requires a tenant and non-negative partition".into(),
+            )));
+        }
+        let options = super::tls::connect_options(database_url, tls).map_err(|err| {
+            EvidenceError::Domain(kavach_domain::DomainError::Golden(format!(
+                "postgres TLS: {err}"
+            )))
+        })?;
+        let pool = PgPoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .map_err(|err| io_err(&err))?;
+        let mut tx = pool.begin().await.map_err(|err| io_err(&err))?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| io_err(&err))?;
+        let can_write: bool = sqlx::query_scalar(
+            "SELECT has_table_privilege(current_user, 'decision_events', 'INSERT, UPDATE, DELETE') \
+             OR has_table_privilege(current_user, 'evidence_chains', 'INSERT, UPDATE, DELETE')",
+        )
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| io_err(&err))?;
+        Ok(Self {
+            tx,
+            tenant_id: tenant_id.into(),
+            partition_id,
+            can_write,
+        })
+    }
+
+    #[must_use]
+    pub const fn can_write(&self) -> bool {
+        self.can_write
+    }
+
+    /// The current partition head; `None` means this partition is empty.
+    pub async fn head(&mut self) -> Result<Option<(i64, String)>, EvidenceError> {
+        let row = sqlx::query(
+            "SELECT head_seq, head_hash FROM evidence_chains \
+             WHERE tenant_id = $1 AND partition_id = $2",
+        )
+        .bind(&self.tenant_id)
+        .bind(self.partition_id)
+        .fetch_optional(&mut *self.tx)
+        .await
+        .map_err(|err| io_err(&err))?;
+        row.map(|row| {
+            Ok((
+                row.try_get("head_seq").map_err(|err| io_err(&err))?,
+                row.try_get("head_hash").map_err(|err| io_err(&err))?,
+            ))
+        })
+        .transpose()
+    }
+
+    /// Read a page by sequence, excluding tenant and partition metadata from
+    /// the v1 `DecisionEvent` representation.
+    pub async fn events(
+        &mut self,
+        after_seq: i64,
+        limit: u32,
+    ) -> Result<Vec<(i64, DecisionEvent)>, EvidenceError> {
+        let rows = sqlx::query(
+            "SELECT * FROM decision_events \
+             WHERE tenant_id = $1 AND partition_id = $2 AND seq > $3 \
+             ORDER BY seq LIMIT $4",
+        )
+        .bind(&self.tenant_id)
+        .bind(self.partition_id)
+        .bind(after_seq)
+        .bind(i64::from(limit))
+        .fetch_all(&mut *self.tx)
+        .await
+        .map_err(|err| io_err(&err))?;
+        rows.iter()
+            .map(|row| {
+                Ok((
+                    row.try_get("seq").map_err(|err| io_err(&err))?,
+                    row_to_event(row)?,
+                ))
+            })
+            .collect()
+    }
+
+    pub async fn close(self) -> Result<(), EvidenceError> {
+        self.tx.commit().await.map_err(|err| io_err(&err))
     }
 }
 

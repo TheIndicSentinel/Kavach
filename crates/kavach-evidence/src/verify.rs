@@ -46,6 +46,67 @@ pub enum EventCheck {
     Mismatch(EvidenceError),
 }
 
+/// Incremental verifier for one complete v1 decision-event partition.
+///
+/// Exporters can validate arbitrarily large partitions a page at a time,
+/// retaining only the expected link and legacy-precision report.
+#[derive(Debug)]
+pub struct ChainVerifier {
+    expected_prev: String,
+    events_checked: usize,
+    legacy_unchecked: Vec<String>,
+    seen_precise: bool,
+}
+
+impl ChainVerifier {
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            expected_prev: GENESIS_HASH.to_string(),
+            events_checked: 0,
+            legacy_unchecked: Vec::new(),
+            seen_precise: false,
+        }
+    }
+
+    pub fn push(&mut self, event: &DecisionEvent) -> Result<(), EvidenceError> {
+        if event.prev_hash != self.expected_prev {
+            return Err(EvidenceError::ChainBreak {
+                event_id: event.event_id.clone(),
+                expected: self.expected_prev.clone(),
+                actual: event.prev_hash.clone(),
+            });
+        }
+        let precise = schema(&event.schema_version) >= PRECISION_SCHEMA;
+        if self.seen_precise && !precise {
+            return Err(EvidenceError::SchemaRegression {
+                event_id: event.event_id.clone(),
+                schema_version: event.schema_version.clone(),
+            });
+        }
+        self.seen_precise |= precise;
+        match check_event(event) {
+            EventCheck::Matches => {}
+            EventCheck::LegacyPrecision => self.legacy_unchecked.push(event.event_id.clone()),
+            EventCheck::Mismatch(err) => return Err(err),
+        }
+        self.expected_prev.clone_from(&event.hash);
+        self.events_checked += 1;
+        Ok(())
+    }
+
+    pub fn finish(self) -> Result<VerifyReport, EvidenceError> {
+        if self.events_checked == 0 {
+            return Err(EvidenceError::EmptyChain);
+        }
+        Ok(VerifyReport {
+            events_checked: self.events_checked,
+            head_hash: self.expected_prev,
+            legacy_unchecked: self.legacy_unchecked,
+        })
+    }
+}
+
 /// Checks one event's hash, telling lost legacy precision from tampering.
 #[must_use]
 pub fn check_event(event: &DecisionEvent) -> EventCheck {
@@ -69,43 +130,11 @@ pub fn check_event(event: &DecisionEvent) -> EventCheck {
 /// exactly; an earlier record whose mismatch lost precision explains is
 /// listed in `legacy_unchecked`; anything else is an error.
 pub fn verify_chain(events: &[DecisionEvent]) -> Result<VerifyReport, EvidenceError> {
-    if events.is_empty() {
-        return Err(EvidenceError::EmptyChain);
-    }
-
-    let mut expected_prev = GENESIS_HASH.to_string();
-    let mut legacy_unchecked = Vec::new();
-    let mut seen_precise = false;
-
+    let mut verifier = ChainVerifier::new();
     for event in events {
-        if event.prev_hash != expected_prev {
-            return Err(EvidenceError::ChainBreak {
-                event_id: event.event_id.clone(),
-                expected: expected_prev,
-                actual: event.prev_hash.clone(),
-            });
-        }
-        let precise = schema(&event.schema_version) >= PRECISION_SCHEMA;
-        if seen_precise && !precise {
-            return Err(EvidenceError::SchemaRegression {
-                event_id: event.event_id.clone(),
-                schema_version: event.schema_version.clone(),
-            });
-        }
-        seen_precise |= precise;
-        match check_event(event) {
-            EventCheck::Matches => {}
-            EventCheck::LegacyPrecision => legacy_unchecked.push(event.event_id.clone()),
-            EventCheck::Mismatch(err) => return Err(err),
-        }
-        expected_prev.clone_from(&event.hash);
+        verifier.push(event)?;
     }
-
-    Ok(VerifyReport {
-        events_checked: events.len(),
-        head_hash: expected_prev,
-        legacy_unchecked,
-    })
+    verifier.finish()
 }
 
 pub fn verify_export_file(path: &std::path::Path) -> Result<VerifyReport, EvidenceError> {
@@ -306,6 +335,28 @@ mod tests {
         std::fs::write(&path, lines.join("\n") + "\n").unwrap();
         assert_eq!(verify_export_file(&path).unwrap().events_checked, 2);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn incremental_verifier_matches_whole_chain_across_pages() {
+        let events = mixed_chain();
+        let expected = verify_chain(&events).unwrap();
+        let mut verifier = ChainVerifier::new();
+        for page in events.chunks(1) {
+            for event in page {
+                verifier.push(event).unwrap();
+            }
+        }
+        assert_eq!(verifier.finish().unwrap(), expected);
+
+        let mut broken = events[1].clone();
+        broken.prev_hash = "0".repeat(64);
+        let mut verifier = ChainVerifier::new();
+        verifier.push(&events[0]).unwrap();
+        assert!(matches!(
+            verifier.push(&broken),
+            Err(EvidenceError::ChainBreak { .. })
+        ));
     }
 
     fn sample_append(correlation_id: &str) -> AppendDecisionEvent {

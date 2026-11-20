@@ -32,7 +32,7 @@ pub use authority_updates::{
 pub use change_requests::PostgresChangeStore;
 pub use consent_preferences::{PostgresConsentSource, PostgresContactPreferenceSource};
 
-pub use evidence::PostgresEvidenceStore;
+pub use evidence::{DecisionEventSnapshot, PostgresEvidenceStore};
 pub use export::EvidenceSnapshot;
 pub use human_review::PostgresReviewApprovalStore;
 pub use incidents::PostgresIncidentStore;

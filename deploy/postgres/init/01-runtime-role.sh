@@ -24,3 +24,15 @@ SELECT format('CREATE ROLE kavach_auditor LOGIN PASSWORD %L', :'pw')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kavach_auditor')\gexec
 SQL
 fi
+
+# Optional: credit decision-event export. This role is distinct from
+# kavach_auditor and receives only SELECT on decision_events/evidence_chains
+# from migration 047. After later migrations, re-run
+#   psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'SELECT kavach_grant_credit_auditor();'
+if [ -n "${KAVACH_CREDIT_AUDITOR_DB_PASSWORD:-}" ]; then
+  psql -v ON_ERROR_STOP=1 -v pw="$KAVACH_CREDIT_AUDITOR_DB_PASSWORD" \
+    --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<'SQL'
+SELECT format('CREATE ROLE kavach_credit_auditor LOGIN PASSWORD %L', :'pw')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'kavach_credit_auditor')\gexec
+SQL
+fi

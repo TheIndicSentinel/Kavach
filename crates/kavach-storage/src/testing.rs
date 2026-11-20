@@ -47,7 +47,7 @@ pub async fn isolated_database_url() -> Option<String> {
 pub const RUNTIME_TEST_PASSWORD: &str = "kavach-runtime-test";
 
 /// Like [`isolated_database_url`], and also creates (once per cluster) the
-/// `kavach_runtime` and `kavach_auditor` roles. Returns `(owner_url, runtime_url)`, both with the
+/// runtime and auditor roles. Returns `(owner_url, runtime_url)`, both with the
 /// fresh schema on their `search_path`; migrate with the owner URL.
 ///
 /// # Panics
@@ -77,6 +77,14 @@ pub async fn isolated_database_urls() -> Option<(String, String)> {
     .execute(&pool)
     .await
     .expect("create kavach_auditor role");
+    sqlx::query(&format!(
+        "DO $$ BEGIN \
+            CREATE ROLE kavach_credit_auditor LOGIN PASSWORD '{CREDIT_AUDITOR_TEST_PASSWORD}'; \
+         EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$"
+    ))
+    .execute(&pool)
+    .await
+    .expect("create kavach_credit_auditor role");
     pool.close().await;
     let runtime = with_credentials(&owner, "kavach_runtime", RUNTIME_TEST_PASSWORD);
     Some((owner, runtime))
@@ -85,11 +93,20 @@ pub async fn isolated_database_urls() -> Option<(String, String)> {
 /// Password of the `kavach_auditor` role created for tests.
 pub const AUDITOR_TEST_PASSWORD: &str = "kavach-auditor-test";
 
+/// Password of the `kavach_credit_auditor` role created for tests.
+pub const CREDIT_AUDITOR_TEST_PASSWORD: &str = "kavach-credit-auditor-test";
+
 /// The read-only auditor's URL for a database from
 /// [`isolated_database_urls`] (same schema as `owner`).
 #[must_use]
 pub fn auditor_url(owner: &str) -> String {
     with_credentials(owner, "kavach_auditor", AUDITOR_TEST_PASSWORD)
+}
+
+/// The credit-only read URL for a database from [`isolated_database_urls`].
+#[must_use]
+pub fn credit_auditor_url(owner: &str) -> String {
+    with_credentials(owner, "kavach_credit_auditor", CREDIT_AUDITOR_TEST_PASSWORD)
 }
 
 /// `postgres://user:pass@host/...` with other credentials.

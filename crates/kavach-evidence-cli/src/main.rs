@@ -40,6 +40,30 @@ struct TargetArgs {
     allow_plaintext_database: bool,
 }
 
+#[cfg(feature = "export")]
+#[derive(clap::Args)]
+struct CreditTargetArgs {
+    /// Postgres URL for the credit-only read role.
+    #[arg(
+        long,
+        env = "KAVACH_CREDIT_AUDITOR_DATABASE_URL",
+        hide_env_values = true
+    )]
+    database_url: String,
+    #[arg(long, default_value = "default")]
+    tenant: String,
+    #[arg(long, default_value_t = 0)]
+    partition: i32,
+    /// Development stacks only: allow a role with evidence write privileges.
+    #[arg(long)]
+    allow_write_role: bool,
+    #[arg(long, env = "KAVACH_DATABASE_CA")]
+    database_ca: Option<PathBuf>,
+    /// Development stacks only: accept a URL weaker than verified TLS.
+    #[arg(long)]
+    allow_plaintext_database: bool,
+}
+
 #[derive(Subcommand)]
 enum Commands {
     /// Verify an exported evidence file (NDJSON or JSON array). Exit status:
@@ -118,6 +142,15 @@ enum Commands {
         #[arg(long)]
         unsigned: bool,
     },
+    /// Export and verify one complete v1 credit decision-event partition as NDJSON.
+    #[cfg(feature = "export")]
+    ExportDecisionEvents {
+        #[command(flatten)]
+        target: CreditTargetArgs,
+        /// NDJSON file to create. Existing files are never overwritten.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Print stored checkpoints as JSON lines, to copy off-host.
     #[cfg(feature = "export")]
     Checkpoints {
@@ -136,11 +169,23 @@ enum Commands {
 mod database {
     use std::path::Path;
 
-    use kavach_evidence_cli::postgres::{run_checkpoints, run_export, Signing, Target, Which};
+    use kavach_evidence_cli::postgres::{
+        run_checkpoints, run_decision_event_export, run_export, Signing, Target, Which,
+    };
 
-    use super::TargetArgs;
+    use super::{CreditTargetArgs, TargetArgs};
 
     fn target(args: TargetArgs) -> Target {
+        Target {
+            database_url: args.database_url,
+            tenant_id: args.tenant,
+            partition_id: args.partition,
+            allow_write_role: args.allow_write_role,
+            tls: kavach_storage::DatabaseTls::new(args.allow_plaintext_database, args.database_ca),
+        }
+    }
+
+    fn credit_target(args: CreditTargetArgs) -> Target {
         Target {
             database_url: args.database_url,
             tenant_id: args.tenant,
@@ -215,6 +260,30 @@ mod database {
         }
         if checkpoints.is_empty() {
             eprintln!("NOTE: no checkpoints");
+        }
+        Ok(())
+    }
+
+    pub fn export_decision_events(args: CreditTargetArgs, out: &Path) -> Result<(), String> {
+        let target = credit_target(args);
+        let report = runtime()?
+            .block_on(run_decision_event_export(&target, out))
+            .map_err(|e| e.to_string())?;
+        println!(
+            "OK: exported and verified {} decision event(s), head_hash={} to {}",
+            report.events_checked,
+            report.head_hash,
+            out.display()
+        );
+        eprintln!(
+            "WARNING: v1 credit decision-event exports have no signed checkpoint; a truncated tail cannot be detected offline"
+        );
+        if !report.legacy_unchecked.is_empty() {
+            eprintln!(
+                "WARNING: {} legacy event(s) could not be re-hashed due to historical timestamp precision",
+                report.legacy_unchecked.len()
+            );
+            std::process::exit(2);
         }
         Ok(())
     }
@@ -313,6 +382,10 @@ fn run(command: Commands) -> Result<(), String> {
                 }
             };
             database::export(target, &out, after_checkpoint, &signing)
+        }
+        #[cfg(feature = "export")]
+        Commands::ExportDecisionEvents { target, out } => {
+            database::export_decision_events(target, &out)
         }
         #[cfg(feature = "export")]
         Commands::Checkpoints {

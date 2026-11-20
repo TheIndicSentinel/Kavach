@@ -88,6 +88,25 @@ fn the_binary_is_named_kavach_evidence() {
     assert!(output.status.success() && help.contains("verify"), "{help}");
 }
 
+#[test]
+fn credit_partition_export_command_is_available() {
+    let output = Command::new(env!("CARGO_BIN_EXE_kavach-evidence"))
+        .args(["export-decision-events", "--help"])
+        .output()
+        .expect("run export help");
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "{output:?}");
+    assert!(
+        help.contains("KAVACH_CREDIT_AUDITOR_DATABASE_URL"),
+        "{help}"
+    );
+    assert!(
+        help.contains("--tenant") && help.contains("--partition"),
+        "{help}"
+    );
+    assert!(help.contains("--out"), "{help}");
+}
+
 /// A pre-1.1.0 record as Postgres gives it back (nanoseconds lost): reported
 /// as legacy, exit 2 with a warning, never as verified or as tampered.
 #[test]
