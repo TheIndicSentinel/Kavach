@@ -253,10 +253,12 @@ fn api_config(
             provider_connect_timeout_ms: 2_000,
             provider_timeout_ms: 5_000,
             provider_ca: None,
+            ollama_endpoint: None,
             test_clock: Some(clock),
             dev_clock: None,
             hsm: None,
         }),
+        credit_checkpoint: None,
     }
 }
 

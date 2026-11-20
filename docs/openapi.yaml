@@ -8,7 +8,8 @@ info:
 
     - **operator**: decision evaluation, governance, change requests,
       evidence reads and administration;
-    - **agent**: the agent data plane (`/v1/authorize`, `/v1/tools/{tool}`);
+    - **agent**: the agent data plane (`/v1/authorize`, `/v1/tools/{tool}`,
+      and the optional Ollama `/proxy/{role}/api/chat` route);
     - **system of record (SoR)**: signed events that issue mandates and
       signed authority updates from the configured source system.
 
@@ -124,6 +125,7 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/EvaluateResponse" }
         "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
         "409": { $ref: "#/components/responses/Conflict" }
@@ -1008,6 +1010,50 @@ paths:
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "500": { $ref: "#/components/responses/Internal" }
         "501": { $ref: "#/components/responses/NotForwardable" }
+
+  /proxy/{role}/api/chat:
+    x-kavach-listeners: [agent]
+    servers:
+      - url: http://127.0.0.1:8091
+        description: agent listener
+    post:
+      operationId: proxyModelChat
+      tags: [agent]
+      summary: Proxy a chat request to the fixed model for an agent role.
+      description: |
+        Requires an authenticated agent with a configured passport. `role` is
+        limited to `collections` or `translation`; agents cannot choose a model,
+        upstream URL, stream mode, or Ollama administrative endpoint. The route
+        is unavailable unless `--ollama-endpoint` is configured. Prompt and
+        completion bodies are not logged. Business actions still require the
+        normal mandate-authorized tool routes.
+      security:
+        - agentToken: []
+      parameters:
+        - name: role
+          in: path
+          required: true
+          schema: { type: string, enum: [collections, translation] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ModelChatRequest" }
+      responses:
+        "200":
+          description: Ollama chat response.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ModelChatResponse" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "422": { $ref: "#/components/responses/Unprocessable" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "502": { $ref: "#/components/responses/BadGateway" }
         "503": { $ref: "#/components/responses/Unavailable" }
 
   /v1/sor/events:
@@ -1570,6 +1616,11 @@ components:
           schema: { $ref: "#/components/schemas/Problem" }
     NotForwardable:
       description: The gateway does not execute this tool.
+      content:
+        application/problem+json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    BadGateway:
+      description: The configured model provider did not return a valid response.
       content:
         application/problem+json:
           schema: { $ref: "#/components/schemas/Problem" }
@@ -2665,6 +2716,32 @@ components:
         provider_message_id: { type: string }
         outcome_recorded: { type: boolean }
         replayed: { type: boolean }
+
+    ModelChatRequest:
+      type: object
+      additionalProperties: false
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items:
+            type: object
+            required: [role, content]
+            properties:
+              role: { type: string, enum: [system, user, assistant, tool] }
+              content: {}
+            additionalProperties: true
+        tools:
+          type: array
+          maxItems: 16
+          items: { type: object }
+        format: {}
+
+    ModelChatResponse:
+      type: object
+      additionalProperties: true
 
     SorEventResponse:
       type: object

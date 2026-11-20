@@ -133,6 +133,9 @@ pub struct DataplaneConfig {
     /// CA certificates (PEM) trusted for provider TLS, besides the system
     /// roots (e.g. a private CA for internal providers).
     pub provider_ca: Option<PathBuf>,
+    /// Optional base URL for local Ollama. Agents access it only through the
+    /// authenticated `/proxy/*` listener.
+    pub ollama_endpoint: Option<String>,
     /// Signing keys held in an HSM, per role (`--hsm-*`); the other roles
     /// use their key directories.
     pub hsm: Option<HsmConfig>,
@@ -1041,6 +1044,7 @@ pub struct Dataplane {
     authority_updates: Option<SignedAuthorityUpdates>,
     reference_destination_updates: Option<ReferenceDestinationUpdates>,
     forwarder: Arc<crate::forward::HttpForwarder>,
+    model_proxy: Option<crate::model_proxy::OllamaProxy>,
     keys: KeySources,
     /// Trusted public key for the configured evidence signer, used to verify
     /// D17 review records before initiating a step-up ceremony.
@@ -1150,6 +1154,7 @@ impl Dataplane {
             ),
         };
         let forwarder = build_forwarder(config, &tools)?;
+        let model_proxy = build_model_proxy(config)?;
         let broker = build_broker(config, &tools, &mandate_kid, insecure_dev, &sources).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
             .map_err(|e| format!("subject pseudonym key: {e}"))?;
@@ -1209,6 +1214,7 @@ impl Dataplane {
             authority_updates,
             reference_destination_updates,
             forwarder: Arc::new(forwarder),
+            model_proxy,
             keys: sources,
             review_evidence_keys: std::collections::BTreeMap::from([(
                 review_evidence_key.kid.clone(),
@@ -1237,6 +1243,11 @@ impl Dataplane {
     /// ([`DataplaneConfig::agent_only`]).
     pub fn agent_only(&self) -> bool {
         self.agent_only
+    }
+
+    fn has_agent_passport(&self, agent_id: &str) -> bool {
+        self.passports
+            .contains(&(self.tenant.clone(), agent_id.to_string()))
     }
 
     /// Gateway calls in flight: an orderly stop drains them before its
@@ -1816,6 +1827,16 @@ fn build_forwarder(
         std::time::Duration::from_millis(total),
         &extra_roots,
     )
+}
+
+fn build_model_proxy(
+    config: &DataplaneConfig,
+) -> Result<Option<crate::model_proxy::OllamaProxy>, String> {
+    config
+        .ollama_endpoint
+        .as_deref()
+        .map(crate::model_proxy::OllamaProxy::new)
+        .transpose()
 }
 
 /// The credential broker, with key separation (NIST SP 800-57 key usage):
@@ -2775,6 +2796,7 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/authorize", post(authorize))
         .route("/v1/tools/{tool}", post(tool_call))
+        .route("/proxy/{role}/api/chat", post(model_chat))
         .layer(DefaultBodyLimit::max(AGENT_BODY_LIMIT))
         .route(
             "/health",
@@ -2789,6 +2811,61 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
             crate::ha_lease::http_gate,
         ))
         .with_state(state)
+}
+
+/// Authenticated chat inference through the configured local Ollama endpoint.
+/// The caller selects only a model role; the exact model id and upstream path
+/// are fixed. Prompts and completions are deliberately not logged.
+async fn model_chat(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(role): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: Result<StrictJson<crate::model_proxy::ChatRequest>, StrictJsonRejection>,
+) -> Result<Json<serde_json::Value>, Refusal> {
+    let dp = dataplane(&state)?;
+    let agent = authenticate_agent(dp, &headers)?;
+    if !dp.has_agent_passport(&agent.agent_id) {
+        return Err(refuse(StatusCode::FORBIDDEN, "agent has no passport"));
+    }
+    let Some(role) = crate::model_proxy::ModelRole::parse(&role) else {
+        return Err(refuse(StatusCode::NOT_FOUND, "unknown model role"));
+    };
+    let Some(proxy) = dp.model_proxy.as_ref() else {
+        return Err(crate::problem::Problem::for_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "model proxy is not configured",
+        ));
+    };
+    let StrictJson(request) = body.map_err(|error| {
+        let status = match error {
+            StrictJsonRejection::Json(rejection) => {
+                axum::response::IntoResponse::into_response(rejection).status()
+            }
+            StrictJsonRejection::RawValueKey => StatusCode::BAD_REQUEST,
+        };
+        refuse(status, "invalid model request")
+    })?;
+    request
+        .validate()
+        .map_err(|message| refuse(StatusCode::BAD_REQUEST, message))?;
+    let response = match proxy.chat(role, &request).await {
+        Ok(response) => response,
+        Err(crate::model_proxy::ProxyError::Busy) => {
+            return Err(crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "model provider is busy",
+            ));
+        }
+        Err(error) => {
+            tracing::warn!(agent = %agent.agent_id, role = role.as_str(), error = ?error, "model gateway request failed");
+            return Err(crate::problem::Problem::for_status(
+                StatusCode::BAD_GATEWAY,
+                "model provider unavailable",
+            ));
+        }
+    };
+    tracing::info!(agent = %agent.agent_id, role = role.as_str(), "model gateway request completed");
+    Ok(Json(response))
 }
 
 /// Router for the system-of-record listener (backend network only).

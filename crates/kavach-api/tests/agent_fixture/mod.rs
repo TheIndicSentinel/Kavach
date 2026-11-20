@@ -358,6 +358,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         provider_connect_timeout_ms: 500,
         provider_timeout_ms: 1500,
         provider_ca: None,
+        ollama_endpoint: None,
         test_clock: None,
         dev_clock: None,
         hsm: None,

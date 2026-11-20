@@ -144,9 +144,12 @@ struct AgentArgs {
     /// Gateway → provider total timeout (ms; below the 15 s credential lifetime).
     #[arg(long, env = "KAVACH_PROVIDER_TIMEOUT_MS", default_value_t = 5000)]
     provider_timeout_ms: u64,
-    /// Serve the agent surfaces and the evidence reads only: no evaluate,
-    /// pack, model, retention, incident or batch routes, no console and no
-    /// gRPC evaluate. For hosted builds (the credit track is frozen).
+    /// Base URL of local Ollama; agents can reach it only through Kavach.
+    #[arg(long, env = "KAVACH_OLLAMA_ENDPOINT")]
+    ollama_endpoint: Option<String>,
+    /// Serve the agent surfaces and their evidence reads only: no Decision
+    /// Governance evaluate/model, pack, retention, incident or batch routes.
+    /// The optional Ollama proxy remains on the authenticated agent listener.
     #[arg(long, env = "KAVACH_AGENT_ONLY")]
     agent_only: bool,
     /// Listener for agents (`/v1/authorize`, tools): the only listener to
@@ -316,6 +319,7 @@ impl AgentArgs {
             provider_connect_timeout_ms: self.provider_connect_timeout_ms,
             provider_timeout_ms: self.provider_timeout_ms,
             provider_ca: self.provider_ca,
+            ollama_endpoint: self.ollama_endpoint,
             test_clock: None,
             dev_clock: None,
             hsm,

@@ -1,0 +1,242 @@
+//! Narrow, authenticated Ollama inference proxy (ADR-007).
+//!
+//! The agent supplies chat messages, never an upstream URL or model name.
+//! Prompts and completions are not logged. Business actions still go through
+//! the mandate-authorized tool gateway.
+
+use std::time::Duration;
+use std::{net::IpAddr, str::FromStr};
+
+use reqwest::Url;
+use serde::Deserialize;
+use serde_json::{json, Value};
+
+const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelRole {
+    Collections,
+    Translation,
+}
+
+impl ModelRole {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "collections" => Some(Self::Collections),
+            "translation" => Some(Self::Translation),
+            _ => None,
+        }
+    }
+
+    pub const fn model(self) -> &'static str {
+        match self {
+            Self::Collections => "granite3.3:2b",
+            Self::Translation => "qwen2.5:1.5b",
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Collections => "collections",
+            Self::Translation => "translation",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatRequest {
+    pub messages: Vec<Value>,
+    #[serde(default)]
+    pub tools: Option<Vec<Value>>,
+    #[serde(default)]
+    pub format: Option<Value>,
+}
+
+impl ChatRequest {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.messages.is_empty() || self.messages.len() > 64 {
+            return Err("messages must contain 1 to 64 entries");
+        }
+        if self.messages.iter().any(|message| {
+            !message.is_object()
+                || message
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .is_none_or(|role| !matches!(role, "system" | "user" | "assistant" | "tool"))
+                || message.get("content").is_none()
+        }) {
+            return Err("each message needs an allowed role and content");
+        }
+        if self.tools.as_ref().is_some_and(|tools| tools.len() > 16) {
+            return Err("at most 16 tool definitions are accepted");
+        }
+        Ok(())
+    }
+
+    fn upstream_body(&self, role: ModelRole) -> Value {
+        let mut body = json!({
+            "model": role.model(),
+            "messages": self.messages,
+            "stream": false,
+            "options": { "num_ctx": 4096, "num_predict": 512 }
+        });
+        if let Some(tools) = &self.tools {
+            body["tools"] = json!(tools);
+        }
+        if let Some(format) = &self.format {
+            body["format"] = format.clone();
+        }
+        body
+    }
+}
+
+pub struct OllamaProxy {
+    endpoint: Url,
+    client: reqwest::Client,
+    concurrency: tokio::sync::Semaphore,
+}
+
+impl OllamaProxy {
+    pub fn new(endpoint: &str) -> Result<Self, String> {
+        let mut endpoint = Url::parse(endpoint)
+            .map_err(|error| format!("Ollama endpoint does not parse: {error}"))?;
+        if !matches!(endpoint.scheme(), "http" | "https")
+            || endpoint.host_str().is_none()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+            || endpoint.path() != "/"
+        {
+            return Err("Ollama endpoint must be an http(s) server-root URL without credentials, path, query, or fragment".into());
+        }
+        if endpoint.scheme() == "http" && !is_internal_host(endpoint.host_str().unwrap_or_default())
+        {
+            return Err("plain HTTP is allowed only for loopback, private, or single-label internal Ollama hosts; use HTTPS otherwise".into());
+        }
+        endpoint.set_path("/api/chat");
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy()
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .user_agent(concat!("kavach-model-gateway/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .map_err(|_| "could not create Ollama HTTP client".to_string())?;
+        Ok(Self {
+            endpoint,
+            client,
+            concurrency: tokio::sync::Semaphore::new(2),
+        })
+    }
+
+    pub async fn chat(&self, role: ModelRole, request: &ChatRequest) -> Result<Value, ProxyError> {
+        let _permit = self
+            .concurrency
+            .try_acquire()
+            .map_err(|_| ProxyError::Busy)?;
+        let response = self
+            .client
+            .post(self.endpoint.clone())
+            .json(&request.upstream_body(role))
+            .send()
+            .await
+            .map_err(|_| ProxyError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(ProxyError::Unavailable);
+        }
+        let mut response = response;
+        let mut bytes = Vec::new();
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) if bytes.len() + chunk.len() <= MAX_RESPONSE_BYTES => {
+                    bytes.extend_from_slice(&chunk);
+                }
+                Ok(Some(_)) | Err(_) => return Err(ProxyError::InvalidResponse),
+                Ok(None) => break,
+            }
+        }
+        serde_json::from_slice(&bytes).map_err(|_| ProxyError::InvalidResponse)
+    }
+}
+
+fn is_internal_host(host: &str) -> bool {
+    if host == "localhost" || host.ends_with(".localhost") || !host.contains('.') {
+        return true;
+    }
+    match IpAddr::from_str(host) {
+        Ok(IpAddr::V4(address)) => {
+            address.is_loopback() || address.is_private() || address.is_link_local()
+        }
+        Ok(IpAddr::V6(address)) => {
+            address.is_loopback() || address.is_unique_local() || address.is_unicast_link_local()
+        }
+        Err(_) => false,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyError {
+    Busy,
+    Unavailable,
+    InvalidResponse,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn roles_are_a_fixed_model_allowlist() {
+        assert_eq!(
+            ModelRole::parse("collections").unwrap().model(),
+            "granite3.3:2b"
+        );
+        assert_eq!(
+            ModelRole::parse("translation").unwrap().model(),
+            "qwen2.5:1.5b"
+        );
+        assert!(ModelRole::parse("../../api/tags").is_none());
+    }
+
+    #[test]
+    fn request_requires_messages_and_rejects_unrecognized_fields() {
+        let empty: ChatRequest = serde_json::from_value(json!({ "messages": [] })).unwrap();
+        assert!(empty.validate().is_err());
+        assert!(serde_json::from_value::<ChatRequest>(json!({
+            "model": "unapproved", "messages": [{"role":"user", "content":"hi"}]
+        }))
+        .is_err());
+        assert!(serde_json::from_value::<ChatRequest>(json!({
+            "messages": [{"role":"user", "content":"hi"}], "stream": true
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn upstream_body_fixes_model_and_disables_streaming() {
+        let request: ChatRequest = serde_json::from_value(json!({
+            "messages": [{"role":"user", "content":"hello"}]
+        }))
+        .unwrap();
+        let body = request.upstream_body(ModelRole::Translation);
+        assert_eq!(body["model"], "qwen2.5:1.5b");
+        assert_eq!(body["stream"], false);
+        assert_eq!(body["options"]["num_ctx"], 4096);
+        assert_eq!(body["options"]["num_predict"], 512);
+    }
+
+    #[test]
+    fn endpoint_is_a_base_url_only() {
+        assert!(OllamaProxy::new("http://127.0.0.1:11434").is_ok());
+        assert!(OllamaProxy::new("http://ollama:11434").is_ok());
+        assert!(OllamaProxy::new("http://example.com:11434").is_err());
+        assert!(OllamaProxy::new("https://example.com:11434").is_ok());
+        assert!(OllamaProxy::new("http://user:pass@127.0.0.1:11434").is_err());
+        assert!(OllamaProxy::new("http://127.0.0.1:11434/api/tags").is_err());
+        assert!(OllamaProxy::new("file:///tmp/model").is_err());
+    }
+}

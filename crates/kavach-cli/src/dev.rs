@@ -264,6 +264,7 @@ pub(crate) fn dataplane_config(project: &Project, clock: Option<Arc<DevClock>>) 
         provider_connect_timeout_ms: 2_000,
         provider_timeout_ms: 5_000,
         provider_ca: Some(kavach.join("tls/ca.pem")),
+        ollama_endpoint: std::env::var("KAVACH_OLLAMA_ENDPOINT").ok(),
         test_clock: None,
         dev_clock: clock,
         hsm: None,

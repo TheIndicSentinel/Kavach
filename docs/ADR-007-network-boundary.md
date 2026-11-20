@@ -38,6 +38,7 @@ ops_net
 - `kavach-dataplane` (gateway + authorization + broker, one process per ADR-002) is the **only** container attached to `agent_net`; it is also attached to `backend_net` and `ops_net` (to reach backends and model endpoints). No other container spans networks.
 - Agent containers have no route to `backend_net` or `ops_net` and no internet egress.
 - **Model endpoints are governed resources:** agents reach Ollama through the gateway, not directly (PRD D3 — one Resource Gateway for tools, APIs and models).
+- **Ollama inference surface:** the agent listener exposes only `POST /proxy/{role}/api/chat` when a fixed Ollama base URL is configured. Roles map to the selected model IDs; clients cannot provide an upstream URL, model ID, streaming option, or administrative endpoint. The route authenticates the agent token and requires a configured passport, caps request/response size and inference concurrency, and never logs prompt/completion content. This slice does not yet bind each inference to a mandate or append signed model-call evidence; those remain required before describing the full FR-13 workflow as complete.
 - `POST /v1/sor/events` (ADR-004 §4) is exposed on `backend_net` only.
 
 ### 3. Agent authentication

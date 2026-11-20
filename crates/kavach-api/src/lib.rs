@@ -29,6 +29,7 @@ pub mod incidents;
 pub mod lifecycle;
 pub mod limits;
 pub mod metrics;
+pub mod model_proxy;
 pub mod mtls;
 pub mod oidc;
 pub mod outcome_reconciler;

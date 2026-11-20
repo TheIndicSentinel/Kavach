@@ -1,6 +1,6 @@
 # FR-13 Reference model pins
 
-**Status:** selected for the local reference workflow; model quality remains to be validated in that workflow.
+**Status:** selected for the local reference workflow; the authenticated Ollama chat proxy is implemented. Model quality remains to be validated in the full workflow.
 
 FR-13 requires two pinned, Apache-2.0 models served by local Ollama. These are small quantized artifacts so they can be pulled on a temporary Colab runtime for experiments; downloading them to the owner's Mac is not required.
 
@@ -15,11 +15,11 @@ Ollama's library page displays short model-layer identifiers (`07bd1f170855` for
 
 ## Gateway implementation boundary
 
-Agents must not contact Ollama directly. The next implementation slice is the approved ADR-007 `/proxy/*` model gateway path, with the two model IDs above as its allowlist. It must be restricted to the needed inference API, authenticate the agent identity, apply an explicit model-invocation authorization decision, bound request/response sizes and time, avoid logging prompts or completions, and fail closed when Ollama is unavailable. Do not expose Ollama's administrative/model-management endpoints to agents. This document does not authorize direct model egress, public tunnels, or a hosted model service.
+Agents must not contact Ollama directly. The ADR-007 `/proxy/*` model gateway path is implemented at `POST /proxy/{role}/api/chat`, with the two model IDs above as its allowlist. It authenticates agent OIDC identity and requires a configured passport; the caller can select only a role, never a model id or URL. It forwards only to the configured Ollama `/api/chat` endpoint, refuses streaming, bounds request/response size, context, output and concurrency, avoids logging prompts or completions, and fails closed on an upstream error. Ollama's administrative/model-management endpoints are not exposed. The current proxy authorization is identity/passport based; per-inference mandate binding and signed model-call evidence are not implemented. This document does not authorize direct model egress, public tunnels, or a hosted model service.
 
 Model invocation output is untrusted input. The LangGraph workflow must not interpret model output as authority, and untrusted tool/model content must follow the planned taint behavior before critical actions.
 
 ## Validation record
 
 - License and size review: 2026-11-20, based on the official Ollama catalogue and publisher model card linked above.
-- Model execution quality, Hindi and other target-language translation quality, gateway controls, and immutable digest verification: pending FR-13 implementation and validation.
+- Model execution quality, Hindi and other target-language translation quality, per-inference mandate/evidence binding, and immutable digest verification: pending FR-13 implementation and validation.
