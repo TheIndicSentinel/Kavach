@@ -88,6 +88,8 @@ pub enum ParamKind {
     FieldSet,
     /// An integer within `[min, max]`.
     Integer,
+    /// A lowercase SHA-256 hex digest, computed by Kavach for transient input.
+    Sha256Digest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -527,6 +529,20 @@ fn bind(call: &mut ToolCall, name: &str, param: &ParamSpec, value: &Value) -> Re
                 call.extra.insert(name.to_string(), number.to_string());
             }
         }
+        ParamKind::Sha256Digest => {
+            let text = string_param(name, value)?;
+            if name != "prompt_digest"
+                || text.len() != 64
+                || !text
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            {
+                return Err(invalid_parameter(format!(
+                    "parameter {name:?} must be a lowercase SHA-256 digest"
+                )));
+            }
+            call.extra.insert(name.to_string(), text.to_string());
+        }
     }
     Ok(())
 }
@@ -548,7 +564,9 @@ fn required_for(action: AgentAction) -> &'static [&'static str] {
         AgentAction::SendReminder | AgentAction::PlaceCall => &["channel"],
         AgentAction::ProposePlan => &["waiver_bps"],
         AgentAction::UpdateStatus => &[],
-        AgentAction::InvokeCollectionsModel | AgentAction::InvokeTranslationModel => &[],
+        AgentAction::InvokeCollectionsModel | AgentAction::InvokeTranslationModel => {
+            &["prompt_digest"]
+        }
     }
 }
 
@@ -571,6 +589,17 @@ fn validate_tool(tool: &ToolSpec) -> Result<(), PortError> {
         || (tool.model_role.is_some() && tool.trust != Trust::ReadOnly)
     {
         return fail("model_role must match a read_only model invocation action".into());
+    }
+    let has_prompt_digest = tool
+        .params
+        .get("prompt_digest")
+        .is_some_and(|param| param.kind == ParamKind::Sha256Digest && !param.optional);
+    if model_action != has_prompt_digest
+        || tool.params.iter().any(|(name, param)| {
+            param.kind == ParamKind::Sha256Digest && (name != "prompt_digest" || !model_action)
+        })
+    {
+        return fail("model tools require only the prompt_digest sha256_digest parameter".into());
     }
     match (&tool.provider, tool.trust) {
         (Some(provider), Trust::ExternalEffect) if is_allowlist_value(provider) => {}
@@ -640,6 +669,9 @@ fn validate_param(name: &str, param: &ParamSpec) -> Result<(), String> {
             (Some(min), Some(max)) if min <= max && !has_values => {}
             _ => return Err(format!("{name}: an integer needs min <= max and no values")),
         },
+        ParamKind::Sha256Digest if has_values || has_range => {
+            return Err(format!("{name}: a sha256_digest takes no values or range"))
+        }
         _ => {}
     }
     let mut seen = BTreeSet::new();
@@ -843,12 +875,35 @@ mod tests {
         assert_eq!(translation.model_role, Some(ModelRole::Translation));
         assert_eq!(translation.action, "invoke_translation_model");
         assert_eq!(translation.trust, Trust::ReadOnly);
+
+        let call = registry
+            .extract(
+                "invoke_collections_model",
+                request(json!({
+                    "subject_ref": "ref:borrower:B-9382",
+                    "prompt_digest": "a".repeat(64)
+                })),
+            )
+            .unwrap();
+        assert_eq!(call.extra["prompt_digest"], "a".repeat(64));
     }
 
     #[test]
     fn model_role_cannot_be_rebound_to_another_action() {
         let yaml = b"version: 1\ntools:\n- name: invoke_collections_model\n  action: invoke_translation_model\n  trust: read_only\n  model_role: collections\n  params:\n    subject_ref: { kind: capability_ref }\n";
         assert!(ToolRegistry::from_bytes(yaml).is_err());
+    }
+
+    #[test]
+    fn model_prompt_digest_rejects_non_digest_values() {
+        let invalid = registry().extract(
+            "invoke_translation_model",
+            request(json!({
+                "subject_ref": "ref:borrower:B-9382",
+                "prompt_digest": "raw prompt text"
+            })),
+        );
+        assert!(invalid.is_err());
     }
 
     #[test]

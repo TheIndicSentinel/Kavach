@@ -909,7 +909,12 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
                 .iter()
                 .map(|f| ("requested_fields", f.as_str())),
         );
-        strings.extend(call.extra.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        strings.extend(
+            call.extra
+                .iter()
+                .filter(|(key, _)| key.as_str() != "prompt_digest")
+                .map(|(key, value)| (key.as_str(), value.as_str())),
+        );
         for (field, value) in strings {
             // The subject is reference-only: held to the stricter rule.
             let found = if field == "subject_ref" {

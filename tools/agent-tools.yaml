@@ -67,6 +67,7 @@ tools:
     model_role: collections
     params:
       subject_ref: { kind: capability_ref }
+      prompt_digest: { kind: sha256_digest }
 
   - name: invoke_translation_model
     action: invoke_translation_model
@@ -74,3 +75,4 @@ tools:
     model_role: translation
     params:
       subject_ref: { kind: capability_ref }
+      prompt_digest: { kind: sha256_digest }
