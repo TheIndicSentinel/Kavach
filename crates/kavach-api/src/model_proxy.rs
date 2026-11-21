@@ -112,6 +112,16 @@ impl ModelRole {
             Self::Translation => "translation",
         }
     }
+
+    /// Published Ollama library model identifier prefix for the approved
+    /// lightweight reference pin. The full manifest digest is read from the
+    /// local Ollama server and recorded with each governed invocation.
+    const fn digest_prefix(self) -> &'static str {
+        match self {
+            Self::Collections => "07bd1f170855",
+            Self::Translation => "65ec06548149",
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -164,6 +174,7 @@ impl ChatRequest {
 
 pub struct OllamaProxy {
     endpoint: Url,
+    tags_endpoint: Url,
     client: reqwest::Client,
     concurrency: tokio::sync::Semaphore,
 }
@@ -186,6 +197,8 @@ impl OllamaProxy {
         {
             return Err("plain HTTP is allowed only for loopback, private, or single-label internal Ollama hosts; use HTTPS otherwise".into());
         }
+        let mut tags_endpoint = endpoint.clone();
+        tags_endpoint.set_path("/api/tags");
         endpoint.set_path("/api/chat");
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -197,9 +210,28 @@ impl OllamaProxy {
             .map_err(|_| "could not create Ollama HTTP client".to_string())?;
         Ok(Self {
             endpoint,
+            tags_endpoint,
             client,
             concurrency: tokio::sync::Semaphore::new(2),
         })
+    }
+
+    /// Resolve the full local Ollama manifest digest after checking the
+    /// approved library-prefix pin. A missing, malformed, or changed model
+    /// fails closed; callers must record the returned full digest.
+    pub async fn model_digest(&self, role: ModelRole) -> Result<String, ProxyError> {
+        let response = self
+            .client
+            .get(self.tags_endpoint.clone())
+            .timeout(CONNECT_TIMEOUT)
+            .send()
+            .await
+            .map_err(|_| ProxyError::Unavailable)?;
+        if !response.status().is_success() {
+            return Err(ProxyError::Unavailable);
+        }
+        let bytes = read_bounded(response).await?;
+        parse_model_digest(role, &bytes)
     }
 
     pub async fn chat(&self, role: ModelRole, request: &ChatRequest) -> Result<Value, ProxyError> {
@@ -217,19 +249,57 @@ impl OllamaProxy {
         if !response.status().is_success() {
             return Err(ProxyError::Unavailable);
         }
-        let mut response = response;
-        let mut bytes = Vec::new();
-        loop {
-            match response.chunk().await {
-                Ok(Some(chunk)) if bytes.len() + chunk.len() <= MAX_RESPONSE_BYTES => {
-                    bytes.extend_from_slice(&chunk);
-                }
-                Ok(Some(_)) | Err(_) => return Err(ProxyError::InvalidResponse),
-                Ok(None) => break,
-            }
-        }
+        let bytes = read_bounded(response).await?;
         serde_json::from_slice(&bytes).map_err(|_| ProxyError::InvalidResponse)
     }
+}
+
+#[derive(Deserialize)]
+struct OllamaTags {
+    models: Vec<OllamaTag>,
+}
+
+#[derive(Deserialize)]
+struct OllamaTag {
+    name: String,
+    digest: String,
+}
+
+async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, ProxyError> {
+    let mut bytes = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) if bytes.len() + chunk.len() <= MAX_RESPONSE_BYTES => {
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(Some(_)) | Err(_) => return Err(ProxyError::InvalidResponse),
+            Ok(None) => return Ok(bytes),
+        }
+    }
+}
+
+fn is_sha256(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn parse_model_digest(role: ModelRole, bytes: &[u8]) -> Result<String, ProxyError> {
+    let body: OllamaTags =
+        serde_json::from_slice(bytes).map_err(|_| ProxyError::InvalidResponse)?;
+    let matching: Vec<_> = body
+        .models
+        .iter()
+        .filter(|model| model.name == role.model())
+        .collect();
+    let [model] = matching.as_slice() else {
+        return Err(ProxyError::ModelPinMismatch);
+    };
+    if !is_sha256(&model.digest) || !model.digest.starts_with(role.digest_prefix()) {
+        return Err(ProxyError::ModelPinMismatch);
+    }
+    Ok(format!("sha256:{}", model.digest))
 }
 
 fn is_internal_host(host: &str) -> bool {
@@ -252,6 +322,7 @@ pub enum ProxyError {
     Busy,
     Unavailable,
     InvalidResponse,
+    ModelPinMismatch,
 }
 
 #[cfg(test)]
@@ -357,5 +428,51 @@ mod tests {
         assert!(OllamaProxy::new("http://user:pass@127.0.0.1:11434").is_err());
         assert!(OllamaProxy::new("http://127.0.0.1:11434/api/tags").is_err());
         assert!(OllamaProxy::new("file:///tmp/model").is_err());
+    }
+
+    #[test]
+    fn ollama_tag_digest_must_match_the_role_pin() {
+        let digest = format!(
+            "{}{}",
+            ModelRole::Collections.digest_prefix(),
+            "a".repeat(52)
+        );
+        let body = serde_json::to_vec(&json!({
+            "models": [{"name":"granite3.3:2b", "digest":digest}]
+        }))
+        .unwrap();
+        assert_eq!(
+            parse_model_digest(ModelRole::Collections, &body).unwrap(),
+            format!("sha256:{}", digest)
+        );
+
+        let translation = format!(
+            "{}{}",
+            ModelRole::Translation.digest_prefix(),
+            "b".repeat(52)
+        );
+        let body = serde_json::to_vec(&json!({
+            "models": [{"name":"qwen2.5:1.5b", "digest":translation}]
+        }))
+        .unwrap();
+        assert_eq!(
+            parse_model_digest(ModelRole::Translation, &body).unwrap(),
+            format!("sha256:{}", translation)
+        );
+
+        let wrong_model = br#"{"models":[{"name":"qwen2.5:1.5b","digest":"07bd1f170855aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#;
+        assert_eq!(
+            parse_model_digest(ModelRole::Collections, wrong_model),
+            Err(ProxyError::ModelPinMismatch)
+        );
+        let wrong_pin = br#"{"models":[{"name":"granite3.3:2b","digest":"65ec06548149aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#;
+        assert_eq!(
+            parse_model_digest(ModelRole::Collections, wrong_pin),
+            Err(ProxyError::ModelPinMismatch)
+        );
+        assert_eq!(
+            parse_model_digest(ModelRole::Collections, b"not-json"),
+            Err(ProxyError::InvalidResponse)
+        );
     }
 }

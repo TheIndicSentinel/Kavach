@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 
 use agent_fixture::{agent_token, config_for_gateway, send};
 use axum::extract::Json;
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::Router;
 use contract::agent_router;
 use kavach_api::AppState;
@@ -18,6 +18,17 @@ async fn fixture(upstream: Router) -> (Arc<AppState>, String, Arc<Mutex<Vec<Valu
     let seen = Arc::new(Mutex::new(Vec::new()));
     let capture = Arc::clone(&seen);
     let upstream = Router::new()
+        .route(
+            "/api/tags",
+            get(|| async {
+                Json(json!({
+                    "models": [
+                        {"name":"granite3.3:2b", "digest":format!("{}{}", "07bd1f170855", "a".repeat(52))},
+                        {"name":"qwen2.5:1.5b", "digest":format!("{}{}", "65ec06548149", "b".repeat(52))}
+                    ]
+                }))
+            }),
+        )
         .route(
             "/api/chat",
             post(move |Json(body): Json<Value>| {
@@ -35,6 +46,20 @@ async fn fixture(upstream: Router) -> (Arc<AppState>, String, Arc<Mutex<Vec<Valu
     config.dataplane.as_mut().unwrap().ollama_endpoint = Some(format!("http://{address}"));
     let state = Arc::new(AppState::from_config(&config).await.unwrap());
     (state, format!("http://{address}"), seen)
+}
+
+#[tokio::test]
+async fn local_manifest_digest_must_match_the_approved_role_prefix() {
+    let (_, endpoint, _) = fixture(Router::new()).await;
+    let proxy = kavach_api::model_proxy::OllamaProxy::new(&endpoint).unwrap();
+    let digest = proxy
+        .model_digest(kavach_api::model_proxy::ModelRole::Collections)
+        .await
+        .unwrap();
+    assert_eq!(
+        digest,
+        format!("sha256:{}{}", "07bd1f170855", "a".repeat(52))
+    );
 }
 
 #[tokio::test]

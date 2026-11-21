@@ -11,7 +11,9 @@ FR-13 requires two pinned, Apache-2.0 models served by local Ollama. These are s
 
 The `granite3.3:2b` choice favors the planned collections agent's structured tool-use workflow. The smaller Qwen model is assigned to translation to reduce resource use while retaining multilingual capability. These are reference/demo models, not a claim of production translation quality or suitability for consequential decisions. Model outputs never grant authority; Kavach's mandate and gateway remain authoritative.
 
-Ollama's library page displays short model-layer identifiers (`07bd1f170855` for Granite and `65ec06548149` for Qwen) and sizes. They are recorded here as provenance hints, not treated as immutable manifest digests. Before making a supply-chain pin guarantee, deployment must capture and verify each full Ollama manifest digest and the Ollama runtime version. The available network in the implementation environment could not retrieve the registry manifests, so this stronger digest lock is still open.
+The [official Ollama tag page for Granite](https://ollama.com/library/granite3.3/tags) publishes `07bd1f170855`; the [official Qwen tag page](https://ollama.com/library/qwen2.5/tags) publishes `65ec06548149`. The new manifest-resolution helper uses these as the approved lightweight prefix pins: it reads Ollama's local `/api/tags`, requires exactly one matching fixed model name, validates its full lowercase SHA-256 digest, and checks that digest begins with the role's approved prefix. A future signed invocation record can then carry the full 64-hex digest returned by the local server.
+
+This prefix check is a lightweight reference pin, not a full supply-chain guarantee: it provides 48 bits of comparison and trusts the configured local Ollama endpoint to report the model it will run. A production supply-chain claim still requires an independently verified exact manifest digest and a runtime that prevents the tag from changing between inspection and execution.
 
 ## Gateway implementation boundary
 
