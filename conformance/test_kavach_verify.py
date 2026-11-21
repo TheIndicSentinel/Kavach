@@ -132,6 +132,25 @@ class Resolutions(unittest.TestCase):
 
 
 class ModelEvidence(unittest.TestCase):
+    def test_empty_mandate_chain_is_allowed_only_for_a_signed_block_reason(self):
+        with open(f"{BUNDLES}/bundle-v5/records.jsonl", encoding="utf-8") as handle:
+            record = json.loads(handle.readline())
+        record["mandate_id"] = "expired-mandate"
+        record["mandate_chain"] = []
+        record["policy_decision"] = "BLOCK"
+        record["returned_decision"] = "BLOCK"
+        record["signals"] = ["mandate_invalid"]
+        kv.Verifier._model_invocation_form(record, "test refusal")
+
+        record["signals"] = ["authorized"]
+        with self.assertRaises(kv.Refused):
+            kv.Verifier._model_invocation_form(record, "test invalid refusal")
+
+        record["signals"] = ["mandate_invalid"]
+        record["mandate_id"] = ""
+        with self.assertRaises(kv.Refused):
+            kv.Verifier._model_invocation_form(record, "test empty mandate id")
+
     def test_bundle_v5_verifies_model_invocation_and_linked_outcome(self):
         r = kv.verify_bundle(f"{BUNDLES}/bundle-v5", f"{BUNDLES}/bundle-v2.keys.json", now=NOW)
         self.assertEqual((r["version"], r["records"], r["last_seq"]), (5, 2, 2))

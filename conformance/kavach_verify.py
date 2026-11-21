@@ -817,12 +817,22 @@ class Verifier:
         role_action = {"collections": "invoke_collections_model",
                        "translation": "invoke_translation_model"}
         chain = rec["mandate_chain"]
+        mandate_chain_valid = (
+            (bool(chain)
+             and all(isinstance(item, str) and item for item in chain)
+             and chain[-1] == rec["mandate_id"])
+            or
+            (chain == []
+             and rec["policy_decision"] == "BLOCK"
+             and rec["returned_decision"] == "BLOCK"
+             and isinstance(rec["signals"], list)
+             and any(signal in ("mandate_invalid", "dependency_unavailable")
+                     for signal in rec["signals"]))
+        )
         if (not isinstance(actor["agent_id"], str) or not actor["agent_id"]
                 or not isinstance(actor["identity_key"], str) or not actor["identity_key"]
                 or not isinstance(rec["mandate_id"], str) or not rec["mandate_id"]
-                or not isinstance(chain, list) or not chain
-                or any(not isinstance(item, str) or not item for item in chain)
-                or chain[-1] != rec["mandate_id"]
+                or not isinstance(chain, list) or not mandate_chain_valid
                 or not isinstance(rec["model_role"], str)
                 or rec["action"] != role_action.get(rec["model_role"])
                 or not isinstance(rec["request_id"], str) or not 1 <= len(rec["request_id"]) <= 128

@@ -150,7 +150,7 @@ A stop is written **after** it takes effect (so stopping never waits on the chai
 
 Signed authorization evidence written before a governed local model call. It proves which agent, mandate, role, action and prompt digest were authorized; it does not prove the model's semantic correctness.
 
-Besides §4.1, it has: `actor` (`agent_id`, `identity_key`); `mandate_chain` (non-empty array ending in `mandate_id`); `mandate_id`; `action`; `request_id`; `subject_pseudonym`; `model_role` (`collections` or `translation`); `model_digest` (`sha256:` plus 64 lowercase hex); `prompt_digest` (64 lowercase hex); `policy_versions`; `policy_decision`; `returned_decision`; `signals`; and `recorded_at` (the record time).
+Besides §4.1, it has: `actor` (`agent_id`, `identity_key`); `mandate_chain`; `mandate_id`; `action`; `request_id`; `subject_pseudonym`; `model_role` (`collections` or `translation`); `model_digest` (`sha256:` plus 64 lowercase hex); `prompt_digest` (64 lowercase hex); `policy_versions`; `policy_decision`; `returned_decision`; `signals`; and `recorded_at` (the record time). An authorized or policy-evaluated request has a non-empty mandate chain ending in `mandate_id`. If mandate verification fails before a chain is available, an empty chain is valid only when both decisions are `BLOCK` and `signals` contains `mandate_invalid` or `dependency_unavailable`; this records the refused attempt without implying that its mandate was verified.
 
 `collections` MUST use `invoke_collections_model`; `translation` MUST use `invoke_translation_model`. The prompt and completion are transient and MUST NOT be included in the record.
 

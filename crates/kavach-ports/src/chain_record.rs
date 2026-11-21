@@ -379,10 +379,23 @@ impl ChainEntry for ModelInvocationRecord {
         {
             return Err("model invocation chain coordinates are invalid");
         }
+        let mandate_binding_valid = if p.mandate_chain.is_empty() {
+            p.policy_decision == Decision::Block
+                && p.returned_decision == Decision::Block
+                && p.signals.iter().any(|signal| {
+                    matches!(
+                        signal.as_str(),
+                        "mandate_invalid" | "dependency_unavailable"
+                    )
+                })
+        } else {
+            p.mandate_chain.iter().all(|id| !id.is_empty())
+                && p.mandate_chain.last().map(String::as_str) == Some(p.mandate_id.as_str())
+        };
         if p.actor.agent_id.is_empty()
             || p.actor.identity_key.is_empty()
-            || p.mandate_chain.is_empty()
-            || p.mandate_chain.last().map(String::as_str) != Some(p.mandate_id.as_str())
+            || p.mandate_id.is_empty()
+            || !mandate_binding_valid
             || p.action != p.model_role.action()
             || p.request_id.is_empty()
             || p.request_id.len() > 128
@@ -1393,6 +1406,49 @@ mod evidence_transition_tests {
             },
         );
         payload.action = "invoke_translation_model".into();
+        assert_eq!(
+            seal_model_invocation(payload, &signer).unwrap().form(),
+            Err("model invocation authorization binding is invalid")
+        );
+    }
+
+    #[test]
+    fn blocked_invocation_can_record_a_mandate_verification_refusal() {
+        let signer = TestSigner(SigningKey::from_bytes(&[7; 32]));
+        let now = crate::TrustedNow {
+            utc: DateTime::from_timestamp(1_795_000_000, 0).unwrap(),
+            sync: crate::SyncStatus::Synced { max_error_ms: 2 },
+        };
+        let mut draft = model_invocation_draft();
+        draft.mandate_chain.clear();
+        draft.mandate_id = "expired-mandate".into();
+        draft.policy_decision = Decision::Block;
+        draft.returned_decision = Decision::Block;
+        draft.signals = vec!["mandate_invalid".into()];
+        let payload = draft.complete(1, GENESIS, "evidence-m2", now);
+        assert!(seal_model_invocation(payload, &signer)
+            .unwrap()
+            .form()
+            .is_ok());
+
+        draft.signals = vec!["authorized".into()];
+        let payload = draft.complete(1, GENESIS, "evidence-m2", now);
+        assert_eq!(
+            seal_model_invocation(payload, &signer).unwrap().form(),
+            Err("model invocation authorization binding is invalid")
+        );
+
+        draft.signals = vec!["mandate_invalid".into()];
+        draft.returned_decision = Decision::Pass;
+        let payload = draft.complete(1, GENESIS, "evidence-m2", now);
+        assert_eq!(
+            seal_model_invocation(payload, &signer).unwrap().form(),
+            Err("model invocation authorization binding is invalid")
+        );
+
+        draft.returned_decision = Decision::Block;
+        draft.mandate_id.clear();
+        let payload = draft.complete(1, GENESIS, "evidence-m2", now);
         assert_eq!(
             seal_model_invocation(payload, &signer).unwrap().form(),
             Err("model invocation authorization binding is invalid")
