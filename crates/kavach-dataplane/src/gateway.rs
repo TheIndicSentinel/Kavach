@@ -298,6 +298,8 @@ pub struct GatewayDeps<'a, V, S, R, C, B, F, O> {
     pub gateway_held: Option<&'a GatewayHeldDispatch<'a>>,
     /// A release atomically consumed by the host for this exact request.
     pub approval_release: Option<&'a kavach_ports::ReviewReleaseRecord>,
+    /// Server-derived task taint, never copied from an agent request.
+    pub task_tainted: bool,
     pub observer: &'a O,
 }
 
@@ -359,9 +361,11 @@ where
         .map_err(|e| GatewayError::Invalid(e.message))?;
     let started = Instant::now();
     let decided = if let Some(release) = deps.approval_release {
-        core.authorize_released(agent, &call, release).await
+        core.authorize_released_with_task_taint(agent, &call, release, deps.task_tainted)
+            .await
     } else {
-        core.authorize(agent, &call, Mode::Commit).await
+        core.authorize_with_task_taint(agent, &call, Mode::Commit, deps.task_tainted)
+            .await
     }
     .map_err(|e| GatewayError::Invalid(e.message))?;
     let authorize_time = started.elapsed();

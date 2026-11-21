@@ -83,12 +83,12 @@ Item names follow the OWASP GenAI Security Project list (Dec 2025); verify IDs a
 
 | OWASP risk | Kavach control | Status |
 |---|---|---|
-| ASI01 Agent goal hijack (prompt injection) | Mandate parameter binding; `@escalate` review; model output never grants authority; task taint | Binding and registry **Enforced**; `@escalate` → `HUMAN_REVIEW` exists but the approval credential is **Not built**; task taint tracking **Not built** (`task_tainted` is only an input to the policy) |
+| ASI01 Agent goal hijack (prompt injection) | Mandate parameter binding; `@escalate` review; model output never grants authority; task taint | Mandate binding and registry **Enforced**; task taint from governed model completions is persisted before content release and applied to verified authorization chains; tainted critical actions return `HUMAN_REVIEW` with signed risk evidence. Borrower/user tool-content classification and full FR-5 acceptance coverage **remain pending**. Approval release uses the separately documented D17 path. |
 | ASI02 Tool misuse | Tool registry, action maps, parameter schemas, ceilings | **Enforced** (tool registry, mandate ceilings) |
 | ASI03 Identity and privilege abuse | Credential broker; no standing secrets; short-lived, mandate-bound credentials | **Enforced** (broker, 15 s credentials); **Reference** for the provider that accepts them |
 | ASI04 Agentic supply chain | Tool manifest hashes; signed packs; SBOM and licence allowlist in CI | Registry digest and signature **Enforced**; signed packs **Conditional** (`--pack-signers`); dependency and licence checks (`cargo deny`) run in CI, which has been unavailable since the billing block (see SECOND_REVIEW) |
 | ASI05 Unexpected code execution | Agents isolated on `agent_net` without egress; no code-exec tools in reference workflow | Isolation **Dev stack** (compose); reference agents **Planned** (M5) |
-| ASI06 Memory and context poisoning | Per-task taint from untrusted tool/user content | **Not built** |
+| ASI06 Memory and context poisoning | Per-task taint from untrusted tool/user content | Governed model-output taint and critical-action escalation are **implemented**; tool/user content classification and remaining FR-5 failure/isolation tests are **pending** |
 | ASI07 Insecure inter-agent communication | Server-side delegation with narrowing (A2A deferred) | Narrowing and chain validity **Enforced** in the library (`kavach-mandate`); no HTTP delegation API, so not exercised end to end |
 | ASI08 Cascading failures | Typed port errors; fail-closed for critical actions | **Enforced** for the agent path (evidence store, clock, signing and provider outages fail closed); the fault-injection coverage is being extended |
 | ASI09 Human-agent trust exploitation | Exact-action approval rendering; batching and decision-latency monitoring | Change requests show the exact change and its digest (**Enforced**); batching and decision-latency monitoring **Not built** |

@@ -9,6 +9,7 @@ use axum::routing::{get, post};
 use axum::Router;
 use contract::agent_router;
 use kavach_api::AppState;
+use kavach_ports::agent_evidence::AgentEvidenceStore as _;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
 
@@ -244,13 +245,12 @@ async fn governed_model_route_refuses_invalid_mandates_without_forwarding() {
         seen.lock().unwrap().is_empty(),
         "refused calls never reach Ollama"
     );
-    assert!(state
+    assert!(!state
         .dataplane()
         .unwrap()
-        .task_taint_for_mandate("missing-mandate")
+        .task_tainted_for_agent("collections-agent", "missing-mandate")
         .await
-        .unwrap()
-        .is_none());
+        .unwrap());
 }
 
 #[tokio::test]
@@ -274,28 +274,24 @@ async fn governed_model_route_records_authorization_before_fixed_role_inference(
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
     assert_eq!(body["response"]["message"]["content"], "approved result");
     assert!(body["invocation_id"].as_str().is_some());
-    assert!(
-        state
-            .dataplane()
-            .unwrap()
-            .task_taint_for_mandate("different-mandate")
-            .await
-            .unwrap()
-            .is_none(),
-        "taint remains scoped to its mandate task"
-    );
-    let taint = state
+    assert!(!state
         .dataplane()
         .unwrap()
-        .task_taint_for_mandate(&mandate)
+        .task_tainted_for_agent("collections-agent", "different-mandate")
         .await
+        .unwrap());
+    assert!(state
+        .dataplane()
         .unwrap()
-        .expect("completed governed model output taints its mandate task");
-    assert_eq!(taint.mandate_id, mandate);
-    assert_eq!(
-        taint.source,
-        kavach_ports::TaskTaintSource::GovernedModelOutput
-    );
+        .task_tainted_for_agent("collections-agent", &mandate)
+        .await
+        .unwrap());
+    assert!(!state
+        .dataplane()
+        .unwrap()
+        .task_tainted_for_agent("translation-agent", &mandate)
+        .await
+        .unwrap());
 
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
@@ -308,4 +304,59 @@ async fn governed_model_route_records_authorization_before_fixed_role_inference(
     );
     assert_eq!(seen[0]["messages"][0]["content"], "synthetic prompt");
     assert_eq!(seen[0]["stream"], false);
+    drop(seen);
+
+    let (status, precheck) = send(
+        agent_router(state.clone()),
+        "/v1/authorize",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_token("collections-agent")),
+        )],
+        json!({
+            "tool": "propose_plan",
+            "mandate_id": mandate.clone(),
+            "request_id": "tainted-critical-precheck",
+            "params": {"subject_ref": SUBJECT, "waiver_bps": 500}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{precheck}");
+    assert_eq!(precheck["decision"], "HUMAN_REVIEW", "{precheck}");
+    assert!(precheck["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "task_tainted"));
+
+    let (status, decision) = send(
+        agent_router(state.clone()),
+        "/v1/tools/propose_plan",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_token("collections-agent")),
+        )],
+        json!({
+            "mandate_id": mandate,
+            "request_id": "tainted-critical-commit",
+            "params": {"subject_ref": SUBJECT, "waiver_bps": 500}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{decision}");
+    assert_eq!(decision["decision"], "HUMAN_REVIEW", "{decision}");
+    let record = state
+        .dataplane()
+        .unwrap()
+        .core()
+        .store()
+        .get_by_request("default", "collections-agent", "tainted-critical-commit")
+        .await
+        .unwrap()
+        .expect("critical tainted action is recorded");
+    assert!(record
+        .payload
+        .signals
+        .iter()
+        .any(|signal| signal == "task_tainted"));
 }

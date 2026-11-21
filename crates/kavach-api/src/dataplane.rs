@@ -25,8 +25,8 @@ use kavach_credential::{JoseCredentialBroker, RecipientKey};
 use kavach_dataplane::ReviewActionSnapshot;
 use kavach_dataplane::{
     execute, AgentIdentity, AuthorizeConfig, AuthorizeCore, CheckpointPolicy, Checkpointer,
-    Decided, FixtureResolver, GatewayDeps, GatewayError, GatewayReply, Mode, RegistryTrust,
-    ToolRegistry, ToolRequest, WhatIfStore,
+    Decided, FixtureResolver, GatewayDeps, GatewayError, GatewayReply, MandateVerifier, Mode,
+    RegistryTrust, ToolRegistry, ToolRequest, WhatIfStore,
 };
 use kavach_domain::authority::AuthorityChange;
 use kavach_domain::mandate::{
@@ -1398,13 +1398,33 @@ impl Dataplane {
         &self.mandates
     }
 
-    /// Read-only inspection of server-derived task taint. This method is
-    /// in-process only; the API does not expose the projection over HTTP.
-    pub async fn task_taint_for_mandate(
+    /// Resolve taint only for the active mandate held by this agent. The
+    /// mandate chain is verified server-side, and any ancestor taint applies
+    /// to a delegated child task.
+    pub async fn task_tainted_for_agent(
         &self,
+        agent_id: &str,
         mandate_id: &str,
-    ) -> Result<Option<TaskTaint>, PortError> {
-        self.task_taint.get_taint(&self.tenant, mandate_id).await
+    ) -> Result<bool, PortError> {
+        let verified = match self.mandates.verify(&self.tenant, mandate_id).await {
+            Ok(verified) => verified,
+            Err(error) if error.class == ErrorClass::Unavailable => return Err(error),
+            Err(_) => return Ok(false),
+        };
+        if verified.holders.last().map(String::as_str) != Some(agent_id) {
+            return Ok(false);
+        }
+        for task_id in verified.ids {
+            if self
+                .task_taint
+                .get_taint(&self.tenant, &task_id)
+                .await?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     async fn mark_task_tainted(
@@ -2274,9 +2294,18 @@ pub async fn authorize(
             },
         )
         .map_err(refuse_tool)?;
+    let task_tainted = dp
+        .task_tainted_for_agent(&agent.agent_id, &call.mandate_id)
+        .await
+        .map_err(|_| {
+            crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "task risk state is unavailable",
+            )
+        })?;
     let decided = dp
         .core
-        .authorize(&agent, &call, Mode::Precheck)
+        .authorize_with_task_taint(&agent, &call, Mode::Precheck, task_tainted)
         .await
         .map_err(|e| refuse(StatusCode::BAD_REQUEST, e.message))?;
     Ok(Json(AuthorizeResponse {
@@ -2654,6 +2683,15 @@ pub async fn tool_call(
             return Err(refuse_tool(refusal));
         }
     };
+    let task_tainted = dp
+        .task_tainted_for_agent(&agent.agent_id, &checked_call.mandate_id)
+        .await
+        .map_err(|_| {
+            crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "task risk state is unavailable",
+            )
+        })?;
     // Consume only a release matching this authenticated caller's extracted
     // action. Missing, expired or unavailable releases leave the original
     // HUMAN_REVIEW request untouched and therefore non-forwardable.
@@ -2712,6 +2750,7 @@ pub async fn tool_call(
             forwarder: &*dp.forwarder,
             gateway_held: None,
             approval_release: approval_release.as_ref(),
+            task_tainted,
             observer: task_state.metrics(),
         };
         execute(&deps, &task_agent, &task_tool, request).await
@@ -2941,6 +2980,15 @@ async fn governed_model_chat(
         .tools()
         .check(&tool, tool_request)
         .map_err(refuse_tool)?;
+    let task_tainted = dp
+        .task_tainted_for_agent(&agent.agent_id, &call.mandate_id)
+        .await
+        .map_err(|_| {
+            crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "task risk state is unavailable",
+            )
+        })?;
     let evidence_role = match role {
         crate::model_proxy::ModelRole::Collections => {
             kavach_ports::chain_record::ModelInvocationRole::Collections
@@ -2951,7 +2999,13 @@ async fn governed_model_chat(
     };
     let invocation = dp
         .core
-        .authorize_model_invocation(&agent, &call, evidence_role, &model_digest)
+        .authorize_model_invocation_with_task_taint(
+            &agent,
+            &call,
+            evidence_role,
+            &model_digest,
+            task_tainted,
+        )
         .await
         .map_err(|_| {
             crate::problem::Problem::for_status(

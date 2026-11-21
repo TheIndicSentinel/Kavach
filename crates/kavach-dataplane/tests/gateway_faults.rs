@@ -342,6 +342,7 @@ impl World {
             forwarder: &self.forwarder,
             gateway_held: None,
             approval_release: None,
+            task_tainted: false,
             observer: &self.observer,
         };
         execute(
@@ -414,6 +415,7 @@ async fn missing_contact_preference_stops_before_destination_resolution() {
         forwarder: &world.forwarder,
         gateway_held: None,
         approval_release: None,
+        task_tainted: false,
         observer: &world.observer,
     };
 

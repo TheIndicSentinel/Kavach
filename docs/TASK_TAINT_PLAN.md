@@ -1,6 +1,6 @@
 # FR-5 task taint implementation plan
 
-**Status:** proposed; owner approval needed for the task boundary and persistence contract before implementation. This plan is limited to the existing PRD FR-5 and acceptance scenario 2. It does not change the approved requirement.
+**Status:** implementation in progress; task boundary and conservative model-output taint rule approved by the owner on 2026-11-21. This plan is limited to the existing PRD FR-5 and acceptance scenario 2. It does not change the approved requirement.
 
 ## Current gap
 
@@ -26,8 +26,14 @@ The authorization core always supplies `task_tainted: false` to Cedar. The regis
 
 - **Slice 1 complete (2026-11-21):** added the typed `TaskTaintStore` port, a memory adapter, and a Postgres adapter. Migration 051 stores only tenant, mandate/task key, first-tainted timestamp and bounded source; `kavach_runtime` receives `SELECT, INSERT` only. The table is included in the active/passive HA write fence. Memory and least-privilege Postgres integration tests passed against a disposable local PostgreSQL cluster. The Postgres test also confirms runtime cannot update or delete taint. No request path reads or writes this store yet; FR-5 enforcement is not complete.
 - **Slice 2 complete (2026-11-21):** successful `/v1/models/{role}/invoke` responses now mark the signed invocation's mandate task as `governed_model_output` tainted before response content is returned. Missing trusted time or a failed store write returns 503 without returning content. A focused route test verifies a completed model output taints only its mandate task, while an invalid mandate creates no taint. The legacy `/proxy/*` path is unchanged and remains ungoverned. Taint is not yet read by authorization or Cedar, so this does not complete FR-5 critical-action escalation.
-- **Next:** feed the persisted taint into all authorization paths, including precheck and exact-action approval/release, and include the derived state in evidence.
+- **Slice 3 complete (2026-11-21):** API authorization paths now derive taint only after verifying the presented mandate chain and confirming the authenticated agent is its leaf holder. A taint on any mandate in the verified parent chain applies to the current task. Precheck, commit, exact-action release, and governed model authorization receive this server-derived value; callers cannot set it. Cedar escalates critical tainted actions to `HUMAN_REVIEW`, and the derived risk appears as a bounded `task_tainted` signal/reason in signed decision evidence. A focused dataplane test passed for precheck, signed commit evidence, and escalation. API route coverage is being verified before this slice is recorded complete.
 
-## Decision needed
+## Approved decisions
 
-Please approve or change the recommended task boundary (mandate ID, inherited by child mandates) and the conservative rule that every governed model completion taints its task. These choices determine cross-request behavior and the persistence schema. Until decided, the code continues to fail closed on existing raw-identifier violations but does not claim FR-5 task-taint enforcement.
+- **2026-11-21:** use mandate ID as the task key; child mandates inherit taint from their verified parent chain.
+- **2026-11-21:** every governed model completion taints its task, regardless of prompt provenance.
+
+## Remaining work
+
+- Add the planned test-only user-content fixture and exercise persistence across subsequent actions, clean-response monotonicity, wrong-mandate isolation, and taint-store failure before response/effect release.
+- Reconcile the PRD's exact-parameter-match wording with existing mandate parameter enforcement before claiming all of FR-5 acceptance scenario 2 is complete.

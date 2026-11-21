@@ -652,6 +652,55 @@ async fn plans_need_a_waiver_and_large_waivers_need_review() {
 }
 
 #[tokio::test]
+async fn server_derived_task_taint_escalates_critical_actions_and_is_signed() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let plan = |request_id: &str| ToolCall {
+        action: "propose_plan".into(),
+        waiver_bps: Some(500),
+        extra: BTreeMap::new(),
+        ..reminder(&mandate, request_id)
+    };
+    let a = agent("collections-agent");
+
+    let precheck = w
+        .core
+        .authorize_with_task_taint(&a, &plan("taint-precheck"), Mode::Precheck, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        precheck.decision,
+        Decision::HumanReview,
+        "{:?}",
+        precheck.reasons
+    );
+    assert!(precheck
+        .reasons
+        .iter()
+        .any(|reason| reason == "task_tainted"));
+    assert_eq!(precheck.status, CommitStatus::NotRecorded);
+
+    let committed = w
+        .core
+        .authorize_with_task_taint(&a, &plan("taint-commit"), Mode::Commit, true)
+        .await
+        .unwrap();
+    assert_eq!(
+        committed.decision,
+        Decision::HumanReview,
+        "{:?}",
+        committed.reasons
+    );
+    let record = committed.record.expect("signed decision record");
+    assert_eq!(record.payload.policy_decision, Decision::HumanReview);
+    assert!(record
+        .payload
+        .signals
+        .iter()
+        .any(|signal| signal == "task_tainted"));
+}
+
+#[tokio::test]
 async fn exact_d17_release_lifts_only_the_recorded_review_and_keeps_policy_evidence() {
     let w = world();
     let mandate = w.mandate_for("B-9382").await;
@@ -915,6 +964,7 @@ async fn selected_gateway_held_provider_uses_internal_broker_and_tokenless_adapt
         forwarder: &normal_forwarder,
         gateway_held: Some(&dispatch),
         approval_release: None,
+        task_tainted: false,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -1022,6 +1072,7 @@ async fn a_send_that_would_land_after_send_by_is_not_executed() {
         forwarder: &forwarder,
         gateway_held: None,
         approval_release: None,
+        task_tainted: false,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -1059,6 +1110,7 @@ async fn a_send_that_would_land_after_send_by_is_not_executed() {
         forwarder: &forwarder,
         gateway_held: None,
         approval_release: None,
+        task_tainted: false,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -1200,6 +1252,7 @@ async fn a_mandate_revoked_after_the_decision_mints_nothing_and_sends_nothing() 
         forwarder: &forwarder,
         gateway_held: None,
         approval_release: None,
+        task_tainted: false,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -1654,6 +1707,7 @@ async fn an_agent_stopped_after_the_decision_mints_nothing_and_sends_nothing() {
         forwarder: &forwarder,
         gateway_held: None,
         approval_release: None,
+        task_tainted: false,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({

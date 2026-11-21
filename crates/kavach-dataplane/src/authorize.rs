@@ -779,7 +779,21 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         call: &ToolCall,
         mode: Mode,
     ) -> Result<Decided, PortError> {
-        self.authorize_inner(agent, call, mode, None).await
+        self.authorize_with_task_taint(agent, call, mode, false)
+            .await
+    }
+
+    /// Decides a tool call with server-derived task risk state. Callers must
+    /// obtain `task_tainted` from the task-taint store, never from the request.
+    pub async fn authorize_with_task_taint(
+        &self,
+        agent: &AgentIdentity,
+        call: &ToolCall,
+        mode: Mode,
+        task_tainted: bool,
+    ) -> Result<Decided, PortError> {
+        self.authorize_inner(agent, call, mode, None, task_tainted)
+            .await
     }
 
     /// Verifies a fixed model action against the active mandate, the exact
@@ -792,6 +806,20 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         call: &ToolCall,
         role: ModelInvocationRole,
         model_digest: &str,
+    ) -> Result<ModelInvocationAppend, PortError> {
+        self.authorize_model_invocation_with_task_taint(agent, call, role, model_digest, false)
+            .await
+    }
+
+    /// Model invocation variant carrying the server-derived taint state into
+    /// the signed invocation signal set. Model output does not gain authority.
+    pub async fn authorize_model_invocation_with_task_taint(
+        &self,
+        agent: &AgentIdentity,
+        call: &ToolCall,
+        role: ModelInvocationRole,
+        model_digest: &str,
+        task_tainted: bool,
     ) -> Result<ModelInvocationAppend, PortError> {
         validate_request_id(&call.request_id)?;
         if call.mandate_id.is_empty() || call.mandate_id.len() > 128 {
@@ -859,8 +887,19 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
                         ),
                         Ok(state) => {
                             let (mut decision, mut reasons) = self
-                                .decide(agent, state, action, call, &verified.mandate, &assessment)
+                                .decide(
+                                    agent,
+                                    state,
+                                    action,
+                                    call,
+                                    &verified.mandate,
+                                    &assessment,
+                                    task_tainted,
+                                )
                                 .await;
+                            if task_tainted {
+                                reasons.push("task_tainted".into());
+                            }
                             if !self.verifier.passport_allows_action(
                                 tenant,
                                 &agent.agent_id,
@@ -874,6 +913,9 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
                     }
                 }
             };
+        if task_tainted && !signals.iter().any(|signal| signal == "task_tainted") {
+            signals.push("task_tainted".into());
+        }
         if !assessment.violations.is_empty() {
             policy_decision = Decision::Block;
             signals.clone_from(&assessment.violations);
@@ -935,7 +977,19 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         call: &ToolCall,
         release: &kavach_ports::ReviewReleaseRecord,
     ) -> Result<Decided, PortError> {
-        self.authorize_inner(agent, call, Mode::Commit, Some(release))
+        self.authorize_released_with_task_taint(agent, call, release, false)
+            .await
+    }
+
+    /// Exact-action release path with current server-derived task risk state.
+    pub async fn authorize_released_with_task_taint(
+        &self,
+        agent: &AgentIdentity,
+        call: &ToolCall,
+        release: &kavach_ports::ReviewReleaseRecord,
+        task_tainted: bool,
+    ) -> Result<Decided, PortError> {
+        self.authorize_inner(agent, call, Mode::Commit, Some(release), task_tainted)
             .await
     }
 
@@ -945,6 +999,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         call: &ToolCall,
         mode: Mode,
         release: Option<&kavach_ports::ReviewReleaseRecord>,
+        task_tainted: bool,
     ) -> Result<Decided, PortError> {
         validate_request_id(&call.request_id)?;
         let action = AgentAction::from_name(&call.action)
@@ -978,8 +1033,19 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
                 ),
                 Ok(state) => {
                     let (decision, mut reasons) = self
-                        .decide(agent, state, action, call, &mandate, &assessment)
+                        .decide(
+                            agent,
+                            state,
+                            action,
+                            call,
+                            &mandate,
+                            &assessment,
+                            task_tainted,
+                        )
                         .await;
+                    if task_tainted {
+                        reasons.push("task_tainted".into());
+                    }
                     if state != AgentState::Active {
                         reasons.push(format!("agent_state:{}", state.as_str()));
                     }
@@ -1110,6 +1176,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         call: &ToolCall,
         mandate: &Mandate,
         assessment: &Assessment,
+        task_tainted: bool,
     ) -> (Decision, Vec<String>) {
         if !assessment.violations.is_empty() {
             return (Decision::Block, assessment.violations.clone());
@@ -1136,7 +1203,7 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             channel: call.channel.clone(),
             waiver_bps: call.waiver_bps,
             contacts_today,
-            task_tainted: false,
+            task_tainted,
             agent_state: state,
             approval_valid: false,
             now,

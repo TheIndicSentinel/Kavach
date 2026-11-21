@@ -52,6 +52,8 @@ The Cedar context record contains:
 
 No field is copied from the agent's request other than the extracted `params`.
 
+For FR-5 task taint, `task_tainted` is derived from the server-side task-taint store after verifying the full mandate chain and authenticated leaf holder. A child mandate inherits taint from any verified ancestor. The value is supplied for precheck, commit and exact-action release, never accepted from the request, and is included as a bounded signal in signed authorization evidence. Governed model completions taint the mandate task before content is returned. Incoming user/tool content classification and the remaining FR-5 acceptance cases are tracked in [TASK_TAINT_PLAN.md](TASK_TAINT_PLAN.md).
+
 ### 4. Schema validation is mandatory
 
 The agent policy set ships with a `.cedarschema`. Kavach runs Cedar's validator in **strict** mode at startup and on every policy activation; startup or activation fails on any validation error. (Retrofitting schema validation to the existing API RBAC set is a follow-up — see Consequences.)
