@@ -12,15 +12,15 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use chrono::NaiveDate;
 use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
-    OutcomeRecord, UnknownOutcomeReview, UnresolvedOutcome,
+    ModelInvocationAppend, OutcomeRecord, UnknownOutcomeReview, UnresolvedOutcome,
 };
 use kavach_ports::agent_state::{
     AgentChangeCursor, AgentState, AgentStateChange, AgentStateStore, Recording, StoredAgentChange,
     StoredAgentState,
 };
 use kavach_ports::chain_record::{
-    AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
-    ModelOutcomeDraft, ModelOutcomeRecord, RevocationDraft, RevocationRecord,
+    AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelOutcomeDraft,
+    ModelOutcomeRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::outcome_resolution::{ResolutionRecord, ResolutionSummary};
 use kavach_ports::{PortError, TimeSource};
@@ -196,7 +196,7 @@ impl<S: AgentEvidenceStore> AgentEvidenceStore for FaultyStore<S> {
         draft: ModelInvocationDraft,
         clock: &dyn TimeSource,
         signer: &dyn EvidenceSigner,
-    ) -> Result<ModelInvocationRecord, PortError> {
+    ) -> Result<ModelInvocationAppend, PortError> {
         self.inner
             .append_model_invocation(draft, clock, signer)
             .await

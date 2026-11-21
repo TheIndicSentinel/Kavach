@@ -90,8 +90,10 @@ async fn memory_model_invocation_append_is_idempotent_and_shares_the_chain_head(
         .append_model_invocation(draft.clone(), &clock, &signer)
         .await
         .unwrap();
-    assert_eq!(first, replay);
-    assert_eq!(first.payload.seq, 1);
+    assert!(first.created);
+    assert!(!replay.created);
+    assert_eq!(first.record, replay.record);
+    assert_eq!(first.record.payload.seq, 1);
 
     let mut conflicting = draft;
     conflicting.prompt_digest = "c".repeat(64);
@@ -111,6 +113,37 @@ async fn memory_model_invocation_append_is_idempotent_and_shares_the_chain_head(
     ));
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_memory_model_invocation_replay_has_one_forward_owner() {
+    let store = Arc::new(MemoryAgentEvidenceStore::default());
+    let signer = Arc::new(TestSigner::new("evidence-model-test", 12));
+    let clock = Arc::new(FakeClock::synced_at(chrono::Utc::now()));
+    let barrier = Arc::new(tokio::sync::Barrier::new(3));
+    let draft = model_invocation_draft();
+
+    let spawn = |draft| {
+        let store = Arc::clone(&store);
+        let signer = Arc::clone(&signer);
+        let clock = Arc::clone(&clock);
+        let barrier = Arc::clone(&barrier);
+        tokio::spawn(async move {
+            barrier.wait().await;
+            store
+                .append_model_invocation(draft, clock.as_ref(), signer.as_ref())
+                .await
+                .unwrap()
+        })
+    };
+    let first = spawn(draft.clone());
+    let second = spawn(draft);
+    barrier.wait().await;
+    let first = first.await.unwrap();
+    let second = second.await.unwrap();
+
+    assert_ne!(first.created, second.created);
+    assert_eq!(first.record, second.record);
+}
+
 #[tokio::test]
 async fn memory_model_outcome_append_is_idempotent_and_requires_its_invocation() {
     let store = MemoryAgentEvidenceStore::default();
@@ -120,7 +153,7 @@ async fn memory_model_outcome_append_is_idempotent_and_requires_its_invocation()
         .append_model_invocation(model_invocation_draft(), &clock, &signer)
         .await
         .unwrap();
-    let draft = model_outcome_draft(invocation);
+    let draft = model_outcome_draft(invocation.record);
     assert_eq!(
         MemoryAgentEvidenceStore::default()
             .append_model_outcome(draft.clone(), &clock, &signer)
@@ -202,9 +235,11 @@ async fn postgres_model_invocation_append_is_idempotent_and_exportable_from_the_
         .append_model_invocation(draft, &clock, &signer)
         .await
         .unwrap();
-    assert_eq!(first, replay);
-    assert_eq!(first.payload.seq, 1);
-    let outcome_draft = model_outcome_draft(first.clone());
+    assert!(first.created);
+    assert!(!replay.created);
+    assert_eq!(first.record, replay.record);
+    assert_eq!(first.record.payload.seq, 1);
+    let outcome_draft = model_outcome_draft(first.record.clone());
     let outcome = store
         .append_model_outcome(outcome_draft.clone(), &clock, &signer)
         .await
@@ -217,6 +252,16 @@ async fn postgres_model_invocation_append_is_idempotent_and_exportable_from_the_
             .unwrap(),
         outcome
     );
+    let mut concurrent_draft = model_invocation_draft();
+    concurrent_draft.request_id = "model-request-concurrent".into();
+    let (left, right) = tokio::join!(
+        store.append_model_invocation(concurrent_draft.clone(), &clock, &signer),
+        store.append_model_invocation(concurrent_draft, &clock, &signer),
+    );
+    let left = left.unwrap();
+    let right = right.unwrap();
+    assert_ne!(left.created, right.created);
+    assert_eq!(left.record, right.record);
     assert!(matches!(
         store
             .records("model-evidence-test", 0)
@@ -225,7 +270,8 @@ async fn postgres_model_invocation_append_is_idempotent_and_exportable_from_the_
             .as_slice(),
         [
             ChainRecord::ModelInvocation(_),
-            ChainRecord::ModelOutcome(_)
+            ChainRecord::ModelOutcome(_),
+            ChainRecord::ModelInvocation(_)
         ]
     ));
 }

@@ -408,7 +408,7 @@ impl MemoryAgentEvidenceStore {
         draft: &ModelInvocationDraft,
         clock: &dyn TimeSource,
         signer: &dyn EvidenceSigner,
-    ) -> Result<ModelInvocationRecord, PortError> {
+    ) -> Result<kavach_ports::agent_evidence::ModelInvocationAppend, PortError> {
         let mut state = self.state.lock().map_err(poisoned)?;
         if let Some(stored) = state.model_invocations.iter().find(|record| {
             record.payload.tenant_id == draft.tenant_id
@@ -416,7 +416,10 @@ impl MemoryAgentEvidenceStore {
                 && record.payload.request_id == draft.request_id
         }) {
             return if draft.matches(stored) {
-                Ok(stored.clone())
+                Ok(kavach_ports::agent_evidence::ModelInvocationAppend {
+                    record: stored.clone(),
+                    created: false,
+                })
             } else {
                 Err(PortError::rejected(
                     "model invocation request id is already bound to other content",
@@ -438,7 +441,10 @@ impl MemoryAgentEvidenceStore {
             .heads
             .insert(head_key, (record.payload.seq, record.hash.clone()));
         state.model_invocations.push(record.clone());
-        Ok(record)
+        Ok(kavach_ports::agent_evidence::ModelInvocationAppend {
+            record,
+            created: true,
+        })
     }
 
     fn append_model_outcome_sync(
@@ -765,7 +771,8 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         draft: ModelInvocationDraft,
         clock: &dyn TimeSource,
         signer: &dyn EvidenceSigner,
-    ) -> impl Future<Output = Result<ModelInvocationRecord, PortError>> + Send {
+    ) -> impl Future<Output = Result<kavach_ports::agent_evidence::ModelInvocationAppend, PortError>>
+           + Send {
         ready(self.append_model_invocation_sync(&draft, clock, signer))
     }
 

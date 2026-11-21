@@ -1110,7 +1110,7 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         draft: ModelInvocationDraft,
         clock: &dyn TimeSource,
         signer: &dyn EvidenceSigner,
-    ) -> Result<ModelInvocationRecord, PortError> {
+    ) -> Result<kavach_ports::agent_evidence::ModelInvocationAppend, PortError> {
         if let Some(stored) = find_model_invocation(
             &self.pool,
             &draft.tenant_id,
@@ -1119,13 +1119,21 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         )
         .await?
         {
-            return same_model_invocation(stored, &draft);
+            return same_model_invocation(stored, &draft).map(|record| {
+                kavach_ports::agent_evidence::ModelInvocationAppend {
+                    record,
+                    created: false,
+                }
+            });
         }
         match self
             .append_model_invocation_once(&draft, clock, signer)
             .await
         {
-            Ok(record) => Ok(record),
+            Ok(record) => Ok(kavach_ports::agent_evidence::ModelInvocationAppend {
+                record,
+                created: true,
+            }),
             Err(error) => {
                 // A concurrent retry may have committed while this writer
                 // waited for the partition head. If so, that row decides.
@@ -1137,7 +1145,12 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
                 )
                 .await?
                 {
-                    Some(stored) => same_model_invocation(stored, &draft),
+                    Some(stored) => same_model_invocation(stored, &draft).map(|record| {
+                        kavach_ports::agent_evidence::ModelInvocationAppend {
+                            record,
+                            created: false,
+                        }
+                    }),
                     None => Err(error),
                 }
             }

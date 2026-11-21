@@ -16,8 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::chain_record::{
-    AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
-    ModelOutcomeDraft, ModelOutcomeRecord, RevocationDraft, RevocationRecord,
+    AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelOutcomeDraft,
+    ModelOutcomeRecord, RevocationDraft, RevocationRecord,
 };
 use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
@@ -536,6 +536,15 @@ pub struct UnknownOutcomeReview {
     pub resolutions: Vec<crate::outcome_resolution::ResolutionRecord>,
 }
 
+/// Result of appending a model invocation. `created` is true only for the
+/// caller that atomically committed the first record; only that caller may
+/// forward the request to the model provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelInvocationAppend {
+    pub record: crate::chain_record::ModelInvocationRecord,
+    pub created: bool,
+}
+
 /// Agent evidence persistence (ADR-005 §6 phase 1).
 ///
 /// `commit` is one transaction: lock the partition head, then (allow only,
@@ -642,13 +651,14 @@ pub trait AgentEvidenceStore: Send + Sync {
 
     /// Appends a signed model invocation record to the same partition chain.
     /// Repeating the exact `(tenant, agent, request_id)` and content returns
-    /// the existing record; reusing that identity for other content is rejected.
+    /// the existing record with `created = false`; only the first append has
+    /// `created = true`, and reusing that identity for other content is rejected.
     fn append_model_invocation(
         &self,
         draft: ModelInvocationDraft,
         clock: &dyn TimeSource,
         signer: &dyn EvidenceSigner,
-    ) -> impl Future<Output = Result<ModelInvocationRecord, PortError>> + Send;
+    ) -> impl Future<Output = Result<ModelInvocationAppend, PortError>> + Send;
 
     /// Appends the signed result for an existing invocation to the same
     /// partition chain. Exact replays return the stored record; changed

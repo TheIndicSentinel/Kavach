@@ -10,11 +10,11 @@ use std::future::{ready, Future};
 use chrono::NaiveDate;
 use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
-    OutcomeRecord, UnknownOutcomeReview,
+    ModelInvocationAppend, OutcomeRecord, UnknownOutcomeReview,
 };
 use kavach_ports::chain_record::{
-    AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
-    ModelOutcomeDraft, ModelOutcomeRecord, RevocationDraft, RevocationRecord,
+    AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelOutcomeDraft,
+    ModelOutcomeRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::{PortError, TimeSource};
 
@@ -131,7 +131,7 @@ impl AgentEvidenceStore for WhatIfStore {
         _draft: ModelInvocationDraft,
         _clock: &dyn TimeSource,
         _signer: &dyn EvidenceSigner,
-    ) -> impl Future<Output = Result<ModelInvocationRecord, PortError>> + Send {
+    ) -> impl Future<Output = Result<ModelInvocationAppend, PortError>> + Send {
         ready(Err(PortError::invalid(NOTHING_RECORDED)))
     }
 
