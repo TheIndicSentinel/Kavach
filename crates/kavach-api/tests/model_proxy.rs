@@ -3,11 +3,11 @@ mod contract;
 
 use std::sync::{Arc, Mutex};
 
-use agent_fixture::{agent_token, config_for_gateway, issue_at, send, SUBJECT};
+use agent_fixture::{agent_token, config_for_gateway, event_at, issue_at, send, SUBJECT};
 use axum::extract::Json;
 use axum::routing::{get, post};
 use axum::Router;
-use contract::agent_router;
+use contract::{agent_router, sor_router};
 use kavach_api::AppState;
 use kavach_ports::agent_evidence::AgentEvidenceStore as _;
 use serde_json::{json, Value};
@@ -256,6 +256,20 @@ async fn governed_model_route_refuses_invalid_mandates_without_forwarding() {
 #[tokio::test]
 async fn governed_model_route_records_authorization_before_fixed_role_inference() {
     let (state, _, seen, mandate) = fixture_with_model_mandate(Router::new()).await;
+    let other_event = event_at("evt-model-other-task", "lms:loan/L-2", chrono::Utc::now()).await;
+    let (other_status, other_body) = send(
+        sor_router(state.clone()),
+        "/v1/sor/events",
+        &[],
+        json!({"event": other_event}),
+    )
+    .await;
+    assert_eq!(
+        other_status,
+        axum::http::StatusCode::CREATED,
+        "{other_body}"
+    );
+    let other_mandate = other_body["mandate_id"].as_str().unwrap();
     let (status, body) = send(
         agent_router(state.clone()),
         "/v1/models/collections/invoke",
@@ -277,7 +291,7 @@ async fn governed_model_route_records_authorization_before_fixed_role_inference(
     assert!(!state
         .dataplane()
         .unwrap()
-        .task_tainted_for_agent("collections-agent", "different-mandate")
+        .task_tainted_for_agent("collections-agent", other_mandate)
         .await
         .unwrap());
     assert!(state

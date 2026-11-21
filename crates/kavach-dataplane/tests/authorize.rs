@@ -23,10 +23,10 @@ use kavach_mandate::memory::{
 use kavach_mandate::{MandateDeps, MandateService};
 use kavach_ports::agent_evidence::AgentEvidenceStore;
 use kavach_ports::chain_record::{ChainRecord, ModelInvocationRole};
-use kavach_ports::{SyncStatus, TimeSource};
+use kavach_ports::{SyncStatus, TaskTaintSource, TaskTaintStore, TimeSource};
 use kavach_ports_testkit::agent_evidence::TestSigner;
 use kavach_ports_testkit::{FakeClock, InMemoryReplayGuard};
-use kavach_storage::MemoryAgentEvidenceStore;
+use kavach_storage::{MemoryAgentEvidenceStore, MemoryTaskTaintStore};
 
 type Service = MandateService<
     InMemoryKeyProvider,
@@ -655,6 +655,35 @@ async fn plans_need_a_waiver_and_large_waivers_need_review() {
 async fn server_derived_task_taint_escalates_critical_actions_and_is_signed() {
     let w = world();
     let mandate = w.mandate_for("B-9382").await;
+    // Test-only stand-in for a registered user-content tool result. Production
+    // tool-content classification remains a separate planned follow-up.
+    let test_taint_store = MemoryTaskTaintStore::default();
+    let first = test_taint_store
+        .mark_tainted(
+            common::TENANT,
+            &mandate,
+            TaskTaintSource::UserContent,
+            Utc::now(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.source, TaskTaintSource::UserContent);
+    // A later clean/model response cannot replace or clear the first taint.
+    let later = test_taint_store
+        .mark_tainted(
+            common::TENANT,
+            &mandate,
+            TaskTaintSource::GovernedModelOutput,
+            Utc::now() + Duration::seconds(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(later, first);
+    let task_tainted = test_taint_store
+        .get_taint(common::TENANT, &mandate)
+        .await
+        .unwrap()
+        .is_some();
     let plan = |request_id: &str| ToolCall {
         action: "propose_plan".into(),
         waiver_bps: Some(500),
@@ -665,7 +694,7 @@ async fn server_derived_task_taint_escalates_critical_actions_and_is_signed() {
 
     let precheck = w
         .core
-        .authorize_with_task_taint(&a, &plan("taint-precheck"), Mode::Precheck, true)
+        .authorize_with_task_taint(&a, &plan("taint-precheck"), Mode::Precheck, task_tainted)
         .await
         .unwrap();
     assert_eq!(
@@ -682,7 +711,7 @@ async fn server_derived_task_taint_escalates_critical_actions_and_is_signed() {
 
     let committed = w
         .core
-        .authorize_with_task_taint(&a, &plan("taint-commit"), Mode::Commit, true)
+        .authorize_with_task_taint(&a, &plan("taint-commit"), Mode::Commit, task_tainted)
         .await
         .unwrap();
     assert_eq!(
