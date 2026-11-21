@@ -2926,7 +2926,14 @@ async fn complete_governed_model(
 ) -> Result<Json<serde_json::Value>, Refusal> {
     let started = Instant::now();
     let upstream_request = request.chat_request();
-    let (status, response_digest, response) = match proxy.chat(role, &upstream_request).await {
+    let (status, response_digest, response) = match proxy
+        .chat_pinned(
+            role,
+            &invocation.record.payload.model_digest,
+            &upstream_request,
+        )
+        .await
+    {
         Ok(response) => {
             let content = response
                 .get("message")

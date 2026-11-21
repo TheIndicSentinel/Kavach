@@ -23,8 +23,8 @@ async fn fixture(upstream: Router) -> (Arc<AppState>, String, Arc<Mutex<Vec<Valu
             get(|| async {
                 Json(json!({
                     "models": [
-                        {"name":"granite3.3:2b", "digest":format!("{}{}", "07bd1f170855", "a".repeat(52))},
-                        {"name":"qwen2.5:1.5b", "digest":format!("{}{}", "65ec06548149", "b".repeat(52))}
+                        {"name":"granite3.3:2b", "digest":kavach_api::model_proxy::ModelRole::Collections.manifest_digest()},
+                        {"name":"qwen2.5:1.5b", "digest":kavach_api::model_proxy::ModelRole::Translation.manifest_digest()}
                     ]
                 }))
             }),
@@ -61,7 +61,7 @@ async fn fixture_with_model_mandate(
             get(|| async {
                 Json(json!({ "models": [{
                     "name":"granite3.3:2b",
-                    "digest":format!("{}{}", "07bd1f170855", "a".repeat(52))
+                    "digest":kavach_api::model_proxy::ModelRole::Collections.manifest_digest()
                 }] }))
             }),
         )
@@ -105,7 +105,7 @@ async fn fixture_with_model_mandate(
 }
 
 #[tokio::test]
-async fn local_manifest_digest_must_match_the_approved_role_prefix() {
+async fn local_manifest_digest_must_match_the_exact_approved_pin() {
     let (_, endpoint, _) = fixture(Router::new()).await;
     let proxy = kavach_api::model_proxy::OllamaProxy::new(&endpoint).unwrap();
     let digest = proxy
@@ -114,7 +114,10 @@ async fn local_manifest_digest_must_match_the_approved_role_prefix() {
         .unwrap();
     assert_eq!(
         digest,
-        format!("sha256:{}{}", "07bd1f170855", "a".repeat(52))
+        format!(
+            "sha256:{}",
+            kavach_api::model_proxy::ModelRole::Collections.manifest_digest()
+        )
     );
 }
 
@@ -267,7 +270,13 @@ async fn governed_model_route_records_authorization_before_fixed_role_inference(
 
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);
-    assert_eq!(seen[0]["model"], "granite3.3:2b");
+    assert_eq!(
+        seen[0]["model"],
+        format!(
+            "sha256:{}",
+            kavach_api::model_proxy::ModelRole::Collections.manifest_digest()
+        )
+    );
     assert_eq!(seen[0]["messages"][0]["content"], "synthetic prompt");
     assert_eq!(seen[0]["stream"], false);
 }

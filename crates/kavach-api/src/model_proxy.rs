@@ -113,13 +113,13 @@ impl ModelRole {
         }
     }
 
-    /// Published Ollama library model identifier prefix for the approved
-    /// lightweight reference pin. The full manifest digest is read from the
-    /// local Ollama server and recorded with each governed invocation.
-    const fn digest_prefix(self) -> &'static str {
+    /// Exact manifest digest obtained from the official Ollama registry for
+    /// the approved reference tag. Governed requests use this digest reference
+    /// so a tag change between inspection and execution cannot select new bytes.
+    pub const fn manifest_digest(self) -> &'static str {
         match self {
-            Self::Collections => "07bd1f170855",
-            Self::Translation => "65ec06548149",
+            Self::Collections => "07bd1f170855240f9e162bf54ea494a8bc1c73d8cbd1365d7fccbeb7d2504947",
+            Self::Translation => "65ec06548149b04c096a120e4a6da9d4017ea809c91734ea5631e89f96ddc57b",
         }
     }
 }
@@ -155,9 +155,9 @@ impl ChatRequest {
         Ok(())
     }
 
-    fn upstream_body(&self, role: ModelRole) -> Value {
+    fn upstream_body_for_model(&self, model: &str) -> Value {
         let mut body = json!({
-            "model": role.model(),
+            "model": model,
             "messages": self.messages,
             "stream": false,
             "options": { "num_ctx": 4096, "num_predict": 512 }
@@ -216,9 +216,9 @@ impl OllamaProxy {
         })
     }
 
-    /// Resolve the full local Ollama manifest digest after checking the
-    /// approved library-prefix pin. A missing, malformed, or changed model
-    /// fails closed; callers must record the returned full digest.
+    /// Resolve the local Ollama manifest digest and require the approved exact
+    /// role pin. A missing, malformed, or changed model fails closed; callers
+    /// must record and use the returned digest reference.
     pub async fn model_digest(&self, role: ModelRole) -> Result<String, ProxyError> {
         let response = self
             .client
@@ -234,7 +234,29 @@ impl OllamaProxy {
         parse_model_digest(role, &bytes)
     }
 
+    /// Executes a governed request using Ollama's exact local digest reference,
+    /// rather than the mutable role tag inspected by [`Self::model_digest`].
+    pub async fn chat_pinned(
+        &self,
+        role: ModelRole,
+        digest: &str,
+        request: &ChatRequest,
+    ) -> Result<Value, ProxyError> {
+        if digest != format!("sha256:{}", role.manifest_digest()) {
+            return Err(ProxyError::ModelPinMismatch);
+        }
+        self.chat_with_model(digest, request).await
+    }
+
     pub async fn chat(&self, role: ModelRole, request: &ChatRequest) -> Result<Value, ProxyError> {
+        self.chat_with_model(role.model(), request).await
+    }
+
+    async fn chat_with_model(
+        &self,
+        model: &str,
+        request: &ChatRequest,
+    ) -> Result<Value, ProxyError> {
         let _permit = self
             .concurrency
             .try_acquire()
@@ -242,7 +264,7 @@ impl OllamaProxy {
         let response = self
             .client
             .post(self.endpoint.clone())
-            .json(&request.upstream_body(role))
+            .json(&request.upstream_body_for_model(model))
             .send()
             .await
             .map_err(|_| ProxyError::Unavailable)?;
@@ -296,7 +318,7 @@ fn parse_model_digest(role: ModelRole, bytes: &[u8]) -> Result<String, ProxyErro
     let [model] = matching.as_slice() else {
         return Err(ProxyError::ModelPinMismatch);
     };
-    if !is_sha256(&model.digest) || !model.digest.starts_with(role.digest_prefix()) {
+    if !is_sha256(&model.digest) || model.digest != role.manifest_digest() {
         return Err(ProxyError::ModelPinMismatch);
     }
     Ok(format!("sha256:{}", model.digest))
@@ -412,11 +434,46 @@ mod tests {
             "messages": [{"role":"user", "content":"hello"}]
         }))
         .unwrap();
-        let body = request.upstream_body(ModelRole::Translation);
+        let body = request.upstream_body_for_model(ModelRole::Translation.model());
         assert_eq!(body["model"], "qwen2.5:1.5b");
         assert_eq!(body["stream"], false);
         assert_eq!(body["options"]["num_ctx"], 4096);
         assert_eq!(body["options"]["num_predict"], 512);
+    }
+
+    #[test]
+    fn governed_upstream_model_name_is_the_exact_digest_reference() {
+        let request: ChatRequest = serde_json::from_value(json!({
+            "messages": [{"role":"user", "content":"hello"}]
+        }))
+        .unwrap();
+        let body = request.upstream_body_for_model(&format!(
+            "sha256:{}",
+            ModelRole::Collections.manifest_digest()
+        ));
+        assert_eq!(
+            body["model"],
+            format!("sha256:{}", ModelRole::Collections.manifest_digest())
+        );
+    }
+
+    #[tokio::test]
+    async fn governed_proxy_rejects_any_digest_other_than_the_role_pin() {
+        let proxy = OllamaProxy::new("http://127.0.0.1:9").unwrap();
+        let request: ChatRequest = serde_json::from_value(json!({
+            "messages": [{"role":"user", "content":"hello"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            proxy
+                .chat_pinned(
+                    ModelRole::Collections,
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    &request,
+                )
+                .await,
+            Err(ProxyError::ModelPinMismatch)
+        );
     }
 
     #[test]
@@ -432,32 +489,24 @@ mod tests {
 
     #[test]
     fn ollama_tag_digest_must_match_the_role_pin() {
-        let digest = format!(
-            "{}{}",
-            ModelRole::Collections.digest_prefix(),
-            "a".repeat(52)
-        );
+        let digest = ModelRole::Collections.manifest_digest();
         let body = serde_json::to_vec(&json!({
             "models": [{"name":"granite3.3:2b", "digest":digest}]
         }))
         .unwrap();
         assert_eq!(
             parse_model_digest(ModelRole::Collections, &body).unwrap(),
-            format!("sha256:{}", digest)
+            format!("sha256:{digest}")
         );
 
-        let translation = format!(
-            "{}{}",
-            ModelRole::Translation.digest_prefix(),
-            "b".repeat(52)
-        );
+        let translation = ModelRole::Translation.manifest_digest();
         let body = serde_json::to_vec(&json!({
             "models": [{"name":"qwen2.5:1.5b", "digest":translation}]
         }))
         .unwrap();
         assert_eq!(
             parse_model_digest(ModelRole::Translation, &body).unwrap(),
-            format!("sha256:{}", translation)
+            format!("sha256:{translation}")
         );
 
         let wrong_model = br#"{"models":[{"name":"qwen2.5:1.5b","digest":"07bd1f170855aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#;
@@ -468,6 +517,19 @@ mod tests {
         let wrong_pin = br#"{"models":[{"name":"granite3.3:2b","digest":"65ec06548149aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}"#;
         assert_eq!(
             parse_model_digest(ModelRole::Collections, wrong_pin),
+            Err(ProxyError::ModelPinMismatch)
+        );
+        let changed_suffix = format!(
+            "{}{}",
+            &ModelRole::Collections.manifest_digest()[..12],
+            "f".repeat(52)
+        );
+        let changed_body = serde_json::to_vec(&json!({
+            "models": [{"name":"granite3.3:2b", "digest":changed_suffix}]
+        }))
+        .unwrap();
+        assert_eq!(
+            parse_model_digest(ModelRole::Collections, &changed_body),
             Err(ProxyError::ModelPinMismatch)
         );
         assert_eq!(
