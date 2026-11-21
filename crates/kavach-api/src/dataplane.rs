@@ -34,6 +34,7 @@ use kavach_domain::mandate::{
 };
 use kavach_domain::Decision;
 use kavach_keys::{SubjectKeys, TrustedSigners};
+use sha2::Digest as _;
 
 use crate::signing::{HsmConfig, HsmRole, HsmStatus, KeySources, SigningKeys};
 use kavach_mandate::jws::KeySet;
@@ -2819,6 +2820,7 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/authorize", post(authorize))
         .route("/v1/tools/{tool}", post(tool_call))
+        .route("/v1/models/{role}/invoke", post(governed_model_chat))
         .route("/proxy/{role}/api/chat", post(model_chat))
         .layer(DefaultBodyLimit::max(AGENT_BODY_LIMIT))
         .route(
@@ -2834,6 +2836,162 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
             crate::ha_lease::http_gate,
         ))
         .with_state(state)
+}
+
+/// Mandate-governed model inference. The invocation record is committed
+/// before Ollama is called; only the signed outcome metadata is persisted.
+async fn governed_model_chat(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(role): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: Result<StrictJson<crate::model_proxy::GovernedModelRequest>, StrictJsonRejection>,
+) -> Result<Json<serde_json::Value>, Refusal> {
+    let dp = dataplane(&state)?;
+    let agent = authenticate_agent(dp, &headers)?;
+    let Some(role) = crate::model_proxy::ModelRole::parse(&role) else {
+        return Err(refuse(StatusCode::NOT_FOUND, "unknown model role"));
+    };
+    let Some(proxy) = dp.model_proxy.as_ref() else {
+        return Err(crate::problem::Problem::for_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "model proxy is not configured",
+        ));
+    };
+    let StrictJson(request) =
+        body.map_err(|_| refuse(StatusCode::BAD_REQUEST, "invalid governed model request"))?;
+    request
+        .prompt_digest()
+        .map_err(|message| refuse(StatusCode::BAD_REQUEST, message))?;
+
+    // Resolve the fixed server-side model before recording authorization.
+    // The full Ollama manifest digest is then bound into signed evidence.
+    let model_digest = match proxy.model_digest(role).await {
+        Ok(digest) => digest,
+        Err(error) => {
+            tracing::warn!(role = role.as_str(), error = ?error, "governed model pin check failed");
+            return Err(crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "approved model is unavailable",
+            ));
+        }
+    };
+    let (tool, tool_request) = request
+        .tool_request(role)
+        .map_err(|message| refuse(StatusCode::BAD_REQUEST, message))?;
+    let call = dp
+        .core
+        .tools()
+        .check(&tool, tool_request)
+        .map_err(refuse_tool)?;
+    let evidence_role = match role {
+        crate::model_proxy::ModelRole::Collections => {
+            kavach_ports::chain_record::ModelInvocationRole::Collections
+        }
+        crate::model_proxy::ModelRole::Translation => {
+            kavach_ports::chain_record::ModelInvocationRole::Translation
+        }
+    };
+    let invocation = dp
+        .core
+        .authorize_model_invocation(&agent, &call, evidence_role, &model_digest)
+        .await
+        .map_err(|_| {
+            crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "model authorization evidence is unavailable",
+            )
+        })?;
+    if invocation.record.payload.returned_decision != Decision::Pass {
+        return Err(crate::problem::Problem::for_status(
+            StatusCode::FORBIDDEN,
+            "model invocation was refused",
+        ));
+    }
+    if !invocation.created {
+        return Err(crate::problem::Problem::for_status(
+            StatusCode::CONFLICT,
+            "model request was already recorded; provider was not called",
+        ));
+    }
+
+    complete_governed_model(dp, proxy, role, request, invocation).await
+}
+
+async fn complete_governed_model(
+    dp: &Dataplane,
+    proxy: &crate::model_proxy::OllamaProxy,
+    role: crate::model_proxy::ModelRole,
+    request: crate::model_proxy::GovernedModelRequest,
+    invocation: kavach_ports::agent_evidence::ModelInvocationAppend,
+) -> Result<Json<serde_json::Value>, Refusal> {
+    let started = Instant::now();
+    let upstream_request = request.chat_request();
+    let (status, response_digest, response) = match proxy.chat(role, &upstream_request).await {
+        Ok(response) => {
+            let content = response
+                .get("message")
+                .and_then(|message| message.get("content"))
+                .and_then(serde_json::Value::as_str);
+            match content {
+                Some(content) => (
+                    kavach_ports::chain_record::ModelOutcomeStatus::Completed,
+                    Some(format!("{:x}", sha2::Sha256::digest(content.as_bytes()))),
+                    Some(response),
+                ),
+                None => (
+                    kavach_ports::chain_record::ModelOutcomeStatus::Unknown,
+                    None,
+                    None,
+                ),
+            }
+        }
+        Err(crate::model_proxy::ProxyError::Busy) => (
+            kavach_ports::chain_record::ModelOutcomeStatus::Failed,
+            None,
+            None,
+        ),
+        Err(_) => (
+            // Once the HTTP request is attempted, a transport or response
+            // error is ambiguous; never retry or claim it did not execute.
+            kavach_ports::chain_record::ModelOutcomeStatus::Unknown,
+            None,
+            None,
+        ),
+    };
+    let duration_ms = u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX);
+    dp.core
+        .record_model_outcome(
+            invocation.record.clone(),
+            status,
+            response_digest,
+            duration_ms,
+        )
+        .await
+        .map_err(|_| {
+            crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "model outcome evidence is unavailable",
+            )
+        })?;
+
+    match (status, response) {
+        (kavach_ports::chain_record::ModelOutcomeStatus::Completed, Some(response)) => {
+            Ok(Json(serde_json::json!({
+                "invocation_id": invocation.record.payload.record_id,
+                "response": response,
+            })))
+        }
+        (kavach_ports::chain_record::ModelOutcomeStatus::Failed, _) => {
+            Err(crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "model provider is busy",
+            ))
+        }
+        _ => Err(crate::problem::Problem::for_status(
+            StatusCode::BAD_GATEWAY,
+            "model provider outcome is unknown; request was not retried",
+        )),
+    }
 }
 
 /// Authenticated chat inference through the configured local Ollama endpoint.

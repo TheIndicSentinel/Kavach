@@ -9,7 +9,7 @@ info:
     - **operator**: decision evaluation, governance, change requests,
       evidence reads and administration;
     - **agent**: the agent data plane (`/v1/authorize`, `/v1/tools/{tool}`,
-      and the optional Ollama `/proxy/{role}/api/chat` route);
+      mandate-governed model invocation, and the legacy Ollama proxy);
     - **system of record (SoR)**: signed events that issue mandates and
       signed authority updates from the configured source system.
 
@@ -1011,6 +1011,64 @@ paths:
         "500": { $ref: "#/components/responses/Internal" }
         "501": { $ref: "#/components/responses/NotForwardable" }
 
+  /v1/models/{role}/invoke:
+    x-kavach-listeners: [agent]
+    servers:
+      - url: http://127.0.0.1:8091
+        description: agent listener
+    post:
+      operationId: invokeGovernedModel
+      tags: [agent]
+      summary: Invoke the fixed model role under an active mandate.
+      description: |
+        Requires agent authentication, a valid mandate, an exact passport
+        action grant, Cedar approval, and a newly committed invocation record.
+        Only then does Kavach call the role's fixed Ollama model. Prompt and
+        completion text are transient; evidence stores their digests only.
+        A replay is never forwarded again. Ambiguous provider outcomes are
+        recorded as unknown and are not retried.
+      security:
+        - agentToken: []
+      parameters:
+        - name: role
+          in: path
+          required: true
+          schema: { type: string, enum: [collections, translation] }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [mandate_id, request_id, subject_ref, prompt]
+              properties:
+                mandate_id: { type: string, minLength: 1, maxLength: 128 }
+                request_id: { $ref: "#/components/schemas/RequestId" }
+                subject_ref: { type: string, pattern: "^ref:[a-z][a-z0-9_-]{0,31}:[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$" }
+                prompt: { type: string, minLength: 1 }
+      responses:
+        "200":
+          description: Model response with its signed invocation record identifier.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [invocation_id, response]
+                properties:
+                  invocation_id: { type: string }
+                  response: { type: object }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "413": { $ref: "#/components/responses/PayloadTooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "502": { $ref: "#/components/responses/BadGateway" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /proxy/{role}/api/chat:
     x-kavach-listeners: [agent]
     servers:
@@ -1025,7 +1083,9 @@ paths:
         limited to `collections` or `translation`; agents cannot choose a model,
         upstream URL, stream mode, or Ollama administrative endpoint. The route
         is unavailable unless `--ollama-endpoint` is configured. Prompt and
-        completion bodies are not logged. Business actions still require the
+        completion bodies are not logged. This legacy identity-only route is
+        ungoverned and must not be used for governed agent workflows; use
+        `/v1/models/{role}/invoke` instead. Business actions still require the
         normal mandate-authorized tool routes.
       security:
         - agentToken: []

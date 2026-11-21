@@ -35,8 +35,9 @@ use kavach_ports::agent_state::{
     AgentStateChange, AgentStateStore, Recording, StoredAgentChange, StoredAgentState,
 };
 use kavach_ports::chain_record::{
-    AgentStateDraft, AgentStateRecord, ModelInvocationDraft, ModelInvocationRole, RevocationDraft,
-    RevocationRecord,
+    AgentStateDraft, AgentStateRecord, ModelInvocationDraft, ModelInvocationRecord,
+    ModelInvocationRole, ModelOutcomeDraft, ModelOutcomeRecord, ModelOutcomeStatus,
+    RevocationDraft, RevocationRecord,
 };
 use kavach_ports::outcome_resolution::{
     outcome_ref, sign_resolution, ResolutionDraft, ResolutionSource, ResolutionState,
@@ -899,6 +900,29 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         };
         self.store
             .append_model_invocation(draft, &*self.clock, &*self.signer)
+            .await
+    }
+
+    /// Appends the digest-only result for a model invocation that was
+    /// authorized and committed before provider forwarding.
+    pub async fn record_model_outcome(
+        &self,
+        invocation: ModelInvocationRecord,
+        status: ModelOutcomeStatus,
+        response_digest: Option<String>,
+        duration_ms: u32,
+    ) -> Result<ModelOutcomeRecord, PortError> {
+        self.store
+            .append_model_outcome(
+                ModelOutcomeDraft {
+                    invocation,
+                    status,
+                    response_digest,
+                    duration_ms,
+                },
+                &*self.clock,
+                &*self.signer,
+            )
             .await
     }
 
