@@ -8,18 +8,226 @@
 //! skipping it.
 
 use chrono::{DateTime, DurationRound, TimeDelta, Utc};
-use kavach_domain::{AgentState, ReasonCode};
+use kavach_domain::{AgentState, Decision, ReasonCode};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::agent_evidence::{
-    content_hash, signing_message, AgentDecisionRecord, ChainEntry, EvidenceSigner, TimeSync,
-    HASH_ALG_V2, KIND_AGENT_DECISION, KIND_AGENT_STATE, KIND_MANDATE_REVOCATION,
+    content_hash, signing_message, Actor, AgentDecisionRecord, ChainEntry, EvidenceSigner,
+    PolicyVersions, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION, KIND_AGENT_STATE,
+    KIND_MANDATE_REVOCATION,
 };
 use crate::error::PortError;
 use crate::time::TrustedNow;
 
 pub const KIND_EVIDENCE_TRANSITION: &str = "evidence_transition";
+pub const KIND_MODEL_INVOCATION: &str = "model_invocation";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelInvocationRole {
+    Collections,
+    Translation,
+}
+
+impl ModelInvocationRole {
+    const fn action(self) -> &'static str {
+        match self {
+            Self::Collections => "invoke_collections_model",
+            Self::Translation => "invoke_translation_model",
+        }
+    }
+}
+
+/// Signed, digest-only authorization evidence written before a model call.
+/// Prompt and completion text are deliberately absent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInvocationPayload {
+    pub record_id: String,
+    pub tenant_id: String,
+    pub partition_id: i32,
+    pub seq: i64,
+    pub prev_hash: String,
+    pub kind: String,
+    pub hash_alg: String,
+    pub key_id: String,
+    pub actor: Actor,
+    pub mandate_chain: Vec<String>,
+    pub mandate_id: String,
+    pub action: String,
+    pub request_id: String,
+    pub subject_pseudonym: String,
+    pub model_role: ModelInvocationRole,
+    /// `sha256:<lowercase hex>` of the pinned local model artifact.
+    pub model_digest: String,
+    /// Lowercase SHA-256 hex digest of transient prompt input.
+    pub prompt_digest: String,
+    pub policy_versions: PolicyVersions,
+    pub policy_decision: Decision,
+    pub returned_decision: Decision,
+    /// Closed reason codes only; never free-form policy text.
+    pub signals: Vec<String>,
+    pub time_sync: TimeSync,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInvocationRecord {
+    #[serde(flatten)]
+    pub payload: ModelInvocationPayload,
+    pub hash: String,
+    pub sig: String,
+}
+
+/// Input to the evidence-chain writer before sequence and trusted time are
+/// assigned under the chain lock.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelInvocationDraft {
+    pub tenant_id: String,
+    pub partition_id: i32,
+    pub actor: Actor,
+    pub mandate_chain: Vec<String>,
+    pub mandate_id: String,
+    pub action: String,
+    pub request_id: String,
+    pub subject_pseudonym: String,
+    pub model_role: ModelInvocationRole,
+    pub model_digest: String,
+    pub prompt_digest: String,
+    pub policy_versions: PolicyVersions,
+    pub policy_decision: Decision,
+    pub returned_decision: Decision,
+    pub signals: Vec<String>,
+}
+
+impl ModelInvocationDraft {
+    #[must_use]
+    pub fn complete(
+        &self,
+        seq: i64,
+        prev_hash: &str,
+        key_id: &str,
+        now: TrustedNow,
+    ) -> ModelInvocationPayload {
+        ModelInvocationPayload {
+            record_id: format!("minv:{}:{}:{seq}", self.tenant_id, self.partition_id),
+            tenant_id: self.tenant_id.clone(),
+            partition_id: self.partition_id,
+            seq,
+            prev_hash: prev_hash.to_string(),
+            kind: KIND_MODEL_INVOCATION.into(),
+            hash_alg: HASH_ALG_V2.into(),
+            key_id: key_id.to_string(),
+            actor: self.actor.clone(),
+            mandate_chain: self.mandate_chain.clone(),
+            mandate_id: self.mandate_id.clone(),
+            action: self.action.clone(),
+            request_id: self.request_id.clone(),
+            subject_pseudonym: self.subject_pseudonym.clone(),
+            model_role: self.model_role,
+            model_digest: self.model_digest.clone(),
+            prompt_digest: self.prompt_digest.clone(),
+            policy_versions: self.policy_versions.clone(),
+            policy_decision: self.policy_decision,
+            returned_decision: self.returned_decision,
+            signals: self.signals.clone(),
+            time_sync: now.sync.into(),
+            recorded_at: micros(now.utc),
+        }
+    }
+}
+
+/// Hashes and signs a model invocation payload with the evidence key.
+pub fn seal_model_invocation(
+    payload: ModelInvocationPayload,
+    signer: &dyn EvidenceSigner,
+) -> Result<ModelInvocationRecord, PortError> {
+    if payload.key_id != signer.key_id() {
+        return Err(PortError::invalid("payload key_id differs from the signer"));
+    }
+    let hash = content_hash(&payload.prev_hash, &payload)?;
+    let sig = hex::encode(signer.sign(&signing_message(&hash))?);
+    Ok(ModelInvocationRecord { payload, hash, sig })
+}
+
+impl ChainEntry for ModelInvocationRecord {
+    fn kind(&self) -> &str {
+        &self.payload.kind
+    }
+    fn hash_alg(&self) -> &str {
+        &self.payload.hash_alg
+    }
+    fn form(&self) -> Result<(), &'static str> {
+        let p = &self.payload;
+        if p.record_id.is_empty()
+            || p.record_id.len() > 128
+            || p.record_id.chars().any(char::is_control)
+            || p.tenant_id.is_empty()
+            || p.tenant_id.len() > 128
+            || p.tenant_id.chars().any(char::is_control)
+            || p.partition_id < 0
+            || p.seq < 1
+            || (!is_hash(&p.prev_hash) && p.prev_hash != crate::agent_evidence::GENESIS)
+        {
+            return Err("model invocation chain coordinates are invalid");
+        }
+        if p.actor.agent_id.is_empty()
+            || p.actor.identity_key.is_empty()
+            || p.mandate_chain.is_empty()
+            || p.mandate_chain.last().map(String::as_str) != Some(p.mandate_id.as_str())
+            || p.action != p.model_role.action()
+            || p.request_id.is_empty()
+            || p.request_id.len() > 128
+            || p.request_id.chars().any(char::is_control)
+            || p.subject_pseudonym.is_empty()
+            || p.subject_pseudonym.len() > 256
+        {
+            return Err("model invocation authorization binding is invalid");
+        }
+        if !p.model_digest.strip_prefix("sha256:").is_some_and(is_hash)
+            || !is_hash(&p.prompt_digest)
+        {
+            return Err("model invocation digests are invalid");
+        }
+        Ok(())
+    }
+    fn expected_kind(&self) -> &'static str {
+        KIND_MODEL_INVOCATION
+    }
+    fn tenant_id(&self) -> &str {
+        &self.payload.tenant_id
+    }
+    fn partition_id(&self) -> i32 {
+        self.payload.partition_id
+    }
+    fn seq(&self) -> i64 {
+        self.payload.seq
+    }
+    fn ts(&self) -> DateTime<Utc> {
+        self.payload.recorded_at
+    }
+    fn prev_hash(&self) -> &str {
+        &self.payload.prev_hash
+    }
+    fn key_id(&self) -> &str {
+        &self.payload.key_id
+    }
+    fn time_sync(&self) -> &TimeSync {
+        &self.payload.time_sync
+    }
+    fn hash(&self) -> &str {
+        &self.hash
+    }
+    fn sig(&self) -> &str {
+        &self.sig
+    }
+    fn content_hash(&self) -> Option<String> {
+        content_hash(&self.payload.prev_hash, &self.payload).ok()
+    }
+    fn as_decision(&self) -> Option<&AgentDecisionRecord> {
+        None
+    }
+}
 
 /// Mandates revoked by a system-of-record event (ADR-012). It names the
 /// event and the mandates, never the borrower or the loan reference.
@@ -591,6 +799,7 @@ pub enum ChainRecord {
     Revocation(RevocationRecord),
     AgentState(AgentStateRecord),
     EvidenceTransition(EvidenceTransitionRecord),
+    ModelInvocation(ModelInvocationRecord),
 }
 
 impl ChainRecord {
@@ -599,7 +808,10 @@ impl ChainRecord {
     pub fn into_decision(self) -> Option<AgentDecisionRecord> {
         match self {
             Self::Decision(record) => Some(record),
-            Self::Revocation(_) | Self::AgentState(_) | Self::EvidenceTransition(_) => None,
+            Self::Revocation(_)
+            | Self::AgentState(_)
+            | Self::EvidenceTransition(_)
+            | Self::ModelInvocation(_) => None,
         }
     }
 }
@@ -625,6 +837,9 @@ impl<'de> Deserialize<'de> for ChainRecord {
             KIND_EVIDENCE_TRANSITION => serde_json::from_value(value)
                 .map(Self::EvidenceTransition)
                 .map_err(D::Error::custom),
+            KIND_MODEL_INVOCATION => serde_json::from_value(value)
+                .map(Self::ModelInvocation)
+                .map_err(D::Error::custom),
             other => Err(D::Error::custom(format!(
                 "a record of kind {other}, which this build does not know: refused"
             ))),
@@ -639,6 +854,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.kind(),
             Self::AgentState(r) => r.kind(),
             Self::EvidenceTransition(r) => r.kind(),
+            Self::ModelInvocation(r) => r.kind(),
         }
     }
     fn hash_alg(&self) -> &str {
@@ -647,6 +863,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.hash_alg(),
             Self::AgentState(r) => r.hash_alg(),
             Self::EvidenceTransition(r) => r.hash_alg(),
+            Self::ModelInvocation(r) => r.hash_alg(),
         }
     }
     fn form(&self) -> Result<(), &'static str> {
@@ -655,6 +872,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.form(),
             Self::AgentState(r) => r.form(),
             Self::EvidenceTransition(r) => r.form(),
+            Self::ModelInvocation(r) => r.form(),
         }
     }
     fn expected_kind(&self) -> &'static str {
@@ -663,6 +881,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.expected_kind(),
             Self::AgentState(r) => r.expected_kind(),
             Self::EvidenceTransition(r) => r.expected_kind(),
+            Self::ModelInvocation(r) => r.expected_kind(),
         }
     }
     fn tenant_id(&self) -> &str {
@@ -671,6 +890,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.tenant_id(),
             Self::AgentState(r) => r.tenant_id(),
             Self::EvidenceTransition(r) => r.tenant_id(),
+            Self::ModelInvocation(r) => r.tenant_id(),
         }
     }
     fn partition_id(&self) -> i32 {
@@ -679,6 +899,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.partition_id(),
             Self::AgentState(r) => r.partition_id(),
             Self::EvidenceTransition(r) => r.partition_id(),
+            Self::ModelInvocation(r) => r.partition_id(),
         }
     }
     fn seq(&self) -> i64 {
@@ -687,6 +908,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.seq(),
             Self::AgentState(r) => r.seq(),
             Self::EvidenceTransition(r) => r.seq(),
+            Self::ModelInvocation(r) => r.seq(),
         }
     }
     fn ts(&self) -> DateTime<Utc> {
@@ -695,6 +917,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.ts(),
             Self::AgentState(r) => r.ts(),
             Self::EvidenceTransition(r) => r.ts(),
+            Self::ModelInvocation(r) => r.ts(),
         }
     }
     fn prev_hash(&self) -> &str {
@@ -703,6 +926,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.prev_hash(),
             Self::AgentState(r) => r.prev_hash(),
             Self::EvidenceTransition(r) => r.prev_hash(),
+            Self::ModelInvocation(r) => r.prev_hash(),
         }
     }
     fn key_id(&self) -> &str {
@@ -711,6 +935,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.key_id(),
             Self::AgentState(r) => r.key_id(),
             Self::EvidenceTransition(r) => r.key_id(),
+            Self::ModelInvocation(r) => r.key_id(),
         }
     }
     fn time_sync(&self) -> &TimeSync {
@@ -719,6 +944,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.time_sync(),
             Self::AgentState(r) => r.time_sync(),
             Self::EvidenceTransition(r) => r.time_sync(),
+            Self::ModelInvocation(r) => r.time_sync(),
         }
     }
     fn hash(&self) -> &str {
@@ -727,6 +953,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.hash(),
             Self::AgentState(r) => r.hash(),
             Self::EvidenceTransition(r) => r.hash(),
+            Self::ModelInvocation(r) => r.hash(),
         }
     }
     fn sig(&self) -> &str {
@@ -735,6 +962,7 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => r.sig(),
             Self::AgentState(r) => r.sig(),
             Self::EvidenceTransition(r) => r.sig(),
+            Self::ModelInvocation(r) => r.sig(),
         }
     }
     fn content_hash(&self) -> Option<String> {
@@ -743,12 +971,16 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(r) => ChainEntry::content_hash(r),
             Self::AgentState(r) => ChainEntry::content_hash(r),
             Self::EvidenceTransition(r) => ChainEntry::content_hash(r),
+            Self::ModelInvocation(r) => ChainEntry::content_hash(r),
         }
     }
     fn as_decision(&self) -> Option<&AgentDecisionRecord> {
         match self {
             Self::Decision(r) => Some(r),
-            Self::Revocation(_) | Self::AgentState(_) | Self::EvidenceTransition(_) => None,
+            Self::Revocation(_)
+            | Self::AgentState(_)
+            | Self::EvidenceTransition(_)
+            | Self::ModelInvocation(_) => None,
         }
     }
 }
@@ -845,5 +1077,119 @@ mod evidence_transition_tests {
             .unwrap()
             .form()
             .is_ok());
+    }
+
+    fn model_invocation_draft() -> ModelInvocationDraft {
+        ModelInvocationDraft {
+            tenant_id: "default".into(),
+            partition_id: 0,
+            actor: Actor {
+                agent_id: "collections-agent".into(),
+                identity_key: "oidc:https://idp#collections-agent".into(),
+            },
+            mandate_chain: vec!["mandate-1".into()],
+            mandate_id: "mandate-1".into(),
+            action: "invoke_collections_model".into(),
+            request_id: "model-req-1".into(),
+            subject_pseudonym: "psn:subject-1".into(),
+            model_role: ModelInvocationRole::Collections,
+            model_digest: format!("sha256:{}", "a".repeat(64)),
+            prompt_digest: "b".repeat(64),
+            policy_versions: PolicyVersions {
+                cedar: "sha256:cedar".into(),
+                cel: None,
+                packs: Vec::new(),
+                tools: Some("sha256:tools".into()),
+                build: "kavach-tests".into(),
+            },
+            policy_decision: Decision::Pass,
+            returned_decision: Decision::Pass,
+            signals: vec!["authorized".into()],
+        }
+    }
+
+    #[test]
+    fn model_invocation_is_digest_only_signed_and_round_trips_as_a_chain_record() {
+        let signer = TestSigner(SigningKey::from_bytes(&[7; 32]));
+        let timestamp = DateTime::from_timestamp(1_795_000_000, 0).unwrap();
+        let payload = model_invocation_draft().complete(
+            1,
+            GENESIS,
+            "evidence-m2",
+            crate::TrustedNow {
+                utc: timestamp,
+                sync: crate::SyncStatus::Synced { max_error_ms: 2 },
+            },
+        );
+        let record = seal_model_invocation(payload, &signer).unwrap();
+        assert!(record.form().is_ok());
+        let encoded = serde_json::to_string(&record).unwrap();
+        assert!(!encoded.contains("prompt text"));
+        assert!(encoded.contains(&"b".repeat(64)));
+
+        let parsed: ChainRecord = serde_json::from_str(&encoded).unwrap();
+        assert!(matches!(parsed, ChainRecord::ModelInvocation(_)));
+
+        let key = PublicKey {
+            kid: "evidence-m2".into(),
+            algorithm: KeyAlgorithm::Ed25519,
+            bytes: signer.0.verifying_key().to_bytes(),
+        };
+        let keys = BTreeMap::from([(key.kid.clone(), key)]);
+        let report = verify_segment(
+            std::slice::from_ref(&record),
+            SegmentStart {
+                seq: 0,
+                hash: GENESIS,
+            },
+            &keys,
+            Some((1, &record.hash)),
+            &[],
+            timestamp,
+            DevKeys::Refuse,
+        )
+        .unwrap();
+        assert_eq!(report.head_hash, record.hash);
+    }
+
+    #[test]
+    fn model_invocation_rejects_wrong_action_for_role() {
+        let signer = TestSigner(SigningKey::from_bytes(&[7; 32]));
+        let mut payload = model_invocation_draft().complete(
+            1,
+            GENESIS,
+            "evidence-m2",
+            crate::TrustedNow {
+                utc: DateTime::from_timestamp(1_795_000_000, 0).unwrap(),
+                sync: crate::SyncStatus::Synced { max_error_ms: 2 },
+            },
+        );
+        payload.action = "invoke_translation_model".into();
+        assert_eq!(
+            seal_model_invocation(payload, &signer).unwrap().form(),
+            Err("model invocation authorization binding is invalid")
+        );
+    }
+
+    #[test]
+    fn model_invocation_rejects_malformed_digests() {
+        let signer = TestSigner(SigningKey::from_bytes(&[7; 32]));
+        let now = crate::TrustedNow {
+            utc: DateTime::from_timestamp(1_795_000_000, 0).unwrap(),
+            sync: crate::SyncStatus::Synced { max_error_ms: 2 },
+        };
+        let mut payload = model_invocation_draft().complete(1, GENESIS, "evidence-m2", now);
+        payload.prompt_digest = "not-a-digest".into();
+        assert_eq!(
+            seal_model_invocation(payload, &signer).unwrap().form(),
+            Err("model invocation digests are invalid")
+        );
+
+        let mut payload = model_invocation_draft().complete(1, GENESIS, "evidence-m2", now);
+        payload.model_digest = "granite3.3:2b".into();
+        assert_eq!(
+            seal_model_invocation(payload, &signer).unwrap().form(),
+            Err("model invocation digests are invalid")
+        );
     }
 }

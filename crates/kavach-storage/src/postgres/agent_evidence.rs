@@ -91,7 +91,8 @@ fn row_to_revocation(row: &sqlx::postgres::PgRow) -> Result<RevocationRecord, Po
         ChainRecord::Revocation(record) => Ok(record),
         ChainRecord::Decision(_)
         | ChainRecord::AgentState(_)
-        | ChainRecord::EvidenceTransition(_) => Err(PortError::invalid(
+        | ChainRecord::EvidenceTransition(_)
+        | ChainRecord::ModelInvocation(_) => Err(PortError::invalid(
             "a revocation row holds another kind of payload",
         )),
     }
@@ -102,7 +103,8 @@ fn row_to_state_record(row: &sqlx::postgres::PgRow) -> Result<AgentStateRecord, 
         ChainRecord::AgentState(record) => Ok(record),
         ChainRecord::Decision(_)
         | ChainRecord::Revocation(_)
-        | ChainRecord::EvidenceTransition(_) => Err(PortError::invalid(
+        | ChainRecord::EvidenceTransition(_)
+        | ChainRecord::ModelInvocation(_) => Err(PortError::invalid(
             "an agent-state row holds another kind of payload",
         )),
     }

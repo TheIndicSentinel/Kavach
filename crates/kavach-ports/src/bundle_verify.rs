@@ -734,9 +734,14 @@ fn check_bundle_record(
             record.kind()
         )));
     }
-    if p.version == 2 && matches!(record, ChainRecord::AgentState(_)) {
+    if p.version == 2
+        && matches!(
+            record,
+            ChainRecord::AgentState(_) | ChainRecord::ModelInvocation(_)
+        )
+    {
         return Err(BundleFailure::Segment(format!(
-            "record {seq} is an {}; a version 2 bundle holds decisions and revocations only",
+            "record {seq} is an {}; a version 2 bundle does not support this record kind",
             record.kind()
         )));
     }

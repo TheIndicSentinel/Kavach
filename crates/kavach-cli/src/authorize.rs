@@ -89,7 +89,9 @@ pub(crate) fn build_params(
                     .filter(|f| !f.is_empty())
                     .collect::<Vec<_>>(),
             ),
-            ParamKind::CapabilityRef | ParamKind::Enum => Value::from(value.as_str()),
+            ParamKind::CapabilityRef | ParamKind::Enum | ParamKind::Sha256Digest => {
+                Value::from(value.as_str())
+            }
         };
         params.insert(name.clone(), typed);
     }
@@ -110,6 +112,12 @@ pub(crate) fn build_params(
                     .into_iter()
                     .collect::<Vec<_>>(),
             ),
+            ParamKind::Sha256Digest => {
+                return Err(usage(
+                    "prompt_digest is computed by Kavach",
+                    "the governed model invocation path is not available yet",
+                ));
+            }
         };
         params.insert(name.clone(), value);
         defaulted.push(name.clone());
