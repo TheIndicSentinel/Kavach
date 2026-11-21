@@ -18,6 +18,7 @@ mod retention;
 mod review_snapshots;
 mod roles;
 mod step_up;
+mod task_taint;
 mod tls;
 
 use active_lease::LeaseConnectionContext;
@@ -51,6 +52,7 @@ pub use retention::PostgresRetentionStore;
 pub use review_snapshots::PostgresReviewSnapshotStore;
 pub use roles::PostgresRoleStore;
 pub use step_up::PostgresStepUpChallengeStore;
+pub use task_taint::PostgresTaskTaintStore;
 pub use tls::{connect_options, is_weakened, DatabaseTls, DatabaseTlsError};
 
 use sqlx::PgPool;
@@ -201,5 +203,9 @@ impl StoragePool {
 
     pub fn step_up_challenge_store(&self) -> PostgresStepUpChallengeStore {
         PostgresStepUpChallengeStore::new(self.pool.clone())
+    }
+
+    pub fn task_taint_store(&self) -> PostgresTaskTaintStore {
+        PostgresTaskTaintStore::new(self.pool.clone())
     }
 }

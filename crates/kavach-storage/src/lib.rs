@@ -14,6 +14,7 @@ mod review_snapshots;
 mod roles;
 mod startup;
 mod step_up;
+mod task_taint;
 #[cfg(feature = "test-support")]
 pub mod testing;
 
@@ -45,7 +46,8 @@ pub use postgres::{
     PostgresIncidentStore, PostgresMandateStore, PostgresReferenceDestinationStore,
     PostgresReferenceResolver, PostgresReplayGuard, PostgresRetentionStore,
     PostgresReviewApprovalStore, PostgresReviewSnapshotStore, PostgresRoleStore,
-    PostgresStepUpChallengeStore, ReferenceVaultKey, StoragePool, DEFAULT_POOL_SIZE,
+    PostgresStepUpChallengeStore, PostgresTaskTaintStore, ReferenceVaultKey, StoragePool,
+    DEFAULT_POOL_SIZE,
 };
 pub use retention::{
     MemoryRetentionStore, RetentionApplyReport, RetentionSettings, RetentionStoreError,
@@ -60,3 +62,4 @@ pub use roles::{
 };
 pub use startup::{check_startup_pack, StartupPackCheck, StartupPackError};
 pub use step_up::MemoryStepUpChallengeStore;
+pub use task_taint::MemoryTaskTaintStore;

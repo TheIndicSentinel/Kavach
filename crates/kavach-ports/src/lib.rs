@@ -23,6 +23,7 @@ mod policy;
 pub mod provider_secret;
 mod reference;
 mod replay;
+pub mod task_taint;
 mod time;
 
 pub use approval::{
@@ -50,4 +51,5 @@ pub use policy::PolicyEngine;
 pub use provider_secret::{ProviderSecretFuture, ProviderSecretStore};
 pub use reference::ReferenceResolver;
 pub use replay::ReplayGuard;
+pub use task_taint::{TaskTaint, TaskTaintSource, TaskTaintStore};
 pub use time::{SyncStatus, SystemClock, TimeSource, TrustedNow};
