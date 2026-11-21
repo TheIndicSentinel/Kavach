@@ -10,6 +10,7 @@ use std::{net::IpAddr, str::FromStr};
 use reqwest::Url;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -19,6 +20,47 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(180);
 pub enum ModelRole {
     Collections,
     Translation,
+}
+
+/// Strict request envelope for the future mandate-governed model route.
+/// `prompt` is transient input: callers must use [`Self::prompt_digest`] for
+/// authorization and evidence, and must not serialize or log this value.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GovernedModelRequest {
+    pub mandate_id: String,
+    pub request_id: String,
+    pub subject_ref: String,
+    pub prompt: String,
+}
+
+impl GovernedModelRequest {
+    /// Validate fields whose grammar is already defined by the agent tool
+    /// envelope, then return a digest of the exact UTF-8 prompt bytes.
+    pub fn prompt_digest(&self) -> Result<String, &'static str> {
+        if self.mandate_id.is_empty() || self.mandate_id.len() > 128 {
+            return Err("mandate_id must be 1-128 bytes");
+        }
+        kavach_dataplane::authorize::validate_request_id(&self.request_id)
+            .map_err(|_| "request_id is invalid")?;
+        if !kavach_domain::mandate::is_capability_ref(&self.subject_ref) {
+            return Err("subject_ref must be a capability reference");
+        }
+        if self.prompt.is_empty() {
+            return Err("prompt must not be empty");
+        }
+        Ok(format!("{:x}", Sha256::digest(self.prompt.as_bytes())))
+    }
+
+    /// Build the existing fixed-role upstream request without exposing a
+    /// caller-controlled model name or URL.
+    pub fn chat_request(&self) -> ChatRequest {
+        ChatRequest {
+            messages: vec![json!({ "role": "user", "content": self.prompt })],
+            tools: None,
+            format: None,
+        }
+    }
 }
 
 impl ModelRole {
@@ -200,6 +242,46 @@ mod tests {
             "qwen2.5:1.5b"
         );
         assert!(ModelRole::parse("../../api/tags").is_none());
+    }
+
+    #[test]
+    fn governed_request_hashes_exact_prompt_and_builds_fixed_chat_input() {
+        let request: GovernedModelRequest = serde_json::from_value(json!({
+            "mandate_id": "mandate-1",
+            "request_id": "req-1",
+            "subject_ref": "ref:borrower:B-9382",
+            "prompt": "hello"
+        }))
+        .unwrap();
+        assert_eq!(
+            request.prompt_digest().unwrap(),
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        let chat = request.chat_request();
+        assert_eq!(chat.messages, [json!({"role":"user", "content":"hello"})]);
+    }
+
+    #[test]
+    fn governed_request_rejects_invalid_envelope_without_echoing_prompt() {
+        let invalid: GovernedModelRequest = serde_json::from_value(json!({
+            "mandate_id": "mandate-1",
+            "request_id": "req-1",
+            "subject_ref": "raw borrower data",
+            "prompt": "do not expose this"
+        }))
+        .unwrap();
+        assert_eq!(
+            invalid.prompt_digest(),
+            Err("subject_ref must be a capability reference")
+        );
+        assert!(serde_json::from_value::<GovernedModelRequest>(json!({
+            "mandate_id": "mandate-1",
+            "request_id": "req-1",
+            "subject_ref": "ref:borrower:B-9382",
+            "prompt": "hello",
+            "model": "caller-selected"
+        }))
+        .is_err());
     }
 
     #[test]
