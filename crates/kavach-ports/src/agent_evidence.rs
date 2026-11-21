@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 
 use crate::chain_record::{
     AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
-    RevocationDraft, RevocationRecord,
+    ModelOutcomeDraft, ModelOutcomeRecord, RevocationDraft, RevocationRecord,
 };
 use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
@@ -649,6 +649,16 @@ pub trait AgentEvidenceStore: Send + Sync {
         clock: &dyn TimeSource,
         signer: &dyn EvidenceSigner,
     ) -> impl Future<Output = Result<ModelInvocationRecord, PortError>> + Send;
+
+    /// Appends the signed result for an existing invocation to the same
+    /// partition chain. Exact replays return the stored record; changed
+    /// outcomes for that invocation are rejected.
+    fn append_model_outcome(
+        &self,
+        draft: ModelOutcomeDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<ModelOutcomeRecord, PortError>> + Send;
 
     /// Appends the record of a revocation by a system-of-record event
     /// (ADR-012 §7), at most once per event: appending the same revocation

@@ -3,7 +3,10 @@
 use std::sync::Arc;
 
 use kavach_ports::agent_evidence::{Actor, AgentEvidenceStore, CommitResult, PolicyVersions};
-use kavach_ports::chain_record::{ChainRecord, ModelInvocationDraft, ModelInvocationRole};
+use kavach_ports::chain_record::{
+    ChainRecord, ModelInvocationDraft, ModelInvocationRecord, ModelInvocationRole,
+    ModelOutcomeDraft, ModelOutcomeStatus,
+};
 use kavach_ports_testkit::agent_evidence::{conformance, request, TestSigner};
 use kavach_ports_testkit::checkpoint_store;
 use kavach_ports_testkit::FakeClock;
@@ -36,6 +39,15 @@ fn model_invocation_draft() -> ModelInvocationDraft {
         policy_decision: kavach_domain::Decision::Pass,
         returned_decision: kavach_domain::Decision::Pass,
         signals: vec!["authorized".into()],
+    }
+}
+
+fn model_outcome_draft(invocation: ModelInvocationRecord) -> ModelOutcomeDraft {
+    ModelOutcomeDraft {
+        invocation,
+        status: ModelOutcomeStatus::Completed,
+        response_digest: Some("c".repeat(64)),
+        duration_ms: 1_250,
     }
 }
 
@@ -99,6 +111,58 @@ async fn memory_model_invocation_append_is_idempotent_and_shares_the_chain_head(
     ));
 }
 
+#[tokio::test]
+async fn memory_model_outcome_append_is_idempotent_and_requires_its_invocation() {
+    let store = MemoryAgentEvidenceStore::default();
+    let signer = TestSigner::new("evidence-model-test", 12);
+    let clock = FakeClock::synced_at(chrono::Utc::now());
+    let invocation = store
+        .append_model_invocation(model_invocation_draft(), &clock, &signer)
+        .await
+        .unwrap();
+    let draft = model_outcome_draft(invocation);
+    assert_eq!(
+        MemoryAgentEvidenceStore::default()
+            .append_model_outcome(draft.clone(), &clock, &signer)
+            .await
+            .unwrap_err()
+            .class,
+        kavach_ports::ErrorClass::Rejected
+    );
+    let first = store
+        .append_model_outcome(draft.clone(), &clock, &signer)
+        .await
+        .unwrap();
+    let replay = store
+        .append_model_outcome(draft.clone(), &clock, &signer)
+        .await
+        .unwrap();
+    assert_eq!(first, replay);
+    assert_eq!(first.payload.seq, 2);
+
+    let mut conflicting = draft;
+    conflicting.response_digest = Some("d".repeat(64));
+    assert_eq!(
+        store
+            .append_model_outcome(conflicting, &clock, &signer)
+            .await
+            .unwrap_err()
+            .class,
+        kavach_ports::ErrorClass::Rejected
+    );
+    assert!(matches!(
+        store
+            .records("model-evidence-test", 0)
+            .await
+            .unwrap()
+            .as_slice(),
+        [
+            ChainRecord::ModelInvocation(_),
+            ChainRecord::ModelOutcome(_)
+        ]
+    ));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn postgres_checkpoint_store_meets_the_contract_as_the_runtime_role() {
     let Some((owner, runtime)) = isolated_database_urls().await else {
@@ -140,13 +204,29 @@ async fn postgres_model_invocation_append_is_idempotent_and_exportable_from_the_
         .unwrap();
     assert_eq!(first, replay);
     assert_eq!(first.payload.seq, 1);
+    let outcome_draft = model_outcome_draft(first.clone());
+    let outcome = store
+        .append_model_outcome(outcome_draft.clone(), &clock, &signer)
+        .await
+        .unwrap();
+    assert_eq!(outcome.payload.seq, 2);
+    assert_eq!(
+        store
+            .append_model_outcome(outcome_draft, &clock, &signer)
+            .await
+            .unwrap(),
+        outcome
+    );
     assert!(matches!(
         store
             .records("model-evidence-test", 0)
             .await
             .unwrap()
             .as_slice(),
-        [ChainRecord::ModelInvocation(_)]
+        [
+            ChainRecord::ModelInvocation(_),
+            ChainRecord::ModelOutcome(_)
+        ]
     ));
 }
 

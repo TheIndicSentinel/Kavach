@@ -14,7 +14,7 @@ use kavach_ports::agent_evidence::{
 };
 use kavach_ports::chain_record::{
     AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
-    RevocationDraft, RevocationRecord,
+    ModelOutcomeDraft, ModelOutcomeRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::{PortError, TimeSource};
 
@@ -132,6 +132,15 @@ impl AgentEvidenceStore for WhatIfStore {
         _clock: &dyn TimeSource,
         _signer: &dyn EvidenceSigner,
     ) -> impl Future<Output = Result<ModelInvocationRecord, PortError>> + Send {
+        ready(Err(PortError::invalid(NOTHING_RECORDED)))
+    }
+
+    fn append_model_outcome(
+        &self,
+        _draft: ModelOutcomeDraft,
+        _clock: &dyn TimeSource,
+        _signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<ModelOutcomeRecord, PortError>> + Send {
         ready(Err(PortError::invalid(NOTHING_RECORDED)))
     }
 

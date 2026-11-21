@@ -47,7 +47,7 @@ use kavach_ports::agent_evidence::{
 };
 use kavach_ports::chain_record::{
     AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
-    RevocationDraft, RevocationRecord,
+    ModelOutcomeDraft, ModelOutcomeRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::ReviewApprovalStore as _;
@@ -692,6 +692,17 @@ impl AgentEvidenceStore for EvidenceBackend {
         match self {
             Self::Memory(s) => s.append_model_invocation(draft, clock, signer).await,
             Self::Postgres(s) => s.append_model_invocation(draft, clock, signer).await,
+        }
+    }
+    async fn append_model_outcome(
+        &self,
+        draft: ModelOutcomeDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<ModelOutcomeRecord, PortError> {
+        match self {
+            Self::Memory(s) => s.append_model_outcome(draft, clock, signer).await,
+            Self::Postgres(s) => s.append_model_outcome(draft, clock, signer).await,
         }
     }
     async fn append_agent_state(

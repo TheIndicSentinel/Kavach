@@ -17,8 +17,9 @@ use kavach_ports::agent_state::{
     StoredAgentState,
 };
 use kavach_ports::chain_record::{
-    seal_agent_state, seal_model_invocation, seal_revocation, AgentStateDraft, AgentStateRecord,
-    ChainRecord, ModelInvocationDraft, ModelInvocationRecord, RevocationDraft, RevocationRecord,
+    seal_agent_state, seal_model_invocation, seal_model_outcome, seal_revocation, AgentStateDraft,
+    AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord, ModelOutcomeDraft,
+    ModelOutcomeRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
@@ -45,6 +46,7 @@ struct State {
     checkpoints: Vec<Checkpoint>,
     changed_state_records: Vec<AgentStateRecord>,
     model_invocations: Vec<ModelInvocationRecord>,
+    model_outcomes: Vec<ModelOutcomeRecord>,
     /// Agent risk states (ADR-013), by `(tenant, agent)`, and the history of
     /// every change. Under the same lock as the chain, so a loosening and its
     /// record are one step.
@@ -386,10 +388,16 @@ impl MemoryAgentEvidenceStore {
             .iter()
             .filter(|r| r.payload.tenant_id == tenant_id && r.payload.partition_id == partition_id)
             .map(|r| (r.payload.seq, ChainRecord::ModelInvocation(r.clone())));
+        let model_outcomes = state
+            .model_outcomes
+            .iter()
+            .filter(|r| r.payload.tenant_id == tenant_id && r.payload.partition_id == partition_id)
+            .map(|r| (r.payload.seq, ChainRecord::ModelOutcome(r.clone())));
         let mut all: Vec<(i64, ChainRecord)> = decisions
             .chain(revocations)
             .chain(states)
             .chain(model_invocations)
+            .chain(model_outcomes)
             .collect();
         all.sort_by_key(|(seq, _)| *seq);
         Ok(all.into_iter().map(|(_, record)| record).collect())
@@ -430,6 +438,57 @@ impl MemoryAgentEvidenceStore {
             .heads
             .insert(head_key, (record.payload.seq, record.hash.clone()));
         state.model_invocations.push(record.clone());
+        Ok(record)
+    }
+
+    fn append_model_outcome_sync(
+        &self,
+        draft: &ModelOutcomeDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<ModelOutcomeRecord, PortError> {
+        let mut state = self.state.lock().map_err(poisoned)?;
+        let invocation = &draft.invocation.payload;
+        let stored_invocation = state.model_invocations.iter().find(|record| {
+            record.payload.tenant_id == invocation.tenant_id
+                && record.payload.actor.agent_id == invocation.actor.agent_id
+                && record.payload.request_id == invocation.request_id
+        });
+        if !stored_invocation.is_some_and(|record| {
+            record.hash == draft.invocation.hash && record.payload.record_id == invocation.record_id
+        }) {
+            return Err(PortError::rejected(
+                "model outcome does not reference a stored invocation",
+            ));
+        }
+        if let Some(stored) = state.model_outcomes.iter().find(|record| {
+            record.payload.tenant_id == invocation.tenant_id
+                && record.payload.agent_id == invocation.actor.agent_id
+                && record.payload.request_id == invocation.request_id
+        }) {
+            return if draft.matches(stored) {
+                Ok(stored.clone())
+            } else {
+                Err(PortError::rejected(
+                    "model outcome already exists with different content",
+                ))
+            };
+        }
+        let head_key = (invocation.tenant_id.clone(), invocation.partition_id);
+        let (head_seq, head_hash) = state
+            .heads
+            .get(&head_key)
+            .cloned()
+            .unwrap_or((0, GENESIS.to_string()));
+        let payload = draft.complete(head_seq + 1, &head_hash, signer.key_id(), clock.now());
+        let record = seal_model_outcome(payload, signer)?;
+        record
+            .form()
+            .map_err(|error| PortError::invalid(error.to_string()))?;
+        state
+            .heads
+            .insert(head_key, (record.payload.seq, record.hash.clone()));
+        state.model_outcomes.push(record.clone());
         Ok(record)
     }
 
@@ -708,6 +767,15 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         signer: &dyn EvidenceSigner,
     ) -> impl Future<Output = Result<ModelInvocationRecord, PortError>> + Send {
         ready(self.append_model_invocation_sync(&draft, clock, signer))
+    }
+
+    fn append_model_outcome(
+        &self,
+        draft: ModelOutcomeDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<ModelOutcomeRecord, PortError>> + Send {
+        ready(self.append_model_outcome_sync(&draft, clock, signer))
     }
 
     fn append_revocation(

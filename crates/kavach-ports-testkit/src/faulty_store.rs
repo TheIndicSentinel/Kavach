@@ -20,7 +20,7 @@ use kavach_ports::agent_state::{
 };
 use kavach_ports::chain_record::{
     AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
-    RevocationDraft, RevocationRecord,
+    ModelOutcomeDraft, ModelOutcomeRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::outcome_resolution::{ResolutionRecord, ResolutionSummary};
 use kavach_ports::{PortError, TimeSource};
@@ -200,6 +200,15 @@ impl<S: AgentEvidenceStore> AgentEvidenceStore for FaultyStore<S> {
         self.inner
             .append_model_invocation(draft, clock, signer)
             .await
+    }
+
+    async fn append_model_outcome(
+        &self,
+        draft: ModelOutcomeDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<ModelOutcomeRecord, PortError> {
+        self.inner.append_model_outcome(draft, clock, signer).await
     }
 
     async fn append_revocation(

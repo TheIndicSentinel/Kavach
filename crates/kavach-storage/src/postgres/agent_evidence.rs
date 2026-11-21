@@ -20,8 +20,9 @@ use kavach_ports::agent_state::{
     StoredAgentState,
 };
 use kavach_ports::chain_record::{
-    seal_agent_state, seal_model_invocation, seal_revocation, AgentStateDraft, AgentStateRecord,
-    ChainRecord, ModelInvocationDraft, ModelInvocationRecord, RevocationDraft, RevocationRecord,
+    seal_agent_state, seal_model_invocation, seal_model_outcome, seal_revocation, AgentStateDraft,
+    AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord, ModelOutcomeDraft,
+    ModelOutcomeRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
@@ -192,6 +193,32 @@ async fn find_model_invocation<'e>(
     }
 }
 
+async fn find_model_outcome<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    tenant_id: &str,
+    agent_id: &str,
+    request_id: &str,
+) -> Result<Option<ModelOutcomeRecord>, PortError> {
+    let row = sqlx::query(
+        "SELECT payload, hash, sig FROM agent_decisions \
+        WHERE kind = 'model_outcome' AND tenant_id = $1 AND agent_id = $2 \
+            AND request_id = $3",
+    )
+    .bind(tenant_id)
+    .bind(agent_id)
+    .bind(request_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(|e| unavailable(&e))?;
+    let Some(row) = row else { return Ok(None) };
+    match row_to_chain_record(&row)? {
+        ChainRecord::ModelOutcome(record) => Ok(Some(record)),
+        _ => Err(PortError::invalid(
+            "a model outcome row holds another kind of payload",
+        )),
+    }
+}
+
 fn same_model_invocation(
     stored: ModelInvocationRecord,
     draft: &ModelInvocationDraft,
@@ -201,6 +228,19 @@ fn same_model_invocation(
     } else {
         Err(PortError::rejected(
             "model invocation request id is already bound to other content",
+        ))
+    }
+}
+
+fn same_model_outcome(
+    stored: ModelOutcomeRecord,
+    draft: &ModelOutcomeDraft,
+) -> Result<ModelOutcomeRecord, PortError> {
+    if draft.matches(&stored) {
+        Ok(stored)
+    } else {
+        Err(PortError::rejected(
+            "model outcome already exists with different content",
         ))
     }
 }
@@ -508,6 +548,92 @@ impl PostgresAgentEvidenceStore {
         .bind(&p.request_id)
         .bind(binding)
         .bind(decision_str(p.returned_decision))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        if advanced.rows_affected() != 1 {
+            return Err(PortError::unavailable("the partition head did not advance"));
+        }
+        tx.commit().await.map_err(|e| unavailable(&e))?;
+        Ok(record)
+    }
+
+    async fn append_model_outcome_once(
+        &self,
+        draft: &ModelOutcomeDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<ModelOutcomeRecord, PortError> {
+        let invocation = &draft.invocation.payload;
+        let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
+        let (head_seq, head_hash) =
+            Self::lock_head(&mut tx, &invocation.tenant_id, invocation.partition_id).await?;
+
+        if let Some(stored) = find_model_outcome(
+            &mut *tx,
+            &invocation.tenant_id,
+            &invocation.actor.agent_id,
+            &invocation.request_id,
+        )
+        .await?
+        {
+            tx.commit().await.map_err(|e| unavailable(&e))?;
+            return same_model_outcome(stored, draft);
+        }
+        let stored_invocation = find_model_invocation(
+            &mut *tx,
+            &invocation.tenant_id,
+            &invocation.actor.agent_id,
+            &invocation.request_id,
+        )
+        .await?;
+        if !stored_invocation.is_some_and(|record| {
+            record.hash == draft.invocation.hash
+                && record.payload.record_id == invocation.record_id
+                && record.payload.partition_id == invocation.partition_id
+        }) {
+            return Err(PortError::rejected(
+                "model outcome does not reference a stored invocation",
+            ));
+        }
+
+        let payload = draft.complete(head_seq + 1, &head_hash, signer.key_id(), clock.now());
+        let record = seal_model_outcome(payload, signer)?;
+        record
+            .form()
+            .map_err(|error| PortError::invalid(error.to_string()))?;
+        let p = &record.payload;
+        let binding = serde_json::json!({
+            "invocation_record_id": p.invocation_record_id,
+            "invocation_hash": p.invocation_hash,
+            "status": p.status,
+            "response_digest": p.response_digest,
+            "duration_ms": p.duration_ms,
+        });
+        let advanced = sqlx::query(
+            "WITH inserted AS ( \
+                INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, \
+                    prev_hash, hash, sig, key_id, payload, kind, agent_id, request_id, binding) \
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'model_outcome', \
+                    $10, $11, $12) \
+                RETURNING tenant_id, partition_id, seq, hash) \
+            UPDATE agent_evidence_chains AS c SET head_seq = inserted.seq, \
+                head_hash = inserted.hash \
+            FROM inserted \
+            WHERE c.tenant_id = inserted.tenant_id AND c.partition_id = inserted.partition_id",
+        )
+        .bind(&p.tenant_id)
+        .bind(p.partition_id)
+        .bind(p.seq)
+        .bind(&p.record_id)
+        .bind(&p.prev_hash)
+        .bind(&record.hash)
+        .bind(&record.sig)
+        .bind(&p.key_id)
+        .bind(json(p).map_err(|e| PortError::invalid(e.message))?)
+        .bind(&p.agent_id)
+        .bind(&p.request_id)
+        .bind(binding)
         .execute(&mut *tx)
         .await
         .map_err(|e| unavailable(&e))?;
@@ -1015,6 +1141,39 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
                     None => Err(error),
                 }
             }
+        }
+    }
+
+    async fn append_model_outcome(
+        &self,
+        draft: ModelOutcomeDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<ModelOutcomeRecord, PortError> {
+        let invocation = &draft.invocation.payload;
+        if let Some(stored) = find_model_outcome(
+            &self.pool,
+            &invocation.tenant_id,
+            &invocation.actor.agent_id,
+            &invocation.request_id,
+        )
+        .await?
+        {
+            return same_model_outcome(stored, &draft);
+        }
+        match self.append_model_outcome_once(&draft, clock, signer).await {
+            Ok(record) => Ok(record),
+            Err(error) => match find_model_outcome(
+                &self.pool,
+                &invocation.tenant_id,
+                &invocation.actor.agent_id,
+                &invocation.request_id,
+            )
+            .await?
+            {
+                Some(stored) => same_model_outcome(stored, &draft),
+                None => Err(error),
+            },
         }
     }
 
