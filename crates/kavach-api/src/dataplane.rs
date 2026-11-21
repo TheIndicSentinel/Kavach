@@ -11,6 +11,7 @@
 //!   agent surfaces need Postgres and a readable kernel clock.
 
 use std::collections::BTreeSet;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -1465,6 +1466,33 @@ async fn tenant_scoped_human_review_record<S: AgentEvidenceStore>(
 }
 
 #[cfg(test)]
+mod task_taint_failure_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unavailable_taint_lookup_refuses_before_authorization_can_continue() {
+        let result = require_task_taint(async {
+            Err(PortError::unavailable("injected task-taint read failure"))
+        })
+        .await;
+
+        let error = result.expect_err("unavailable task state must fail closed");
+        assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn failed_taint_write_never_returns_model_content() {
+        let result = content_after_taint_persisted("synthetic model completion", async {
+            Err(PortError::unavailable("injected task-taint write failure"))
+        })
+        .await;
+
+        let error = result.expect_err("content must remain unavailable without persisted taint");
+        assert_eq!(error.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+}
+
+#[cfg(test)]
 mod human_review_record_tests {
     use super::*;
     use kavach_ports::agent_evidence::{AgentEvidenceStore, CommitResult};
@@ -2177,6 +2205,34 @@ async fn load_mandate_config(
 /// Agent and SoR refusals are RFC 9457 problems (`crate::problem`).
 type Refusal = crate::problem::Problem;
 
+/// Do not start an authorization/effect path when the server-side task risk
+/// projection cannot be read.
+async fn require_task_taint<F>(lookup: F) -> Result<bool, Refusal>
+where
+    F: Future<Output = Result<bool, PortError>>,
+{
+    lookup.await.map_err(|_| {
+        crate::problem::Problem::for_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "task risk state is unavailable",
+        )
+    })
+}
+
+/// Do not expose model content until its monotonic taint write has completed.
+async fn content_after_taint_persisted<T, F>(content: T, persist: F) -> Result<T, Refusal>
+where
+    F: Future<Output = Result<TaskTaint, PortError>>,
+{
+    persist.await.map_err(|_| {
+        crate::problem::Problem::for_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "task risk state is unavailable",
+        )
+    })?;
+    Ok(content)
+}
+
 /// A refusal with the code that goes with its status.
 fn refuse(status: StatusCode, error: impl Into<String>) -> Refusal {
     crate::problem::Problem::for_status(status, error)
@@ -2294,15 +2350,8 @@ pub async fn authorize(
             },
         )
         .map_err(refuse_tool)?;
-    let task_tainted = dp
-        .task_tainted_for_agent(&agent.agent_id, &call.mandate_id)
-        .await
-        .map_err(|_| {
-            crate::problem::Problem::for_status(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "task risk state is unavailable",
-            )
-        })?;
+    let task_tainted =
+        require_task_taint(dp.task_tainted_for_agent(&agent.agent_id, &call.mandate_id)).await?;
     let decided = dp
         .core
         .authorize_with_task_taint(&agent, &call, Mode::Precheck, task_tainted)
@@ -2683,15 +2732,9 @@ pub async fn tool_call(
             return Err(refuse_tool(refusal));
         }
     };
-    let task_tainted = dp
-        .task_tainted_for_agent(&agent.agent_id, &checked_call.mandate_id)
-        .await
-        .map_err(|_| {
-            crate::problem::Problem::for_status(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "task risk state is unavailable",
-            )
-        })?;
+    let task_tainted =
+        require_task_taint(dp.task_tainted_for_agent(&agent.agent_id, &checked_call.mandate_id))
+            .await?;
     // Consume only a release matching this authenticated caller's extracted
     // action. Missing, expired or unavailable releases leave the original
     // HUMAN_REVIEW request untouched and therefore non-forwardable.
@@ -2980,15 +3023,8 @@ async fn governed_model_chat(
         .tools()
         .check(&tool, tool_request)
         .map_err(refuse_tool)?;
-    let task_tainted = dp
-        .task_tainted_for_agent(&agent.agent_id, &call.mandate_id)
-        .await
-        .map_err(|_| {
-            crate::problem::Problem::for_status(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "task risk state is unavailable",
-            )
-        })?;
+    let task_tainted =
+        require_task_taint(dp.task_tainted_for_agent(&agent.agent_id, &call.mandate_id)).await?;
     let evidence_role = match role {
         crate::model_proxy::ModelRole::Collections => {
             kavach_ports::chain_record::ModelInvocationRole::Collections
@@ -3038,7 +3074,7 @@ async fn complete_governed_model(
 ) -> Result<Json<serde_json::Value>, Refusal> {
     let started = Instant::now();
     let upstream_request = request.chat_request();
-    let (status, response_digest, response) = match proxy
+    let (status, response_digest, mut response) = match proxy
         .chat_pinned(
             role,
             &invocation.record.payload.model_digest,
@@ -3100,18 +3136,23 @@ async fn complete_governed_model(
                 "trusted time is unavailable",
             ));
         };
-        dp.mark_task_tainted(
-            &invocation.record.payload.mandate_id,
-            TaskTaintSource::GovernedModelOutput,
-            tainted_at,
-        )
-        .await
-        .map_err(|_| {
-            crate::problem::Problem::for_status(
+        let Some(response_value) = response.take() else {
+            return Err(crate::problem::Problem::for_status(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "task risk state is unavailable",
+            ));
+        };
+        response = Some(
+            content_after_taint_persisted(
+                response_value,
+                dp.mark_task_tainted(
+                    &invocation.record.payload.mandate_id,
+                    TaskTaintSource::GovernedModelOutput,
+                    tainted_at,
+                ),
             )
-        })?;
+            .await?,
+        );
     }
 
     match (status, response) {
