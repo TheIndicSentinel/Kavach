@@ -13,7 +13,8 @@ use kavach_ports::agent_evidence::{
     OutcomeRecord, UnknownOutcomeReview,
 };
 use kavach_ports::chain_record::{
-    AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
+    AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
+    RevocationDraft, RevocationRecord,
 };
 use kavach_ports::{PortError, TimeSource};
 
@@ -123,6 +124,15 @@ impl AgentEvidenceStore for WhatIfStore {
         _partition_id: i32,
     ) -> impl Future<Output = Result<Vec<ChainRecord>, PortError>> + Send {
         ready(Ok(Vec::new()))
+    }
+
+    fn append_model_invocation(
+        &self,
+        _draft: ModelInvocationDraft,
+        _clock: &dyn TimeSource,
+        _signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<ModelInvocationRecord, PortError>> + Send {
+        ready(Err(PortError::invalid(NOTHING_RECORDED)))
     }
 
     fn append_agent_state(

@@ -9,16 +9,16 @@ use chrono::{DateTime, NaiveDate, Utc};
 use kavach_domain::Decision;
 use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
-    CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding,
-    UnknownOutcomeReview, UnresolvedOutcome, GENESIS,
+    ChainEntry, CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord,
+    RequestBinding, UnknownOutcomeReview, UnresolvedOutcome, GENESIS,
 };
 use kavach_ports::agent_state::{
     AgentChangeCursor, AgentState, AgentStateChange, AgentStateStore, Recording, StoredAgentChange,
     StoredAgentState,
 };
 use kavach_ports::chain_record::{
-    seal_agent_state, seal_revocation, AgentStateDraft, AgentStateRecord, ChainRecord,
-    RevocationDraft, RevocationRecord,
+    seal_agent_state, seal_model_invocation, seal_revocation, AgentStateDraft, AgentStateRecord,
+    ChainRecord, ModelInvocationDraft, ModelInvocationRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
@@ -44,6 +44,7 @@ struct State {
     resolutions: Vec<ResolutionRecord>,
     checkpoints: Vec<Checkpoint>,
     changed_state_records: Vec<AgentStateRecord>,
+    model_invocations: Vec<ModelInvocationRecord>,
     /// Agent risk states (ADR-013), by `(tenant, agent)`, and the history of
     /// every change. Under the same lock as the chain, so a loosening and its
     /// record are one step.
@@ -380,9 +381,56 @@ impl MemoryAgentEvidenceStore {
             .iter()
             .filter(|r| r.payload.tenant_id == tenant_id && r.payload.partition_id == partition_id)
             .map(|r| (r.payload.seq, ChainRecord::AgentState(r.clone())));
-        let mut all: Vec<(i64, ChainRecord)> = decisions.chain(revocations).chain(states).collect();
+        let model_invocations = state
+            .model_invocations
+            .iter()
+            .filter(|r| r.payload.tenant_id == tenant_id && r.payload.partition_id == partition_id)
+            .map(|r| (r.payload.seq, ChainRecord::ModelInvocation(r.clone())));
+        let mut all: Vec<(i64, ChainRecord)> = decisions
+            .chain(revocations)
+            .chain(states)
+            .chain(model_invocations)
+            .collect();
         all.sort_by_key(|(seq, _)| *seq);
         Ok(all.into_iter().map(|(_, record)| record).collect())
+    }
+
+    fn append_model_invocation_sync(
+        &self,
+        draft: &ModelInvocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<ModelInvocationRecord, PortError> {
+        let mut state = self.state.lock().map_err(poisoned)?;
+        if let Some(stored) = state.model_invocations.iter().find(|record| {
+            record.payload.tenant_id == draft.tenant_id
+                && record.payload.actor.agent_id == draft.actor.agent_id
+                && record.payload.request_id == draft.request_id
+        }) {
+            return if draft.matches(stored) {
+                Ok(stored.clone())
+            } else {
+                Err(PortError::rejected(
+                    "model invocation request id is already bound to other content",
+                ))
+            };
+        }
+        let head_key = (draft.tenant_id.clone(), draft.partition_id);
+        let (head_seq, head_hash) = state
+            .heads
+            .get(&head_key)
+            .cloned()
+            .unwrap_or((0, GENESIS.to_string()));
+        let payload = draft.complete(head_seq + 1, &head_hash, signer.key_id(), clock.now());
+        let record = seal_model_invocation(payload, signer)?;
+        record
+            .form()
+            .map_err(|error| PortError::invalid(error.to_string()))?;
+        state
+            .heads
+            .insert(head_key, (record.payload.seq, record.hash.clone()));
+        state.model_invocations.push(record.clone());
+        Ok(record)
     }
 
     fn append_revocation_sync(
@@ -651,6 +699,15 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         partition_id: i32,
     ) -> impl Future<Output = Result<Vec<ChainRecord>, PortError>> + Send {
         ready(self.records_sync(tenant_id, partition_id))
+    }
+
+    fn append_model_invocation(
+        &self,
+        draft: ModelInvocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<ModelInvocationRecord, PortError>> + Send {
+        ready(self.append_model_invocation_sync(&draft, clock, signer))
     }
 
     fn append_revocation(

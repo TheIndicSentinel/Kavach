@@ -19,7 +19,8 @@ use kavach_ports::agent_state::{
     StoredAgentState,
 };
 use kavach_ports::chain_record::{
-    AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
+    AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
+    RevocationDraft, RevocationRecord,
 };
 use kavach_ports::outcome_resolution::{ResolutionRecord, ResolutionSummary};
 use kavach_ports::{PortError, TimeSource};
@@ -188,6 +189,17 @@ impl<S: AgentEvidenceStore> AgentEvidenceStore for FaultyStore<S> {
         partition_id: i32,
     ) -> Result<Vec<ChainRecord>, PortError> {
         self.inner.records(tenant_id, partition_id).await
+    }
+
+    async fn append_model_invocation(
+        &self,
+        draft: ModelInvocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<ModelInvocationRecord, PortError> {
+        self.inner
+            .append_model_invocation(draft, clock, signer)
+            .await
     }
 
     async fn append_revocation(

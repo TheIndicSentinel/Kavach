@@ -16,7 +16,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::chain_record::{
-    AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
+    AgentStateDraft, AgentStateRecord, ChainRecord, ModelInvocationDraft, ModelInvocationRecord,
+    RevocationDraft, RevocationRecord,
 };
 use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
@@ -638,6 +639,16 @@ pub trait AgentEvidenceStore: Send + Sync {
         tenant_id: &str,
         partition_id: i32,
     ) -> impl Future<Output = Result<Vec<ChainRecord>, PortError>> + Send;
+
+    /// Appends a signed model invocation record to the same partition chain.
+    /// Repeating the exact `(tenant, agent, request_id)` and content returns
+    /// the existing record; reusing that identity for other content is rejected.
+    fn append_model_invocation(
+        &self,
+        draft: ModelInvocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> impl Future<Output = Result<ModelInvocationRecord, PortError>> + Send;
 
     /// Appends the record of a revocation by a system-of-record event
     /// (ADR-012 §7), at most once per event: appending the same revocation

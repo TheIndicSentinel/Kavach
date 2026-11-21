@@ -135,6 +135,29 @@ impl ModelInvocationDraft {
             recorded_at: micros(now.utc),
         }
     }
+
+    /// Whether a previously persisted record is the same invocation. Chain
+    /// coordinates, trusted time and signature are assigned by the store and
+    /// intentionally excluded from this comparison.
+    #[must_use]
+    pub fn matches(&self, record: &ModelInvocationRecord) -> bool {
+        let p = &record.payload;
+        p.tenant_id == self.tenant_id
+            && p.partition_id == self.partition_id
+            && p.actor == self.actor
+            && p.mandate_chain == self.mandate_chain
+            && p.mandate_id == self.mandate_id
+            && p.action == self.action
+            && p.request_id == self.request_id
+            && p.subject_pseudonym == self.subject_pseudonym
+            && p.model_role == self.model_role
+            && p.model_digest == self.model_digest
+            && p.prompt_digest == self.prompt_digest
+            && p.policy_versions == self.policy_versions
+            && p.policy_decision == self.policy_decision
+            && p.returned_decision == self.returned_decision
+            && p.signals == self.signals
+    }
 }
 
 /// Hashes and signs a model invocation payload with the evidence key.

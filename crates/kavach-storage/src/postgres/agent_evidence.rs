@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, NaiveDate, Utc};
 use kavach_domain::Decision;
 use kavach_domain::ReasonCode;
+use kavach_ports::agent_evidence::ChainEntry;
 use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding,
@@ -19,8 +20,8 @@ use kavach_ports::agent_state::{
     StoredAgentState,
 };
 use kavach_ports::chain_record::{
-    seal_agent_state, seal_revocation, AgentStateDraft, AgentStateRecord, ChainRecord,
-    RevocationDraft, RevocationRecord,
+    seal_agent_state, seal_model_invocation, seal_revocation, AgentStateDraft, AgentStateRecord,
+    ChainRecord, ModelInvocationDraft, ModelInvocationRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::checkpoint::{
     check_follows, check_storable, Appended, Checkpoint, CheckpointStore, Scope,
@@ -161,6 +162,45 @@ async fn find_revocation<'e>(
     .await
     .map_err(|e| unavailable(&e))?;
     row.as_ref().map(row_to_revocation).transpose()
+}
+
+async fn find_model_invocation<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    tenant_id: &str,
+    agent_id: &str,
+    request_id: &str,
+) -> Result<Option<ModelInvocationRecord>, PortError> {
+    let row = sqlx::query(
+        "SELECT payload, hash, sig FROM agent_decisions \
+        WHERE kind = 'model_invocation' AND tenant_id = $1 AND agent_id = $2 \
+            AND request_id = $3",
+    )
+    .bind(tenant_id)
+    .bind(agent_id)
+    .bind(request_id)
+    .fetch_optional(executor)
+    .await
+    .map_err(|e| unavailable(&e))?;
+    let Some(row) = row else { return Ok(None) };
+    match row_to_chain_record(&row)? {
+        ChainRecord::ModelInvocation(record) => Ok(Some(record)),
+        _ => Err(PortError::invalid(
+            "a model invocation row holds another kind of payload",
+        )),
+    }
+}
+
+fn same_model_invocation(
+    stored: ModelInvocationRecord,
+    draft: &ModelInvocationDraft,
+) -> Result<ModelInvocationRecord, PortError> {
+    if draft.matches(&stored) {
+        Ok(stored)
+    } else {
+        Err(PortError::rejected(
+            "model invocation request id is already bound to other content",
+        ))
+    }
 }
 
 /// The stored revocation for this event, if it is this revocation.
@@ -414,6 +454,65 @@ impl PostgresAgentEvidenceStore {
             ));
         }
         tx.commit().await?;
+        Ok(record)
+    }
+
+    async fn append_model_invocation_once(
+        &self,
+        draft: &ModelInvocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<ModelInvocationRecord, PortError> {
+        let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
+        let (head_seq, head_hash) =
+            Self::lock_head(&mut tx, &draft.tenant_id, draft.partition_id).await?;
+        let payload = draft.complete(head_seq + 1, &head_hash, signer.key_id(), clock.now());
+        let record = seal_model_invocation(payload, signer)?;
+        record
+            .form()
+            .map_err(|error| PortError::invalid(error.to_string()))?;
+        let p = &record.payload;
+        let binding = serde_json::json!({
+            "action": p.action,
+            "mandate_id": p.mandate_id,
+            "model_role": p.model_role,
+            "model_digest": p.model_digest,
+            "prompt_digest": p.prompt_digest,
+            "subject_pseudonym": p.subject_pseudonym,
+        });
+        let advanced = sqlx::query(
+            "WITH inserted AS ( \
+                INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, \
+                    prev_hash, hash, sig, key_id, payload, kind, agent_id, request_id, \
+                    binding, returned_decision) \
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'model_invocation', \
+                    $10, $11, $12, $13) \
+                RETURNING tenant_id, partition_id, seq, hash) \
+            UPDATE agent_evidence_chains AS c SET head_seq = inserted.seq, \
+                head_hash = inserted.hash \
+            FROM inserted \
+            WHERE c.tenant_id = inserted.tenant_id AND c.partition_id = inserted.partition_id",
+        )
+        .bind(&p.tenant_id)
+        .bind(p.partition_id)
+        .bind(p.seq)
+        .bind(&p.record_id)
+        .bind(&p.prev_hash)
+        .bind(&record.hash)
+        .bind(&record.sig)
+        .bind(&p.key_id)
+        .bind(json(p).map_err(|e| PortError::invalid(e.message))?)
+        .bind(&p.actor.agent_id)
+        .bind(&p.request_id)
+        .bind(binding)
+        .bind(decision_str(p.returned_decision))
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        if advanced.rows_affected() != 1 {
+            return Err(PortError::unavailable("the partition head did not advance"));
+        }
+        tx.commit().await.map_err(|e| unavailable(&e))?;
         Ok(record)
     }
 }
@@ -876,6 +975,45 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         .await
         .map_err(|e| unavailable(&e))?;
         rows.iter().map(row_to_chain_record).collect()
+    }
+
+    async fn append_model_invocation(
+        &self,
+        draft: ModelInvocationDraft,
+        clock: &dyn TimeSource,
+        signer: &dyn EvidenceSigner,
+    ) -> Result<ModelInvocationRecord, PortError> {
+        if let Some(stored) = find_model_invocation(
+            &self.pool,
+            &draft.tenant_id,
+            &draft.actor.agent_id,
+            &draft.request_id,
+        )
+        .await?
+        {
+            return same_model_invocation(stored, &draft);
+        }
+        match self
+            .append_model_invocation_once(&draft, clock, signer)
+            .await
+        {
+            Ok(record) => Ok(record),
+            Err(error) => {
+                // A concurrent retry may have committed while this writer
+                // waited for the partition head. If so, that row decides.
+                match find_model_invocation(
+                    &self.pool,
+                    &draft.tenant_id,
+                    &draft.actor.agent_id,
+                    &draft.request_id,
+                )
+                .await?
+                {
+                    Some(stored) => same_model_invocation(stored, &draft),
+                    None => Err(error),
+                }
+            }
+        }
     }
 
     async fn append_revocation(
