@@ -61,6 +61,33 @@ impl GovernedModelRequest {
             format: None,
         }
     }
+
+    /// Adapt the transient model request to the registered tool envelope used
+    /// by the mandate/Cedar authorization core. The prompt itself is omitted;
+    /// only its digest is bound into the tool parameters MAC and evidence.
+    pub fn tool_request(
+        &self,
+        role: ModelRole,
+    ) -> Result<(String, kavach_dataplane::tools::ToolRequest), &'static str> {
+        let prompt_digest = self.prompt_digest()?;
+        let params = serde_json::Map::from_iter([
+            (
+                "subject_ref".to_string(),
+                Value::String(self.subject_ref.clone()),
+            ),
+            ("prompt_digest".to_string(), Value::String(prompt_digest)),
+        ]);
+        Ok((
+            format!("invoke_{}_model", role.as_str()),
+            kavach_dataplane::tools::ToolRequest {
+                mandate_id: self.mandate_id.clone(),
+                request_id: self.request_id.clone(),
+                approval_id: None,
+                execution_id: None,
+                params,
+            },
+        ))
+    }
 }
 
 impl ModelRole {
@@ -259,6 +286,16 @@ mod tests {
         );
         let chat = request.chat_request();
         assert_eq!(chat.messages, [json!({"role":"user", "content":"hello"})]);
+        let (tool, call) = request.tool_request(ModelRole::Collections).unwrap();
+        assert_eq!(tool, "invoke_collections_model");
+        assert_eq!(call.mandate_id, "mandate-1");
+        assert_eq!(call.request_id, "req-1");
+        assert_eq!(call.params["subject_ref"], "ref:borrower:B-9382");
+        assert_eq!(
+            call.params["prompt_digest"],
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+        assert!(!call.params.contains_key("prompt"));
     }
 
     #[test]
