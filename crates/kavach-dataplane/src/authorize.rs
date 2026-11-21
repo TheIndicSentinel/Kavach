@@ -27,14 +27,16 @@ use kavach_keys::SubjectKeys;
 use kavach_mandate::VerifiedChain;
 use kavach_ports::agent_evidence::{
     is_allow, sign_outcome, Actor, AgentDecisionPayload, AgentDecisionRecord, AgentEvidenceStore,
-    CommitRequest, CommitResult, ContactReservation, EvidenceSigner, Outcome, OutcomeRecord,
-    PolicyVersions, RequestBinding, TimeSync, HASH_ALG_V2, KIND_AGENT_DECISION,
+    CommitRequest, CommitResult, ContactReservation, EvidenceSigner, ModelInvocationAppend,
+    Outcome, OutcomeRecord, PolicyVersions, RequestBinding, TimeSync, HASH_ALG_V2,
+    KIND_AGENT_DECISION,
 };
 use kavach_ports::agent_state::{
     AgentStateChange, AgentStateStore, Recording, StoredAgentChange, StoredAgentState,
 };
 use kavach_ports::chain_record::{
-    AgentStateDraft, AgentStateRecord, RevocationDraft, RevocationRecord,
+    AgentStateDraft, AgentStateRecord, ModelInvocationDraft, ModelInvocationRole, RevocationDraft,
+    RevocationRecord,
 };
 use kavach_ports::outcome_resolution::{
     outcome_ref, sign_resolution, ResolutionDraft, ResolutionSource, ResolutionState,
@@ -44,7 +46,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::detect::{raw_identifier, reference_identifier};
-use crate::tools::ToolRegistry;
+use crate::tools::{ModelRole as RegisteredModelRole, ToolRegistry};
 
 /// Loads and verifies a mandate (and its whole chain) by id.
 pub trait MandateVerifier: Send + Sync {
@@ -54,6 +56,10 @@ pub trait MandateVerifier: Send + Sync {
         tenant_id: &str,
         mandate_id: &str,
     ) -> impl Future<Output = Result<VerifiedChain, PortError>> + Send;
+
+    /// Whether the exact tenant-scoped agent passport grants this action.
+    /// This is an additional ceiling on mandate and Cedar authorization.
+    fn passport_allows_action(&self, tenant_id: &str, agent_id: &str, action: &str) -> bool;
 }
 
 impl<K, R, C, S, E, T> MandateVerifier for kavach_mandate::MandateService<K, R, C, S, E, T>
@@ -73,6 +79,10 @@ where
             .ok_or_else(|| PortError::rejected(format!("unknown mandate {mandate_id}")))?;
         self.verify_active_chain(&stored.token).await
     }
+
+    fn passport_allows_action(&self, tenant_id: &str, agent_id: &str, action: &str) -> bool {
+        kavach_mandate::MandateService::passport_allows_action(self, tenant_id, agent_id, action)
+    }
 }
 
 impl<V: MandateVerifier> MandateVerifier for Arc<V> {
@@ -82,6 +92,10 @@ impl<V: MandateVerifier> MandateVerifier for Arc<V> {
         mandate_id: &str,
     ) -> impl Future<Output = Result<VerifiedChain, PortError>> + Send {
         V::verify(self, tenant_id, mandate_id)
+    }
+
+    fn passport_allows_action(&self, tenant_id: &str, agent_id: &str, action: &str) -> bool {
+        V::passport_allows_action(self, tenant_id, agent_id, action)
     }
 }
 
@@ -765,6 +779,127 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         mode: Mode,
     ) -> Result<Decided, PortError> {
         self.authorize_inner(agent, call, mode, None).await
+    }
+
+    /// Verifies a fixed model action against the active mandate, the exact
+    /// tenant-scoped passport grant, Cedar and current agent state, then
+    /// appends the signed invocation record. The caller may forward only
+    /// when the returned decision is PASS and `created` is true.
+    pub async fn authorize_model_invocation(
+        &self,
+        agent: &AgentIdentity,
+        call: &ToolCall,
+        role: ModelInvocationRole,
+        model_digest: &str,
+    ) -> Result<ModelInvocationAppend, PortError> {
+        validate_request_id(&call.request_id)?;
+        if call.mandate_id.is_empty() || call.mandate_id.len() > 128 {
+            return Err(PortError::invalid("mandate_id must be 1-128 bytes"));
+        }
+        if call.approval_id.is_some()
+            || call.execution_id.is_some()
+            || call.channel.is_some()
+            || call.waiver_bps.is_some()
+            || !call.requested_fields.is_empty()
+            || call.extra.len() != 1
+            || !call.extra.contains_key("prompt_digest")
+        {
+            return Err(PortError::invalid(
+                "model calls require only a subject reference and prompt digest",
+            ));
+        }
+        let expected_action = role.action();
+        if call.action != expected_action {
+            return Err(PortError::invalid(
+                "model role does not match the registered action",
+            ));
+        }
+        let registered = self
+            .tools
+            .for_action(expected_action)
+            .ok_or_else(|| PortError::invalid("model action has no registered tool"))?;
+        let expected_registered_role = match role {
+            ModelInvocationRole::Collections => RegisteredModelRole::Collections,
+            ModelInvocationRole::Translation => RegisteredModelRole::Translation,
+        };
+        if registered.model_role != Some(expected_registered_role) {
+            return Err(PortError::invalid(
+                "model role does not match the registered tool",
+            ));
+        }
+        let prompt_digest = call
+            .extra
+            .get("prompt_digest")
+            .ok_or_else(|| PortError::invalid("model prompt digest is missing"))?;
+        let action = AgentAction::from_name(expected_action)
+            .ok_or_else(|| PortError::invalid("model action is not recognized"))?;
+        let assessment = self.assess(call)?;
+        let tenant = &self.config.tenant_id;
+        let (mut policy_decision, mut signals, mandate_chain) =
+            match self.verifier.verify(tenant, &call.mandate_id).await {
+                Err(error) => {
+                    let reason = if error.class == ErrorClass::Unavailable {
+                        "dependency_unavailable"
+                    } else {
+                        "mandate_invalid"
+                    };
+                    (Decision::Block, vec![reason.to_string()], Vec::new())
+                }
+                Ok(verified) => {
+                    let chain = verified.ids.clone();
+                    match self
+                        .effective_state(&agent.agent_id, &verified.holders)
+                        .await
+                    {
+                        Err(_) => (
+                            Decision::Block,
+                            vec!["dependency_unavailable".into()],
+                            chain,
+                        ),
+                        Ok(state) => {
+                            let (mut decision, mut reasons) = self
+                                .decide(agent, state, action, call, &verified.mandate, &assessment)
+                                .await;
+                            if !self.verifier.passport_allows_action(
+                                tenant,
+                                &agent.agent_id,
+                                expected_action,
+                            ) {
+                                decision = Decision::Block;
+                                reasons.push("passport_action_not_granted".into());
+                            }
+                            (decision, reasons, chain)
+                        }
+                    }
+                }
+            };
+        if !assessment.violations.is_empty() {
+            policy_decision = Decision::Block;
+            signals.clone_from(&assessment.violations);
+        }
+        let draft = ModelInvocationDraft {
+            tenant_id: tenant.clone(),
+            partition_id: self.config.partition_id,
+            actor: Actor {
+                agent_id: agent.agent_id.clone(),
+                identity_key: agent.identity_key.clone(),
+            },
+            mandate_chain,
+            mandate_id: call.mandate_id.clone(),
+            action: expected_action.into(),
+            request_id: call.request_id.clone(),
+            subject_pseudonym: assessment.pseudonym,
+            model_role: role,
+            model_digest: model_digest.into(),
+            prompt_digest: prompt_digest.clone(),
+            policy_versions: self.versions.clone(),
+            policy_decision,
+            returned_decision: policy_decision,
+            signals,
+        };
+        self.store
+            .append_model_invocation(draft, &*self.clock, &*self.signer)
+            .await
     }
 
     /// Applies a durable, exact-action D17 release to a matching review.

@@ -22,6 +22,7 @@ use kavach_mandate::memory::{
 };
 use kavach_mandate::{MandateDeps, MandateService};
 use kavach_ports::agent_evidence::AgentEvidenceStore;
+use kavach_ports::chain_record::{ChainRecord, ModelInvocationRole};
 use kavach_ports::{SyncStatus, TimeSource};
 use kavach_ports_testkit::agent_evidence::TestSigner;
 use kavach_ports_testkit::{FakeClock, InMemoryReplayGuard};
@@ -45,13 +46,34 @@ struct World {
 }
 
 fn world_with(signer: TestSigner) -> World {
+    world_with_model_actions(signer, false)
+}
+
+fn model_world() -> World {
+    world_with_model_actions(TestSigner::new("evidence-test", 9), true)
+}
+
+fn world_with_model_actions(signer: TestSigner, model_actions: bool) -> World {
     let clock = Arc::new(FakeClock::synced_at(ist(11, 0, 0)));
     let Setup {
         kavach,
         sor,
         consents,
-        config,
+        mut config,
     } = setup();
+    if model_actions {
+        for template in &mut config.templates {
+            template.actions.insert("invoke_collections_model".into());
+        }
+        for passport in &mut config.passports {
+            match passport.agent_id.as_str() {
+                "collections-agent" => {
+                    passport.actions.insert("invoke_collections_model".into());
+                }
+                _ => {}
+            }
+        }
+    }
     let mandates = Arc::new(
         MandateService::new(
             MandateDeps {
@@ -136,6 +158,126 @@ fn reminder(mandate_id: &str, request_id: &str) -> ToolCall {
         extra: BTreeMap::from([("template_id".to_string(), "emi_reminder_v1".to_string())]),
         violations: Vec::new(),
     }
+}
+
+fn model_call(mandate_id: &str, request_id: &str, subject_ref: &str, action: &str) -> ToolCall {
+    ToolCall {
+        mandate_id: mandate_id.into(),
+        action: action.into(),
+        request_id: request_id.into(),
+        approval_id: None,
+        execution_id: None,
+        subject_ref: subject_ref.into(),
+        channel: None,
+        waiver_bps: None,
+        requested_fields: BTreeSet::new(),
+        extra: BTreeMap::from([("prompt_digest".into(), "b".repeat(64))]),
+        violations: Vec::new(),
+    }
+}
+
+#[tokio::test]
+async fn model_invocation_requires_mandate_passport_and_cedar_then_records_before_forward() {
+    let w = model_world();
+    let mandate = w.mandate_for("B-9382").await;
+    let call = model_call(
+        &mandate,
+        "model-pass-1",
+        SUBJECT,
+        "invoke_collections_model",
+    );
+    let pin = format!("sha256:{}", "a".repeat(64));
+    let appended = w
+        .core
+        .authorize_model_invocation(
+            &agent("collections-agent"),
+            &call,
+            ModelInvocationRole::Collections,
+            &pin,
+        )
+        .await
+        .unwrap();
+
+    assert!(
+        appended.created,
+        "the first authorized request owns forwarding"
+    );
+    assert_eq!(appended.record.payload.returned_decision, Decision::Pass);
+    assert_eq!(appended.record.payload.mandate_chain, [mandate]);
+    assert_eq!(appended.record.payload.model_digest, pin);
+    let records = w.core.store().records(TENANT, 0).await.unwrap();
+    assert!(matches!(
+        records.as_slice(),
+        [ChainRecord::ModelInvocation(_)]
+    ));
+
+    let replay = w
+        .core
+        .authorize_model_invocation(
+            &agent("collections-agent"),
+            &call,
+            ModelInvocationRole::Collections,
+            &format!("sha256:{}", "a".repeat(64)),
+        )
+        .await
+        .unwrap();
+    assert!(!replay.created, "replays may not forward again");
+    assert_eq!(replay.record, appended.record);
+}
+
+#[tokio::test]
+async fn model_invocation_refusals_are_signed_and_wrong_role_cannot_pass() {
+    let w = model_world();
+    let mandate = w.mandate_for("B-9382").await;
+    let wrong_role = model_call(
+        &mandate,
+        "model-wrong-role",
+        SUBJECT,
+        "invoke_translation_model",
+    );
+    let pin = format!("sha256:{}", "a".repeat(64));
+    let denied = w
+        .core
+        .authorize_model_invocation(
+            &agent("collections-agent"),
+            &wrong_role,
+            ModelInvocationRole::Translation,
+            &pin,
+        )
+        .await
+        .unwrap();
+    assert!(denied.created);
+    assert_eq!(denied.record.payload.returned_decision, Decision::Block);
+    assert!(denied
+        .record
+        .payload
+        .signals
+        .contains(&"passport_action_not_granted".into()));
+
+    let invalid_mandate = model_call(
+        "expired-mandate",
+        "model-invalid-mandate",
+        SUBJECT,
+        "invoke_collections_model",
+    );
+    let denied = w
+        .core
+        .authorize_model_invocation(
+            &agent("collections-agent"),
+            &invalid_mandate,
+            ModelInvocationRole::Collections,
+            &pin,
+        )
+        .await
+        .unwrap();
+    assert!(denied.created);
+    assert_eq!(denied.record.payload.returned_decision, Decision::Block);
+    assert!(denied.record.payload.mandate_chain.is_empty());
+    assert!(denied
+        .record
+        .payload
+        .signals
+        .contains(&"mandate_invalid".into()));
 }
 
 #[tokio::test]

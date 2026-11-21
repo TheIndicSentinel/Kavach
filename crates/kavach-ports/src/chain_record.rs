@@ -216,7 +216,7 @@ pub enum ModelInvocationRole {
 }
 
 impl ModelInvocationRole {
-    const fn action(self) -> &'static str {
+    pub const fn action(self) -> &'static str {
         match self {
             Self::Collections => "invoke_collections_model",
             Self::Translation => "invoke_translation_model",

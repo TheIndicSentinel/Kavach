@@ -71,6 +71,10 @@ impl MandateVerifier for Gate {
         }
         MandateVerifier::verify(&self.inner, tenant_id, mandate_id).await
     }
+
+    fn passport_allows_action(&self, tenant_id: &str, agent_id: &str, action: &str) -> bool {
+        MandateVerifier::passport_allows_action(&self.inner, tenant_id, agent_id, action)
+    }
 }
 
 #[derive(Default)]
