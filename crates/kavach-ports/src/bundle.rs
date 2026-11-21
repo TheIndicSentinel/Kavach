@@ -26,13 +26,11 @@ use crate::error::PortError;
 use crate::keys::{verify_ed25519, PublicKey};
 
 pub const BUNDLE_FORMAT: &str = "kavach-evidence-bundle";
-/// The format version an export writes. Version 4 (ADR-017) adds a fifth
-/// file, `resolutions.jsonl`, with the resolutions of `unknown` outcomes;
-/// version 3 (ADR-013 §4) added `agent_state` records to version 2's decisions
-/// and revocations (ADR-012 §7); version 1 carried decisions only.
-pub const BUNDLE_VERSION: u32 = 4;
+/// The format version an export writes. Version 5 supports model invocation
+/// and outcome records; version 4 (ADR-017) added `resolutions.jsonl`.
+pub const BUNDLE_VERSION: u32 = 5;
 /// The versions a verifier reads; it refuses any other.
-pub const BUNDLE_VERSIONS: [u32; 4] = [1, 2, 3, 4];
+pub const BUNDLE_VERSIONS: [u32; 5] = [1, 2, 3, 4, 5];
 /// The first version with a resolutions file.
 pub const RESOLUTIONS_SINCE: u32 = 4;
 pub const BUNDLE_HASH_PREFIX: &[u8] = b"kavach-evidence-bundle-v1";
@@ -43,7 +41,7 @@ pub const MANIFEST_FILE: &str = "manifest.json";
 pub const RECORDS_FILE: &str = "records.jsonl";
 pub const OUTCOMES_FILE: &str = "outcomes.jsonl";
 pub const CHECKPOINTS_FILE: &str = "checkpoints.jsonl";
-/// Resolutions of unknown outcomes (version 4 only).
+/// Resolutions of unknown outcomes (versions 4 and later).
 pub const RESOLUTIONS_FILE: &str = "resolutions.jsonl";
 
 /// Export key ids start with this (after `dev-`, for a development key).
@@ -258,11 +256,11 @@ fn check_shape(p: &ManifestPayload) -> Result<(), ManifestError> {
             return format("file digests must be 64 lowercase hex");
         }
     }
-    // A resolutions file exists in version 4 and only there: never accepted
-    // inside a format that did not define it, never absent from one that did.
+    // A resolutions file was added in version 4: never accepted before then,
+    // never absent from formats that define it.
     if p.files.resolutions.is_some() != (p.version >= RESOLUTIONS_SINCE) {
         return format(if p.version >= RESOLUTIONS_SINCE {
-            "a version 4 bundle lists its resolutions file"
+            "this bundle version lists its resolutions file"
         } else {
             "a resolutions file is not part of bundle versions before 4"
         });
@@ -380,6 +378,32 @@ const AGENT_STATE_MEMBERS: &[&str] = &[
     "changed_at",
     "recorded_at",
 ];
+const MODEL_INVOCATION_MEMBERS: &[&str] = &[
+    "actor",
+    "mandate_chain",
+    "mandate_id",
+    "action",
+    "request_id",
+    "subject_pseudonym",
+    "model_role",
+    "model_digest",
+    "prompt_digest",
+    "policy_versions",
+    "policy_decision",
+    "returned_decision",
+    "signals",
+    "recorded_at",
+];
+const MODEL_OUTCOME_MEMBERS: &[&str] = &[
+    "agent_id",
+    "request_id",
+    "invocation_record_id",
+    "invocation_hash",
+    "status",
+    "response_digest",
+    "duration_ms",
+    "recorded_at",
+];
 const ACTOR_MEMBERS: &[&str] = &["agent_id", "identity_key"];
 const POLICY_VERSIONS_MEMBERS: &[&str] = &["cedar", "cel", "packs", "tools", "build"];
 const TIME_SYNC_MEMBERS: &[&str] = &["status", "max_error_ms"];
@@ -438,6 +462,8 @@ pub fn undefined_record_member(record: &serde_json::Value) -> Option<String> {
         "agent_decision" => AGENT_DECISION_MEMBERS,
         "mandate_revocation" => MANDATE_REVOCATION_MEMBERS,
         "agent_state" => AGENT_STATE_MEMBERS,
+        "model_invocation" => MODEL_INVOCATION_MEMBERS,
+        "model_outcome" => MODEL_OUTCOME_MEMBERS,
         _ => return None,
     };
     stray(record, &[RECORD_COMMON, kind_members], "the record")
@@ -663,8 +689,8 @@ mod tests {
             verify(&m)
         };
         for change in [
-            (|p| p.version = 5) as fn(&mut ManifestPayload),
-            // The resolutions file belongs to version 4 and only there.
+            (|p| p.version = 6) as fn(&mut ManifestPayload),
+            // The resolutions file is required beginning with version 4.
             |p| p.files.resolutions = None,
             |p| p.version = 3,
             |p| p.format = "something-else".into(),
@@ -738,6 +764,14 @@ mod tests {
         assert_eq!(
             list(&[RECORD_COMMON, AGENT_STATE_MEMBERS]),
             sorted(with_hash_sig(fields(chain, "AgentStatePayload")))
+        );
+        assert_eq!(
+            list(&[RECORD_COMMON, MODEL_INVOCATION_MEMBERS]),
+            sorted(with_hash_sig(fields(chain, "ModelInvocationPayload")))
+        );
+        assert_eq!(
+            list(&[RECORD_COMMON, MODEL_OUTCOME_MEMBERS]),
+            sorted(with_hash_sig(fields(chain, "ModelOutcomePayload")))
         );
         assert_eq!(list(&[ACTOR_MEMBERS]), sorted(fields(evidence, "Actor")));
         assert_eq!(

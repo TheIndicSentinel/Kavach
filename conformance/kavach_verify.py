@@ -496,6 +496,7 @@ KINDS = {
     2: {"agent_decision", "mandate_revocation"},
     3: {"agent_decision", "mandate_revocation", "agent_state"},
     4: {"agent_decision", "mandate_revocation", "agent_state"},
+    5: {"agent_decision", "mandate_revocation", "agent_state", "model_invocation", "model_outcome"},
 }
 RESOLUTION_SIG = b"kavach-outcome-resolution-sig-v1:"
 RESOLUTION_STATES = {"confirmed_delivered", "confirmed_not_delivered", "ambiguous"}
@@ -534,6 +535,12 @@ RECORD_MEMBERS = {
     "agent_state": {"agent_id", "change_no", "from_state", "to_state", "reason_code",
                     "reason_digest", "changed_by", "change_request_id", "approved_by",
                     "changed_at", "recorded_at"},
+    "model_invocation": {"actor", "mandate_chain", "mandate_id", "action", "request_id",
+                         "subject_pseudonym", "model_role", "model_digest", "prompt_digest",
+                         "policy_versions", "policy_decision", "returned_decision", "signals",
+                         "recorded_at"},
+    "model_outcome": {"agent_id", "request_id", "invocation_record_id", "invocation_hash",
+                      "status", "response_digest", "duration_ms", "recorded_at"},
 }
 NESTED_RECORD_MEMBERS = {"actor": {"agent_id", "identity_key"},
                          "policy_versions": {"cedar", "cel", "packs", "tools", "build"}}
@@ -690,6 +697,7 @@ class Verifier:
         seg, version = manifest["segment"], manifest["version"]
         expected_seq, prev = seg["after_seq"] + 1, seg["after_hash"]
         out = []
+        invocations = {}
         for number, raw in enumerate(lines, 1):
             where = f"records.jsonl line {number}"
             rec = _parse_line(raw, "records.jsonl", number)
@@ -726,7 +734,8 @@ class Verifier:
                 raise Refused(f"{where}: hash does not match its content")
             self._check_sig(kid, _signed(RECORD_SIG, rec["hash"]), rec["sig"], where)
             when = parse_time(
-                rec["recorded_at"] if kind in ("mandate_revocation", "agent_state") else rec.get("ts"),
+                rec["recorded_at"] if kind in ("mandate_revocation", "agent_state",
+                                               "model_invocation", "model_outcome") else rec.get("ts"),
                 f"{where}: time")
             self._limits(kid, seq, when, where)
             if kind == "agent_decision":
@@ -737,6 +746,19 @@ class Verifier:
                 self._event_digest(rec, where)
             if kind == "agent_state":
                 self._agent_state_form(rec, where)
+            if kind == "model_invocation":
+                self._model_invocation_form(rec, where)
+                actor = rec["actor"]
+                invocations[(rec["tenant_id"], actor["agent_id"], rec["request_id"])] = (
+                    rec["record_id"], rec["hash"])
+            if kind == "model_outcome":
+                self._model_outcome_form(rec, where)
+                invocation = invocations.get((rec["tenant_id"], rec["agent_id"], rec["request_id"]))
+                if invocation is not None and invocation != (
+                        rec["invocation_record_id"], rec["invocation_hash"]):
+                    raise Refused(f"{where}: does not link to its invocation")
+                if invocation is None and seg["after_seq"] == 0:
+                    raise Refused(f"{where}: model outcome has no invocation in this chain")
             prev, expected_seq = rec["hash"], expected_seq + 1
             out.append(rec)
         if prev != seg["head_hash"] or expected_seq - 1 != seg["last_seq"]:
@@ -784,6 +806,52 @@ class Verifier:
                 bad("change_request_id is not a plain identifier of 1 to 128 characters")
             if not loosens:
                 bad("only a loosening is carried out by a change request")
+
+    @staticmethod
+    def _model_invocation_form(rec, where):
+        _members(rec, list(RECORD_COMMON | RECORD_MEMBERS["model_invocation"]), what=where)
+        _members(rec["actor"], ["agent_id", "identity_key"], what=f"{where}: actor")
+        _members(rec["policy_versions"], ["cedar", "cel", "packs", "build"],
+                 ["tools"], f"{where}: policy_versions")
+        actor = rec["actor"]
+        role_action = {"collections": "invoke_collections_model",
+                       "translation": "invoke_translation_model"}
+        chain = rec["mandate_chain"]
+        if (not isinstance(actor["agent_id"], str) or not actor["agent_id"]
+                or not isinstance(actor["identity_key"], str) or not actor["identity_key"]
+                or not isinstance(rec["mandate_id"], str) or not rec["mandate_id"]
+                or not isinstance(chain, list) or not chain
+                or any(not isinstance(item, str) or not item for item in chain)
+                or chain[-1] != rec["mandate_id"]
+                or not isinstance(rec["model_role"], str)
+                or rec["action"] != role_action.get(rec["model_role"])
+                or not isinstance(rec["request_id"], str) or not 1 <= len(rec["request_id"]) <= 128
+                or not isinstance(rec["subject_pseudonym"], str)
+                or not 1 <= len(rec["subject_pseudonym"]) <= 256
+                or not isinstance(rec["model_digest"], str)
+                or not re.fullmatch(r"sha256:[0-9a-f]{64}", rec["model_digest"])
+                or not is_hash(rec["prompt_digest"])):
+            raise Refused(f"{where}: invalid model invocation binding")
+
+    @staticmethod
+    def _model_outcome_form(rec, where):
+        _members(rec, list(RECORD_COMMON | RECORD_MEMBERS["model_outcome"]), what=where)
+        for member in ("agent_id", "request_id", "invocation_record_id"):
+            if not isinstance(rec[member], str) or not 1 <= len(rec[member]) <= 128:
+                raise Refused(f"{where}: invalid {member}")
+        if not is_hash(rec["invocation_hash"]):
+            raise Refused(f"{where}: invalid invocation_hash")
+        status, digest = rec["status"], rec["response_digest"]
+        if status not in ("completed", "failed", "unknown"):
+            raise Refused(f"{where}: invalid model outcome status")
+        if status == "completed":
+            if not isinstance(digest, str) or not is_hash(digest):
+                raise Refused(f"{where}: completed outcome needs a response digest")
+        elif digest is not None:
+            raise Refused(f"{where}: non-completed outcome cannot include a response digest")
+        duration = _int(rec["duration_ms"], f"{where}: duration_ms", 0)
+        if duration > 2**32 - 1:
+            raise Refused(f"{where}: duration_ms exceeds u32")
 
     @staticmethod
     def _event_digest(rec, where):

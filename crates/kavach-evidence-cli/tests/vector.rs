@@ -1,9 +1,7 @@
 //! Known-answer vectors for the evidence bundle format.
 //!
-//! - `tests/vectors/bundle-v2/` (format 2, what an export writes now) is a
-//!   bundle written once from a fixed run, decisions and a revocation, with
-//!   test-only keys; `bundle-v2.keys.json` holds the public keys an
-//!   operator would supply (they are **not** in the bundle).
+//! - `tests/vectors/bundle-v5/` is the current model-evidence bundle; older
+//!   version fixtures remain fixed and are never rewritten.
 //! - `tests/vectors/bundle-v1/` (format 1, decisions only) is kept
 //!   byte-identical and is never regenerated: it shows that a bundle
 //!   written before format 2 still verifies.
@@ -13,9 +11,8 @@
 //! what an independent verifier is written against
 //! (`docs/EVIDENCE_BUNDLE.md`).
 //!
-//! Regenerate `bundle-v2` only on a deliberate format change (it never
-//! touches `bundle-v1`):
-//! `cargo test -p kavach-evidence-cli --test vector -- --ignored generate`.
+//! Regenerate a versioned fixture only on a deliberate format change with
+//! its matching ignored `generate_vN` test.
 
 mod common;
 
@@ -25,18 +22,21 @@ use std::path::{Path, PathBuf};
 
 use kavach_evidence_cli::writer::BundleWriter;
 use kavach_ports::agent_evidence::{
-    verify_segment, AgentDecisionRecord, DevKeys, OutcomeRecord, SegmentStart,
+    verify_segment, AgentDecisionRecord, DevKeys, EvidenceSigner, OutcomeRecord, SegmentStart,
+    TimeSync,
 };
 use kavach_ports::bundle::{
-    verify_manifest, Manifest, ManifestSignature, CHECKPOINTS_FILE, MANIFEST_FILE, OUTCOMES_FILE,
-    RECORDS_FILE, RESOLUTIONS_FILE,
+    manifest_signing_message, verify_manifest, Manifest, ManifestSignature, CHECKPOINTS_FILE,
+    MANIFEST_FILE, OUTCOMES_FILE, RECORDS_FILE, RESOLUTIONS_FILE,
 };
 use kavach_ports::chain_record::ChainRecord;
-use kavach_ports::checkpoint::{verify_checkpoints, ChainSegment, Checkpoint};
+use kavach_ports::checkpoint::{
+    sign_checkpoint, verify_checkpoints, ChainSegment, Checkpoint, Head,
+};
 use kavach_ports::outcome_resolution::{
     resolution_message, ResolutionRecord, ResolutionSource, ResolutionState,
 };
-use kavach_ports::{KeyAlgorithm, PublicKey};
+use kavach_ports::{KeyAlgorithm, PublicKey, SyncStatus, TrustedNow};
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -65,6 +65,24 @@ fn write_chain(out: &Path, chain: &[ChainRecord]) {
     writer
         .finish(exported_at(), exporter(), Some(&export_key()))
         .unwrap();
+    set_bundle_version(out, 4);
+}
+
+fn set_bundle_version(out: &Path, version: u32) {
+    let path = out.join(MANIFEST_FILE);
+    let mut manifest: Manifest = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    manifest.payload.version = version;
+    if version < 4 {
+        manifest.payload.files.resolutions = None;
+        fs::remove_file(out.join(RESOLUTIONS_FILE)).unwrap();
+    }
+    manifest.hash = kavach_ports::bundle::manifest_hash(&manifest.payload).unwrap();
+    manifest.sig = Some(hex::encode(
+        export_key()
+            .sign(&manifest_signing_message(&manifest.hash))
+            .unwrap(),
+    ));
+    fs::write(path, serde_json::to_vec(&manifest).unwrap()).unwrap();
 }
 
 /// The format 4 run (`bundle-v4`): the format 3 chain with two unknown
@@ -91,6 +109,67 @@ fn write_v4(out: &Path) {
         .unwrap();
 }
 
+fn write_v5(out: &Path) {
+    write_v5_chain(out, &chain_v5_model());
+}
+
+fn write_v5_chain(out: &Path, chain: &[ChainRecord]) {
+    use kavach_ports::agent_evidence::ChainEntry as _;
+    let mut writer = BundleWriter::create(out, SCOPE, SegmentStart::GENESIS).unwrap();
+    for record in chain {
+        writer.record(record).unwrap();
+    }
+    let last = chain.last().unwrap();
+    let checkpoint = sign_checkpoint(
+        Head {
+            scope: SCOPE,
+            seq: last.seq(),
+            hash: last.hash(),
+        },
+        None,
+        last.ts() + chrono::Duration::seconds(5),
+        TimeSync {
+            status: "synced".into(),
+            max_error_ms: Some(12),
+        },
+        &checkpoint_key(),
+    )
+    .unwrap();
+    writer.checkpoint(&checkpoint).unwrap();
+    writer
+        .finish(exported_at(), exporter(), Some(&export_key()))
+        .unwrap();
+}
+
+fn model_chain_with_mismatched_outcome_link() -> Vec<ChainRecord> {
+    use kavach_ports::chain_record::{seal_model_outcome, ModelOutcomeDraft, ModelOutcomeStatus};
+
+    let mut chain = chain_v5_model();
+    chain.truncate(1);
+    let ChainRecord::ModelInvocation(invocation) = &chain[0] else {
+        unreachable!("fixture begins with an invocation")
+    };
+    let mut wrong_reference = invocation.clone();
+    wrong_reference.hash = "d".repeat(64);
+    let now = TrustedNow {
+        utc: t0() + chrono::Duration::seconds(10),
+        sync: SyncStatus::Synced { max_error_ms: 12 },
+    };
+    let outcome = seal_model_outcome(
+        ModelOutcomeDraft {
+            invocation: wrong_reference,
+            status: ModelOutcomeStatus::Completed,
+            response_digest: Some("c".repeat(64)),
+            duration_ms: 1_250,
+        }
+        .complete(2, &invocation.hash, evidence_key().0, now),
+        &evidence_key(),
+    )
+    .unwrap();
+    chain.push(ChainRecord::ModelOutcome(outcome));
+    chain
+}
+
 #[test]
 #[ignore = "regenerates the checked-in vector; run only on a deliberate format change"]
 fn generate_v4() {
@@ -101,10 +180,16 @@ fn generate_v4() {
 
 #[test]
 #[ignore = "regenerates the checked-in vector; run only on a deliberate format change"]
+fn generate_v5() {
+    let bundle = vectors().join("bundle-v5");
+    let _ = fs::remove_dir_all(&bundle);
+    write_v5(&bundle);
+}
+
+#[test]
+#[ignore = "regenerates the checked-in vector; run only on a deliberate format change"]
 fn generate() {
-    // The keys file only: `bundle-v1` and `bundle-v2` were written by earlier
-    // formats and are never rewritten (the writer now writes format 3, see
-    // `generate_v3`).
+    // The keys file only: historical bundle fixtures are never rewritten.
     fs::create_dir_all(vectors()).unwrap();
     let keys: Vec<Value> = public_keys()
         .values()
@@ -154,12 +239,11 @@ fn keys_from_file(vector: &str) -> BTreeMap<String, PublicKey> {
         .collect()
 }
 
-/// What the writer writes now is bundle version 4: bundles of versions 1 to 3
-/// are checked in and verified, but they are never rewritten.
+/// The current writer emits version 5. Historical vectors stay unchanged.
 #[test]
-fn the_writer_reproduces_the_checked_in_bundle_byte_for_byte() {
+fn the_writer_reproduces_the_checked_in_model_bundle_byte_for_byte() {
     let out = scratch("vector");
-    write_v4(&out);
+    write_v5(&out);
     for name in [
         MANIFEST_FILE,
         RECORDS_FILE,
@@ -169,7 +253,7 @@ fn the_writer_reproduces_the_checked_in_bundle_byte_for_byte() {
     ] {
         assert_eq!(
             fs::read(out.join(name)).unwrap(),
-            fs::read(vectors().join("bundle-v4").join(name)).unwrap(),
+            fs::read(vectors().join("bundle-v5").join(name)).unwrap(),
             "{name}: the bundle format changed (see the module docs)"
         );
     }
@@ -457,6 +541,7 @@ fn generate_v3() {
     let bundle = vectors().join("bundle-v3");
     let _ = fs::remove_dir_all(&bundle);
     write_chain(&bundle, &chain_v3());
+    set_bundle_version(&bundle, 3);
 }
 
 #[test]
@@ -541,6 +626,50 @@ fn verify_dir(dir: &Path) -> Result<kavach_ports::bundle_verify::BundleReport, S
         now: exported_at(),
     })
     .map_err(|e| e.to_string())
+}
+
+#[test]
+fn version_5_exports_and_verifies_model_records_while_version_4_refuses_them() {
+    let out = scratch("bundle-v5-model");
+    write_v5(&out);
+    let manifest: Manifest =
+        serde_json::from_slice(&fs::read(out.join(MANIFEST_FILE)).unwrap()).unwrap();
+    assert_eq!(manifest.payload.version, 5);
+    assert_eq!(manifest.payload.files.records.count, 2);
+    let report = verify_dir(&out).expect("version 5 model bundle verifies");
+    assert_eq!((report.records, report.last_seq), (2, 2));
+
+    let mut old_manifest = manifest;
+    old_manifest.payload.version = 4;
+    old_manifest.hash = kavach_ports::bundle::manifest_hash(&old_manifest.payload).unwrap();
+    old_manifest.sig = Some(hex::encode(
+        export_key()
+            .sign(&manifest_signing_message(&old_manifest.hash))
+            .unwrap(),
+    ));
+    fs::write(
+        out.join(MANIFEST_FILE),
+        serde_json::to_vec(&old_manifest).unwrap(),
+    )
+    .unwrap();
+    let error = verify_dir(&out).expect_err("version 4 must refuse model records");
+    assert!(
+        error.contains("bundle version 4 does not support this record kind"),
+        "{error}"
+    );
+    fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn version_5_refuses_an_outcome_link_to_another_invocation_hash() {
+    let out = scratch("bundle-v5-bad-model-link");
+    write_v5_chain(&out, &model_chain_with_mismatched_outcome_link());
+    let error = verify_dir(&out).expect_err("mismatched invocation link must fail");
+    assert!(
+        error.contains("does not link to its model invocation"),
+        "{error}"
+    );
+    fs::remove_dir_all(out).unwrap();
 }
 
 #[test]
@@ -875,7 +1004,7 @@ fn a_resolution_with_an_unknown_member_is_refused() {
 /// A resolution is never accepted inside a format that did not define it, and
 /// never missing from one that did.
 #[test]
-fn the_resolutions_file_belongs_to_version_4_only() {
+fn the_resolutions_file_is_required_from_version_4_onward() {
     // A resolutions file inside a version 3 bundle.
     let out = scratch("v3-with-resolutions");
     for name in [MANIFEST_FILE, RECORDS_FILE, OUTCOMES_FILE, CHECKPOINTS_FILE] {
@@ -910,4 +1039,12 @@ fn the_resolutions_file_belongs_to_version_4_only() {
     .unwrap();
     let err = verify_dir(&v4).unwrap_err();
     assert!(err.contains("lists its resolutions file"), "{err}");
+
+    // Version 5 also requires the file.
+    let v5 = scratch("v5-missing-resolutions");
+    write_v5(&v5);
+    fs::remove_file(v5.join(RESOLUTIONS_FILE)).unwrap();
+    let err = verify_dir(&v5).unwrap_err();
+    assert!(err.contains("resolutions.jsonl is missing"), "{err}");
+    fs::remove_dir_all(v5).unwrap();
 }

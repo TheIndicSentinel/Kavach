@@ -1,9 +1,9 @@
 //! `kavach-evidence verify-bundle`: checks a bundle directory offline, with
 //! keys the operator supplies (the steps of `docs/EVIDENCE_BUNDLE.md`).
 //!
-//! No database and no network. The files are read as streams (twice: once
-//! for their digests, once for what they say), so memory use does not grow
-//! with the size of the chain.
+//! No database and no network. The files are read as streams (once for their
+//! digests, once for what they say) rather than loaded as whole files. The
+//! verifier retains chain state and indexes needed for cross-record checks.
 //!
 //! The verifier fails closed. A bundle that verifies but is not fully
 //! protected (unsigned, records no checkpoint covers, no kept checkpoint to
@@ -364,8 +364,8 @@ fn digest(path: &Path) -> Result<FileEntry, VerifyError> {
 }
 
 /// The directory holds exactly the files of a bundle of `version`, as plain
-/// files: four, and a fifth (resolutions) from version 4. A resolutions file
-/// in an older bundle is as wrong as its absence from a version 4 one.
+/// files: four, and a fifth (resolutions) from version 4 onward. A resolutions
+/// file in an older bundle is as wrong as its absence from a version 4+ one.
 fn check_layout(dir: &Path, version: u32) -> Result<(), VerifyError> {
     let mut expected = vec![MANIFEST_FILE, RECORDS_FILE, OUTCOMES_FILE, CHECKPOINTS_FILE];
     if version >= RESOLUTIONS_SINCE {

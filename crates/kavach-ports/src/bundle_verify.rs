@@ -1,11 +1,11 @@
 //! Verifies an evidence bundle offline (ADR-005 §13, the steps of
-//! `docs/EVIDENCE_BUNDLE.md`), in one pass and in constant memory.
+//! `docs/EVIDENCE_BUNDLE.md`), streaming the input files. The verifier keeps
+//! chain state plus the model invocation links and unknown outcomes needed
+//! for cross-record checks.
 //!
-//! The three files are read as streams and merged by `seq`: records in
-//! order, the outcome of each record as it goes by, and each checkpoint
-//! against the record it names. Nothing but the previous hash, the next
-//! outcome and the next checkpoint is kept, so the size of a chain does not
-//! matter.
+//! The bundle files are read as streams and merged by `seq`: records in
+//! order, outcomes as records go by, and each checkpoint against the record
+//! it names. File contents are not loaded as whole files.
 //!
 //! The result separates two things a reader must not confuse:
 //! - a [`BundleFailure`]: the bundle does not verify;
@@ -197,7 +197,7 @@ pub struct BundleReport {
     pub head_hash: String,
     pub records: u64,
     pub outcomes: u64,
-    /// Lines of the resolutions file (version 4; zero before).
+    /// Lines of the resolutions file (version 4 and later; zero before).
     pub resolutions: u64,
     pub checkpoints: u64,
     /// `seq` of the newest checkpoint that covers a record of the bundle
@@ -209,7 +209,7 @@ pub struct BundleReport {
     pub kept_checkpoint: Option<i64>,
     /// Allows past their credential's expiry with no outcome.
     pub outcome_missing: Tally,
-    /// Outcomes recorded as `unknown` (sent, result not known). In version 4,
+    /// Outcomes recorded as `unknown` (sent, result not known). In version 4 and later,
     /// only those no resolution has settled: unresolved or only ambiguous.
     pub outcome_unknown: Tally,
     /// Version 4: unknown outcomes with two different confirmed answers and
@@ -579,13 +579,13 @@ struct UnknownOutcome {
     outcome: OutcomeRecord,
 }
 
-/// What the resolutions of a version 4 bundle say, per unknown outcome.
+/// What the resolutions of a version 4+ bundle say, per unknown outcome.
 struct Resolutions {
     lines: u64,
     by_credential: BTreeMap<String, Vec<ResolutionRecord>>,
 }
 
-/// Verifies `resolutions.jsonl` (version 4): every line refers to an
+/// Verifies `resolutions.jsonl` (version 4+): every line refers to an
 /// `unknown` outcome of this bundle, by the hash of its signature; is of a
 /// well-formed shape (who may say what); is signed by a trusted key within
 /// its limits; is not before its outcome; and is not a repeat.
@@ -734,17 +734,22 @@ fn check_bundle_record(
             record.kind()
         )));
     }
-    if p.version == 2
+    if p.version == 2 && matches!(record, ChainRecord::AgentState(_)) {
+        return Err(BundleFailure::Segment(format!(
+            "record {seq} is an {}; a version 2 bundle holds decisions and revocations only",
+            record.kind()
+        )));
+    }
+    if p.version < 5
         && matches!(
             record,
-            ChainRecord::AgentState(_)
-                | ChainRecord::ModelInvocation(_)
-                | ChainRecord::ModelOutcome(_)
+            ChainRecord::ModelInvocation(_) | ChainRecord::ModelOutcome(_)
         )
     {
         return Err(BundleFailure::Segment(format!(
-            "record {seq} is an {}; a version 2 bundle does not support this record kind",
-            record.kind()
+            "record {seq} is an {}; bundle version {} does not support this record kind",
+            record.kind(),
+            p.version
         )));
     }
     let allow_dev_keys = opts.dev_keys == DevKeys::Accept;
@@ -812,12 +817,66 @@ where
 
     let mut last_seq = segment.after_seq;
     let mut prev = segment.after_hash.clone();
+    let mut model_invocations = BTreeMap::new();
+    let mut model_outcomes = std::collections::BTreeSet::new();
     let (mut missing, mut unknown) = (Tally::default(), Tally::default());
     let mut unknown_outcomes: Vec<UnknownOutcome> = Vec::new();
     run.checkpoints_through(last_seq, &prev)?;
     while let Some(record) = records.next()? {
         let seq = record.seq();
         check_bundle_record(&record, p, (last_seq, &prev), opts)?;
+        match &record {
+            ChainRecord::ModelInvocation(invocation) => {
+                let identity = (
+                    invocation.payload.tenant_id.clone(),
+                    invocation.payload.actor.agent_id.clone(),
+                    invocation.payload.request_id.clone(),
+                );
+                if model_invocations
+                    .insert(
+                        identity,
+                        (
+                            invocation.payload.record_id.clone(),
+                            invocation.hash.clone(),
+                        ),
+                    )
+                    .is_some()
+                {
+                    return Err(BundleFailure::Segment(format!(
+                        "record {seq} repeats a model invocation request"
+                    )));
+                }
+            }
+            ChainRecord::ModelOutcome(outcome) => {
+                let identity = (
+                    outcome.payload.tenant_id.clone(),
+                    outcome.payload.agent_id.clone(),
+                    outcome.payload.request_id.clone(),
+                );
+                if !model_outcomes.insert(identity.clone()) {
+                    return Err(BundleFailure::Segment(format!(
+                        "record {seq} repeats a model outcome request"
+                    )));
+                }
+                match model_invocations.get(&identity) {
+                    Some((record_id, hash))
+                        if record_id == &outcome.payload.invocation_record_id
+                            && hash == &outcome.payload.invocation_hash => {}
+                    Some(_) => {
+                        return Err(BundleFailure::Segment(format!(
+                            "record {seq} does not link to its model invocation"
+                        )))
+                    }
+                    None if segment.after_seq == 0 => {
+                        return Err(BundleFailure::Segment(format!(
+                            "record {seq} has no earlier model invocation in this chain"
+                        )))
+                    }
+                    None => {}
+                }
+            }
+            _ => {}
+        }
         if let Some(decision) = record.as_decision() {
             let found = take_outcome(&mut outcomes, decision, opts)?;
             note_outcome(

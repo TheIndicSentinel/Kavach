@@ -1,4 +1,4 @@
-//! Writes an evidence bundle (format version 4, `docs/specs/evidence-bundle.md`).
+//! Writes an evidence bundle (format version 5, `docs/specs/evidence-bundle.md`).
 //!
 //! The bundle is built in `<out>.partial` and renamed to `<out>` only when
 //! it is complete, so a directory at `<out>` is always a whole bundle. The
@@ -202,7 +202,7 @@ impl BundleWriter {
 
     /// The next record of the segment: the right chain, the next `seq`,
     /// linked to the record before it. All records come before any outcome.
-    /// A record of any kind (bundle format 2).
+    /// A record of any kind supported by bundle format 5.
     pub fn record<R: ChainEntry + serde::Serialize>(
         &mut self,
         record: &R,
@@ -247,7 +247,7 @@ impl BundleWriter {
         self.outcomes.line(outcome)
     }
 
-    /// A resolution of an unknown outcome of this tenant (bundle version 4).
+    /// A resolution of an unknown outcome of this tenant (bundle version 4+).
     /// The exporter writes them in the order of their outcomes, then by time,
     /// source and state.
     pub fn resolution(&mut self, resolution: &ResolutionRecord) -> Result<(), BundleError> {
@@ -292,7 +292,7 @@ impl BundleWriter {
             records: self.records.finish()?,
             outcomes: self.outcomes.finish()?,
             checkpoints: self.checkpoints.finish()?,
-            // Always written, empty when there are none: a version 4 bundle
+            // Always written, empty when there are none: a version 5 bundle
             // has the file.
             resolutions: Some(self.resolutions.finish()?),
         };

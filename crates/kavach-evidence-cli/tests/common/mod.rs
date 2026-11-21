@@ -17,8 +17,9 @@ use kavach_ports::agent_evidence::{
 };
 use kavach_ports::bundle::Exporter;
 use kavach_ports::chain_record::{
-    seal_agent_state, seal_revocation, AgentStateDraft, ChainRecord, RevocationDraft,
-    RevocationRecord,
+    seal_agent_state, seal_model_invocation, seal_model_outcome, seal_revocation, AgentStateDraft,
+    ChainRecord, ModelInvocationDraft, ModelInvocationRole, ModelOutcomeDraft, ModelOutcomeStatus,
+    RevocationDraft, RevocationRecord,
 };
 use kavach_ports::checkpoint::{sign_checkpoint, Checkpoint, Head, Scope, CHAIN_AGENT_DECISIONS};
 use kavach_ports::outcome_resolution::{
@@ -464,6 +465,60 @@ pub fn chain_v3() -> Vec<ChainRecord> {
         chain.push(ChainRecord::AgentState(record));
     }
     chain
+}
+
+/// Bundle format 5 sample: a digest-only model authorization and its outcome.
+pub fn chain_v5_model() -> Vec<ChainRecord> {
+    let now = TrustedNow {
+        utc: t0() + Duration::seconds(10),
+        sync: SyncStatus::Synced { max_error_ms: 12 },
+    };
+    let invocation = seal_model_invocation(
+        ModelInvocationDraft {
+            tenant_id: TENANT.into(),
+            partition_id: 0,
+            actor: kavach_ports::agent_evidence::Actor {
+                agent_id: "collections-agent".into(),
+                identity_key: "oidc:https://idp.example/realms/kavach#collections-agent".into(),
+            },
+            mandate_chain: vec!["ma-kat-root".into()],
+            mandate_id: "ma-kat-root".into(),
+            action: "invoke_collections_model".into(),
+            request_id: "model-kat-1".into(),
+            subject_pseudonym: "psn:5b1f0a7c9d2e4f60".into(),
+            model_role: ModelInvocationRole::Collections,
+            model_digest: format!("sha256:{}", "a".repeat(64)),
+            prompt_digest: "b".repeat(64),
+            policy_versions: kavach_ports::agent_evidence::PolicyVersions {
+                cedar: "sha256:cedar-kat".into(),
+                cel: None,
+                packs: vec![],
+                tools: Some("sha256:tools-kat".into()),
+                build: "kat".into(),
+            },
+            policy_decision: Decision::Pass,
+            returned_decision: Decision::Pass,
+            signals: vec!["authorized".into()],
+        }
+        .complete(1, GENESIS, evidence_key().0, now),
+        &evidence_key(),
+    )
+    .unwrap();
+    let outcome = seal_model_outcome(
+        ModelOutcomeDraft {
+            invocation: invocation.clone(),
+            status: ModelOutcomeStatus::Completed,
+            response_digest: Some("c".repeat(64)),
+            duration_ms: 1_250,
+        }
+        .complete(2, &invocation.hash, evidence_key().0, now),
+        &evidence_key(),
+    )
+    .unwrap();
+    vec![
+        ChainRecord::ModelInvocation(invocation),
+        ChainRecord::ModelOutcome(outcome),
+    ]
 }
 
 /// A linked, signed chain of decisions, one record per entry, from record 1.

@@ -1,0 +1,39 @@
+{
+  "format": "kavach-evidence-bundle",
+  "version": 5,
+  "tenant_id": "default",
+  "partition_id": 0,
+  "chain": "agent_decisions",
+  "segment": {
+    "after_seq": 0,
+    "after_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "last_seq": 2,
+    "head_hash": "ea6f3f61eef5676362c869fd2cf9e3aba7bf8389ed7b2aa00091632fdf18973c"
+  },
+  "files": {
+    "records": {
+      "sha256": "08328fcc0c545fd0d2ae7adfa0636b06bbde527c81ff030173944afa272335bd",
+      "count": 2
+    },
+    "outcomes": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "count": 0
+    },
+    "checkpoints": {
+      "sha256": "08868f13d83c5b505fe126cb57e142c58a9e3a304b7197f17d7f10aad5a2be18",
+      "count": 1
+    },
+    "resolutions": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "count": 0
+    }
+  },
+  "exported_at": "2026-10-02T06:30:00Z",
+  "exporter": {
+    "tool": "kavach-evidence",
+    "version": "kat"
+  },
+  "key_id": "export-kat-1",
+  "hash": "f8037f725aedd15e8ee2306b83a0f8f49ae93f722b53f86b8556fa4c867b4287",
+  "sig": "7329ae94ed2493a0bf34e8bda3fdedb646cbfeb61048268679b16eb349a32b1a51fff27b12d0b8e61e8e65fb0ed68bbfb1eb0e8b488ee7cfdc85c95f551f5b01"
+}

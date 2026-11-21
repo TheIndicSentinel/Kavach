@@ -95,6 +95,7 @@ class Resolutions(unittest.TestCase):
         os.remove(self.path("resolutions.jsonl"))
         self.refuse("must hold exactly", "layout")
 
+
     def test_a_removed_resolution(self):
         rows = self.lines("resolutions.jsonl")[:-1]
         with open(self.path("resolutions.jsonl"), "w", encoding="utf-8") as h:
@@ -128,6 +129,66 @@ class Resolutions(unittest.TestCase):
         with open(self.path("resolutions.jsonl"), "w", encoding="utf-8") as h:
             h.write("".join(kv.jcs(row).decode() + "\n" for row in rows))
         self.refuse("digest does not match", "digest")
+
+
+class ModelEvidence(unittest.TestCase):
+    def test_bundle_v5_verifies_model_invocation_and_linked_outcome(self):
+        r = kv.verify_bundle(f"{BUNDLES}/bundle-v5", f"{BUNDLES}/bundle-v2.keys.json", now=NOW)
+        self.assertEqual((r["version"], r["records"], r["last_seq"]), (5, 2, 2))
+
+    def test_bundle_v4_refuses_version_5_model_record_kinds(self):
+        with open(f"{BUNDLES}/bundle-v5/manifest.json", encoding="utf-8") as handle:
+            manifest = json.load(handle)
+        manifest["version"] = 4
+        manifest.pop("key_id", None)
+        manifest.pop("sig", None)
+        payload = {k: v for k, v in manifest.items() if k not in ("hash", "sig")}
+        manifest["hash"] = hashlib.sha256(kv.MANIFEST_PREFIX + kv.jcs(payload)).hexdigest()
+        directory = tempfile.mkdtemp()
+        bundle = os.path.join(directory, "bundle")
+        shutil.copytree(f"{BUNDLES}/bundle-v5", bundle)
+        with open(os.path.join(bundle, "manifest.json"), "w", encoding="utf-8") as handle:
+            handle.write(kv.jcs(manifest).decode() + "\n")
+        try:
+            with self.assertRaises(kv.Refused) as ctx:
+                kv.verify_bundle(bundle, f"{BUNDLES}/bundle-v2.keys.json", now=NOW)
+            self.assertIn("not in the registry for version 4", str(ctx.exception))
+        finally:
+            shutil.rmtree(directory)
+
+    def test_bundle_v5_refuses_a_mismatched_invocation_hash(self):
+        directory = tempfile.mkdtemp()
+        bundle = os.path.join(directory, "bundle")
+        shutil.copytree(f"{BUNDLES}/bundle-v5", bundle)
+        try:
+            with open(os.path.join(bundle, "records.jsonl"), encoding="utf-8") as handle:
+                records = [json.loads(line) for line in handle]
+            records[1]["invocation_hash"] = "d" * 64
+            payload = {k: v for k, v in records[1].items() if k not in ("hash", "sig")}
+            records[1]["hash"] = hashlib.sha256(
+                kv.RECORD_PREFIX + records[1]["prev_hash"].encode("ascii") + kv.jcs(payload)
+            ).hexdigest()
+            raw_records = "".join(kv.jcs(row).decode() + "\n" for row in records).encode()
+            with open(os.path.join(bundle, "records.jsonl"), "wb") as handle:
+                handle.write(raw_records)
+
+            with open(os.path.join(bundle, "manifest.json"), encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            manifest["segment"]["head_hash"] = records[-1]["hash"]
+            manifest["files"]["records"]["sha256"] = hashlib.sha256(raw_records).hexdigest()
+            manifest.pop("key_id", None)
+            manifest.pop("sig", None)
+            payload = {k: v for k, v in manifest.items() if k not in ("hash", "sig")}
+            manifest["hash"] = hashlib.sha256(kv.MANIFEST_PREFIX + kv.jcs(payload)).hexdigest()
+            with open(os.path.join(bundle, "manifest.json"), "w", encoding="utf-8") as handle:
+                handle.write(kv.jcs(manifest).decode() + "\n")
+
+            with mock.patch.object(kv.Verifier, "_check_sig", lambda *args, **kwargs: None):
+                with self.assertRaises(kv.Refused) as ctx:
+                    kv.verify_bundle(bundle, f"{BUNDLES}/bundle-v2.keys.json", now=NOW)
+            self.assertIn("does not link to its invocation", str(ctx.exception))
+        finally:
+            shutil.rmtree(directory)
 
 
 class DigestForms(unittest.TestCase):

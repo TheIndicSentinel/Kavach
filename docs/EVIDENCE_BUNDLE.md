@@ -14,7 +14,7 @@ How Kavach's agent evidence is checkpointed, exported and verified offline. The 
 | Writing checkpoints in a running deployment (background writer, mandatory key, metrics, stall alert) | Done (E2b) |
 | Bundle format v1: manifest, writer, export key rules, test vector; read-only `kavach_auditor` database role | Done (E3a) |
 | Export command (`kavach-evidence export`, `checkpoints`) | Done (E3b) |
-| `verify-bundle` command (offline, fail-closed, constant memory) | Done (E4a) |
+| `verify-bundle` command (offline, fail-closed, streaming files) | Done (E4a) |
 | Export and verify from a deployed stack in CI (the required isolation job) | Done (E4b) |
 | Bundle format v2: records of every kind (revocations, ADR-012 §7); v1 bundles still verify | Done (R1b) |
 | Detecting a deleted outcome row | Not yet (E5, only if a benchmark shows the lock is cheap) |
@@ -91,29 +91,31 @@ A checkpoint dated before the one preceding it is a warning (the clock stepped b
 - On SIGTERM or Ctrl-C the server stops accepting, waits for the gateway calls in flight and writes a final checkpoint, so nothing recorded is left uncovered. A process that is killed (SIGKILL, a crash) writes none: its records are covered after the next start.
 - The checkpoint key is separate from every other key by id and from the evidence key by material. By default it sits in a directory beside the other keys, so the separation only becomes a real boundary when keys move to a KMS or HSM.
 
-## Bundle format, version 2
+## Bundle format, version 5
 
-An export writes version 2. A verifier also reads version 1, written before version 2; nothing else changed between them (see "Record kinds").
+An export writes version 5. The verifier reads versions 1 to 5, preserving historical record registries and layouts. Version 5 adds signed model invocation and outcome record kinds; versions 4 and 5 contain `resolutions.jsonl`.
 
-A bundle is one export of one chain segment. It is a directory with exactly four files; the names are fixed, and a manifest never names a path.
+A bundle is one export of one chain segment. Versions 1 to 3 have four files; versions 4 and 5 have five. The names are fixed, and a manifest never names a path.
 
 | File | Contents |
 |---|---|
-| `manifest.json` | What the bundle is, the segment it covers and the SHA-256 of the other three files |
+| `manifest.json` | What the bundle is, the segment it covers and the SHA-256 of the other files |
 | `records.jsonl` | The segment's records of every kind (see "Record kinds"), one JSON object per line, in `seq` order |
 | `outcomes.jsonl` | The outcomes of those records, one per line, in the order of their records |
 | `checkpoints.jsonl` | The checkpoints from the segment's start, one per line, in `seq` order |
+| `resolutions.jsonl` | Resolutions of unknown outcomes; required from version 4 |
+| `resolutions.jsonl` | Resolutions of unknown outcomes; required from version 4 |
 
 A bundle contains **no public keys**. A verifier gets its keys from the operator (see "Trusted keys").
 
-**What is in a bundle.** Agent, mandate and request identifiers, decisions, signals, reason codes, times, a keyed pseudonym of the subject and a keyed MAC of the parameters. It holds no destination (phone number) and no raw subject reference; a test fails the build if either reaches a bundle. It is still evidence about people's cases: the writer creates the directory and files readable by their owner only, and a bundle should be stored and shared accordingly.
+**What is in a bundle.** Agent, mandate and request identifiers, decisions, signals, reason codes, times, a keyed pseudonym of the subject and a keyed MAC of the parameters. Version 5 model records add only prompt and response digests, role/action, authorization metadata, outcome status and duration; prompts and completions are never stored. It holds no destination (phone number) and no raw subject reference; a test fails the build if either reaches a bundle. It is still evidence about people's cases: the writer creates the directory and files readable by their owner only, and a bundle should be stored and shared accordingly.
 
 ### Manifest
 
 | Field | Type | Meaning |
 |---|---|---|
 | `format` | string | `kavach-evidence-bundle` |
-| `version` | integer | `2` (`1` in bundles written before it). A verifier refuses a version it does not know. |
+| `version` | integer | `5` for new exports; verifier reads `1` to `5`. |
 | `tenant_id`, `partition_id`, `chain` | | The chain, as in a checkpoint |
 | `segment.after_seq` | integer ≥ 0 | The record the segment follows; `0` when it starts at the first record |
 | `segment.after_hash` | 64 lowercase hex | Hash of that record; 64 zeros when `after_seq` is `0` |
@@ -158,9 +160,11 @@ Every record states its `kind` inside its hashed and signed content, so a record
 
 | `kind` | What it records | In version |
 |---|---|---|
-| `agent_decision` | An agent's call and the decision on it (ADR-005 §4). Its outcome, if it was allowed, is in `outcomes.jsonl` | 1, 2 and 3 |
-| `mandate_revocation` | Mandates revoked by a system-of-record event (ADR-012 §7) | 2, 3 |
-| `agent_state` | A change of an agent's state: restricted, quarantined, revoked, or reinstated (ADR-013 §4) | 3 |
+| `agent_decision` | An agent's call and the decision on it (ADR-005 §4). Its outcome, if it was allowed, is in `outcomes.jsonl` | 1 to 5 |
+| `mandate_revocation` | Mandates revoked by a system-of-record event (ADR-012 §7) | 2 to 5 |
+| `agent_state` | A change of an agent's state: restricted, quarantined, revoked, or reinstated (ADR-013 §4) | 3 to 5 |
+| `model_invocation` | Authorized model role/action and prompt/model digests | 5 |
+| `model_outcome` | Completed, failed or unknown status, response digest and elapsed time | 5 |
 
 A `mandate_revocation` record holds, besides the fields every record has (`record_id`, `tenant_id`, `partition_id`, `seq`, `prev_hash`, `kind`, `hash_alg`, `key_id`, `time_sync`):
 
@@ -177,7 +181,9 @@ A `mandate_revocation` record holds, besides the fields every record has (`recor
 
 An `agent_state` record holds: `agent_id`, `change_no` (1 for the agent's first change), `from_state` and `to_state`, `reason_code` (a closed set: the chain never holds an operator's free text, which could name a borrower and cannot be erased), `reason_digest` (a keyed digest of that text, which stays in the store and the audit log), `changed_by`, `approved_by` (present exactly when the change loosens, and never the changer), `changed_at` and `recorded_at`. A stop takes effect first and its record follows, so `recorded_at` can be later than `changed_at`; a loosening is written with its record or not at all.
 
-**A verifier refuses a kind it does not know, and never skips it.** A skipped record would break the chain's links anyway, and a verifier that skipped records could be shown a bundle with an unexplained gap. A version 1 bundle may hold `agent_decision` records only, and a version 2 bundle decisions and revocations only; any other kind in it fails verification. An export writes version 3.
+A `model_invocation` has no prompt or completion text. It binds the authorized agent, mandate, exact model role/action, pinned model digest and prompt digest. A `model_outcome` links to the invocation record ID and hash; it carries a response digest only for `completed`, and carries no response digest for `failed` or `unknown`. `duration_ms` is an unsigned 32-bit millisecond count. Both model record kinds are accepted only in version 5.
+
+**A verifier refuses a kind not defined for its version, and never skips it.** Version 1 holds decisions; version 2 adds revocations; version 3 adds agent state; version 4 adds resolutions; version 5 adds model invocation and model outcome records. Model outcomes link to invocation record IDs and hashes. When both appear in the bundle segment, the verifier checks the link. Historical bundle versions remain unchanged.
 
 ### Trusted keys
 
@@ -209,7 +215,7 @@ kavach-evidence verify-bundle ./bundle-2026-10-02 \
   --expect-checkpoint /mnt/offsite/kavach-checkpoints.jsonl
 ```
 
-It needs no database and no network, and reads the files as streams, so its memory use does not grow with the chain.
+It needs no database and no network, and reads files as streams instead of loading whole files. The verifier retains the chain state and indexes needed to relate outcomes and model invocations.
 
 **Three results, three exit statuses.**
 
@@ -293,4 +299,5 @@ kavach-evidence checkpoints --after 12000
 
 - **A bundle, version 2:** [`crates/kavach-evidence-cli/tests/vectors/bundle-v2/`](../crates/kavach-evidence-cli/tests/vectors/bundle-v2/) is a complete bundle of five records: four decisions (one of them a block), then a `mandate_revocation` (record 5). It has two outcomes and three checkpoints, the last covering the revocation, and its trusted keys are in [`bundle-v2.keys.json`](../crates/kavach-evidence-cli/tests/vectors/bundle-v2.keys.json). Verifying it should report one allow with no outcome (`cred-4`), one outcome recorded as `unknown` (`cred-3`) and no record newer than the last checkpoint.
 - **A bundle, version 1:** [`crates/kavach-evidence-cli/tests/vectors/bundle-v1/`](../crates/kavach-evidence-cli/tests/vectors/bundle-v1/) is the same run's four decisions, two outcomes and two checkpoints, written before version 2 and kept unchanged, with its keys in [`bundle-v1.keys.json`](../crates/kavach-evidence-cli/tests/vectors/bundle-v1.keys.json). It must still verify: one allow with no outcome (`cred-4`), one outcome recorded as `unknown` (`cred-3`) and one record newer than the last checkpoint.
+- **A bundle, version 5:** [`crates/kavach-evidence-cli/tests/vectors/bundle-v5/`](../crates/kavach-evidence-cli/tests/vectors/bundle-v5/) demonstrates a digest-only model invocation and its linked completed outcome. The Rust and independent Python verifiers both accept it and refuse model records under version 4.
 - **Checkpoints:** [`crates/kavach-ports/tests/vectors/checkpoint-v1.json`](../crates/kavach-ports/tests/vectors/checkpoint-v1.json) holds two linked checkpoints signed with a test-only key, the public key, the record hashes they cover and, for each checkpoint, the exact canonical bytes that were hashed. An independent implementation should reproduce `hash` from `canonical_payload` and verify `sig`.

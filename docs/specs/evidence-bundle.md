@@ -1,4 +1,4 @@
-# Evidence bundle, versions 1 to 4 (normative)
+# Evidence bundle, versions 1 to 5 (normative)
 
 This document defines the evidence a Kavach deployment writes and exactly what a verifier checks. It is self-contained: an implementer needs nothing else. [`docs/EVIDENCE_BUNDLE.md`](../EVIDENCE_BUNDLE.md) explains how an operator uses it.
 
@@ -13,7 +13,7 @@ A verifier that returns *verified* shows only this: the records, outcomes and ch
 ### 2.1 JSON
 - Every file line is one JSON value (RFC 8259) in UTF-8, ended by a line feed (`0x0A`). The last line is ended too. A line is at most 1,048,576 bytes.
 - A JSON object MUST NOT repeat a member name. A verifier MUST refuse a line that does.
-- A line MUST NOT hold a member this specification does not define for it: a record the members of §4.1 and its kind's section (and, inside `time_sync`, `actor` and `policy_versions`, only theirs), an outcome those of §5, a checkpoint those of §6, a resolution those of §5.3. A verifier MUST refuse a line that does, as unreadable (`read`, §10.2), before any hash or signature is checked. A record's extra member would be inside its hash, but an outcome's or a checkpoint's is outside every hash and signature: unsigned data that rides through an audit trail. The rule is one explicit list per file and record kind, not a comparison of the line with what a reader makes of it.
+- A line MUST NOT hold a member this specification does not define for it: a record the members of §4.1 and its kind's section (and, inside `time_sync`, `actor` and `policy_versions`, only theirs), an outcome those of §5, a checkpoint those of §6, a resolution those of §5.3. A verifier MUST refuse a line that does, as unreadable (`read`, §10.3), before any hash or signature is checked. A record's extra member would be inside its hash, but an outcome's or a checkpoint's is outside every hash and signature: unsigned data that rides through an audit trail. The rule is one explicit list per file and record kind, not a comparison of the line with what a reader makes of it.
 - A file with no lines is empty (zero bytes).
 
 ### 2.2 Canonical form
@@ -36,17 +36,17 @@ A time is a string `YYYY-MM-DDTHH:MM:SS[.f]Z` (UTC, `Z` suffix, at most nine fra
 
 ## 3. The bundle
 
-A bundle is a directory holding exactly these regular files and nothing else: four in versions 1 to 3, five in version 4.
+A bundle is a directory holding exactly these regular files and nothing else: four in versions 1 to 3, five in versions 4 and 5.
 
 | File | Contents | Versions |
 |---|---|---|
-| `manifest.json` | One JSON object (§7): what the bundle is and the SHA-256 of the other files | 1 to 4 |
-| `records.jsonl` | The segment's records (§4), in `seq` order, one per line | 1 to 4 |
-| `outcomes.jsonl` | Outcomes (§5), in the order of their records, one per line | 1 to 4 |
-| `checkpoints.jsonl` | Checkpoints (§6) from the segment's start, in `seq` order, one per line | 1 to 4 |
-| `resolutions.jsonl` | Resolutions (§5.3) of `unknown` outcomes, one per line; empty when there are none | **4 only** |
+| `manifest.json` | One JSON object (§7): what the bundle is and the SHA-256 of the other files | 1 to 5 |
+| `records.jsonl` | The segment's records (§4), in `seq` order, one per line | 1 to 5 |
+| `outcomes.jsonl` | Outcomes (§5), in the order of their records, one per line | 1 to 5 |
+| `checkpoints.jsonl` | Checkpoints (§6) from the segment's start, in `seq` order, one per line | 1 to 5 |
+| `resolutions.jsonl` | Resolutions (§5.3) of `unknown` outcomes, one per line; empty when there are none | 4 and 5 |
 
-A `resolutions.jsonl` in a bundle of version 1, 2 or 3 is a layout failure, and so is a version 4 bundle without one: a resolution is never accepted inside a format that did not define it, and never skipped.
+A `resolutions.jsonl` in a bundle of version 1, 2 or 3 is a layout failure, and so is a version 4 or 5 bundle without one: a resolution is never accepted inside a format that did not define it, and never skipped.
 
 The `manifest.json` file is one JSON value, followed by an optional line feed.
 
@@ -82,11 +82,13 @@ sig  = hex( Ed25519_sign( evidence_key, "kavach-agent-evidence-sig-v1:" || ASCII
 
 | `kind` | Defined in | Bundle versions |
 |---|---|---|
-| `agent_decision` | §4.3 | 1, 2, 3 |
-| `mandate_revocation` | §4.4 | 2, 3 |
-| `agent_state` | §4.5 | 3 |
+| `agent_decision` | §4.3 | 1 to 5 |
+| `mandate_revocation` | §4.4 | 2 to 5 |
+| `agent_state` | §4.5 | 3 to 5 |
+| `model_invocation` | §4.6 | 5 |
+| `model_outcome` | §4.7 | 5 |
 
-**A verifier MUST refuse a record whose `kind` is not in the registry for the bundle's version, and MUST NOT skip it.** A bundle of version 1 may hold `agent_decision` records only, and a bundle of version 2 `agent_decision` and `mandate_revocation` records only. A new kind is added to this registry with a new bundle `version`, so a verifier that does not know it fails on the bundle rather than misreading it.
+**A verifier MUST refuse a record whose `kind` is not in the registry for the bundle's version, and MUST NOT skip it.** A bundle of version 1 may hold `agent_decision` records only, and a bundle of version 2 `agent_decision` and `mandate_revocation` records only. Version 3 adds `agent_state`, version 4 adds resolutions, and version 5 adds the model evidence records. A verifier that does not know a record kind fails rather than misreading it.
 
 ### 4.3 `agent_decision`
 
@@ -144,6 +146,22 @@ Severity orders the states `active` < `restricted` < `quarantined` < `revoked`. 
 
 A stop is written **after** it takes effect (so stopping never waits on the chain), so a record's `recorded_at` can be later than `changed_at` and its position in the chain later than decisions made after the stop. That is why the record carries `changed_at`.
 
+### 4.6 `model_invocation` (version 5)
+
+Signed authorization evidence written before a governed local model call. It proves which agent, mandate, role, action and prompt digest were authorized; it does not prove the model's semantic correctness.
+
+Besides §4.1, it has: `actor` (`agent_id`, `identity_key`); `mandate_chain` (non-empty array ending in `mandate_id`); `mandate_id`; `action`; `request_id`; `subject_pseudonym`; `model_role` (`collections` or `translation`); `model_digest` (`sha256:` plus 64 lowercase hex); `prompt_digest` (64 lowercase hex); `policy_versions`; `policy_decision`; `returned_decision`; `signals`; and `recorded_at` (the record time).
+
+`collections` MUST use `invoke_collections_model`; `translation` MUST use `invoke_translation_model`. The prompt and completion are transient and MUST NOT be included in the record.
+
+### 4.7 `model_outcome` (version 5)
+
+Signed outcome metadata linked to the prior invocation by `invocation_record_id` and its signed `invocation_hash`. It also has `agent_id`, `request_id`, `status`, `response_digest`, `duration_ms`, and `recorded_at`. `duration_ms` is an integer in the range 0 to 4,294,967,295.
+
+`status` is `completed`, `failed` or `unknown`. A completed record MUST carry `response_digest`, a SHA-256 hash in 64 lowercase hex. A failed or unknown record MUST carry `response_digest: null`. An ambiguous timeout is `unknown`; it MUST NOT trigger an automatic retry under the same request ID. Response text and error text are never evidence fields.
+
+When the corresponding invocation is in the same bundle segment, a verifier MUST check that the tenant, agent, request ID, invocation record ID and invocation hash match. A segment may begin after that invocation; in that case the signed outcome alone cannot establish the earlier invocation's contents.
+
 ## 5. Outcomes
 
 What happened after an allow. An outcome is a JSON object, **off the chain**:
@@ -160,7 +178,7 @@ What happened after an allow. An outcome is a JSON object, **off the chain**:
 | `sig` | signature | See §5.2 |
 
 ### 5.1 Meaning
-`delivered`, `failed`, `refused` and `not_executed` are final. `unknown` means the request was sent and its result is not known; it is never retried. In versions 1 to 3 nothing can settle it. In version 4 a **resolution** (§5.3) may, without changing the outcome.
+`delivered`, `failed`, `refused` and `not_executed` are final. For an agent delivery outcome, `unknown` means the request was sent and its result is not known; it is never retried. In versions 1 to 3 nothing can settle it. In versions 4 and 5 a **resolution** (§5.3) may, without changing the outcome. This is separate from the `model_outcome` record status in §4.7.
 
 ### 5.2 Signature
 Let `T` be `ts` rendered per §2.3 with exactly six fractional digits (for example `2026-10-02T05:30:12.000000Z`). The signed message is the concatenation of the prefix and the body:
@@ -172,7 +190,7 @@ Let `T` be `ts` rendered per §2.3 with exactly six fractional digits (for examp
 
 `sig = hex( Ed25519_sign( evidence_key, message ) )`. An outcome whose `reason` is present but not of the form above MUST be refused.
 
-### 5.3 Resolutions (version 4)
+### 5.3 Resolutions (versions 4 and 5)
 
 A resolution is a second signed row that refers to an `unknown` outcome. It never replaces the outcome (which stays as written) and it never causes anything to be sent. A resolution is a JSON object, **off the chain**, with exactly these members; a member not listed here makes the line invalid, so that nothing unsigned can ride along:
 
@@ -241,10 +259,10 @@ There is **no** `prev_hash` here: a checkpoint's hash covers the canonical paylo
 | Member | Type | Meaning |
 |---|---|---|
 | `format` | string | MUST be `kavach-evidence-bundle` |
-| `version` | integer | `1`, `2`, `3` or `4`. A verifier MUST refuse any other. An export writes `4` |
+| `version` | integer | `1` to `5`. A verifier MUST refuse any other. An export writes `5` |
 | `tenant_id`, `partition_id`, `chain` | | The chain the segment belongs to |
 | `segment` | object | `after_seq` (integer ≥ 0), `after_hash` (hash), `last_seq` (integer ≥ `after_seq`), `head_hash` (hash) |
-| `files` | object | `records`, `outcomes`, `checkpoints` and, in version 4 only, `resolutions`, each `{ "sha256": hash, "count": integer ≥ 0 }`. A `resolutions` member in a manifest of version 1 to 3, or its absence in version 4, is refused |
+| `files` | object | `records`, `outcomes`, `checkpoints` and, in versions 4 and 5, `resolutions`, each `{ "sha256": hash, "count": integer ≥ 0 }`. A `resolutions` member in a manifest of version 1 to 3, or its absence in version 4 or 5, is refused |
 | `exported_at` | time | The exporter's own clock. Not trusted time |
 | `exporter` | object | `tool`, `version` (strings) |
 | `key_id` | string | The export key. **Absent** on an unsigned bundle |
@@ -291,14 +309,14 @@ The `seq` and time used are: for a record, its `seq` and its `ts` (`recorded_at`
 
 A verifier is given the bundle directory, the trusted keys, optionally a kept checkpoint, whether it is verifying a development stack, and a reference time `now` for §9.6 (default: the verifier's clock, never the bundle's `exported_at`).
 
-1. **Layout.** The directory holds exactly the files of §3 for the manifest's `version` (four, or five in version 4), as regular files. The keys file is not inside it.
+1. **Layout.** The directory holds exactly the files of §3 for the manifest's `version` (four in versions 1 to 3, five in versions 4 and 5), as regular files. The keys file is not inside it.
 2. **Manifest.** Parse it. Refuse an unknown `format` or `version`, a member that breaks §7, or a count that does not match the segment.
 3. **Manifest hash and signature.** Recompute `hash`. If signed: the `key_id` is an export key, a `dev-` key only when development is allowed, and `sig` verifies. If unsigned, report `unsigned`.
-4. **Files.** For each file the manifest lists (three, or four in version 4): the SHA-256 of its bytes equals `files.<name>.sha256`, and its number of lines equals `files.<name>.count`.
+4. **Files.** For each file the manifest lists (three, or four in versions 4 and 5): the SHA-256 of its bytes equals `files.<name>.sha256`, and its number of lines equals `files.<name>.count`.
 5. **Records.** In file order, starting with `expected_seq = after_seq + 1` and `prev = after_hash`, for each line:
    1. Parse it; refuse duplicate member names (§2.1).
    2. `tenant_id` and `partition_id` equal the manifest's.
-   3. `kind` is in the registry for the manifest's `version` (§4.2).
+   3. `kind` is in the registry for the manifest's `version` (§4.2). For `model_outcome`, if the matching invocation appears earlier in this segment, the tenant, agent, request ID, invocation record ID and invocation hash MUST match. If the segment begins after the invocation, the segment cannot verify the earlier record.
    4. Unless development is allowed: `key_id` does not start with `dev-` and `time_sync.status` is not `dev_fixed`.
    5. `hash_alg` is `v2`; `seq` equals `expected_seq`; `prev_hash` equals `prev`.
    6. `hash` recomputes (§4) and `sig` verifies with the key `key_id` names.
@@ -312,9 +330,9 @@ A verifier is given the bundle directory, the trusted keys, optionally a kept ch
    3. its `reason`, if present, is well formed (§5), and its `sig` verifies (§5.2) with the key `key_id` names;
    4. key limits hold.
 
-   If the next outcome is for another record, this record has no outcome. If it is an allow (`returned_decision` `PASS` or `ALERT`) and its `credential_expires_at` is null or at or before `now`, report `outcome_missing` with its `credential_id`. After all records, **no outcome may remain**: a remaining or out-of-order or repeated outcome fails the bundle. For each consumed outcome of `unknown`: in versions 1 to 3, report `outcome_unknown`; in version 4, apply step 6a first and report by the governing state (§5.3.3): `outcome_unknown` when it is *unresolved* or *ambiguous*, `outcome_conflicted` when it is *conflicted*, and nothing when a confirmed state governs (the verifier SHOULD list those as resolved, with the state and its source).
+   If the next outcome is for another record, this record has no outcome. If it is an allow (`returned_decision` `PASS` or `ALERT`) and its `credential_expires_at` is null or at or before `now`, report `outcome_missing` with its `credential_id`. After all records, **no outcome may remain**: a remaining or out-of-order or repeated outcome fails the bundle. For each consumed outcome of `unknown`: in versions 1 to 3, report `outcome_unknown`; in versions 4 and 5, apply step 6a first and report by the governing state (§5.3.3): `outcome_unknown` when it is *unresolved* or *ambiguous*, `outcome_conflicted` when it is *conflicted*, and nothing when a confirmed state governs (the verifier SHOULD list those as resolved, with the state and its source).
 
-   **6a. Resolutions (version 4 only).** For each line of `resolutions.jsonl`, in file order:
+   **6a. Resolutions (versions 4 and 5).** For each line of `resolutions.jsonl`, in file order:
    1. Parse it; refuse duplicate member names (§2.1) and any member not listed in §5.3.
    2. `tenant_id` equals the manifest's.
    3. It refers to an outcome of this bundle: an outcome with its `credential_id` whose `outcome` is `unknown`, and whose `sig` hashes to `outcome_ref` (§5.3). Otherwise the bundle fails: a resolution of a settled outcome, of another row, or of an outcome that is not in the bundle is not accepted.
@@ -341,7 +359,7 @@ The findings `outcome_missing`, `outcome_unknown` and `outcome_conflicted` are a
 | Result | Meaning |
 |---|---|
 | **fail** | Any refusal above. The bundle does not verify |
-| **verified, with warnings** | It verifies, but something is not protected: the reports `unsigned`, `no_kept_checkpoint`, `uncovered_records`, `outcome_missing`, `outcome_unknown`, `outcome_conflicted` (version 4), `clock_stepped_back` |
+| **verified, with warnings** | It verifies, but something is not protected: the reports `unsigned`, `no_kept_checkpoint`, `uncovered_records`, `outcome_missing`, `outcome_unknown`, `outcome_conflicted` (versions 4 and 5), `clock_stepped_back` |
 | **verified** | It verifies and none of those apply |
 
 A script that tests only for success MUST treat *verified, with warnings* as not verified, unless it names the warning it accepts.
@@ -376,7 +394,11 @@ The expected result is *verified, with warnings*: `no_kept_checkpoint` and `outc
 
 Refusal vectors for version 4, each a bundle (or a line) that MUST fail, for the reason named: a `resolutions.jsonl` inside a version 3 bundle (layout); a version 4 manifest without a `resolutions` file entry (layout); a resolution of a settled outcome; with an `outcome_ref` that does not match; for a credential with no outcome; with a member not in §5.3; "not delivered" attested by one person; "not delivered" approved by the same person; the reconciler stating a confirmed state; a conflict closed by one person; a duplicate `(credential_id, source, state)`; a `ts` before its outcome's; a forged `sig`; a `dev-` key without development allowed.
 
-### 10.2 Failure classes
+### 10.2 Version 5 vector
+
+`crates/kavach-evidence-cli/tests/vectors/bundle-v5` contains a signed `model_invocation` followed by a signed linked `model_outcome`, plus a checkpoint covering the segment. Both Rust and independent Python verifiers MUST accept it. They MUST refuse its model record kinds under bundle version 4, and refuse an outcome whose invocation hash does not match an earlier invocation in the same segment.
+
+### 10.3 Failure classes
 
 Two verifiers that both refuse a bundle can still disagree about *why*, and then one of them is wrong about what it checked. So a verifier that reports a failure SHOULD report one of these classes besides its reason (the reference verifiers do: `VerifyError::class()` and the `class` member of the Python verifier's JSON), and the two MUST report the same class for the same damage. The wording of the reason is free; the class is not.
 
