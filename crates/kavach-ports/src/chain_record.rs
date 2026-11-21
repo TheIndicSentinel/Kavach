@@ -22,6 +22,191 @@ use crate::time::TrustedNow;
 
 pub const KIND_EVIDENCE_TRANSITION: &str = "evidence_transition";
 pub const KIND_MODEL_INVOCATION: &str = "model_invocation";
+pub const KIND_MODEL_OUTCOME: &str = "model_outcome";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOutcomeStatus {
+    Completed,
+    Failed,
+    Unknown,
+}
+
+/// Signed digest-only result metadata linked to its prior model invocation.
+/// Completion content itself is never included.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelOutcomePayload {
+    pub record_id: String,
+    pub tenant_id: String,
+    pub partition_id: i32,
+    pub seq: i64,
+    pub prev_hash: String,
+    pub kind: String,
+    pub hash_alg: String,
+    pub key_id: String,
+    pub agent_id: String,
+    pub request_id: String,
+    pub invocation_record_id: String,
+    pub invocation_hash: String,
+    pub status: ModelOutcomeStatus,
+    /// SHA-256 of transient completion text; present only for `completed`.
+    pub response_digest: Option<String>,
+    /// Elapsed model-call time in milliseconds, bounded by its u32 encoding.
+    pub duration_ms: u32,
+    pub time_sync: TimeSync,
+    pub recorded_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelOutcomeRecord {
+    #[serde(flatten)]
+    pub payload: ModelOutcomePayload,
+    pub hash: String,
+    pub sig: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelOutcomeDraft {
+    pub invocation: ModelInvocationRecord,
+    pub status: ModelOutcomeStatus,
+    pub response_digest: Option<String>,
+    pub duration_ms: u32,
+}
+
+impl ModelOutcomeDraft {
+    #[must_use]
+    pub fn complete(
+        &self,
+        seq: i64,
+        prev_hash: &str,
+        key_id: &str,
+        now: crate::time::TrustedNow,
+    ) -> ModelOutcomePayload {
+        let invocation = &self.invocation.payload;
+        ModelOutcomePayload {
+            record_id: format!(
+                "mout:{}:{}:{seq}",
+                invocation.tenant_id, invocation.partition_id
+            ),
+            tenant_id: invocation.tenant_id.clone(),
+            partition_id: invocation.partition_id,
+            seq,
+            prev_hash: prev_hash.to_string(),
+            kind: KIND_MODEL_OUTCOME.into(),
+            hash_alg: HASH_ALG_V2.into(),
+            key_id: key_id.to_string(),
+            agent_id: invocation.actor.agent_id.clone(),
+            request_id: invocation.request_id.clone(),
+            invocation_record_id: invocation.record_id.clone(),
+            invocation_hash: self.invocation.hash.clone(),
+            status: self.status,
+            response_digest: self.response_digest.clone(),
+            duration_ms: self.duration_ms,
+            time_sync: now.sync.into(),
+            recorded_at: micros(now.utc),
+        }
+    }
+
+    #[must_use]
+    pub fn matches(&self, record: &ModelOutcomeRecord) -> bool {
+        let p = &record.payload;
+        p.tenant_id == self.invocation.payload.tenant_id
+            && p.partition_id == self.invocation.payload.partition_id
+            && p.agent_id == self.invocation.payload.actor.agent_id
+            && p.request_id == self.invocation.payload.request_id
+            && p.invocation_record_id == self.invocation.payload.record_id
+            && p.invocation_hash == self.invocation.hash
+            && p.status == self.status
+            && p.response_digest == self.response_digest
+            && p.duration_ms == self.duration_ms
+    }
+}
+
+pub fn seal_model_outcome(
+    payload: ModelOutcomePayload,
+    signer: &dyn EvidenceSigner,
+) -> Result<ModelOutcomeRecord, PortError> {
+    if payload.key_id != signer.key_id() {
+        return Err(PortError::invalid("payload key_id differs from the signer"));
+    }
+    let hash = content_hash(&payload.prev_hash, &payload)?;
+    let sig = hex::encode(signer.sign(&signing_message(&hash))?);
+    Ok(ModelOutcomeRecord { payload, hash, sig })
+}
+
+impl ChainEntry for ModelOutcomeRecord {
+    fn kind(&self) -> &str {
+        &self.payload.kind
+    }
+    fn hash_alg(&self) -> &str {
+        &self.payload.hash_alg
+    }
+    fn form(&self) -> Result<(), &'static str> {
+        let p = &self.payload;
+        if p.record_id.is_empty()
+            || p.record_id.len() > 128
+            || p.tenant_id.is_empty()
+            || p.tenant_id.len() > 128
+            || p.tenant_id.chars().any(char::is_control)
+            || p.partition_id < 0
+            || p.seq < 1
+            || (!is_hash(&p.prev_hash) && p.prev_hash != crate::agent_evidence::GENESIS)
+            || p.agent_id.is_empty()
+            || p.agent_id.len() > 128
+            || p.request_id.is_empty()
+            || p.request_id.len() > 128
+            || p.invocation_record_id.is_empty()
+            || p.invocation_record_id.len() > 128
+            || !is_hash(&p.invocation_hash)
+        {
+            return Err("model outcome binding is invalid");
+        }
+        match (p.status, p.response_digest.as_deref()) {
+            (ModelOutcomeStatus::Completed, Some(digest)) if is_hash(digest) => Ok(()),
+            (ModelOutcomeStatus::Completed, _) => {
+                Err("completed model outcome needs a response digest")
+            }
+            (_, None) => Ok(()),
+            (_, Some(_)) => Err("non-completed model outcome cannot include a response digest"),
+        }
+    }
+    fn expected_kind(&self) -> &'static str {
+        KIND_MODEL_OUTCOME
+    }
+    fn tenant_id(&self) -> &str {
+        &self.payload.tenant_id
+    }
+    fn partition_id(&self) -> i32 {
+        self.payload.partition_id
+    }
+    fn seq(&self) -> i64 {
+        self.payload.seq
+    }
+    fn ts(&self) -> DateTime<Utc> {
+        self.payload.recorded_at
+    }
+    fn prev_hash(&self) -> &str {
+        &self.payload.prev_hash
+    }
+    fn key_id(&self) -> &str {
+        &self.payload.key_id
+    }
+    fn time_sync(&self) -> &TimeSync {
+        &self.payload.time_sync
+    }
+    fn hash(&self) -> &str {
+        &self.hash
+    }
+    fn sig(&self) -> &str {
+        &self.sig
+    }
+    fn content_hash(&self) -> Option<String> {
+        content_hash(&self.payload.prev_hash, &self.payload).ok()
+    }
+    fn as_decision(&self) -> Option<&AgentDecisionRecord> {
+        None
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -823,6 +1008,7 @@ pub enum ChainRecord {
     AgentState(AgentStateRecord),
     EvidenceTransition(EvidenceTransitionRecord),
     ModelInvocation(ModelInvocationRecord),
+    ModelOutcome(ModelOutcomeRecord),
 }
 
 impl ChainRecord {
@@ -834,7 +1020,8 @@ impl ChainRecord {
             Self::Revocation(_)
             | Self::AgentState(_)
             | Self::EvidenceTransition(_)
-            | Self::ModelInvocation(_) => None,
+            | Self::ModelInvocation(_)
+            | Self::ModelOutcome(_) => None,
         }
     }
 }
@@ -863,6 +1050,9 @@ impl<'de> Deserialize<'de> for ChainRecord {
             KIND_MODEL_INVOCATION => serde_json::from_value(value)
                 .map(Self::ModelInvocation)
                 .map_err(D::Error::custom),
+            KIND_MODEL_OUTCOME => serde_json::from_value(value)
+                .map(Self::ModelOutcome)
+                .map_err(D::Error::custom),
             other => Err(D::Error::custom(format!(
                 "a record of kind {other}, which this build does not know: refused"
             ))),
@@ -878,6 +1068,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.kind(),
             Self::EvidenceTransition(r) => r.kind(),
             Self::ModelInvocation(r) => r.kind(),
+            Self::ModelOutcome(r) => r.kind(),
         }
     }
     fn hash_alg(&self) -> &str {
@@ -887,6 +1078,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.hash_alg(),
             Self::EvidenceTransition(r) => r.hash_alg(),
             Self::ModelInvocation(r) => r.hash_alg(),
+            Self::ModelOutcome(r) => r.hash_alg(),
         }
     }
     fn form(&self) -> Result<(), &'static str> {
@@ -896,6 +1088,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.form(),
             Self::EvidenceTransition(r) => r.form(),
             Self::ModelInvocation(r) => r.form(),
+            Self::ModelOutcome(r) => r.form(),
         }
     }
     fn expected_kind(&self) -> &'static str {
@@ -905,6 +1098,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.expected_kind(),
             Self::EvidenceTransition(r) => r.expected_kind(),
             Self::ModelInvocation(r) => r.expected_kind(),
+            Self::ModelOutcome(r) => r.expected_kind(),
         }
     }
     fn tenant_id(&self) -> &str {
@@ -914,6 +1108,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.tenant_id(),
             Self::EvidenceTransition(r) => r.tenant_id(),
             Self::ModelInvocation(r) => r.tenant_id(),
+            Self::ModelOutcome(r) => r.tenant_id(),
         }
     }
     fn partition_id(&self) -> i32 {
@@ -923,6 +1118,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.partition_id(),
             Self::EvidenceTransition(r) => r.partition_id(),
             Self::ModelInvocation(r) => r.partition_id(),
+            Self::ModelOutcome(r) => r.partition_id(),
         }
     }
     fn seq(&self) -> i64 {
@@ -932,6 +1128,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.seq(),
             Self::EvidenceTransition(r) => r.seq(),
             Self::ModelInvocation(r) => r.seq(),
+            Self::ModelOutcome(r) => r.seq(),
         }
     }
     fn ts(&self) -> DateTime<Utc> {
@@ -941,6 +1138,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.ts(),
             Self::EvidenceTransition(r) => r.ts(),
             Self::ModelInvocation(r) => r.ts(),
+            Self::ModelOutcome(r) => r.ts(),
         }
     }
     fn prev_hash(&self) -> &str {
@@ -950,6 +1148,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.prev_hash(),
             Self::EvidenceTransition(r) => r.prev_hash(),
             Self::ModelInvocation(r) => r.prev_hash(),
+            Self::ModelOutcome(r) => r.prev_hash(),
         }
     }
     fn key_id(&self) -> &str {
@@ -959,6 +1158,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.key_id(),
             Self::EvidenceTransition(r) => r.key_id(),
             Self::ModelInvocation(r) => r.key_id(),
+            Self::ModelOutcome(r) => r.key_id(),
         }
     }
     fn time_sync(&self) -> &TimeSync {
@@ -968,6 +1168,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.time_sync(),
             Self::EvidenceTransition(r) => r.time_sync(),
             Self::ModelInvocation(r) => r.time_sync(),
+            Self::ModelOutcome(r) => r.time_sync(),
         }
     }
     fn hash(&self) -> &str {
@@ -977,6 +1178,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.hash(),
             Self::EvidenceTransition(r) => r.hash(),
             Self::ModelInvocation(r) => r.hash(),
+            Self::ModelOutcome(r) => r.hash(),
         }
     }
     fn sig(&self) -> &str {
@@ -986,6 +1188,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => r.sig(),
             Self::EvidenceTransition(r) => r.sig(),
             Self::ModelInvocation(r) => r.sig(),
+            Self::ModelOutcome(r) => r.sig(),
         }
     }
     fn content_hash(&self) -> Option<String> {
@@ -995,6 +1198,7 @@ impl ChainEntry for ChainRecord {
             Self::AgentState(r) => ChainEntry::content_hash(r),
             Self::EvidenceTransition(r) => ChainEntry::content_hash(r),
             Self::ModelInvocation(r) => ChainEntry::content_hash(r),
+            Self::ModelOutcome(r) => ChainEntry::content_hash(r),
         }
     }
     fn as_decision(&self) -> Option<&AgentDecisionRecord> {
@@ -1003,7 +1207,8 @@ impl ChainEntry for ChainRecord {
             Self::Revocation(_)
             | Self::AgentState(_)
             | Self::EvidenceTransition(_)
-            | Self::ModelInvocation(_) => None,
+            | Self::ModelInvocation(_)
+            | Self::ModelOutcome(_) => None,
         }
     }
 }
@@ -1213,6 +1418,91 @@ mod evidence_transition_tests {
         assert_eq!(
             seal_model_invocation(payload, &signer).unwrap().form(),
             Err("model invocation digests are invalid")
+        );
+    }
+
+    #[test]
+    fn model_outcome_is_signed_digest_only_and_linked_to_its_invocation() {
+        let signer = TestSigner(SigningKey::from_bytes(&[7; 32]));
+        let now = crate::TrustedNow {
+            utc: DateTime::from_timestamp(1_795_000_000, 0).unwrap(),
+            sync: crate::SyncStatus::Synced { max_error_ms: 2 },
+        };
+        let invocation = seal_model_invocation(
+            model_invocation_draft().complete(1, GENESIS, "evidence-m2", now),
+            &signer,
+        )
+        .unwrap();
+        let draft = ModelOutcomeDraft {
+            invocation: invocation.clone(),
+            status: ModelOutcomeStatus::Completed,
+            response_digest: Some("c".repeat(64)),
+            duration_ms: 1_250,
+        };
+        let record = seal_model_outcome(
+            draft.complete(2, &invocation.hash, "evidence-m2", now),
+            &signer,
+        )
+        .unwrap();
+        assert!(record.form().is_ok());
+        let encoded = serde_json::to_string(&record).unwrap();
+        assert!(!encoded.contains("completion text"));
+        assert!(encoded.contains(&"c".repeat(64)));
+        assert_eq!(
+            record.payload.invocation_record_id,
+            invocation.payload.record_id
+        );
+        assert_eq!(record.payload.invocation_hash, invocation.hash);
+        assert!(matches!(
+            serde_json::from_str::<ChainRecord>(&encoded).unwrap(),
+            ChainRecord::ModelOutcome(_)
+        ));
+        let key = PublicKey {
+            kid: "evidence-m2".into(),
+            algorithm: KeyAlgorithm::Ed25519,
+            bytes: signer.0.verifying_key().to_bytes(),
+        };
+        let keys = BTreeMap::from([(key.kid.clone(), key)]);
+        let chain_record = ChainRecord::ModelOutcome(record.clone());
+        let report = verify_segment(
+            std::slice::from_ref(&chain_record),
+            SegmentStart {
+                seq: 1,
+                hash: &invocation.hash,
+            },
+            &keys,
+            Some((2, &record.hash)),
+            &[],
+            now.utc,
+            DevKeys::Refuse,
+        )
+        .unwrap();
+        assert_eq!(report.head_hash, record.hash);
+
+        let unknown = ModelOutcomeDraft {
+            invocation: invocation.clone(),
+            status: ModelOutcomeStatus::Unknown,
+            response_digest: None,
+            duration_ms: 30_000,
+        };
+        let unknown = seal_model_outcome(
+            unknown.complete(2, &invocation.hash, "evidence-m2", now),
+            &signer,
+        )
+        .unwrap();
+        assert!(unknown.form().is_ok());
+
+        let invalid = ModelOutcomeDraft {
+            invocation,
+            status: ModelOutcomeStatus::Completed,
+            response_digest: None,
+            duration_ms: 1,
+        };
+        let invalid =
+            seal_model_outcome(invalid.complete(2, GENESIS, "evidence-m2", now), &signer).unwrap();
+        assert_eq!(
+            invalid.form(),
+            Err("completed model outcome needs a response digest")
         );
     }
 }

@@ -737,7 +737,9 @@ fn check_bundle_record(
     if p.version == 2
         && matches!(
             record,
-            ChainRecord::AgentState(_) | ChainRecord::ModelInvocation(_)
+            ChainRecord::AgentState(_)
+                | ChainRecord::ModelInvocation(_)
+                | ChainRecord::ModelOutcome(_)
         )
     {
         return Err(BundleFailure::Segment(format!(
