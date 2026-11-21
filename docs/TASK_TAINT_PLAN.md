@@ -25,7 +25,8 @@ The authorization core always supplies `task_tainted: false` to Cedar. The regis
 ## Implementation record
 
 - **Slice 1 complete (2026-11-21):** added the typed `TaskTaintStore` port, a memory adapter, and a Postgres adapter. Migration 051 stores only tenant, mandate/task key, first-tainted timestamp and bounded source; `kavach_runtime` receives `SELECT, INSERT` only. The table is included in the active/passive HA write fence. Memory and least-privilege Postgres integration tests passed against a disposable local PostgreSQL cluster. The Postgres test also confirms runtime cannot update or delete taint. No request path reads or writes this store yet; FR-5 enforcement is not complete.
-- **Next:** wire governed model completions to persist taint before returning response content, with fail-closed behavior on storage errors.
+- **Slice 2 complete (2026-11-21):** successful `/v1/models/{role}/invoke` responses now mark the signed invocation's mandate task as `governed_model_output` tainted before response content is returned. Missing trusted time or a failed store write returns 503 without returning content. A focused route test verifies a completed model output taints only its mandate task, while an invalid mandate creates no taint. The legacy `/proxy/*` path is unchanged and remains ungoverned. Taint is not yet read by authorization or Cedar, so this does not complete FR-5 critical-action escalation.
+- **Next:** feed the persisted taint into all authorization paths, including precheck and exact-action approval/release, and include the derived state in evidence.
 
 ## Decision needed
 

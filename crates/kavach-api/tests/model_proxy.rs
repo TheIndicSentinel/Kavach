@@ -225,7 +225,7 @@ async fn translation_role_uses_only_its_pinned_model() {
 async fn governed_model_route_refuses_invalid_mandates_without_forwarding() {
     let (state, _, seen) = fixture(Router::new()).await;
     let (status, _) = send(
-        agent_router(state),
+        agent_router(state.clone()),
         "/v1/models/collections/invoke",
         &[(
             "authorization",
@@ -244,20 +244,27 @@ async fn governed_model_route_refuses_invalid_mandates_without_forwarding() {
         seen.lock().unwrap().is_empty(),
         "refused calls never reach Ollama"
     );
+    assert!(state
+        .dataplane()
+        .unwrap()
+        .task_taint_for_mandate("missing-mandate")
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
 async fn governed_model_route_records_authorization_before_fixed_role_inference() {
     let (state, _, seen, mandate) = fixture_with_model_mandate(Router::new()).await;
     let (status, body) = send(
-        agent_router(state),
+        agent_router(state.clone()),
         "/v1/models/collections/invoke",
         &[(
             "authorization",
             format!("Bearer {}", agent_token("collections-agent")),
         )],
         json!({
-            "mandate_id": mandate,
+            "mandate_id": mandate.clone(),
             "request_id": "model-route-approved",
             "subject_ref": SUBJECT,
             "prompt": "synthetic prompt"
@@ -267,6 +274,28 @@ async fn governed_model_route_records_authorization_before_fixed_role_inference(
     assert_eq!(status, axum::http::StatusCode::OK, "{body}");
     assert_eq!(body["response"]["message"]["content"], "approved result");
     assert!(body["invocation_id"].as_str().is_some());
+    assert!(
+        state
+            .dataplane()
+            .unwrap()
+            .task_taint_for_mandate("different-mandate")
+            .await
+            .unwrap()
+            .is_none(),
+        "taint remains scoped to its mandate task"
+    );
+    let taint = state
+        .dataplane()
+        .unwrap()
+        .task_taint_for_mandate(&mandate)
+        .await
+        .unwrap()
+        .expect("completed governed model output taints its mandate task");
+    assert_eq!(taint.mandate_id, mandate);
+    assert_eq!(
+        taint.source,
+        kavach_ports::TaskTaintSource::GovernedModelOutput
+    );
 
     let seen = seen.lock().unwrap();
     assert_eq!(seen.len(), 1);

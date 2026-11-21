@@ -55,7 +55,7 @@ use kavach_ports::ReviewApprovalStore as _;
 use kavach_ports::{
     ConsentSource, ContactPreferenceSource, ErrorClass, KeyAlgorithm, KeyProvider, MandateStore,
     PortError, PublicKey, ReplayGuard, RevocationCursor, StoredMandate, StoredRevocation,
-    SyncStatus, TimeSource, TrustedNow,
+    SyncStatus, TaskTaint, TaskTaintSource, TaskTaintStore, TimeSource, TrustedNow,
 };
 use kavach_ports::{CredentialBroker, Destination, ReferenceResolver};
 use kavach_storage::{
@@ -914,6 +914,38 @@ pub enum ContactPreferenceBackend {
     Postgres(kavach_storage::PostgresContactPreferenceSource),
 }
 
+/// Monotonic task taint uses the same storage mode as the agent dataplane.
+pub enum TaskTaintBackend {
+    Memory(kavach_storage::MemoryTaskTaintStore),
+    Postgres(kavach_storage::PostgresTaskTaintStore),
+}
+
+impl TaskTaintBackend {
+    async fn mark_tainted(
+        &self,
+        tenant_id: &str,
+        mandate_id: &str,
+        source: TaskTaintSource,
+        at: DateTime<Utc>,
+    ) -> Result<TaskTaint, PortError> {
+        match self {
+            Self::Memory(store) => store.mark_tainted(tenant_id, mandate_id, source, at).await,
+            Self::Postgres(store) => store.mark_tainted(tenant_id, mandate_id, source, at).await,
+        }
+    }
+
+    async fn get_taint(
+        &self,
+        tenant_id: &str,
+        mandate_id: &str,
+    ) -> Result<Option<TaskTaint>, PortError> {
+        match self {
+            Self::Memory(store) => store.get_taint(tenant_id, mandate_id).await,
+            Self::Postgres(store) => store.get_taint(tenant_id, mandate_id).await,
+        }
+    }
+}
+
 /// Runtime reference selection. Persistent resolution is enabled only with
 /// both Postgres and the explicitly configured encrypted vault.
 pub enum ReferenceBackend {
@@ -1065,6 +1097,7 @@ pub struct Dataplane {
     relaxed: Vec<crate::relaxations::Relaxation>,
     resolver: ReferenceBackend,
     contact_preferences: ContactPreferenceBackend,
+    task_taint: TaskTaintBackend,
     authority_updates: Option<SignedAuthorityUpdates>,
     reference_destination_updates: Option<ReferenceDestinationUpdates>,
     forwarder: Arc<crate::forward::HttpForwarder>,
@@ -1177,6 +1210,10 @@ impl Dataplane {
                 .map_err(|error| format!("contact preferences: {}", error.message))?,
             ),
         };
+        let task_taint = match pool {
+            Some(pool) => TaskTaintBackend::Postgres(pool.task_taint_store()),
+            None => TaskTaintBackend::Memory(kavach_storage::MemoryTaskTaintStore::default()),
+        };
         let forwarder = build_forwarder(config, &tools)?;
         let model_proxy = build_model_proxy(config)?;
         let broker = build_broker(config, &tools, &mandate_kid, insecure_dev, &sources).await?;
@@ -1235,6 +1272,7 @@ impl Dataplane {
             broker: Arc::new(broker),
             resolver,
             contact_preferences,
+            task_taint,
             authority_updates,
             reference_destination_updates,
             forwarder: Arc::new(forwarder),
@@ -1358,6 +1396,26 @@ impl Dataplane {
 
     pub fn mandates(&self) -> &Arc<Mandates> {
         &self.mandates
+    }
+
+    /// Read-only inspection of server-derived task taint. This method is
+    /// in-process only; the API does not expose the projection over HTTP.
+    pub async fn task_taint_for_mandate(
+        &self,
+        mandate_id: &str,
+    ) -> Result<Option<TaskTaint>, PortError> {
+        self.task_taint.get_taint(&self.tenant, mandate_id).await
+    }
+
+    async fn mark_task_tainted(
+        &self,
+        mandate_id: &str,
+        source: TaskTaintSource,
+        at: DateTime<Utc>,
+    ) -> Result<TaskTaint, PortError> {
+        self.task_taint
+            .mark_tainted(&self.tenant, mandate_id, source, at)
+            .await
     }
 
     /// The development clock, when the stack runs with one.
@@ -2980,6 +3038,27 @@ async fn complete_governed_model(
                 "model outcome evidence is unavailable",
             )
         })?;
+
+    if status == kavach_ports::chain_record::ModelOutcomeStatus::Completed && response.is_some() {
+        let Some(tainted_at) = dp.core.trusted_now() else {
+            return Err(crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "trusted time is unavailable",
+            ));
+        };
+        dp.mark_task_tainted(
+            &invocation.record.payload.mandate_id,
+            TaskTaintSource::GovernedModelOutput,
+            tainted_at,
+        )
+        .await
+        .map_err(|_| {
+            crate::problem::Problem::for_status(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "task risk state is unavailable",
+            )
+        })?;
+    }
 
     match (status, response) {
         (kavach_ports::chain_record::ModelOutcomeStatus::Completed, Some(response)) => {
