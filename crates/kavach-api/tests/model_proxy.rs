@@ -9,6 +9,9 @@ use axum::routing::{get, post};
 use axum::Router;
 use contract::{agent_router, sor_router};
 use kavach_api::AppState;
+use kavach_domain::authority::{AuthorityChange, AuthorityUpdateEvent};
+use kavach_domain::mandate::{ConsentArtefactSubset, ConsentRecord, ConsentStatus};
+use kavach_keys::InMemoryKeyProvider;
 use kavach_ports::agent_evidence::AgentEvidenceStore as _;
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
@@ -52,6 +55,13 @@ async fn fixture(upstream: Router) -> (Arc<AppState>, String, Arc<Mutex<Vec<Valu
 async fn fixture_with_model_mandate(
     upstream: Router,
 ) -> (Arc<AppState>, String, Arc<Mutex<Vec<Value>>>, String) {
+    fixture_with_model_mandate_and_config(upstream, config_for_gateway()).await
+}
+
+async fn fixture_with_model_mandate_and_config(
+    upstream: Router,
+    mut config: kavach_api::ApiConfig,
+) -> (Arc<AppState>, String, Arc<Mutex<Vec<Value>>>, String) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -79,7 +89,6 @@ async fn fixture_with_model_mandate(
         .merge(upstream);
     tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
 
-    let mut config = config_for_gateway();
     let dataplane = config.dataplane.as_mut().unwrap();
     dataplane.ollama_endpoint = Some(format!("http://{address}"));
     let mut mandate_config: Value =
@@ -100,9 +109,118 @@ async fn fixture_with_model_mandate(
         .push(json!("invoke_collections_model"));
     std::fs::write(&dataplane.mandate_config, mandate_config.to_string()).unwrap();
 
+    let postgres = matches!(
+        &config.evidence_store,
+        kavach_api::EvidenceStoreKind::Postgres { .. }
+    );
     let state = Arc::new(AppState::from_config(&config).await.unwrap());
+    if postgres {
+        seed_postgres_consent(&state).await;
+    }
     let mandate = issue_at(&state, "evt-model-route", chrono::Utc::now()).await;
     (state, format!("http://{address}"), seen, mandate)
+}
+
+async fn seed_postgres_consent(state: &Arc<AppState>) {
+    let now = chrono::Utc::now();
+    let expires_at = now + chrono::Duration::days(30);
+    let event = AuthorityUpdateEvent {
+        update_id: "model-taint-consent-grant".into(),
+        tenant_id: "default".into(),
+        system: "lms".into(),
+        occurred_at: now,
+        nonce: "model-taint-consent-grant-nonce".into(),
+        change: AuthorityChange::Consent(ConsentRecord {
+            consent_id: "C-7f3a".into(),
+            tenant_id: "default".into(),
+            subject_ref: SUBJECT.into(),
+            purposes: agent_fixture::set(&["loan_recovery"]),
+            expires_at,
+            active: true,
+            artefact: Some(ConsentArtefactSubset {
+                data_types: agent_fixture::set(&["financial_information"]),
+                valid_from: now,
+                data_from: now,
+                data_to: expires_at,
+                status: ConsentStatus::Active,
+            }),
+        }),
+    };
+    let mut issuer = InMemoryKeyProvider::new();
+    issuer.insert_seed("lms-issuer-1", [2u8; 32]).unwrap();
+    let signed = kavach_mandate::jws::sign(
+        &issuer,
+        "lms-issuer-1",
+        kavach_mandate::jws::TYP_AUTHORITY_UPDATE,
+        &event,
+    )
+    .await
+    .unwrap();
+    let (status, body) = send(
+        sor_router(state.clone()),
+        "/v1/sor/authority-updates",
+        &[],
+        json!({ "event": signed }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::CREATED, "{body}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn governed_model_task_taint_persists_and_escalates_through_postgres() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let mut config = agent_fixture::config(
+        kavach_api::EvidenceStoreKind::Postgres {
+            database_url: runtime,
+        },
+        true,
+        50,
+    );
+    config.migration_database_url = Some(owner);
+    let (state, _, _, mandate) = fixture_with_model_mandate_and_config(Router::new(), config).await;
+
+    let (status, body) = send(
+        agent_router(state.clone()),
+        "/v1/models/collections/invoke",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_token("collections-agent")),
+        )],
+        json!({
+            "mandate_id": mandate.clone(),
+            "request_id": "postgres-model-taint-source",
+            "subject_ref": SUBJECT,
+            "prompt": "synthetic prompt"
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert!(state
+        .dataplane()
+        .unwrap()
+        .task_tainted_for_agent("collections-agent", &mandate)
+        .await
+        .unwrap());
+
+    let (status, body) = send(
+        agent_router(state),
+        "/v1/authorize",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_token("collections-agent")),
+        )],
+        json!({
+            "tool": "propose_plan",
+            "mandate_id": mandate,
+            "request_id": "postgres-model-taint-review",
+            "params": {"subject_ref": SUBJECT, "waiver_bps": 500}
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+    assert_eq!(body["decision"], "HUMAN_REVIEW", "{body}");
 }
 
 #[tokio::test]
