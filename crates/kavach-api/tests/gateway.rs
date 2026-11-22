@@ -134,6 +134,25 @@ async fn scenario1_a_reminder_is_delivered_once_and_the_agent_never_sees_the_des
     assert_eq!(gw.provider.inbox().len(), 1);
 }
 
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn task_taint_read_failure_stops_tool_before_external_effect() {
+    let gw = gateway(Some(NUMBER), true).await;
+    assert!(gw
+        .state
+        .dataplane()
+        .unwrap()
+        .fail_next_task_taint_read_for_tests());
+
+    let (status, body) = gw.remind("taint-read-failure").await;
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert!(
+        gw.provider.inbox().is_empty(),
+        "provider received no effect"
+    );
+}
+
 /// Forward-once ownership over HTTP: concurrent identical calls produce
 /// exactly one provider call.
 #[tokio::test]

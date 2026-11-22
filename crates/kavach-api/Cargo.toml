@@ -7,6 +7,9 @@ license.workspace = true
 authors.workspace = true
 build = "build.rs"
 
+[features]
+test-support = ["kavach-storage/test-support"]
+
 [[bin]]
 name = "kavach-api"
 path = "src/bin/kavach-api.rs"

@@ -922,6 +922,34 @@ pub enum TaskTaintBackend {
 }
 
 impl TaskTaintBackend {
+    /// Inject one memory-store read failure into the next API request.
+    /// Available only to route tests compiled with `test-support`.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn fail_next_read_for_tests(&self) -> bool {
+        match self {
+            Self::Memory(store) => {
+                store.fail_next_read_for_tests();
+                true
+            }
+            Self::Postgres(_) => false,
+        }
+    }
+
+    /// Inject one memory-store write failure into the next model response.
+    /// Available only to route tests compiled with `test-support`.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn fail_next_write_for_tests(&self) -> bool {
+        match self {
+            Self::Memory(store) => {
+                store.fail_next_write_for_tests();
+                true
+            }
+            Self::Postgres(_) => false,
+        }
+    }
+
     async fn mark_tainted(
         &self,
         tenant_id: &str,
@@ -1123,6 +1151,20 @@ struct SignedAuthorityUpdates {
 }
 
 impl Dataplane {
+    /// Inject one taint-store read failure for API route tests.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn fail_next_task_taint_read_for_tests(&self) -> bool {
+        self.task_taint.fail_next_read_for_tests()
+    }
+
+    /// Inject one taint-store write failure for API route tests.
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn fail_next_task_taint_write_for_tests(&self) -> bool {
+        self.task_taint.fail_next_write_for_tests()
+    }
+
     /// Builds the agent surfaces. Without `insecure_dev`, refuses the
     /// development stand-ins (memory stores, an unreadable kernel clock).
     pub async fn build(

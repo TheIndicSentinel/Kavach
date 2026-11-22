@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 use std::future::{ready, Future};
+#[cfg(feature = "test-support")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use chrono::{DateTime, Utc};
@@ -8,6 +10,26 @@ use kavach_ports::{PortError, TaskTaint, TaskTaintSource, TaskTaintStore};
 #[derive(Default)]
 pub struct MemoryTaskTaintStore {
     rows: Mutex<BTreeMap<(String, String), TaskTaint>>,
+    #[cfg(feature = "test-support")]
+    fail_next_write: AtomicBool,
+    #[cfg(feature = "test-support")]
+    fail_next_read: AtomicBool,
+}
+
+impl MemoryTaskTaintStore {
+    /// Injects one storage error for a test that exercises a caller's
+    /// fail-closed behavior. Compiled only with the `test-support` feature.
+    #[cfg(feature = "test-support")]
+    pub fn fail_next_write_for_tests(&self) {
+        self.fail_next_write.store(true, Ordering::SeqCst);
+    }
+
+    /// Injects one storage error for a test that exercises a caller's
+    /// fail-closed behavior. Compiled only with the `test-support` feature.
+    #[cfg(feature = "test-support")]
+    pub fn fail_next_read_for_tests(&self) {
+        self.fail_next_read.store(true, Ordering::SeqCst);
+    }
 }
 
 impl TaskTaintStore for MemoryTaskTaintStore {
@@ -18,6 +40,12 @@ impl TaskTaintStore for MemoryTaskTaintStore {
         source: TaskTaintSource,
         at: DateTime<Utc>,
     ) -> impl Future<Output = Result<TaskTaint, PortError>> + Send {
+        #[cfg(feature = "test-support")]
+        if self.fail_next_write.swap(false, Ordering::SeqCst) {
+            return ready(Err(PortError::unavailable(
+                "injected task taint write failure",
+            )));
+        }
         let result = self
             .rows
             .lock()
@@ -40,6 +68,12 @@ impl TaskTaintStore for MemoryTaskTaintStore {
         tenant_id: &str,
         mandate_id: &str,
     ) -> impl Future<Output = Result<Option<TaskTaint>, PortError>> + Send {
+        #[cfg(feature = "test-support")]
+        if self.fail_next_read.swap(false, Ordering::SeqCst) {
+            return ready(Err(PortError::unavailable(
+                "injected task taint read failure",
+            )));
+        }
         let result = self
             .rows
             .lock()

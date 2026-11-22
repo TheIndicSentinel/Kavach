@@ -1009,6 +1009,7 @@ paths:
         "413": { $ref: "#/components/responses/PayloadTooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
         "501": { $ref: "#/components/responses/NotForwardable" }
 
   /v1/models/{role}/invoke:

@@ -17,7 +17,7 @@ echo "==> cargo clippy"
 cargo clippy --workspace --all-targets -- -D warnings
 
 echo "==> cargo test"
-cargo test --workspace --verbose
+cargo test --workspace --verbose --features kavach-api/test-support
 
 if command -v initdb >/dev/null 2>&1 && command -v pg_ctl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
   echo "==> HA shared-Postgres outage and recovery"

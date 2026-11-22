@@ -374,3 +374,44 @@ async fn governed_model_route_records_authorization_before_fixed_role_inference(
         .iter()
         .any(|signal| signal == "task_tainted"));
 }
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+async fn governed_model_route_withholds_completion_when_taint_write_fails() {
+    let (state, _, seen, mandate) = fixture_with_model_mandate(Router::new()).await;
+    assert!(state
+        .dataplane()
+        .unwrap()
+        .fail_next_task_taint_write_for_tests());
+
+    let (status, body) = send(
+        agent_router(state.clone()),
+        "/v1/models/collections/invoke",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_token("collections-agent")),
+        )],
+        json!({
+            "mandate_id": mandate.clone(),
+            "request_id": "model-route-taint-write-failure",
+            "subject_ref": SUBJECT,
+            "prompt": "synthetic prompt"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        status,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "{body}"
+    );
+    assert!(body.get("response").is_none());
+    assert!(!body.to_string().contains("approved result"));
+    assert_eq!(seen.lock().unwrap().len(), 1, "upstream completed once");
+    assert!(!state
+        .dataplane()
+        .unwrap()
+        .task_tainted_for_agent("collections-agent", &mandate)
+        .await
+        .unwrap());
+}

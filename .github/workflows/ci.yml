@@ -221,7 +221,7 @@ jobs:
         env:
           KAVACH_TEST_DATABASE_URL: postgres://kavach:kavach-ci@localhost:5432/kavach_test
           KAVACH_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
-        run: cargo test --workspace --verbose
+        run: cargo test --workspace --verbose --features kavach-api/test-support
 
       # This scenario must be allowed to stop Postgres, so it provisions and
       # controls its own disposable cluster instead of touching the shared CI service.
