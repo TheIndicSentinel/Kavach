@@ -3,6 +3,7 @@
 use std::{path::PathBuf, process::Command};
 
 use kavach_api::{ha_lease, DatabaseTls};
+use kavach_ports::{TaskTaintSource, TaskTaintStore};
 use kavach_storage::{connect_runtime, testing::isolated_database_urls, StoragePool};
 use tokio::sync::watch;
 
@@ -118,6 +119,17 @@ async fn apis_stay_fenced_during_shared_postgres_outage_and_recover_after_restar
     .expect("start standby lease lifecycle");
     assert_eq!(standby_fence.status(), "standby");
 
+    let taint_store = active_pool.task_taint_store();
+    taint_store
+        .mark_tainted(
+            "tenant-ha-server-outage",
+            "mandate-outage-probe",
+            TaskTaintSource::GovernedModelOutput,
+            chrono::Utc::now(),
+        )
+        .await
+        .expect("persist taint before the outage");
+
     let outage_started = tokio::time::Instant::now();
     postgres.stop();
     let server_status = Command::new("pg_ctl")
@@ -151,8 +163,45 @@ async fn apis_stay_fenced_during_shared_postgres_outage_and_recover_after_restar
     tokio::time::sleep_until(outage_started + std::time::Duration::from_secs(14)).await;
     assert_eq!(active_fence.status(), "fenced");
     assert_eq!(standby_fence.status(), "standby");
+    let (taint_read, taint_write) =
+        tokio::time::timeout(std::time::Duration::from_secs(35), async {
+            tokio::join!(
+                taint_store.get_taint("tenant-ha-server-outage", "mandate-outage-probe"),
+                taint_store.mark_tainted(
+                    "tenant-ha-server-outage",
+                    "mandate-outage-write-probe",
+                    TaskTaintSource::GovernedModelOutput,
+                    chrono::Utc::now(),
+                )
+            )
+        })
+        .await
+        .expect("taint read and write must be bounded during outage");
+    assert!(
+        taint_read.is_err(),
+        "taint reads must fail closed while Postgres is unavailable"
+    );
+    assert!(
+        taint_write.is_err(),
+        "taint writes must fail closed while Postgres is unavailable"
+    );
 
     postgres.start();
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match taint_store
+                .get_taint("tenant-ha-server-outage", "mandate-outage-probe")
+                .await
+            {
+                Ok(Some(taint)) if taint.source == TaskTaintSource::GovernedModelOutput => {
+                    break;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(100)).await,
+            }
+        }
+    })
+    .await
+    .expect("persisted taint must remain readable after Postgres recovery");
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         while standby_fence.status() != "active" {
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
