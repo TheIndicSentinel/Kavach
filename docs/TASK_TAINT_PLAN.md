@@ -31,13 +31,14 @@ The authorization core always supplies `task_tainted: false` to Cedar. The regis
 - **Slice 4b complete (2026-11-22):** centralized the fail-closed gates used by the model response and authorization/effect paths. An unavailable taint write maps to 503 before model content is returned; an unavailable taint lookup maps to 503 before authorization or gateway execution. Injected-error unit tests passed, along with the successful governed-model route regression test. Route-level store fault injection and an assertion against the external-effect fixture remain unverified.
 - **Slice 4c complete (2026-11-22):** added a `test-support`-only failure injector to the in-memory taint store. Route tests now inject a write failure and verify `/v1/models/.../invoke` returns 503 without completion content, and inject a read failure and verify `/v1/tools/...` returns 503 with an empty mock-provider inbox. Both route tests passed. This verifies the memory-backed API path; a live Postgres fault drill is not included.
 - **Slice 5a complete (2026-11-22):** added a regression assertion that a tainted task with a subject outside its mandate remains `BLOCK`; taint does not widen the subject binding. Existing Cedar checks also retain field-scope and waiver constraints.
+- **Slice 5b complete (2026-11-22):** the owner approved clarifying FR-5 as preserving the existing verified mandate and parameter checks, with taint adding `HUMAN_REVIEW` only to eligible critical actions. PRD and acceptance wording now match this contract; no policy behavior changed.
 
 ## Approved decisions
 
 - **2026-11-21:** use mandate ID as the task key; child mandates inherit taint from their verified parent chain.
 - **2026-11-21:** every governed model completion taints its task, regardless of prompt provenance.
+- **2026-11-22:** preserve existing verified mandate subject/action/parameter checks; taint adds review and never overrides a `BLOCK`.
 
 ## Remaining work
 
-- Add production classification of user/tool content under the approved trust labels. The test-only fixture exercises the store and authorization policy directly. A live Postgres fault drill remains optional follow-up coverage for the same fail-closed port behavior.
-- The PRD's phrase “parameters must exactly match the mandate” is ambiguous against current least-privilege semantics: subject is exact-bound, requested field sets may be subsets of mandate fields, and waiver amounts are constrained by the mandate ceiling (with the existing review policy). The approved task-taint design says to preserve these existing checks. Before claiming full FR-5 completion, the owner should confirm that “exactly match” means “satisfy the existing verified mandate constraints,” or approve a different amendment. No policy semantics were changed in this slice.
+- Add production classification of inbound borrower/user tool content under the approved trust labels when an inbound tool-output path is introduced. The current registry has no such response path; the test-only `user_content` fixture covers the store and authorization behavior. A live Postgres fault drill remains optional follow-up coverage for the same fail-closed port behavior.
