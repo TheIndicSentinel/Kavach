@@ -727,6 +727,15 @@ async fn server_derived_task_taint_escalates_critical_actions_and_is_signed() {
         .signals
         .iter()
         .any(|signal| signal == "task_tainted"));
+
+    let mut outside_mandate = plan("taint-cannot-expand-subject");
+    outside_mandate.subject_ref = "ref:borrower:B-5511".into();
+    let refused = w
+        .core
+        .authorize_with_task_taint(&a, &outside_mandate, Mode::Precheck, task_tainted)
+        .await
+        .unwrap();
+    assert_eq!(refused.decision, Decision::Block, "{:?}", refused.reasons);
 }
 
 #[tokio::test]
