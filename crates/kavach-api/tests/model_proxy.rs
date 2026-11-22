@@ -10,7 +10,9 @@ use axum::Router;
 use contract::{agent_router, sor_router};
 use kavach_api::AppState;
 use kavach_domain::authority::{AuthorityChange, AuthorityUpdateEvent};
-use kavach_domain::mandate::{ConsentArtefactSubset, ConsentRecord, ConsentStatus};
+use kavach_domain::mandate::{
+    ConsentArtefactSubset, ConsentRecord, ConsentStatus, DelegationRequest,
+};
 use kavach_keys::InMemoryKeyProvider;
 use kavach_ports::agent_evidence::AgentEvidenceStore as _;
 use serde_json::{json, Value};
@@ -609,6 +611,60 @@ async fn governed_model_route_records_authorization_before_fixed_role_inference(
         .signals
         .iter()
         .any(|signal| signal == "task_tainted"));
+}
+
+#[tokio::test]
+async fn governed_model_task_taint_is_inherited_by_verified_child_mandate() {
+    let (state, _, _, parent_mandate) = fixture_with_model_mandate(Router::new()).await;
+    let (status, body) = send(
+        agent_router(state.clone()),
+        "/v1/models/collections/invoke",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_token("collections-agent")),
+        )],
+        json!({
+            "mandate_id": parent_mandate,
+            "request_id": "parent-task-taint-before-delegation",
+            "subject_ref": SUBJECT,
+            "prompt": "synthetic prompt"
+        }),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK, "{body}");
+
+    let child = state
+        .dataplane()
+        .unwrap()
+        .mandates()
+        .delegate(
+            "default",
+            &parent_mandate,
+            "collections-agent",
+            "translation-agent",
+            &DelegationRequest {
+                actions: agent_fixture::set(&["read_fields"]),
+                data_fields: agent_fixture::set(&["name"]),
+                ..DelegationRequest::default()
+            },
+        )
+        .await
+        .expect("delegation is within the parent mandate")
+        .mandate
+        .id;
+
+    assert!(state
+        .dataplane()
+        .unwrap()
+        .task_tainted_for_agent("translation-agent", &child)
+        .await
+        .unwrap());
+    assert!(!state
+        .dataplane()
+        .unwrap()
+        .task_tainted_for_agent("collections-agent", &child)
+        .await
+        .unwrap());
 }
 
 #[cfg(feature = "test-support")]
