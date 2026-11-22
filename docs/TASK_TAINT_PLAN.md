@@ -34,6 +34,7 @@ The authorization core always supplies `task_tainted: false` to Cedar. The regis
 - **Slice 5b complete (2026-11-22):** the owner approved clarifying FR-5 as preserving the existing verified mandate and parameter checks, with taint adding `HUMAN_REVIEW` only to eligible critical actions. PRD and acceptance wording now match this contract; no policy behavior changed.
 - **Slice 6 complete (2026-11-22):** added a Postgres-backed API route test using an isolated schema and least-privilege runtime credentials. The test issues a mandate after a signed consent grant, invokes the governed model, verifies persisted task taint, then confirms a subsequent critical-action precheck returns `HUMAN_REVIEW`. The focused test passed against a disposable local PostgreSQL cluster; cleanup completed. This verifies the healthy Postgres API path, not a database-outage fault drill.
 - **Slice 7 complete (2026-11-22):** the Postgres API test now revokes only the runtime role's `INSERT` privilege on the isolated taint table, then invokes the governed model. The route returns 503 without model content; the test restores the grant before completion. The focused test passed against a disposable local PostgreSQL cluster, which was cleaned up.
+- **Slice 8 complete (2026-11-22):** a Postgres API test revokes only the runtime role's `SELECT` privilege on the isolated taint table. A valid model request returns 503 before the fake upstream is called; the test restores the grant. The focused test passed against a disposable local PostgreSQL cluster, which was cleaned up.
 
 ## Approved decisions
 
@@ -43,4 +44,4 @@ The authorization core always supplies `task_tainted: false` to Cedar. The regis
 
 ## Remaining work
 
-- Add production classification of inbound borrower/user tool content under the approved trust labels when an inbound tool-output path is introduced. The current registry has no such response path; the test-only `user_content` fixture covers the store and authorization behavior. Postgres read-denial and database-outage tests remain optional follow-up coverage; write-denial is covered at the model route.
+- Add production classification of inbound borrower/user tool content under the approved trust labels when an inbound tool-output path is introduced. The current registry has no such response path; the test-only `user_content` fixture covers the store and authorization behavior. Postgres read/write denial is covered at the model route; a full database-outage drill remains optional follow-up coverage.
