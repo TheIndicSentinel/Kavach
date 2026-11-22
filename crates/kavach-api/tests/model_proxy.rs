@@ -223,6 +223,64 @@ async fn governed_model_task_taint_persists_and_escalates_through_postgres() {
     assert_eq!(body["decision"], "HUMAN_REVIEW", "{body}");
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn governed_model_route_withholds_content_when_postgres_taint_insert_is_denied() {
+    let Some((owner, runtime)) = kavach_storage::testing::isolated_database_urls().await else {
+        return;
+    };
+    let mut config = agent_fixture::config(
+        kavach_api::EvidenceStoreKind::Postgres {
+            database_url: runtime,
+        },
+        true,
+        50,
+    );
+    config.migration_database_url = Some(owner.clone());
+    let (state, _, seen, mandate) =
+        fixture_with_model_mandate_and_config(Router::new(), config).await;
+
+    let owner_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&owner)
+        .await
+        .unwrap();
+    sqlx::query("REVOKE INSERT ON agent_task_taint FROM kavach_runtime")
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+
+    let (status, body) = send(
+        agent_router(state),
+        "/v1/models/collections/invoke",
+        &[(
+            "authorization",
+            format!("Bearer {}", agent_token("collections-agent")),
+        )],
+        json!({
+            "mandate_id": mandate,
+            "request_id": "postgres-model-taint-insert-denied",
+            "subject_ref": SUBJECT,
+            "prompt": "synthetic prompt"
+        }),
+    )
+    .await;
+
+    sqlx::query("GRANT INSERT ON agent_task_taint TO kavach_runtime")
+        .execute(&owner_pool)
+        .await
+        .unwrap();
+    owner_pool.close().await;
+
+    assert_eq!(
+        status,
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "{body}"
+    );
+    assert!(body.get("response").is_none());
+    assert!(!body.to_string().contains("approved result"));
+    assert_eq!(seen.lock().unwrap().len(), 1, "upstream completed once");
+}
+
 #[tokio::test]
 async fn local_manifest_digest_must_match_the_exact_approved_pin() {
     let (_, endpoint, _) = fixture(Router::new()).await;
