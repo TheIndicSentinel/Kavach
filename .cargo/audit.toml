@@ -1,5 +1,10 @@
 [advisories]
-# sqlx lockfile retains optional mysql driver metadata; build graph is postgres-only.
+# cargo audit reads Cargo.lock, which also lists optional crates that are never
+# compiled. cargo deny checks the build graph instead and needs no ignores.
+#
+# RUSTSEC-2023-0071 (rsa): not compiled: lockfile only, via sqlx-mysql
+# (optional dependency of sqlx; the build graph is postgres-only; check:
+# cargo tree -i rsa -e normal prints nothing). Review when sqlx is upgraded.
 #
 # RUSTSEC-2026-0459 (libsqlite3-sys): not compiled: lockfile only, via
 # sqlx-sqlite (optional dependency of sqlx 0.8.6, no feature enables it;

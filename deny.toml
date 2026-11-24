@@ -3,9 +3,11 @@
 
 [advisories]
 version = 2
-# No ignored advisories. (RUSTSEC-2024-0436 and RUSTSEC-2023-0071 were
-# ignored until the 2026-10 dependency updates removed the affected crates;
-# if either returns, this check fails instead of staying silent.)
+# No ignored advisories. cargo deny checks the build graph, so crates that are
+# only in Cargo.lock (rsa via the optional sqlx-mysql, RUSTSEC-2023-0071) do not
+# match; .cargo/audit.toml ignores them for cargo audit, which reads the lockfile.
+# RUSTSEC-2024-0436 left the graph in the 2026-10 dependency updates. If either
+# enters the build graph, this check fails instead of staying silent.
 ignore = []
 unmaintained = "none"
 
