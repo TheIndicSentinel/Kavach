@@ -10,5 +10,26 @@ console/dist/
 !partner/**
 !crates/kavach-auth/policies/**
 
-# Generated dev bundles (keys): never in a build context.
+# Local secrets and site config: never in a build context. These mirror the
+# matching .gitignore entries; the isolation workflow plants a canary in each
+# and fails if one reaches the context.
 deploy/agent-stack/bundle/
+.demo/
+.env
+.env.*
+**/.env
+**/*.env
+!deploy/pilot.env.example
+deploy/pilot-config/
+deploy/pilot-db-tls/
+**/*.pem
+**/*.key
+**/*.p12
+**/*.secret
+.tools/
+*.cdx.json
+console/.e2e-dist/
+console/test-results/
+console/.roundtrip-stack/
+console/.real-stack/
+console/playwright-report/
