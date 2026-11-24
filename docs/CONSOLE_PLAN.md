@@ -38,7 +38,7 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `GET /v1/models` | `read_governance` | Models | done (credit track) |
 | `GET /v1/models/{model_id}` | `read_governance` | Model detail | done (credit track) |
 | `GET /v1/change-requests` | `read_change_requests` | Change requests | done |
-| `POST /v1/change-requests` | `propose_<kind>` | Policy detail (`activate_pack`), Model detail (`update_model`), Retention (`update_retention`, `apply_retention`), Agent detail (`reinstate_agent`, UI-2 #233) | done; `rollback_pack`, `erase_evidence` and `activate_model` are not proposed from the console |
+| `POST /v1/change-requests` | `propose_<kind>` | Policy detail (`activate_pack`), Model detail (`update_model`), Retention (`update_retention`, `apply_retention`), Agent detail (`reinstate_agent`, UI-2 #233), Users & roles (`grant_role`, `revoke_role`, ADR-019 step 3) | done; `rollback_pack`, `erase_evidence` and `activate_model` are not proposed from the console |
 | `GET /v1/change-requests/{id}` | `read_change_requests` | none | exempt: the list returns the same `ChangeRequest` items, and the console has no single-request view |
 | `POST /v1/change-requests/{id}/approve` | `approve_<kind>` | Change requests | done (role-aware #239) |
 | `POST /v1/change-requests/{id}/reject` | `approve_<kind>` | Change requests | done (role-aware #239) |
@@ -58,6 +58,10 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `GET /v1/admin/tombstones` | `read_tombstones` | Retention | done (credit track) |
 | `GET /v1/admin/incidents` | `read_incidents` | Incidents | done (credit track) |
 | `GET /v1/admin/batch-jobs` | `read_batch_jobs` | Batch jobs | done (credit track) |
+| `GET /v1/me` | none (any authenticated caller; decides nothing) | the shell: role hints, the sidebar, the superadmin banner | done (ADR-019 step 3) |
+| `GET /v1/principals` | `read_principals` | Users & roles | done (ADR-019 step 3) |
+| `GET /v1/role-bindings` | `read_principals` | Users & roles | done (ADR-019 step 3) |
+| `GET /v1/access-review` | `read_access_review` (audited) | Users & roles, on a click only | done (ADR-019 step 3) |
 | `GET /v1/admin/batch-jobs/{job_id}` | `read_batch_jobs` | Batch job detail | done (credit track) |
 | `POST /v1/authorize` | agent token | none | exempt: agent listener |
 | `POST /v1/tools/{tool}` | agent token | none | exempt: agent listener |
@@ -125,7 +129,7 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 
 ### UI-4: hardening and polish — done (#239, #241, #244, ADR-018 sign-in, #253, #254)
 
-- Role-aware views: a control the viewer's known groups lack is replaced by a role hint (the API stays the gate).
+- Role-aware views: a control the viewer's known groups lack is replaced by a role hint (the API stays the gate). Since ADR-019 step 3 the hints and the sidebar also use the roles from `GET /v1/me`.
 - Console tests and lint in CI, axe on every page, keyboard and CSP checks; the sign-in round trip against `kavach-api` and an OIDC test double; every page and action on a real, seeded stack (#253).
 - The same loading, empty, error, 401/403 and 404 states on every page, a 404 page, and every page checked at 375px (#254).
 - OIDC authorization code with PKCE in place of the pasted token, per [ADR-018](ADR-018-console-login-and-token-storage.md) option C.

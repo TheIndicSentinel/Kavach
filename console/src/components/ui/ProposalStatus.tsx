@@ -6,7 +6,14 @@ import { ProblemAlert } from "./ProblemAlert";
  * `request_id`, or that it is proposed, in regions that are always rendered
  * so assistive technology announces what fills them.
  */
-export function ProposalStatus({ proposal }: { proposal: Proposal }) {
+export function ProposalStatus({
+  proposal,
+  proposed = () => PROPOSED,
+}: {
+  proposal: Proposal;
+  /** The line once proposed, given the change request's id; PROPOSED by default. */
+  proposed?: (id: string) => string;
+}) {
   return (
     <>
       <ProblemAlert
@@ -14,7 +21,7 @@ export function ProposalStatus({ proposal }: { proposal: Proposal }) {
         className="mt-3 empty:mt-0"
       />
       <p role="status" aria-live="polite" className="mt-3 text-sm text-muted empty:mt-0">
-        {proposal.phase === "busy" ? "Proposing…" : proposal.phase === "done" ? PROPOSED : ""}
+        {proposal.phase === "busy" ? "Proposing…" : proposal.phase === "done" ? proposed(proposal.id) : ""}
       </p>
     </>
   );

@@ -11,6 +11,7 @@ import {
   proposeAction,
   type Viewer,
 } from "./permissions";
+import { useMe } from "./me";
 import { useSessionViewer, type SessionViewer } from "./session";
 
 export type { Viewer } from "./permissions";
@@ -61,14 +62,18 @@ export function viewerFor(session: SessionViewer, fallback: Viewer): Viewer {
  * following the session as it changes. Outside login mode it is read once
  * ({@link currentViewer}): Settings reloads the page when the credentials
  * change. `groups` is the hook argument for a caller that knows them there.
+ * The roles are `GET /v1/me`'s, once it answers (null until then, or when it
+ * failed); `rolesPending` says it has not answered yet.
  */
 export function useViewer(groups: readonly string[] | null = null): Viewer {
   const [fallback] = useState(() => currentViewer(undefined, undefined, groups));
   const session = useSessionViewer();
+  const { me, pending } = useMe();
   const { principal, groups: sessionGroups } = session;
+  const roles = me?.roles ?? null;
   return useMemo(
-    () => viewerFor({ principal, groups: sessionGroups }, fallback),
-    [principal, sessionGroups, fallback],
+    () => ({ ...viewerFor({ principal, groups: sessionGroups }, fallback), roles, rolesPending: pending }),
+    [principal, sessionGroups, fallback, roles, pending],
   );
 }
 
