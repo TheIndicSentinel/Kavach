@@ -1,11 +1,14 @@
 //! Durable, one-use state for reviewer step-up ceremonies.
 
-use chrono::{Duration, Utc};
+use chrono::{Duration, SubsecRound, Utc};
 use kavach_ports::{StepUpChallengeState, StepUpChallengeStore};
 use kavach_storage::testing::isolated_database_urls;
 use kavach_storage::{DatabaseTls, StoragePool};
 
 fn state(id: &str, digest: char, issued_at: chrono::DateTime<Utc>) -> StepUpChallengeState {
+    // Postgres keeps microseconds; Linux clocks give nanoseconds, so a
+    // round-trip only compares equal from a microsecond timestamp.
+    let issued_at = issued_at.trunc_subsecs(6);
     StepUpChallengeState {
         challenge_id: id.into(),
         state_hash: format!("sha256:{}", digest.to_string().repeat(64)),
