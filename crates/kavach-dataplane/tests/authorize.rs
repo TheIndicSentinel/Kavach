@@ -1765,12 +1765,19 @@ async fn authz01_a_non_holder_over_the_ceiling_is_blocked_and_never_queued() {
         "{:?}",
         d.reasons
     );
-    assert!(!d.reasons.iter().any(|r| r == "escalated"), "{:?}", d.reasons);
+    assert!(
+        !d.reasons.iter().any(|r| r == "escalated"),
+        "{:?}",
+        d.reasons
+    );
     assert!(d.grant.is_none());
     let record = d.record.expect("only the BLOCK record");
     assert_eq!(record.payload.policy_decision, Decision::Block);
     assert_eq!(record.payload.returned_decision, Decision::Block);
-    assert!(record.payload.review_action_hash.is_none(), "no review digest");
+    assert!(
+        record.payload.review_action_hash.is_none(),
+        "no review digest"
+    );
 }
 
 /// AUTHZ-01: a release is only an input. If Cedar no longer allows the action
