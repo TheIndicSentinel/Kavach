@@ -25,7 +25,7 @@ mod agent_state;
 mod revocation;
 
 /// Bumped whenever an attack is added, removed or its expectation changes.
-pub const CATALOG_VERSION: &str = "8";
+pub const CATALOG_VERSION: &str = "9";
 
 /// The borrower the dev mandate covers, and one it does not.
 pub const SUBJECT: &str = "ref:borrower:B-9382";
@@ -257,7 +257,7 @@ const STOPPED: &str =
     "A stopped agent does nothing, from its next call, on every replica (ADR-013, K1-1):";
 
 /// The catalog, in the order it runs.
-pub const CATALOG: [Attack; 35] = [
+pub const CATALOG: [Attack; 36] = [
     Attack {
         id: "raw-phone-number",
         group: "identifiers",
@@ -417,6 +417,23 @@ pub const CATALOG: [Attack; 35] = [
         },
         security_property: CORE,
         bypass: None,
+    },
+    Attack {
+        id: "approval-laundering",
+        group: "policy",
+        tries: "another agent proposing an over-ceiling plan under this agent's mandate, to have an approval stand in for the missing permit (AUTHZ-01)",
+        probe: Probe::ToolCall {
+            tool: "propose_plan",
+            auth: Auth::OtherAgent,
+            real_mandate: true,
+            params: || json!({ "subject_ref": SUBJECT, "waiver_bps": 2500 }),
+        },
+        expect: Expect::Decision {
+            decision: "BLOCK",
+            reason: "no_matching_permit",
+        },
+        security_property: CORE,
+        bypass: Some(STOLEN_TOKEN),
     },
     Attack {
         id: "agent-set-timestamp",
