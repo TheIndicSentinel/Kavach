@@ -343,6 +343,7 @@ const AGENT_DECISION_MEMBERS: &[&str] = &[
     "request_id",
     "subject_pseudonym",
     "params_mac",
+    "review_action_hash",
     "policy_versions",
     "signals",
     "pre_commit_decision",

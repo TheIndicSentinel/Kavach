@@ -845,6 +845,9 @@ pub struct Dataplane {
     resolver: FixtureResolver,
     forwarder: Arc<crate::forward::HttpForwarder>,
     keys: KeySources,
+    /// Trusted public key for the configured evidence signer, used to verify
+    /// D17 review records before initiating a step-up ceremony.
+    review_evidence_keys: std::collections::BTreeMap<String, PublicKey>,
     /// Gateway calls that have started and not finished (an orderly stop
     /// waits for them).
     in_flight: Arc<crate::shutdown::InFlight>,
@@ -854,6 +857,7 @@ pub struct Dataplane {
 impl Dataplane {
     /// Builds the agent surfaces. Without `insecure_dev`, refuses the
     /// development stand-ins (memory stores, an unreadable kernel clock).
+    #[allow(clippy::too_many_lines)] // one linear wiring of every agent surface
     pub async fn build(
         config: &DataplaneConfig,
         pool: Option<&StoragePool>,
@@ -909,6 +913,13 @@ impl Dataplane {
             &config.evidence_keys_dir,
             &config.evidence_key_id,
         )?;
+        let review_evidence_key = sources
+            .public_key(
+                HsmRole::Evidence,
+                &config.evidence_keys_dir,
+                &config.evidence_key_id,
+            )
+            .await?;
         let resolver = FixtureResolver::from_file(&config.references)
             .map_err(|e| format!("references: {}", e.message))?;
         let forwarder = build_forwarder(config, &tools)?;
@@ -958,6 +969,10 @@ impl Dataplane {
             resolver,
             forwarder: Arc::new(forwarder),
             keys: sources,
+            review_evidence_keys: std::collections::BTreeMap::from([(
+                review_evidence_key.kid.clone(),
+                review_evidence_key,
+            )]),
             in_flight: crate::shutdown::InFlight::new(),
             agent_only: config.agent_only,
         })
@@ -1026,6 +1041,25 @@ impl Dataplane {
         &self.core
     }
 
+    /// Loads a D17 review record using this dataplane's configured tenant.
+    /// Records from other tenants, non-review decisions, and records without
+    /// an exact-action binding are indistinguishable from a missing record.
+    /// The caller must still verify the record signature before deriving a
+    /// step-up request.
+    pub async fn human_review_record(
+        &self,
+        record_id: &str,
+    ) -> Result<Option<AgentDecisionRecord>, PortError> {
+        tenant_scoped_human_review_record(self.core.store().as_ref(), &self.tenant, record_id).await
+    }
+
+    /// Trusted public key(s) currently configured for review evidence.
+    /// Records using an older key id fail closed until a trusted rotation set
+    /// is configured for this dataplane.
+    pub fn review_evidence_keys(&self) -> &std::collections::BTreeMap<String, PublicKey> {
+        &self.review_evidence_keys
+    }
+
     /// The agent ids this configuration has a passport for in its own
     /// tenant, in ascending byte order. Other tenants' passports are not in
     /// it.
@@ -1048,6 +1082,75 @@ impl Dataplane {
     /// The development clock, when the stack runs with one.
     pub fn dev_clock(&self) -> Option<&Arc<crate::dev_clock::DevClock>> {
         self.dev_clock.as_ref()
+    }
+}
+
+async fn tenant_scoped_human_review_record<S: AgentEvidenceStore>(
+    store: &S,
+    tenant_id: &str,
+    record_id: &str,
+) -> Result<Option<AgentDecisionRecord>, PortError> {
+    let Some(record) = store.record(tenant_id, record_id).await? else {
+        return Ok(None);
+    };
+    let payload = &record.payload;
+    if payload.tenant_id != tenant_id
+        || payload.record_id != record_id
+        || payload.policy_decision != Decision::HumanReview
+        || payload.returned_decision != Decision::HumanReview
+        || payload.review_action_hash.is_none()
+    {
+        return Ok(None);
+    }
+    Ok(Some(record))
+}
+
+#[cfg(test)]
+mod human_review_record_tests {
+    use super::*;
+    use kavach_ports::agent_evidence::{AgentEvidenceStore, CommitResult};
+    use kavach_ports_testkit::agent_evidence::{request, TestSigner};
+    use kavach_ports_testkit::FakeClock;
+    use kavach_storage::MemoryAgentEvidenceStore;
+
+    #[tokio::test]
+    async fn review_record_lookup_is_tenant_scoped_and_requires_action_binding() {
+        let store = MemoryAgentEvidenceStore::default();
+        let signer = TestSigner::new("evidence-test", 9);
+        let clock = FakeClock::synced_at(chrono::Utc::now());
+        let mut commit_request = request("tenant-a", "review-request", 3);
+        commit_request.draft.pre_commit_decision = Decision::HumanReview;
+        commit_request.draft.review_action_hash =
+            Some(format!("sha256-action-v1:{}", "a".repeat(64)));
+        let record = match store.commit(commit_request, &clock, &signer).await.unwrap() {
+            CommitResult::Committed(record) => *record,
+            result => panic!("expected committed review record, got {result:?}"),
+        };
+
+        let found =
+            tenant_scoped_human_review_record(&store, "tenant-a", &record.payload.record_id)
+                .await
+                .unwrap();
+        assert_eq!(found, Some(record.clone()));
+        assert!(
+            tenant_scoped_human_review_record(&store, "tenant-b", &record.payload.record_id,)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let mut unbound = request("tenant-a", "unbound-review", 3);
+        unbound.draft.pre_commit_decision = Decision::HumanReview;
+        let unbound = match store.commit(unbound, &clock, &signer).await.unwrap() {
+            CommitResult::Committed(record) => *record,
+            result => panic!("expected committed unbound record, got {result:?}"),
+        };
+        assert!(
+            tenant_scoped_human_review_record(&store, "tenant-a", &unbound.payload.record_id,)
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }
 

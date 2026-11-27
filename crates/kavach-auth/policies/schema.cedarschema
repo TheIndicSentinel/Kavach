@@ -58,6 +58,11 @@ namespace Kavach {
     resource: [System],
   };
 
+  action approve_human_review appliesTo {
+    principal: [User],
+    resource: [System],
+  };
+
   action set_dev_clock appliesTo {
     principal: [User],
     resource: [System],

@@ -22,6 +22,59 @@ use crate::governance::RuntimeResponse;
 use crate::metrics::Metrics;
 use crate::registry::registry_roots;
 
+/// Runtime-selected storage for D17 challenge state. The challenge itself
+/// retains only state/nonce digests and is one-use; production deployments
+/// use PostgreSQL while development memory stores remain process-local.
+#[derive(Clone)]
+pub enum StepUpChallengeBackend {
+    Memory(kavach_storage::MemoryStepUpChallengeStore),
+    Postgres(kavach_storage::PostgresStepUpChallengeStore),
+}
+
+impl kavach_ports::StepUpChallengeStore for StepUpChallengeBackend {
+    async fn insert(
+        &self,
+        state: kavach_ports::StepUpChallengeState,
+    ) -> Result<(), kavach_ports::PortError> {
+        match self {
+            Self::Memory(store) => store.insert(state).await,
+            Self::Postgres(store) => store.insert(state).await,
+        }
+    }
+
+    async fn get_live(
+        &self,
+        state_hash: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Option<kavach_ports::StepUpChallengeState>, kavach_ports::PortError> {
+        match self {
+            Self::Memory(store) => store.get_live(state_hash, now).await,
+            Self::Postgres(store) => store.get_live(state_hash, now).await,
+        }
+    }
+
+    async fn consume(
+        &self,
+        state_hash: &str,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<Option<kavach_ports::StepUpChallengeState>, kavach_ports::PortError> {
+        match self {
+            Self::Memory(store) => store.consume(state_hash, now).await,
+            Self::Postgres(store) => store.consume(state_hash, now).await,
+        }
+    }
+
+    async fn purge_expired(
+        &self,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<u64, kavach_ports::PortError> {
+        match self {
+            Self::Memory(store) => store.purge_expired(now).await,
+            Self::Postgres(store) => store.purge_expired(now).await,
+        }
+    }
+}
+
 pub struct AppState {
     service: Mutex<EvaluateService<EvidenceBackend, IncidentBackend>>,
     hmac_secret: Option<String>,
@@ -56,6 +109,10 @@ pub struct AppState {
     /// live-swap order agree.
     governance_lock: tokio::sync::Mutex<()>,
     dataplane: Option<crate::dataplane::Dataplane>,
+    /// One-use D17 step-up challenge state (PRD D17).
+    step_up_challenges: StepUpChallengeBackend,
+    /// Stable AEAD key for encrypted D17 review projections, when configured.
+    review_snapshot_key: Option<crate::review_snapshot_key::ReviewSnapshotKey>,
     /// Console sign-in (ADR-018); `None` unless configured.
     console_login: Option<std::sync::Arc<crate::console_login::ConsoleLogin>>,
 }
@@ -103,6 +160,7 @@ mod changes;
 pub use changes::{ChangeProposal, DEFAULT_CHANGE_TTL_HOURS};
 
 impl AppState {
+    #[allow(clippy::too_many_lines)] // one linear wiring of the service state
     pub async fn from_config(config: &ApiConfig) -> Result<Self, ApiError> {
         let pack = PackLoader::load_from_path(config.pack_path())
             .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;
@@ -124,6 +182,16 @@ impl AppState {
 
         let (evidence, incidents, batch_jobs, admin, retention, changes, roles, pool) =
             storage_backends(config).await?;
+        let step_up_challenges =
+            pool.as_ref().map_or_else(
+                || {
+                    StepUpChallengeBackend::Memory(
+                        kavach_storage::MemoryStepUpChallengeStore::default(),
+                    )
+                },
+                |pool| StepUpChallengeBackend::Postgres(pool.step_up_challenge_store()),
+            );
+        let review_snapshot_key = load_review_snapshot_key(config)?;
         bootstrap_superadmins(&roles, &config.roles).await?;
         let dataplane = build_dataplane(config, pool.as_ref()).await?;
 
@@ -206,6 +274,8 @@ impl AppState {
             ),
             governance_lock: tokio::sync::Mutex::new(()),
             dataplane,
+            step_up_challenges,
+            review_snapshot_key,
             console_login: None,
         })
     }
@@ -236,6 +306,8 @@ impl AppState {
             database_pool_size: kavach_storage::DEFAULT_POOL_SIZE,
             dataplane: None,
             require_hardening: false,
+            review_snapshot_key_file: None,
+            review_snapshot_key_id: crate::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         };
         Self::from_config(&config).await
     }
@@ -252,6 +324,16 @@ impl AppState {
 
     pub fn console_login(&self) -> Option<&std::sync::Arc<crate::console_login::ConsoleLogin>> {
         self.console_login.as_ref()
+    }
+
+    /// The runtime challenge store used by the D17 Keycloak adapter.
+    pub fn step_up_challenges(&self) -> &StepUpChallengeBackend {
+        &self.step_up_challenges
+    }
+
+    /// Stable encryption key for D17 review snapshots, if configured.
+    pub fn review_snapshot_key(&self) -> Option<&crate::review_snapshot_key::ReviewSnapshotKey> {
+        self.review_snapshot_key.as_ref()
     }
 
     pub fn hmac_secret(&self) -> Option<&str> {
@@ -559,6 +641,22 @@ impl AppState {
         }
         Ok(result.response)
     }
+}
+
+fn load_review_snapshot_key(
+    config: &ApiConfig,
+) -> Result<Option<crate::review_snapshot_key::ReviewSnapshotKey>, ApiError> {
+    config
+        .review_snapshot_key_file
+        .as_deref()
+        .map(|path| {
+            crate::review_snapshot_key::ReviewSnapshotKey::from_file(
+                path,
+                &config.review_snapshot_key_id,
+            )
+            .map_err(ApiError::Internal)
+        })
+        .transpose()
 }
 
 /// The metrics registry, with the evidence checkpoint writer reporting into
@@ -1104,5 +1202,52 @@ mod poisoned_lock_tests {
             send(&state, "POST", "/v1/evaluate", None, Some(evaluate_body())).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["returned_decision"], "PASS");
+    }
+}
+
+#[cfg(test)]
+mod step_up_backend_tests {
+    use chrono::{Duration, Utc};
+    use kavach_ports::{StepUpChallengeState, StepUpChallengeStore};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn app_state_exposes_one_use_memory_challenge_storage() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let app = AppState::from_paths_for_tests(
+            &root.join("packs/finance/v0.yaml"),
+            &root.join("models/finance/credit-underwriting-v1.yaml"),
+            None,
+        )
+        .await
+        .expect("state");
+        let now = Utc::now();
+        let challenge = StepUpChallengeState {
+            challenge_id: "state-value".into(),
+            state_hash: format!("sha256:{}", "a".repeat(64)),
+            nonce_hash: format!("sha256:{}", "b".repeat(64)),
+            tenant_id: "tenant-a".into(),
+            principal_key: "oidc:https://idp.example#reviewer".into(),
+            action_hash: format!("sha256-action-v1:{}", "c".repeat(64)),
+            issued_at: now - Duration::seconds(1),
+            expires_at: now + Duration::minutes(5),
+        };
+
+        let store = app.step_up_challenges();
+        store.insert(challenge.clone()).await.unwrap();
+        assert_eq!(
+            store.get_live(&challenge.state_hash, now).await.unwrap(),
+            Some(challenge.clone())
+        );
+        assert_eq!(
+            store.consume(&challenge.state_hash, now).await.unwrap(),
+            Some(challenge.clone())
+        );
+        assert!(store
+            .consume(&challenge.state_hash, now)
+            .await
+            .unwrap()
+            .is_none());
     }
 }

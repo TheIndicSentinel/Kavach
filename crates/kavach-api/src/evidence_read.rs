@@ -57,7 +57,7 @@ fn take() -> bool {
 }
 
 /// `adr:<tenant>:<partition>:<seq>`, bounded and plain.
-fn valid_record_id(id: &str) -> bool {
+pub(crate) fn valid_record_id(id: &str) -> bool {
     let parts: Vec<_> = id.split(':').collect();
     id.len() <= 128
         && parts.len() == 4

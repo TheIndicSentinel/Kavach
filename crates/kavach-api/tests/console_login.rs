@@ -1503,6 +1503,31 @@ fn session_limits_just_outside_each_bound_are_refused() {
 }
 
 #[test]
+fn d17_step_up_acr_is_bounded_and_rejects_controls_or_surrounding_space() {
+    let config = api_config();
+    for acr in ["webauthn-2", "urn:kavach:acr:webauthn"] {
+        let mut s = settings();
+        s.step_up_acr = Some(acr.into());
+        console_login::validate(&s, &config).expect("valid configured ACR");
+    }
+    let too_long = "a".repeat(129);
+    for acr in [
+        "",
+        " webauthn-2",
+        "webauthn-2 ",
+        "weak\nacr",
+        too_long.as_str(),
+    ] {
+        let mut s = settings();
+        s.step_up_acr = Some(acr.into());
+        assert!(
+            refused(&s, &config).contains("--console-step-up-acr"),
+            "ACR {acr:?}"
+        );
+    }
+}
+
+#[test]
 fn console_login_without_operator_oidc_is_refused() {
     let mut config = api_config();
     config.oidc = None;

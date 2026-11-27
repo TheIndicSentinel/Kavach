@@ -5,12 +5,14 @@ mod agent_evidence;
 mod change_requests;
 mod evidence;
 mod export;
+mod human_review;
 mod incidents;
 mod jobs;
 mod mandates;
 mod migrate;
 mod retention;
 mod roles;
+mod step_up;
 mod tls;
 
 pub use admin::PostgresAdminStore;
@@ -19,6 +21,7 @@ pub use change_requests::PostgresChangeStore;
 
 pub use evidence::PostgresEvidenceStore;
 pub use export::EvidenceSnapshot;
+pub use human_review::PostgresReviewApprovalStore;
 pub use incidents::PostgresIncidentStore;
 pub use jobs::{
     BatchJobCreate, BatchJobStore, JobStoreError, NoopBatchJobStore, PostgresBatchJobStore,
@@ -29,6 +32,7 @@ pub use migrate::{
 };
 pub use retention::PostgresRetentionStore;
 pub use roles::PostgresRoleStore;
+pub use step_up::PostgresStepUpChallengeStore;
 pub use tls::{connect_options, is_weakened, DatabaseTls, DatabaseTlsError};
 
 use sqlx::PgPool;
@@ -115,5 +119,13 @@ impl StoragePool {
 
     pub fn role_store(&self) -> PostgresRoleStore {
         PostgresRoleStore::new(self.pool.clone())
+    }
+
+    pub fn review_approval_store(&self) -> PostgresReviewApprovalStore {
+        PostgresReviewApprovalStore::new(self.pool.clone())
+    }
+
+    pub fn step_up_challenge_store(&self) -> PostgresStepUpChallengeStore {
+        PostgresStepUpChallengeStore::new(self.pool.clone())
     }
 }

@@ -173,7 +173,7 @@ const ROLE_CHANGES: &str = r#"[Kavach::Action::"propose_grant_role", Kavach::Act
 
 /// Operator policy properties (ADR-019 §2): (name, policy permitting exactly
 /// the forbidden requests). `{ROLE_CHANGES}` is replaced before parsing.
-const OPERATOR_PROPERTIES: [(&str, &str); 4] = [
+const OPERATOR_PROPERTIES: [(&str, &str); 5] = [
     (
         "only superadmin may propose or approve a grant or revoke of superadmin",
         r#"permit (principal, action in {ROLE_CHANGES}, resource)
@@ -194,6 +194,12 @@ const OPERATOR_PROPERTIES: [(&str, &str); 4] = [
                     || principal in Kavach::Role::"auditor" };"#,
     ),
     (
+        "only superadmin and approver may approve one HUMAN_REVIEW action",
+        r#"permit (principal, action == Kavach::Action::"approve_human_review", resource)
+           unless { principal in Kavach::Role::"superadmin"
+                    || principal in Kavach::Role::"approver" };"#,
+    ),
+    (
         "viewer and auditor are allowed no change, approval, evaluation, agent stop or dev clock",
         r#"permit (principal, action in [
              Kavach::Action::"evaluate", Kavach::Action::"stop_agent", Kavach::Action::"set_dev_clock",
@@ -205,6 +211,7 @@ const OPERATOR_PROPERTIES: [(&str, &str); 4] = [
              Kavach::Action::"propose_erase_evidence", Kavach::Action::"approve_erase_evidence",
              Kavach::Action::"propose_apply_retention", Kavach::Action::"approve_apply_retention",
              Kavach::Action::"propose_reinstate_agent", Kavach::Action::"approve_reinstate_agent",
+             Kavach::Action::"approve_human_review",
              Kavach::Action::"propose_grant_role", Kavach::Action::"approve_grant_role",
              Kavach::Action::"propose_revoke_role", Kavach::Action::"approve_revoke_role"], resource)
            when { principal in Kavach::Role::"viewer" || principal in Kavach::Role::"auditor" }
@@ -220,7 +227,7 @@ const OPERATOR_PROPERTIES: [(&str, &str); 4] = [
 ];
 
 /// Weakened operator policies that must be caught.
-const OPERATOR_SANITY_VARIANTS: [(&str, &str, &str); 4] = [
+const OPERATOR_SANITY_VARIANTS: [(&str, &str, &str); 5] = [
     (
         "user_admin may change superadmin",
         r#"when { context.role != "superadmin" };"#,
@@ -230,6 +237,11 @@ const OPERATOR_SANITY_VARIANTS: [(&str, &str, &str); 4] = [
         "an alias group may change roles",
         "  principal in Kavach::Role::\"user_admin\",\n  action in [\n    Kavach::Action::\"propose_grant_role\",",
         "  principal in Kavach::Group::\"admins\",\n  action in [\n    Kavach::Action::\"propose_grant_role\",",
+    ),
+    (
+        "the change-approvers group may approve human review",
+        "  principal in Kavach::Role::\"approver\",\n  action == Kavach::Action::\"approve_human_review\",",
+        "  principal in Kavach::Group::\"change-approvers\",\n  action == Kavach::Action::\"approve_human_review\",",
     ),
     (
         "viewer may read the access review",

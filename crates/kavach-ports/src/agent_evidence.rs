@@ -123,6 +123,11 @@ pub struct AgentDecisionPayload {
     /// Keyed MAC of the canonical parameters; `None` when parameters were
     /// refused as raw identifiers (only the violation is recorded).
     pub params_mac: Option<String>,
+    /// Exact-action binding used to begin D17 approval for a HUMAN_REVIEW.
+    /// It is a digest only; source parameters remain transient and are never
+    /// included in evidence. Omitted from older records for hash compatibility.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_action_hash: Option<String>,
     pub policy_versions: PolicyVersions,
     pub signals: Vec<String>,
     /// The authorization outcome before the commit-time checks.
@@ -688,6 +693,9 @@ pub fn complete_payload(
         payload.credential_id = None;
         payload.credential_expires_at = None;
     }
+    if final_decision != Decision::HumanReview {
+        payload.review_action_hash = None;
+    }
     payload.time_sync = now.sync.into();
     payload.ts = now.utc;
     payload
@@ -1046,6 +1054,7 @@ mod tests {
             request_id: format!("q-{seq}"),
             subject_pseudonym: "psn:x".into(),
             params_mac: None,
+            review_action_hash: None,
             policy_versions: PolicyVersions {
                 cedar: "c".into(),
                 cel: None,

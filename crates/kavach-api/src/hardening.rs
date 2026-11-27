@@ -16,7 +16,7 @@
 //!   "isolated" network: the process cannot verify isolation), and carries no
 //!   userinfo, query or fragment;
 //! - the TLS private key, the HSM PIN file, the subject-pseudonym key and
-//!   the console client secret are readable by their owner only, and the
+//!   the console client secret and review-snapshot key are readable by their owner only, and the
 //!   platform can say so;
 //! - `POST /v1/dev/clock` is not mounted (see `crate::http`).
 //!
@@ -176,6 +176,9 @@ pub fn violations(config: &ApiConfig, built: &[Relaxation]) -> Vec<Violation> {
                 }
             }
         }
+    }
+    if let Some(path) = &config.review_snapshot_key_file {
+        check_secret_file("--review-snapshot-key-file", path, &mut out);
     }
     out
 }

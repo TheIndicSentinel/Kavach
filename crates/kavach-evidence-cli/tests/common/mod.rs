@@ -110,6 +110,7 @@ fn payload(seq: i64, prev: &str, decision: Decision) -> AgentDecisionPayload {
         request_id: format!("kat-{seq}"),
         subject_pseudonym: "psn:5b1f0a7c9d2e4f60".into(),
         params_mac: allow.then(|| "mac:9a8b7c6d5e4f3021".into()),
+        review_action_hash: None,
         policy_versions: PolicyVersions {
             cedar: "sha256:cedar-kat".into(),
             cel: None,

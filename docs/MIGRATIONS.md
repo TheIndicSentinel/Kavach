@@ -29,6 +29,17 @@ How schema changes are made. Operators: how migrations run is in [INSTALL.md](IN
 5. **Expand, then contract.** A change old code cannot run against is split across releases: first add what the new code needs, ship, then remove what only the old code used.
 6. **A security-relevant migration goes on the second-review list** ([SECOND_REVIEW.md](SECOND_REVIEW.md)): grants, triggers, anything that changes what the runtime role can do.
 
+## Notes per migration
+
+From 025 on, each migration that lands records here its lock level, expected duration and how to roll back (remediation plan §1.4). Durations are reasoning from what each statement touches, not measurements. Rollback is always "run the previous binary against the new schema" unless a note says otherwise: these migrations only add, so older code ignores what they create.
+
+| Migration | What it does | Locks | Duration | Rollback |
+|---|---|---|---|---|
+| 025 `human_review_approvals` | New table of D17 review decisions; four CHECKs added `NOT VALID` then validated; immutability, no-delete and no-truncate triggers; `kavach_grant_runtime()` redefined to add `SELECT, INSERT` and `UPDATE (consumed_at)` | Only the new, empty table. The grant function's `REVOKE`/`GRANT` change catalog rows for every table, with no scan or rewrite | Milliseconds | Previous binary; the table stays and is unused |
+| 026 `human_review_step_up_challenges` | New table of one-use step-up challenges (digests of state and nonce only); CHECKs inline (new table); immutability trigger that lets only expired rows be deleted; no-truncate trigger; runtime grants in a `DO` block | Only the new, empty table | Milliseconds | Previous binary; the table stays and is unused |
+
+**Known gap (026):** it grants in a `DO` block instead of redefining `kavach_grant_runtime()` (rule 1). The next redefinition, in 029, leaves the table out, so the runtime loses its rights until 032 adds them back. 029–032 land together in one slice and apply in one startup run, so no release runs between them. Any new migration must keep `human_review_step_up_challenges` in the function.
+
 ## Not decided yet
 - Index builds on large tables (`CREATE INDEX CONCURRENTLY` cannot run inside a transaction). Decide it when the first migration needs one.
 - A way to roll a deployment back past a migration. Today a migration is forward-only.

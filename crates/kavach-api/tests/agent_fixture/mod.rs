@@ -352,6 +352,8 @@ pub fn config(store: EvidenceStoreKind, insecure_dev: bool, rate: u32) -> ApiCon
     let (dataplane, operator) = files(rate);
     ApiConfig {
         require_hardening: false,
+        review_snapshot_key_file: None,
+        review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: repo("packs/finance/v0.yaml"),
         model_path: repo("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,

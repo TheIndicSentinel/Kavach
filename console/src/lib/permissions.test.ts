@@ -159,6 +159,8 @@ describe("mayProbably and roleHint", () => {
     [["operators"], "evaluate", true],
     [["operators"], "read_evidence", false],
     [["change-approvers"], approveAction("reinstate_agent"), true],
+    // This action is role-only; when roles are unknown, the control remains visible.
+    [["change-approvers"], "approve_human_review", true],
     [["change-approvers"], proposeAction("reinstate_agent"), false],
     [["admins"], approveAction("reinstate_agent"), false],
     [["admins", "change-approvers"], approveAction("reinstate_agent"), true],
@@ -207,6 +209,8 @@ describe("roles from GET /v1/me", () => {
     [[], ["operator"], "attest_outcome_delivered", true],
     [[], ["auditor"], "attest_outcome_delivered", false],
     [[], ["approver"], approveAction("reinstate_agent"), true],
+    [[], ["approver"], "approve_human_review", true],
+    [[], ["auditor"], "approve_human_review", false],
     [[], ["viewer"], "read_change_requests", false],
     // A role name the console does not know grants nothing.
     [[], ["root"], "read_audit", false],

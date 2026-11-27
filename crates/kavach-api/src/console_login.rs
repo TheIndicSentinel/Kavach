@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration as StdDuration, Instant};
 
-use axum::extract::{Query, Request, State};
+use axum::extract::{Path as AxumPath, Query, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -39,22 +39,34 @@ use axum::Json;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use base64::Engine;
 use chrono::{DateTime, Duration, Utc};
-use kavach_ports::TokenSecret;
+use kavach_auth::KavachAction;
+use kavach_ports::{
+    ErrorClass, PortError, StepUpChallenge, StepUpChallengeStore, TokenSecret, VerifiedStepUp,
+};
 use reqwest::Url;
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::auth::{authorize_credentials, Credentials};
 use crate::config::ApiConfig;
+use crate::error::ApiError;
 use crate::oidc::{OidcError, OidcVerifier};
 use crate::problem::Problem;
 use crate::state::AppState;
+use crate::step_up::{
+    request_for_human_review, KeycloakStepUpCallback, KeycloakStepUpCallbackConfig,
+    KeycloakStepUpCallbackRequest, KeycloakStepUpConfig, KeycloakStepUpInitiator,
+    KeycloakStepUpStart, STEP_UP_CALLBACK_PATH,
+};
 
 /// The login cookie: binds the callback to the browser that started it.
 pub const LOGIN_COOKIE: &str = "__Host-kavach_login";
 /// The session cookie: an opaque 256-bit session id.
 pub const SESSION_COOKIE: &str = "__Host-kavach_session";
+/// One-time, Lax callback handle; the main session cookie remains Strict.
+pub const STEP_UP_COOKIE: &str = "__Host-kavach_step_up";
 /// The header every console request sends (a CSRF defence: a cross-site
 /// form or image cannot set it).
 pub const CONSOLE_HEADER: &str = "x-kavach-console";
@@ -111,6 +123,9 @@ pub struct ConsoleLoginSettings {
     /// Return the IdP's end-session URL from logout (off by default).
     pub idp_logout: bool,
     pub max_sessions: usize,
+    /// IdP ACR configured to require the intended WebAuthn/passkey flow for
+    /// D17 step-up. `None` leaves step-up initiation unconfigured.
+    pub step_up_acr: Option<String>,
 }
 
 impl ConsoleLoginSettings {
@@ -127,6 +142,7 @@ impl ConsoleLoginSettings {
             absolute_minutes: DEFAULT_ABSOLUTE_MINUTES,
             idp_logout: false,
             max_sessions: DEFAULT_MAX_SESSIONS,
+            step_up_acr: None,
         }
     }
 }
@@ -201,6 +217,14 @@ pub fn validate(settings: &ConsoleLoginSettings, config: &ApiConfig) -> Result<(
     if settings.client_id == oidc.audience {
         return Err(
             "--console-client-id must differ from --oidc-audience (the operator audience)".into(),
+        );
+    }
+    if settings.step_up_acr.as_ref().is_some_and(|acr| {
+        acr.is_empty() || acr.len() > 128 || acr.trim() != acr || acr.chars().any(char::is_control)
+    }) {
+        return Err(
+            "--console-step-up-acr must be 1-128 characters without controls or surrounding space"
+                .into(),
         );
     }
     if config
@@ -398,12 +422,58 @@ struct Tokens {
 
 struct Session {
     principal: String,
+    principal_key: Option<String>,
     absolute_expires: DateTime<Utc>,
     last_seen: Mutex<DateTime<Utc>>,
     /// One refresh at a time per session.
     tokens: tokio::sync::Mutex<Tokens>,
     /// A random reference for the audit log; never the cookie value.
     audit_ref: String,
+    /// Short-lived D17 proofs retained server-side until exact-action use.
+    verified_step_ups: Mutex<HashMap<String, VerifiedStepUp>>,
+}
+
+struct PendingStepUp {
+    session_key: [u8; 32],
+    tenant_id: String,
+    principal_key: String,
+    action_hash: String,
+    state: TokenSecret,
+    nonce: TokenSecret,
+    pkce_verifier: TokenSecret,
+    expires_at: DateTime<Utc>,
+}
+
+pub const MAX_STEP_UP_TTL_SECONDS: i64 = 300;
+
+/// A challenge redirect and the one-time cookie value that binds its callback
+/// to the initiating console session.
+pub struct StepUpSessionStart {
+    pub challenge: StepUpChallenge,
+    pub callback_cookie: TokenSecret,
+}
+
+/// Short-lived callback values removed from the pending session slot in one
+/// operation. The caller must pass these only to the step-up verifier.
+pub struct StepUpCallbackSecrets {
+    pub state: TokenSecret,
+    pub nonce: TokenSecret,
+    pub pkce_verifier: TokenSecret,
+    pub tenant_id: String,
+    pub principal_key: String,
+    pub action_hash: String,
+    pub expires_at: DateTime<Utc>,
+    session_key: [u8; 32],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StepUpSessionError {
+    NoSession,
+    Expired,
+    IdentityMismatch,
+    ChallengePending,
+    InvalidState,
+    Unavailable,
 }
 
 /// What `/auth/session` returns: never a token.
@@ -437,11 +507,13 @@ pub struct ConsoleLogin {
     absolute: Duration,
     idp_logout: bool,
     max_sessions: usize,
+    step_up_acr: Option<String>,
     http: reqwest::Client,
     clock: Clock,
     rng: SystemRandom,
     logins: Mutex<HashMap<[u8; 32], PendingLogin>>,
     sessions: Mutex<HashMap<[u8; 32], Arc<Session>>>,
+    step_up_flows: Mutex<HashMap<[u8; 32], PendingStepUp>>,
     limiter: Mutex<Bucket>,
 }
 
@@ -544,11 +616,13 @@ impl ConsoleLogin {
             absolute: minutes(settings.absolute_minutes),
             idp_logout: settings.idp_logout,
             max_sessions: settings.max_sessions,
+            step_up_acr: settings.step_up_acr.clone(),
             http: idp_client(allow_plain_http)?,
             clock: Arc::new(Utc::now),
             rng: SystemRandom::new(),
             logins: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
+            step_up_flows: Mutex::new(HashMap::new()),
             limiter: Mutex::new(Bucket {
                 tokens: LOGIN_BURST,
                 last: Instant::now(),
@@ -573,6 +647,35 @@ impl ConsoleLogin {
         &self.origin
     }
 
+    /// The configured IdP ACR for D17 WebAuthn step-up, if enabled.
+    #[must_use]
+    pub fn step_up_acr(&self) -> Option<&str> {
+        self.step_up_acr.as_deref()
+    }
+
+    /// Builds the Keycloak D17 initiator from this confidential client's
+    /// already-validated endpoints and redirect origin.
+    pub fn step_up_initiator<S: StepUpChallengeStore>(
+        &self,
+        store: S,
+        allow_http_loopback: bool,
+    ) -> Result<KeycloakStepUpInitiator<S>, PortError> {
+        let expected_acr = self
+            .step_up_acr
+            .as_ref()
+            .ok_or_else(|| PortError::rejected("D17 step-up ACR is not configured"))?;
+        KeycloakStepUpInitiator::new(
+            KeycloakStepUpConfig {
+                authorization_endpoint: self.endpoints.authorization.clone(),
+                client_id: self.client_id.clone(),
+                redirect_uri: format!("{}{STEP_UP_CALLBACK_PATH}", self.origin),
+                expected_acr: expected_acr.clone(),
+                allow_http_loopback,
+            },
+            store,
+        )
+    }
+
     /// Live sessions (tests and the session-table bound).
     #[must_use]
     pub fn session_count(&self) -> usize {
@@ -583,6 +686,230 @@ impl ConsoleLogin {
     #[must_use]
     pub fn pending_logins(&self) -> usize {
         self.logins.lock().map_or(0, |l| l.len())
+    }
+
+    /// Returns the source-qualified identity from a live console session for
+    /// server-side step-up initiation. It is never accepted from a request
+    /// parameter or exposed through the session JSON response.
+    pub fn step_up_principal_key(
+        &self,
+        session_cookie: &str,
+    ) -> Result<String, StepUpSessionError> {
+        let now = self.now();
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        let session = sessions
+            .get(&digest(session_cookie))
+            .ok_or(StepUpSessionError::NoSession)?;
+        if !self.live(session, now) {
+            return Err(StepUpSessionError::Expired);
+        }
+        let principal_key = session
+            .principal_key
+            .clone()
+            .ok_or(StepUpSessionError::IdentityMismatch)?;
+        if let Ok(mut last_seen) = session.last_seen.lock() {
+            *last_seen = now;
+        }
+        Ok(principal_key)
+    }
+
+    /// Binds callback secrets from a freshly created challenge to the live
+    /// authenticated console session. Only one step-up may be pending per
+    /// session; a live ceremony is never silently replaced.
+    pub fn bind_step_up_start(
+        &self,
+        session_cookie: &str,
+        started: KeycloakStepUpStart,
+    ) -> Result<StepUpSessionStart, StepUpSessionError> {
+        let now = self.now();
+        let session_key = digest(session_cookie);
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        let session = sessions
+            .get(&session_key)
+            .ok_or(StepUpSessionError::NoSession)?;
+        if !self.live(session, now) {
+            return Err(StepUpSessionError::Expired);
+        }
+        if session.principal_key.as_deref() != Some(started.principal_key()) {
+            return Err(StepUpSessionError::IdentityMismatch);
+        }
+        if started.challenge().expires_at <= now
+            || (started.challenge().expires_at - now).num_seconds() > MAX_STEP_UP_TTL_SECONDS
+        {
+            return Err(StepUpSessionError::Expired);
+        }
+        let (challenge, tenant_id, principal_key, action_hash, state, nonce, pkce_verifier) =
+            started.into_parts();
+        if challenge.challenge_id != state.expose() {
+            return Err(StepUpSessionError::InvalidState);
+        }
+        let callback_handle =
+            TokenSecret::new(self.random().map_err(|_| StepUpSessionError::Unavailable)?);
+        let callback_key = digest(callback_handle.expose());
+        let mut flows = self
+            .step_up_flows
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        flows.retain(|_, current| {
+            now < current.expires_at && sessions.contains_key(&current.session_key)
+        });
+        if flows
+            .values()
+            .any(|current| current.session_key == session_key && now < current.expires_at)
+        {
+            return Err(StepUpSessionError::ChallengePending);
+        }
+        if flows.contains_key(&callback_key) {
+            return Err(StepUpSessionError::Unavailable);
+        }
+        flows.insert(
+            callback_key,
+            PendingStepUp {
+                session_key,
+                tenant_id,
+                principal_key,
+                action_hash,
+                state,
+                nonce,
+                pkce_verifier,
+                expires_at: challenge.expires_at,
+            },
+        );
+        if let Ok(mut last_seen) = session.last_seen.lock() {
+            *last_seen = now;
+        }
+        drop(flows);
+        drop(sessions);
+        Ok(StepUpSessionStart {
+            challenge,
+            callback_cookie: callback_handle,
+        })
+    }
+
+    /// Takes callback secrets once, only from the session that started the
+    /// challenge and only for the matching unexpired OIDC state value.
+    pub fn take_step_up_callback(
+        &self,
+        callback_handle: &str,
+        callback_state: &str,
+    ) -> Result<StepUpCallbackSecrets, StepUpSessionError> {
+        let now = self.now();
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        let handle_key = digest(callback_handle);
+        let mut flows = self
+            .step_up_flows
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        let current = flows.get(&handle_key).ok_or(StepUpSessionError::Expired)?;
+        let Some(session) = sessions.get(&current.session_key) else {
+            flows.remove(&handle_key);
+            return Err(StepUpSessionError::NoSession);
+        };
+        if !self.live(session, now) {
+            flows.remove(&handle_key);
+            return Err(StepUpSessionError::Expired);
+        }
+        if now >= current.expires_at {
+            flows.remove(&handle_key);
+            return Err(StepUpSessionError::Expired);
+        }
+        if current.state.expose() != callback_state {
+            return Err(StepUpSessionError::InvalidState);
+        }
+        if session.principal_key.as_deref() != Some(current.principal_key.as_str()) {
+            flows.remove(&handle_key);
+            return Err(StepUpSessionError::IdentityMismatch);
+        }
+        let current = flows
+            .remove(&handle_key)
+            .ok_or(StepUpSessionError::Expired)?;
+        Ok(StepUpCallbackSecrets {
+            state: current.state,
+            nonce: current.nonce,
+            pkce_verifier: current.pkce_verifier,
+            tenant_id: current.tenant_id,
+            principal_key: current.principal_key,
+            action_hash: current.action_hash,
+            expires_at: current.expires_at,
+            session_key: current.session_key,
+        })
+    }
+
+    /// Stores a verified, exact-action proof on the initiating session. The
+    /// proof is server-only and short-lived for the approval endpoint to take.
+    pub fn store_verified_step_up(
+        &self,
+        session_key: &[u8; 32],
+        verified: VerifiedStepUp,
+    ) -> Result<(), StepUpSessionError> {
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        let session = sessions
+            .get(session_key)
+            .ok_or(StepUpSessionError::NoSession)?;
+        let now = self.now();
+        if !self.live(session, now)
+            || session.principal_key.as_deref() != Some(verified.principal_key.as_str())
+        {
+            return Err(StepUpSessionError::IdentityMismatch);
+        }
+        let mut proofs = session
+            .verified_step_ups
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        proofs.retain(|_, proof| {
+            now < proof.verified_at + Duration::seconds(MAX_STEP_UP_TTL_SECONDS)
+        });
+        if proofs.len() >= 32 && !proofs.contains_key(&verified.action_hash) {
+            return Err(StepUpSessionError::Unavailable);
+        }
+        proofs.insert(verified.action_hash.clone(), verified);
+        Ok(())
+    }
+
+    /// Takes a verified proof once, from its live session and for the exact
+    /// action. The upcoming approval route is the intended caller.
+    pub fn take_verified_step_up(
+        &self,
+        session_cookie: &str,
+        action_hash: &str,
+    ) -> Result<VerifiedStepUp, StepUpSessionError> {
+        let now = self.now();
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        let session = sessions
+            .get(&digest(session_cookie))
+            .ok_or(StepUpSessionError::NoSession)?;
+        if !self.live(session, now) {
+            return Err(StepUpSessionError::Expired);
+        }
+        let mut proofs = session
+            .verified_step_ups
+            .lock()
+            .map_err(|_| StepUpSessionError::Unavailable)?;
+        proofs.retain(|_, proof| {
+            now < proof.verified_at + Duration::seconds(MAX_STEP_UP_TTL_SECONDS)
+        });
+        let proof = proofs
+            .remove(action_hash)
+            .ok_or(StepUpSessionError::Expired)?;
+        if session.principal_key.as_deref() != Some(proof.principal_key.as_str()) {
+            return Err(StepUpSessionError::IdentityMismatch);
+        }
+        Ok(proof)
     }
 
     fn random(&self) -> Result<String, LoginError> {
@@ -617,6 +944,11 @@ impl ConsoleLogin {
     fn purge_sessions(&self, sessions: &mut HashMap<[u8; 32], Arc<Session>>) {
         let now = self.now();
         sessions.retain(|_, s| self.live(s, now));
+        if let Ok(mut flows) = self.step_up_flows.lock() {
+            flows.retain(|_, flow| {
+                now < flow.expires_at && sessions.contains_key(&flow.session_key)
+            });
+        }
     }
 
     fn sessions_full(&self) -> bool {
@@ -722,8 +1054,13 @@ impl ConsoleLogin {
         drop(granted.id);
 
         let cookie = self.random()?;
+        let principal_key = identity
+            .subject
+            .as_ref()
+            .map(|subject| format!("oidc:{}#{subject}", verifier.issuer()));
         let session = Arc::new(Session {
             principal: identity.principal.clone(),
+            principal_key,
             absolute_expires: now + self.absolute,
             last_seen: Mutex::new(now),
             tokens: tokio::sync::Mutex::new(Tokens {
@@ -733,6 +1070,7 @@ impl ConsoleLogin {
                 groups: identity.groups,
             }),
             audit_ref: uuid::Uuid::new_v4().to_string(),
+            verified_step_ups: Mutex::new(HashMap::new()),
         });
         if !self.insert_session(&cookie, &session)? {
             self.revoke(&session).await;
@@ -926,7 +1264,12 @@ impl ConsoleLogin {
     }
 
     fn end(&self, cookie: &str) -> Option<Arc<Session>> {
-        self.sessions.lock().ok()?.remove(&digest(cookie))
+        let session_key = digest(cookie);
+        let removed = self.sessions.lock().ok()?.remove(&session_key);
+        if let Ok(mut flows) = self.step_up_flows.lock() {
+            flows.retain(|_, flow| flow.session_key != session_key);
+        }
+        removed
     }
 
     /// RFC 7009: revokes the session's refresh token when the IdP has a
@@ -1219,6 +1562,94 @@ pub async fn callback(
     }
 }
 
+/// `GET /auth/step-up/callback`: validates the IdP response against the
+/// session-bound one-time handle and stores the verified action proof only
+/// on that live server-side session.
+pub async fn step_up_callback(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    query: Result<Query<CallbackQuery>, axum::extract::rejection::QueryRejection>,
+) -> Response {
+    let Some(login) = state.console_login() else {
+        return step_up_callback_failure();
+    };
+    if !login.admit() {
+        return step_up_callback_failure();
+    }
+    let query = query.map(|Query(q)| q).unwrap_or_default();
+    let Some(handle) = cookie(&headers, STEP_UP_COOKIE) else {
+        return step_up_callback_failure();
+    };
+    let Some(state_value) = query.state.as_deref() else {
+        return step_up_callback_failure();
+    };
+    if query.error.is_some() {
+        // Consume the matching server-side flow on an IdP refusal without
+        // reflecting its caller-controlled error text.
+        let _ = login.take_step_up_callback(handle, state_value);
+        return step_up_callback_failure();
+    }
+    let Some(code) = query.code.as_deref() else {
+        return step_up_callback_failure();
+    };
+    let Ok(secrets) = login.take_step_up_callback(handle, state_value) else {
+        return step_up_callback_failure();
+    };
+    let Some(oidc_verifier) = state.oidc().cloned() else {
+        return step_up_callback_failure();
+    };
+    let callback = KeycloakStepUpCallback::new(
+        state.step_up_challenges().clone(),
+        KeycloakStepUpCallbackConfig {
+            token_endpoint: login.endpoints.token.clone(),
+            client_id: login.client_id.clone(),
+            client_secret: TokenSecret::new(login.client_secret.expose().to_owned()),
+            redirect_uri: format!("{}{STEP_UP_CALLBACK_PATH}", login.origin),
+            expected_acr: login.step_up_acr().unwrap_or_default().to_owned(),
+            verifier: oidc_verifier,
+            allow_http_loopback: state.insecure_dev(),
+        },
+    );
+    let Ok(callback) = callback else {
+        return step_up_callback_failure();
+    };
+    let verified = callback
+        .finish(KeycloakStepUpCallbackRequest {
+            state: &secrets.state,
+            code: &TokenSecret::new(code),
+            nonce: &secrets.nonce,
+            pkce_verifier: &secrets.pkce_verifier,
+            authenticated_principal_key: &secrets.principal_key,
+            expected_tenant_id: &secrets.tenant_id,
+            expected_action_hash: &secrets.action_hash,
+            now: Utc::now(),
+        })
+        .await;
+    let Ok(verified) = verified else {
+        return step_up_callback_failure();
+    };
+    if login
+        .store_verified_step_up(&secrets.session_key, verified)
+        .is_err()
+    {
+        return step_up_callback_failure();
+    }
+    let mut response = (StatusCode::SEE_OTHER, [(header::LOCATION, "/")]).into_response();
+    append_cookie(&mut response, &expired_cookie(STEP_UP_COOKIE, "Lax"));
+    response
+}
+
+fn step_up_callback_failure() -> Response {
+    let mut response = Problem::new(
+        StatusCode::BAD_REQUEST,
+        "bad_request",
+        "step-up callback was refused",
+    )
+    .into_response();
+    append_cookie(&mut response, &expired_cookie(STEP_UP_COOKIE, "Lax"));
+    response
+}
+
 /// `GET /auth/session`: who is signed in, and until when. Never a token.
 pub async fn session(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
     let (Some(login), Some(verifier)) = (state.console_login(), state.oidc()) else {
@@ -1274,8 +1705,136 @@ async fn logout_response(state: &AppState, headers: &HeaderMap) -> Response {
     }
 }
 
+/// `POST /auth/step-up/{record_id}`: start an action-bound WebAuthn step-up
+/// from a live console session and a signed, tenant-scoped HUMAN_REVIEW row.
+/// The browser receives only the IdP URL and a one-time opaque callback
+/// cookie; challenge state and callback secrets remain server-side.
+pub async fn begin_step_up(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(record_id): AxumPath<String>,
+    credentials: Credentials,
+) -> Response {
+    match begin_step_up_inner(&state, &headers, &record_id, &credentials).await {
+        Ok((authorization_url, expires_at, callback_cookie)) => {
+            let mut response = Json(json!({
+                "authorization_url": authorization_url,
+                "expires_at": expires_at,
+            }))
+            .into_response();
+            let cookie = TokenSecret::new(format!(
+                "{STEP_UP_COOKIE}={}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={MAX_STEP_UP_TTL_SECONDS}",
+                callback_cookie.expose()
+            ));
+            append_cookie(&mut response, cookie.expose());
+            response
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+async fn begin_step_up_inner(
+    state: &AppState,
+    headers: &HeaderMap,
+    record_id: &str,
+    credentials: &Credentials,
+) -> Result<(String, DateTime<Utc>, TokenSecret), ApiError> {
+    let login = state
+        .console_login()
+        .ok_or_else(|| ApiError::Unavailable("console step-up is not configured".into()))?;
+    if login.step_up_acr().is_none() || state.access_control().is_none() {
+        return Err(ApiError::Unavailable(
+            "console step-up is not configured".into(),
+        ));
+    }
+    let session_cookie = cookie(headers, SESSION_COOKIE).ok_or(ApiError::Unauthorized)?;
+    let principal_key = login
+        .step_up_principal_key(session_cookie)
+        .map_err(|_| ApiError::Unauthorized)?;
+    authorize_credentials(state, credentials, KavachAction::ApproveHumanReview).await?;
+    if !login.admit() {
+        return Err(ApiError::Unavailable(
+            "step-up initiation is temporarily unavailable".into(),
+        ));
+    }
+    if !crate::evidence_read::valid_record_id(record_id) {
+        return Err(ApiError::BadRequest("invalid review record id".into()));
+    }
+
+    let dataplane = state
+        .dataplane()
+        .ok_or_else(|| ApiError::Unavailable("agent evidence is not configured".into()))?;
+    let record = dataplane
+        .human_review_record(record_id)
+        .await
+        .map_err(|_| ApiError::Unavailable("review evidence is unavailable".into()))?
+        .ok_or_else(|| ApiError::NotFound("no eligible HUMAN_REVIEW record".into()))?;
+    if record.payload.tenant_id != state.tenant_id() {
+        return Err(ApiError::NotFound("no eligible HUMAN_REVIEW record".into()));
+    }
+
+    let now = Utc::now();
+    let expires_at = now + Duration::seconds(MAX_STEP_UP_TTL_SECONDS);
+    let request = request_for_human_review(
+        &record,
+        dataplane.review_evidence_keys(),
+        state.insecure_dev(),
+        state.tenant_id(),
+        &principal_key,
+        now,
+        expires_at,
+    )
+    .map_err(|_| ApiError::NotFound("no eligible HUMAN_REVIEW record".into()))?;
+
+    let store = state.step_up_challenges().clone();
+    store
+        .purge_expired(now)
+        .await
+        .map_err(|_| ApiError::Unavailable("step-up challenge store is unavailable".into()))?;
+    let initiator = login
+        .step_up_initiator(store, state.insecure_dev())
+        .map_err(|_| ApiError::Unavailable("step-up provider is not configured".into()))?;
+    let started = initiator
+        .begin(request, now)
+        .await
+        .map_err(|error| match error.class {
+            ErrorClass::Unavailable => {
+                ApiError::Unavailable("step-up challenge could not be created".into())
+            }
+            ErrorClass::Rejected => {
+                ApiError::Conflict("a step-up challenge is already active".into())
+            }
+            ErrorClass::Invalid => ApiError::BadRequest("invalid step-up challenge".into()),
+        })?;
+    let bound = login
+        .bind_step_up_start(session_cookie, started)
+        .map_err(|error| match error {
+            StepUpSessionError::ChallengePending => {
+                ApiError::Conflict("a step-up challenge is already active".into())
+            }
+            StepUpSessionError::NoSession
+            | StepUpSessionError::Expired
+            | StepUpSessionError::IdentityMismatch => ApiError::Unauthorized,
+            StepUpSessionError::InvalidState | StepUpSessionError::Unavailable => {
+                ApiError::Unavailable("step-up session could not be prepared".into())
+            }
+        })?;
+    Ok((
+        bound.challenge.authorization_url,
+        bound.challenge.expires_at,
+        bound.callback_cookie,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
+    use axum::body::Body;
+    use chrono::{Duration, TimeZone};
+    use http_body_util::BodyExt;
+    use kavach_ports::{StepUpChallengeStore, StepUpRequest};
+    use kavach_storage::MemoryStepUpChallengeStore;
+    use tower::ServiceExt;
+
     use super::*;
 
     #[test]
@@ -1312,5 +1871,195 @@ mod tests {
         }
         assert!(check_redirect_uri("http://localhost:8080/auth/callback", true).is_ok());
         assert!(check_redirect_uri("http://kavach.example/auth/callback", true).is_err());
+    }
+
+    #[tokio::test]
+    async fn step_up_start_is_mounted_but_unavailable_without_console_login() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let state = Arc::new(
+            AppState::from_paths_for_tests(
+                &root.join("packs/finance/v0.yaml"),
+                &root.join("models/finance/credit-underwriting-v1.yaml"),
+                None,
+            )
+            .await
+            .expect("state"),
+        );
+        let response = crate::http::router(state)
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("POST")
+                    .uri("/auth/step-up/adr:default:0:1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let problem: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(problem["code"], "unavailable");
+
+        let callback = crate::http::router(Arc::new(
+            AppState::from_paths_for_tests(
+                &root.join("packs/finance/v0.yaml"),
+                &root.join("models/finance/credit-underwriting-v1.yaml"),
+                None,
+            )
+            .await
+            .expect("state"),
+        ))
+        .oneshot(
+            axum::http::Request::builder()
+                .uri(STEP_UP_CALLBACK_PATH)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(callback.status(), StatusCode::BAD_REQUEST);
+        assert!(callback
+            .headers()
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .any(|cookie| cookie.to_str().unwrap().contains("__Host-kavach_step_up=")));
+    }
+
+    #[tokio::test]
+    #[allow(clippy::too_many_lines)] // one step-up session lifecycle, read top to bottom
+    async fn step_up_secrets_stay_in_the_bound_console_session_and_are_taken_once() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
+        let mut settings = ConsoleLoginSettings::new(
+            "kavach-console",
+            PathBuf::new(),
+            "https://console.example/auth/callback",
+        );
+        settings.step_up_acr = Some("webauthn-2".into());
+        let login = ConsoleLogin::build(
+            &settings,
+            IdpEndpoints {
+                authorization: "https://idp.example/authorize".into(),
+                token: "https://idp.example/token".into(),
+                revocation: None,
+                end_session: None,
+            },
+            TokenSecret::new("client-secret"),
+            false,
+        )
+        .unwrap()
+        .with_clock(Arc::new(move || now));
+        let session_cookie = "random-console-session-cookie";
+        let principal_key = "oidc:https://idp.example#reviewer-1";
+        let session = Arc::new(Session {
+            principal: "reviewer-1".into(),
+            principal_key: Some(principal_key.into()),
+            absolute_expires: now + Duration::hours(1),
+            last_seen: Mutex::new(now),
+            tokens: tokio::sync::Mutex::new(Tokens {
+                access: TokenSecret::new("access-token"),
+                refresh: None,
+                access_expires: now + Duration::minutes(5),
+                groups: vec![],
+            }),
+            audit_ref: "session-audit-ref".into(),
+            verified_step_ups: Mutex::new(HashMap::new()),
+        });
+        login
+            .sessions
+            .lock()
+            .unwrap()
+            .insert(digest(session_cookie), session);
+        assert_eq!(
+            login.step_up_principal_key(session_cookie).unwrap(),
+            principal_key
+        );
+
+        let store = MemoryStepUpChallengeStore::default();
+        let initiator = login.step_up_initiator(store.clone(), false).unwrap();
+        let action_hash = format!("sha256-action-v1:{}", "a".repeat(64));
+        let start = initiator
+            .begin(
+                StepUpRequest {
+                    tenant_id: "tenant-1".into(),
+                    principal_key: principal_key.into(),
+                    action_hash: action_hash.clone(),
+                    issued_at: now,
+                    expires_at: now + Duration::minutes(2),
+                },
+                now,
+            )
+            .await
+            .unwrap();
+        let bound = login.bind_step_up_start(session_cookie, start).unwrap();
+        let challenge = bound.challenge;
+        let callback_cookie = bound.callback_cookie;
+        let query: std::collections::HashMap<_, _> = Url::parse(&challenge.authorization_url)
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        let callback_state = query.get("state").unwrap();
+        let state_hash = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(callback_state.as_bytes()))
+        );
+        let persisted = store.get_live(&state_hash, now).await.unwrap().unwrap();
+        assert_eq!(persisted.principal_key, principal_key);
+        assert_eq!(persisted.action_hash, action_hash);
+        assert!(!challenge
+            .authorization_url
+            .contains(callback_cookie.expose()));
+
+        assert_eq!(
+            login
+                .take_step_up_callback(callback_cookie.expose(), "wrong-state")
+                .err()
+                .unwrap(),
+            StepUpSessionError::InvalidState
+        );
+        assert_eq!(
+            login
+                .take_step_up_callback("unknown-callback-cookie", callback_state)
+                .err()
+                .unwrap(),
+            StepUpSessionError::Expired
+        );
+        let secrets = login
+            .take_step_up_callback(callback_cookie.expose(), callback_state)
+            .unwrap();
+        assert_eq!(secrets.state.expose(), callback_state);
+        assert_eq!(secrets.tenant_id, "tenant-1");
+        assert_eq!(secrets.principal_key, principal_key);
+        assert_eq!(secrets.action_hash, action_hash);
+        assert_eq!(secrets.expires_at, challenge.expires_at);
+        let verified = VerifiedStepUp {
+            tenant_id: secrets.tenant_id.clone(),
+            principal_key: secrets.principal_key.clone(),
+            action_hash: secrets.action_hash.clone(),
+            step_up_ref: "keycloak-step-up:test".into(),
+            verified_at: now,
+        };
+        login
+            .store_verified_step_up(&secrets.session_key, verified.clone())
+            .unwrap();
+        assert!(login
+            .take_verified_step_up(session_cookie, "different-action")
+            .is_err());
+        assert!(
+            login
+                .take_verified_step_up(session_cookie, &action_hash)
+                .unwrap()
+                == verified
+        );
+        assert!(login
+            .take_verified_step_up(session_cookie, &action_hash)
+            .is_err());
+        assert_eq!(
+            login
+                .take_step_up_callback(callback_cookie.expose(), callback_state)
+                .err()
+                .unwrap(),
+            StepUpSessionError::Expired
+        );
     }
 }

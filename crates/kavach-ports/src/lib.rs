@@ -6,6 +6,7 @@
 
 pub mod agent_evidence;
 pub mod agent_state;
+pub mod approval;
 pub mod bundle;
 pub mod bundle_verify;
 pub mod chain_record;
@@ -23,6 +24,11 @@ mod reference;
 mod replay;
 mod time;
 
+pub use approval::{
+    ReviewApprovalRecord, ReviewApprovalStore, ReviewDecision, StepUpChallenge,
+    StepUpChallengeState, StepUpChallengeStore, StepUpProof, StepUpProvider, StepUpRequest,
+    VerifiedStepUp,
+};
 pub use credential::{
     CredentialBroker, CredentialRequest, Destination, InternalCredentialBroker,
     InternalCredentialFuture, InternalCredentialReceipt, IssuedCredential, StatusQuestions,

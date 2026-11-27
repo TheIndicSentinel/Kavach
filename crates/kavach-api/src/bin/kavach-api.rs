@@ -409,6 +409,11 @@ struct ConsoleLoginArgs {
     #[arg(long, env = "KAVACH_CONSOLE_MAX_SESSIONS",
           default_value_t = kavach_api::console_login::DEFAULT_MAX_SESSIONS)]
     console_max_sessions: usize,
+
+    /// IdP ACR value mapped to the intended WebAuthn/passkey flow for D17.
+    /// Step-up is not enabled unless this value is configured.
+    #[arg(long, env = "KAVACH_CONSOLE_STEP_UP_ACR")]
+    console_step_up_acr: Option<String>,
 }
 
 impl ConsoleLoginArgs {
@@ -438,12 +443,13 @@ impl ConsoleLoginArgs {
                 )
             }
         };
+        let step_up_acr = self.console_step_up_acr;
         match (
             self.console_client_id,
             self.console_client_secret_file,
             self.console_redirect_uri,
         ) {
-            (None, None, None) if endpoints.is_none() => Ok(None),
+            (None, None, None) if endpoints.is_none() && step_up_acr.is_none() => Ok(None),
             (Some(client_id), Some(secret_file), Some(redirect_uri)) => {
                 Ok(Some(ConsoleLoginSettings {
                     endpoints,
@@ -452,9 +458,15 @@ impl ConsoleLoginArgs {
                     absolute_minutes: self.console_session_absolute_minutes,
                     idp_logout: self.console_idp_logout,
                     max_sessions: self.console_max_sessions,
+                    step_up_acr,
                     ..ConsoleLoginSettings::new(&client_id, secret_file, &redirect_uri)
                 }))
             }
+            (None, None, None) => Err(
+                "--console-step-up-acr requires console login; configure --console-client-id, \
+                 --console-client-secret-file and --console-redirect-uri"
+                    .into(),
+            ),
             _ => Err(
                 "console login needs --console-client-id, --console-client-secret-file \
                       and --console-redirect-uri"
@@ -565,6 +577,18 @@ struct Cli {
     /// (docs/BYPASS_INVENTORY.md). Every failing condition is reported.
     #[arg(long, env = "KAVACH_REQUIRE_HARDENING")]
     require_hardening: bool,
+
+    /// Owner-only 32-byte hex key file for durable D17 review snapshots.
+    #[arg(long, env = "KAVACH_REVIEW_SNAPSHOT_KEY_FILE")]
+    review_snapshot_key_file: Option<PathBuf>,
+
+    /// Rotation id stored with encrypted D17 review snapshots.
+    #[arg(
+        long,
+        env = "KAVACH_REVIEW_SNAPSHOT_KEY_ID",
+        default_value = kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID
+    )]
+    review_snapshot_key_id: String,
 
     /// Cedar policy file (required when --access-control cedar).
     #[arg(long, env = "KAVACH_CEDAR_POLICY")]
@@ -765,6 +789,8 @@ impl Cli {
             database_pool_size: self.database_pool_size,
             dataplane,
             require_hardening: self.require_hardening,
+            review_snapshot_key_file: self.review_snapshot_key_file,
+            review_snapshot_key_id: self.review_snapshot_key_id,
             roles,
         };
         validate_principal_sources(&config)?;

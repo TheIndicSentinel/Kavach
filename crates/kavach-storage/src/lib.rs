@@ -4,6 +4,7 @@ mod admin;
 mod agent_evidence;
 mod backends;
 mod change_requests;
+mod human_review;
 mod incidents_store;
 mod jobs_store;
 mod model_governance;
@@ -11,6 +12,7 @@ mod postgres;
 mod retention;
 mod roles;
 mod startup;
+mod step_up;
 #[cfg(feature = "test-support")]
 pub mod testing;
 
@@ -27,6 +29,7 @@ pub use change_requests::{
     ChangeRequestBackend, ChangeStatus, ChangeStoreError, CloseRequest, GovernanceEffect,
     MemoryChangeStore,
 };
+pub use human_review::MemoryReviewApprovalStore;
 pub use incidents_store::{IncidentRecord, IncidentStoreError, MemoryIncidentStore};
 pub use jobs_store::{BatchJobRecord, JobQueryError, MemoryBatchJobStore};
 pub use model_governance::{govern_model, GovernedModel, ModelStartupError, ModelStartupRole};
@@ -35,7 +38,8 @@ pub use postgres::{
     BatchJobCreate, BatchJobStore, DatabaseTls, DatabaseTlsError, EvidenceSnapshot, JobStoreError,
     NoopBatchJobStore, PostgresAdminStore, PostgresAgentEvidenceStore, PostgresBatchJobStore,
     PostgresChangeStore, PostgresEvidenceStore, PostgresIncidentStore, PostgresMandateStore,
-    PostgresReplayGuard, PostgresRetentionStore, PostgresRoleStore, StoragePool, DEFAULT_POOL_SIZE,
+    PostgresReplayGuard, PostgresRetentionStore, PostgresReviewApprovalStore, PostgresRoleStore,
+    PostgresStepUpChallengeStore, StoragePool, DEFAULT_POOL_SIZE,
 };
 pub use retention::{
     MemoryRetentionStore, RetentionApplyReport, RetentionSettings, RetentionStoreError,
@@ -48,3 +52,4 @@ pub use roles::{
     DISPLAY_NAME_MAX_CHARS, LAST_SEEN_GRANULARITY, ROLE_BINDING_RESOURCE,
 };
 pub use startup::{check_startup_pack, StartupPackCheck, StartupPackError};
+pub use step_up::MemoryStepUpChallengeStore;

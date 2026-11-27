@@ -81,6 +81,7 @@ export type CedarAction =
   | ReadAction
   | "evaluate"
   | "reconcile_closed_records"
+  | "approve_human_review"
   | "stop_agent"
   | `propose_${MakerCheckerKind}`
   | `approve_${MakerCheckerKind}`
@@ -127,6 +128,7 @@ export const COVERED_ACTIONS: readonly CedarAction[] = [
   ...READ_ACTIONS,
   "evaluate",
   "reconcile_closed_records",
+  "approve_human_review",
   "stop_agent",
   ...CHANGE_KINDS.filter((kind) => !isDirectActionKind(kind)).map(proposeAction),
   ...CHANGE_KINDS.filter((kind) => !isDirectActionKind(kind)).map(approveAction),
@@ -181,6 +183,7 @@ export const ROLE_ACTIONS: Record<RoleName, readonly CedarAction[]> = {
     "read_tombstones",
     "read_change_requests",
     ...GOVERNANCE_KINDS.map(approveAction),
+    "approve_human_review",
   ],
   operator: [
     "read_health",

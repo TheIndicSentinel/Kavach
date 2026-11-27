@@ -109,6 +109,7 @@ pub fn request(tenant: &str, request_id: &str, max: u32) -> CommitRequest {
         request_id: request_id.into(),
         subject_pseudonym: SUBJECT.into(),
         params_mac: Some("mac:params".into()),
+        review_action_hash: None,
         policy_versions: PolicyVersions {
             cedar: "sha256:cedar".into(),
             cel: None,

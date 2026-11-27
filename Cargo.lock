@@ -2401,12 +2401,14 @@ dependencies = [
  "kavach-storage",
  "proptest",
  "regex",
+ "ring",
  "serde",
  "serde_json",
  "serde_yaml",
  "sha2",
  "tokio",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

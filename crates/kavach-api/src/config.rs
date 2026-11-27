@@ -41,6 +41,10 @@ pub struct ApiConfig {
     /// `--require-hardening`: the start was checked against
     /// `crate::hardening`, and the development routes are not mounted.
     pub require_hardening: bool,
+    /// Stable owner-managed key file for D17 review snapshots. Off until set.
+    pub review_snapshot_key_file: Option<PathBuf>,
+    /// Rotation id authenticated into each encrypted D17 snapshot.
+    pub review_snapshot_key_id: String,
     /// Agent surfaces (`/v1/authorize`, `/v1/sor/events`; ADR-007, H5a-5).
     pub dataplane: Option<crate::dataplane::DataplaneConfig>,
     /// Operator roles (ADR-019).
@@ -64,6 +68,8 @@ pub struct RolesConfig {
 pub const DEFAULT_ACCESS_REVIEW_STALE_DAYS: u32 = 90;
 /// The longest `--access-review-stale-days` accepted (ten years).
 pub const MAX_ACCESS_REVIEW_STALE_DAYS: u32 = 3650;
+/// Default key id for the D17 review-snapshot encryption key.
+pub const DEFAULT_REVIEW_SNAPSHOT_KEY_ID: &str = "review-snapshot-1";
 
 impl Default for RolesConfig {
     fn default() -> Self {

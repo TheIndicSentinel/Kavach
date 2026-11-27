@@ -53,6 +53,8 @@ A role is a Cedar entity of its own type, `Kavach::Role::"<name>"`, **not** a `K
 
 New actions: `read_principals`, `read_access_review`, `propose_grant_role`, `approve_grant_role`, `propose_revoke_role`, `approve_revoke_role`, `attest_outcome_delivered`, `attest_outcome_not_delivered` and `resolve_outcome_conflict` (ADR-017). Approving includes rejecting, as in ADR-009.
 
+**D17 role decision (2026-11-17):** the existing `approver` role may approve exact-action HUMAN_REVIEW items after WebAuthn step-up (`approve_human_review`). This is a distinct Cedar action from governance change approvals. The `change-approvers` IdP group alias does not receive this permission; only a Kavach `approver` role binding (or `superadmin`) allows it.
+
 | Action | superadmin | user_admin | policy_admin | approver | operator | auditor | viewer |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | `read_health` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -66,6 +68,7 @@ New actions: `read_principals`, `read_access_review`, `propose_grant_role`, `app
 | `read_change_requests` | ✓ | ✓ | ✓ | ✓ | | ✓ | |
 | `propose_*`, the eight governance kinds¹ | ✓ | | ✓ | | | | |
 | `approve_*`, the eight governance kinds¹ | ✓ | | | ✓ | | | |
+| `approve_human_review` (D17; after action-bound WebAuthn step-up) | ✓ | | | ✓ | | | |
 | `read_audit`, `read_evidence` | ✓ | | | | | ✓ | |
 | `read_principals`, `read_access_review` | ✓ | ✓ | | | | ✓ | |
 | `attest_outcome_delivered` | ✓ | | | | ✓ | | |

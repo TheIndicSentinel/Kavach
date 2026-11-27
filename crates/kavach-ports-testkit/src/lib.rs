@@ -9,6 +9,7 @@ pub mod checkpoint_store;
 pub mod credential_broker;
 pub mod faulty_store;
 pub mod reference_resolver;
+pub mod step_up;
 
 use std::collections::HashMap;
 use std::future::{ready, Future};
