@@ -9,15 +9,20 @@ import { Button } from "../components/ui/Button";
 import { Card, CardDescription, CardHeader, CardTitle } from "../components/ui/Card";
 import { PageHeader } from "../components/ui/PageHeader";
 import { RoleHint } from "../components/ui/RoleHint";
+import { ProblemAlert } from "../components/ui/ProblemAlert";
+import { ResourceState } from "../components/ui/ResourceState";
 import { TextField } from "../components/ui/TextField";
 import { useLookup, type Lookup } from "../hooks/useLookup";
 import { LOOKUP_MAX_LENGTH, idProblem, recordIdProblem } from "../lib/agents";
 import {
   fetchAgentDecision,
   fetchRevocationRecord,
+  fetchUnknownOutcomeReviews,
   type AgentDecisionLookup,
   type RevocationLookup,
+  type UnknownOutcomeReviewPage,
 } from "../lib/api";
+import type { Resource } from "../hooks/useResource";
 import { useViewer } from "../lib/changeRequests";
 import { roleHint, type Viewer } from "../lib/permissions";
 
@@ -192,18 +197,142 @@ function RevocationLookupCard({
   );
 }
 
+function reviewState(state: string): string {
+  switch (state) {
+    case "confirmed_delivered": return "Confirmed delivered";
+    case "confirmed_not_delivered": return "Confirmed not delivered";
+    case "ambiguous": return "Ambiguous";
+    case "conflicted": return "Conflicted";
+    default: return "Unresolved";
+  }
+}
+
+function reviewTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.valueOf()) ? "Unknown" : date.toLocaleString();
+}
+
+function UnknownOutcomeReview({ viewer, initial }: { viewer: Viewer; initial?: Resource<UnknownOutcomeReviewPage> }) {
+  const [resource, setResource] = useState<Resource<UnknownOutcomeReviewPage> | null>(initial ?? null);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [pageError, setPageError] = useState<unknown>(null);
+  const hint = evidenceHint(viewer);
+
+  async function load(cursor?: string) {
+    if (loading || loadingMore) return;
+    if (cursor) setLoadingMore(true);
+    else {
+      setLoading(true);
+      setResource({ phase: "loading" });
+    }
+    setPageError(null);
+    try {
+      const page = await fetchUnknownOutcomeReviews({ limit: 50, ...(cursor ? { cursor } : {}) });
+      setResource((current) => ({
+        phase: "ok",
+        data: cursor && current?.phase === "ok"
+          ? { items: [...current.data.items, ...page.items], next_cursor: page.next_cursor }
+          : page,
+      }));
+    } catch (error) {
+      if (cursor) setPageError(error);
+      else setResource({ phase: "error", error });
+    } finally {
+      setLoading(false);
+      setLoadingMore(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Unknown outcome review</CardTitle>
+        <CardDescription>
+          Loads every unknown outcome and its signed resolution history, including ambiguous and conflicted cases. This read is audited; it does not resend a message or release a contact slot.
+        </CardDescription>
+      </CardHeader>
+      {hint ? <RoleHint>{hint}</RoleHint> : (
+        <>
+          <Button variant="secondary" aria-disabled={loading || loadingMore} onClick={() => { void load(); }}>
+            {resource?.phase === "ok" ? "Refresh review" : loading ? "Loading review…" : resource?.phase === "error" ? "Try review again" : "Load unknown outcomes"}
+          </Button>
+          {resource && (
+            <div className="mt-4">
+              <ResourceState
+                resource={resource}
+                loading="Loading and auditing unknown outcomes…"
+                summary={(page) => `${page.items.length} unknown ${page.items.length === 1 ? "outcome" : "outcomes"} loaded${page.next_cursor ? "; more are available" : "."}`}
+                onRetry={() => { void load(); }}
+              >
+                {(page) => page.items.length === 0 ? (
+                  <p className="text-sm text-muted">No unknown outcomes are recorded for this tenant.</p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[52rem] border-collapse text-left text-sm">
+                      <thead><tr className="border-b border-border text-xs uppercase tracking-wide text-muted">
+                        <th scope="col" className="px-3 py-3 font-semibold">Credential</th>
+                        <th scope="col" className="px-3 py-3 font-semibold">Action</th>
+                        <th scope="col" className="px-3 py-3 font-semibold">Unknown since</th>
+                        <th scope="col" className="px-3 py-3 font-semibold">Governing state</th>
+                        <th scope="col" className="px-3 py-3 font-semibold">History</th>
+                      </tr></thead>
+                      <tbody>
+                        {page.items.map((item) => (
+                          <tr key={item.outcome.credential_id} className="border-b border-border align-top last:border-0">
+                            <th scope="row" className="break-all px-3 py-3 font-mono text-xs font-medium text-ink">{item.outcome.credential_id}</th>
+                            <td className="px-3 py-3 text-ink">{item.action}</td>
+                            <td className="px-3 py-3 text-muted">{reviewTime(item.outcome.ts)}</td>
+                            <td className="px-3 py-3 text-ink">
+                              {reviewState(item.governing_state)}{item.governing_source ? ` · ${item.governing_source}` : ""}
+                            </td>
+                            <td className="px-3 py-3 text-muted">
+                              {item.resolutions.length === 0 ? "No resolution" : (
+                                <ul className="space-y-1">
+                                  {item.resolutions.map((row) => (
+                                    <li key={`${row.ts}-${row.source}-${row.state}`}>
+                                      {reviewState(row.state)} · {row.source} · {row.reason} · {reviewTime(row.ts)}
+                                    </li>
+                                  ))}
+                                </ul>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </ResourceState>
+              {resource?.phase === "ok" && resource.data.next_cursor && (
+                <Button variant="ghost" className="mt-4" aria-disabled={loadingMore} onClick={() => { void load(resource.data.next_cursor ?? undefined); }}>
+                  {loadingMore ? "Loading more…" : "Load more unknown outcomes"}
+                </Button>
+              )}
+              <ProblemAlert error={pageError} className="mt-3" />
+            </div>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
 type AgentEvidencePageProps = {
   /** For tests; the app passes none and the page reads it. */
   viewer?: Viewer;
   /** For tests: each lookup's phase, as if it had been submitted. */
   decision?: Lookup<AgentDecisionLookup>;
   revocation?: Lookup<RevocationLookup>;
+  /** For tests: the on-demand unknown-outcome review state. */
+  review?: Resource<UnknownOutcomeReviewPage>;
 };
 
 export default function AgentEvidencePage({
   viewer: given,
   decision,
   revocation,
+  review,
 }: AgentEvidencePageProps) {
   const current = useViewer();
   const viewer = given ?? current;
@@ -223,6 +352,7 @@ export default function AgentEvidencePage({
       </Card>
 
       <div className="space-y-6">
+        <UnknownOutcomeReview viewer={viewer} initial={review} />
         <DecisionLookup viewer={viewer} initial={decision} />
         <RevocationLookupCard viewer={viewer} initial={revocation} />
       </div>

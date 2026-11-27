@@ -50,7 +50,8 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `POST /v1/agents/{agent_id}/restrict` | `stop_agent` | Agent detail | done (UI-2 #233) |
 | `POST /v1/agents/{agent_id}/quarantine` | `stop_agent` | Agent detail | done (UI-2 #233) |
 | `POST /v1/agents/{agent_id}/revoke` | `stop_agent` | Agent detail | done (UI-2 #233) |
-| `GET /v1/agent-decisions/{record_id}` | `read_evidence` (rate limited, audited) | Agent evidence | done (UI-1 #232) |
+| `GET /v1/agent-decisions/{record_id}` | `read_evidence` (rate limited, audited) | Agent evidence: signed decision/outcome and ADR-017 resolution history | done (UI-1 #232; ADR-017 first UI-3 slice) |
+| `GET /v1/unknown-outcomes?limit=&cursor=` | `read_evidence` (rate limited, audited) | Agent evidence: on-demand unknown-outcome review by governing state | done (ADR-017 third UI-3 slice; console fourth slice) |
 | `GET /v1/agent-revocations/{system}/{event_id}` | `read_evidence` (rate limited, audited) | Agent evidence | done (UI-1 #232) |
 | `POST /v1/reconciliation/closed-records` | `reconcile_closed_records` (rate limited, audited; revokes nothing) | Closed loans (`/reconciliation`) | done (UI-3 #234) |
 | `GET /v1/decision-events/{evidence_id}` | `read_evidence` | Decision events | done (UI-3 #234) |
@@ -59,6 +60,10 @@ CI keeps this table honest: `scripts/console_path_coverage.py` (step "Console AP
 | `GET /v1/admin/incidents` | `read_incidents` | Incidents | done (credit track) |
 | `GET /v1/admin/batch-jobs` | `read_batch_jobs` | Batch jobs | done (credit track) |
 | `GET /v1/admin/batch-jobs/{job_id}` | `read_batch_jobs` | Batch job detail | done (credit track) |
+| `GET /v1/me` | caller's session | App shell: role-aware page hints and superadmin banner | done (ADR-019 step 3, `/v1/me` is presentation only) |
+| `GET /v1/principals?q=&limit=&cursor=` | `read_principals` | Users & roles: searchable people directory | done (ADR-019 step 3, read-only slice) |
+| `GET /v1/role-bindings` | `read_principals` | Users & roles: active role bindings | done (ADR-019 step 3, read-only slice) |
+| `GET /v1/access-review?format=json\|csv` | `read_access_review` | Users & roles: on-demand review and CSV download | done (ADR-019 step 3) |
 | `POST /v1/authorize` | agent token | none | exempt: agent listener |
 | `POST /v1/tools/{tool}` | agent token | none | exempt: agent listener |
 | `POST /v1/sor/events` | issuer signature | none | exempt: system-of-record listener |
@@ -72,7 +77,7 @@ The credit-track pages keep working and get no new features. On an `--agent-only
 
 ### Backend gaps the console still has
 
-- **ADR-017 unknown outcomes and resolutions** have no read endpoint, and the agent-decision lookup carries no resolution. The console shows neither until one exists.
+- **ADR-017 unknown outcomes and resolutions:** the agent-decision lookup returns and displays full resolution history (first UI-3 slice). Memory and Postgres stores expose all unknown outcomes and history (second slice), the API provides a paged audited read with governing state (third slice), and the Agent Evidence page now provides the on-demand list (fourth slice). The backend has delivered and not-delivered attestation plus two-person conflict-closure change requests; the console remains read-only for outcomes. Remaining mock simulator/demo work and validation before real-provider work are tracked in ADR-017.
 - **Reinstatement parameters are untyped** in the spec (`ChangeProposal.params`), so `ReinstateAgentParams` is the one hand-written request type.
 - **One change request by id.** `GET /v1/change-requests/{id}` exists but the console does not use it: after proposing a reinstatement it links to the list. A detail view would use it and drop the exemption.
 - **Three change kinds** (`rollback_pack`, `erase_evidence`, `activate_model`) are listed, approved, rejected and cancelled in the console, but proposed only through the API.
@@ -117,11 +122,15 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - The result: `applied`, `record` (`written`, `pending`, `unchanged`), and for revoke the mandates revoked and not revoked, with "repeat the revoke to finish" when the second list is not empty.
 - Reinstate: propose a `reinstate_agent` change request (`to: active | restricted`), never from `revoked`.
 
-### UI-3: evidence and reconciliation — done (#234), one item waiting
+### UI-3: evidence and reconciliation — done (#234; ADR-017 read-only console slices)
 
 - Closed-records reconciliation (Closed loans): upload or paste the lender's list, show findings, state plainly that the call revokes nothing.
 - Decision events (credit) by evidence id, with `kavach-evidence verify --file` for the exported chain and `kavach why --export` for one event. Agent records get `kavach-evidence verify-bundle`, `kavach why --bundle` (decisions only) and the independent Python verifier. The console runs none of these; it shows them to copy.
-- Waiting: unknown outcomes and resolutions (ADR-017), once the read endpoints exist (section 2).
+- **Done (first ADR-017 slice):** an agent-decision evidence lookup returns all signed resolutions for an unknown outcome, oldest first, through the existing audited and rate-limited `read_evidence` path. The page renders the append-only history.
+- **Done (second slice):** both evidence stores expose a tenant-scoped, cursor-paged read of every unknown outcome and its complete resolution history. It includes unresolved, ambiguous, conflicted and confirmed histories; the reconciler's narrower queue remains unchanged.
+- **Done (third slice):** `GET /v1/unknown-outcomes` returns the paged store read with the governing state and source. It uses `read_evidence`, the evidence-read rate limit and an audit record; it does not resend or release a contact slot.
+- **Done (fourth slice):** Agent Evidence has a click-to-load, cursor-paged list showing each unknown outcome's governing state and complete resolution history, with loading, empty, error, retry and role-hint states. The read does not enable a write action.
+- **Separate backend work:** ADR-017 R3b attestation and conflict-closure change requests are backend capabilities. They are not part of the approved read-only UI-3 scope; no outcome write controls are shown in the console.
 
 ### UI-4: hardening and polish — done (#239, #241, #244, ADR-018 sign-in, #253, #254)
 
@@ -130,6 +139,15 @@ Each step was one or more PRs from `main`, with the repo's five-question checkli
 - The same loading, empty, error, 401/403 and 404 states on every page, a 404 page, and every page checked at 375px (#254).
 - OIDC authorization code with PKCE in place of the pasted token, per [ADR-018](ADR-018-console-login-and-token-storage.md) option C.
 - The API path check (section 2).
+
+### ADR-019 step 3: operator role management — done
+
+- **Done:** `/v1/me` is read once for the current caller and held in memory; known groups and roles inform sidebar visibility, and superadmins see the persistent banner.
+- **Done:** `/users` shows the searchable, cursor-paged people directory. Its read is covered by loading, empty, error, and accessibility tests.
+- **Done:** `/users` lists active role bindings separately from the people directory, with its own loading, empty and error states.
+- **Done:** `/users` lets an authorized operator propose a role grant for a directory principal. It submits a maker-checker request; the UI states that the pending request grants no access. The API remains authoritative.
+- **Done:** `/users` lets an authorized operator propose revocation of an active role binding by binding id. The UI states that the binding remains active until a different authorized person approves. The API remains authoritative.
+- **Done:** `/users` loads the access review only on request and displays active binding, grant, approver, last-seen and stale information. JSON loads and CSV downloads use the API's audited export route; the API provides the spreadsheet-safe CSV.
 
 ## 5. Decisions (closed)
 

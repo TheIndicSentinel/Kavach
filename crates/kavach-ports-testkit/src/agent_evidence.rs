@@ -168,6 +168,7 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     every_outcome_kind_is_stored(&*store, &clock, &signer).await;
     outcome_resolutions(&*store, &clock, &signer).await;
     unresolved_outcomes_are_what_the_reconciler_may_resolve(&*store, &clock, &signer).await;
+    unknown_outcome_reviews_include_every_governing_state(&*store, &clock, &signer).await;
     the_summary_counts_each_unknown_outcome_once(&*store, &clock, &signer).await;
     stuck_allows_are_the_allows_without_an_outcome_in_the_window(&*store, &clock, &signer).await;
     one_creator_per_request_under_concurrency(Arc::clone(&store), TestSigner::new(KID, 9)).await;
@@ -899,6 +900,114 @@ async fn unresolved_outcomes_are_what_the_reconciler_may_resolve<S: AgentEvidenc
     .unwrap();
     assert!(store.record_resolution(by_hand).await.unwrap());
     assert_eq!(work(100).await, std::slice::from_ref(&open.credential));
+}
+
+/// Operator review reads every unknown outcome, including cases the
+/// reconciler's narrower work queue has already stopped processing.
+async fn unknown_outcome_reviews_include_every_governing_state<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+) {
+    use ResolutionSource::{OperatorAttested, ProviderStatus, Reconciler};
+    use ResolutionState::{
+        Ambiguous, ConfirmedDelivered as Delivered, ConfirmedNotDelivered as Not,
+    };
+    let tenant = "ae-review-list";
+    let open = an_unknown_outcome(store, clock, signer, tenant, "review-a", Outcome::Unknown).await;
+    let ambiguous =
+        an_unknown_outcome(store, clock, signer, tenant, "review-b", Outcome::Unknown).await;
+    let conflicted =
+        an_unknown_outcome(store, clock, signer, tenant, "review-c", Outcome::Unknown).await;
+    let resolved =
+        an_unknown_outcome(store, clock, signer, tenant, "review-d", Outcome::Unknown).await;
+    let _known =
+        an_unknown_outcome(store, clock, signer, tenant, "review-e", Outcome::Delivered).await;
+    let _other_tenant = an_unknown_outcome(
+        store,
+        clock,
+        signer,
+        "ae-review-list-other",
+        "review-x",
+        Outcome::Unknown,
+    )
+    .await;
+
+    for row in [
+        resolution(
+            &ambiguous,
+            signer,
+            (Ambiguous, Reconciler),
+            None,
+            (None, None),
+        )
+        .unwrap(),
+        resolution(
+            &conflicted,
+            signer,
+            (Delivered, ProviderStatus),
+            Some("yes"),
+            (None, None),
+        )
+        .unwrap(),
+        resolution(
+            &conflicted,
+            signer,
+            (Not, OperatorAttested),
+            Some("ref"),
+            (Some("alice"), Some("bob")),
+        )
+        .unwrap(),
+        resolution(
+            &resolved,
+            signer,
+            (Delivered, ProviderStatus),
+            Some("yes"),
+            (None, None),
+        )
+        .unwrap(),
+    ] {
+        assert!(store.record_resolution(row).await.unwrap());
+    }
+
+    let page = store
+        .unknown_outcome_reviews(tenant, None, 10)
+        .await
+        .unwrap();
+    let ids: Vec<_> = page
+        .iter()
+        .map(|row| row.outcome.credential_id.as_str())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            open.credential.as_str(),
+            ambiguous.credential.as_str(),
+            conflicted.credential.as_str(),
+            resolved.credential.as_str()
+        ]
+    );
+    assert_eq!(page[0].resolutions, []);
+    assert_eq!(page[1].resolutions.len(), 1);
+    assert_eq!(page[2].resolutions.len(), 2);
+    assert_eq!(page[3].resolutions.len(), 1);
+    assert!(page.iter().all(|row| row.action == "send_reminder"));
+
+    let first = store
+        .unknown_outcome_reviews(tenant, None, 2)
+        .await
+        .unwrap();
+    let next = store
+        .unknown_outcome_reviews(tenant, Some(&first[1].outcome.credential_id), 2)
+        .await
+        .unwrap();
+    assert_eq!(first.len(), 2);
+    assert_eq!(
+        next.iter()
+            .map(|row| row.outcome.credential_id.as_str())
+            .collect::<Vec<_>>(),
+        [conflicted.credential.as_str(), resolved.credential.as_str()]
+    );
 }
 
 /// The summary (ADR-017 R3a) puts every unknown outcome of the tenant in

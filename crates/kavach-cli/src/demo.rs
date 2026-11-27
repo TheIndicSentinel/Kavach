@@ -111,6 +111,15 @@ pub async fn run(ui: &Ui, keep: bool, step_mode: bool, attack: bool) -> Result<i
             code,
         ));
     }
+
+    // Run this isolated stack before the demo stack starts: the simulator
+    // and the demo each need the same small pool of free loopback ports.
+    let (_, unknown) =
+        scene.kavach(&["simulate", "run", "--builtin", "unknown-outcome-resolved"])?;
+    let reconciled = &unknown["reconciliation"];
+    let unknown_resolved = reconciled["unknown_resolved"].as_u64() == Some(2);
+    let inbox_matches = reconciled["inbox_messages"].as_u64() == Some(2);
+
     scene.start_stack()?;
 
     let (_, issued) = scene.kavach(&["sor", "event"])?;
@@ -137,6 +146,24 @@ pub async fn run(ui: &Ui, keep: bool, step_mode: bool, attack: bool) -> Result<i
         &format!("kavach call send_reminder --mandate {mandate}"),
         call["decision"] == "PASS" && delivered,
         format!("{} ({}), record {record}", w(&call["decision"]), w(&call["reply"]["outcome"])),
+    );
+    pause(step_mode);
+
+    step(
+        "A second, isolated mock-provider run loses one response and returns an error for another send. Kavach asks for status, resolves both unknown outcomes from the provider, and the inbox confirms there was no resend.",
+        "kavach simulate run --builtin unknown-outcome-resolved",
+        unknown["evidence"]["state"] == "verified"
+            && unknown_resolved
+            && inbox_matches
+            && unknown["reconciliation"]["findings"]
+                .as_array()
+                .is_some_and(Vec::is_empty),
+        format!(
+            "{} unknown outcomes resolved; {} messages in the provider inbox; evidence {}",
+            w(&reconciled["unknown_resolved"]),
+            w(&reconciled["inbox_messages"]),
+            w(&unknown["evidence"]["state"])
+        ),
     );
     pause(step_mode);
 

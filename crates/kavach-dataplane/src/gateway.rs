@@ -12,7 +12,9 @@
 //! Nothing here ever returns the destination, the credential or a
 //! provider's raw response to the agent: [`GatewayReply`] is an allowlist.
 
+use std::collections::BTreeSet;
 use std::future::Future;
+use std::pin::Pin;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -44,6 +46,39 @@ pub enum ForwardResult {
     Lost,
 }
 
+/// Request for a backend that accepts a Kavach-encrypted credential. Use
+/// [`GatewayHeldRequest`] for an adapter that holds its own provider token.
+pub struct CredentialAcceptingRequest<'a> {
+    pub credential_id: &'a str,
+    pub destination: &'a kavach_ports::Destination,
+    pub channel: &'a str,
+    pub template_id: &'a str,
+    pub credential: &'a TokenSecret,
+}
+
+/// Request context for a gateway-held provider adapter. It deliberately has
+/// no Kavach token field; provider credentials must be resolved separately
+/// from the configured secret store at send time. These values are sensitive
+/// and must never be logged.
+pub struct GatewayHeldRequest<'a> {
+    pub credential_id: &'a str,
+    pub destination: &'a kavach_ports::Destination,
+    pub channel: &'a str,
+    pub template_id: &'a str,
+}
+
+/// Runtime selection for providers whose credentials are held by Kavach.
+/// Each selected provider is issued an internal artifact and sent through the
+/// tokenless adapter. Providers absent from this set use the standard path.
+pub struct GatewayHeldDispatch<'a> {
+    pub providers: &'a BTreeSet<String>,
+    pub broker: &'a dyn kavach_ports::InternalCredentialBroker,
+    pub forwarder: &'a dyn GatewayHeldForwarder,
+}
+
+/// Object-safe future returned by [`GatewayHeldForwarder`].
+pub type GatewayHeldForwardFuture<'a> = Pin<Box<dyn Future<Output = ForwardResult> + Send + 'a>>;
+
 /// Sends one credential to a provider. Implementations must not retry, must
 /// not follow redirects and must not use ambient proxies.
 pub trait Forwarder: Send + Sync {
@@ -52,6 +87,46 @@ pub trait Forwarder: Send + Sync {
         provider: &str,
         credential: &TokenSecret,
     ) -> impl Future<Output = ForwardResult> + Send;
+
+    /// Builds a provider-specific request from the gateway's resolved,
+    /// authorized values. Credential-accepting providers keep the original
+    /// wire format through the default implementation.
+    fn forward_request(
+        &self,
+        provider: &str,
+        request: &CredentialAcceptingRequest<'_>,
+    ) -> impl Future<Output = ForwardResult> + Send {
+        self.forward(provider, request.credential)
+    }
+}
+
+/// Sends one gateway-held provider request. The interface intentionally has
+/// no `TokenSecret` argument, so an adapter implementing this trait cannot
+/// accidentally forward a Kavach credential. Implementations must send once,
+/// without retries, redirects or ambient proxies.
+pub trait GatewayHeldForwarder: Send + Sync {
+    fn forward_gateway_held<'a>(
+        &'a self,
+        provider: &'a str,
+        request: &'a GatewayHeldRequest<'a>,
+    ) -> GatewayHeldForwardFuture<'a>;
+}
+
+async fn send_forward_request<F: Forwarder>(
+    forwarder: &F,
+    provider: &str,
+    request: CredentialAcceptingRequest<'_>,
+) -> ForwardResult {
+    forwarder.forward_request(provider, &request).await
+}
+
+fn forwarded_message_id(result: &ForwardResult) -> Option<String> {
+    match result {
+        ForwardResult::Responded { message_id, .. } => {
+            message_id.as_deref().and_then(bounded_message_id)
+        }
+        _ => None,
+    }
 }
 
 /// What a provider says became of one earlier send (the status contract,
@@ -215,6 +290,8 @@ pub struct GatewayDeps<'a, V, S, R, B, F, O> {
     pub resolver: &'a R,
     pub broker: &'a B,
     pub forwarder: &'a F,
+    /// Optional per-provider dispatch for gateway-held provider tokens.
+    pub gateway_held: Option<&'a GatewayHeldDispatch<'a>>,
     pub observer: &'a O,
 }
 
@@ -223,6 +300,20 @@ struct Allowed<'a> {
     credential_id: &'a str,
     expires_at: DateTime<Utc>,
     send_by: Option<DateTime<Utc>>,
+}
+
+enum IssuedForCall {
+    Provider(kavach_ports::IssuedCredential),
+    Internal(kavach_ports::InternalCredentialReceipt),
+}
+
+impl IssuedForCall {
+    fn expires_at(&self) -> DateTime<Utc> {
+        match self {
+            Self::Provider(credential) => credential.expires_at,
+            Self::Internal(receipt) => receipt.expires_at,
+        }
+    }
 }
 
 /// Executes one tool call. `Err` only for calls that get no decision reply.
@@ -451,37 +542,36 @@ where
         });
     }
     let started = Instant::now();
-    let issued = deps
-        .broker
-        .issue(&CredentialRequest {
-            tenant_id: core.tenant_id(),
-            agent_id: &agent.agent_id,
-            mandate_id: &call.mandate_id,
-            record_id: &allowed.record.payload.record_id,
-            credential_id: allowed.credential_id,
-            audience: provider,
-            action: &call.action,
-            destination: &destination,
-            channel,
-            template_id: content,
-            expires_at: allowed.expires_at,
-            send_by: allowed.send_by,
-            now,
-        })
-        .await;
-    deps.observer.stage(Stage::Credential, started.elapsed());
-    drop(destination);
-    let credential = match issued {
-        Ok(credential) => credential,
+    let credential_request = CredentialRequest {
+        tenant_id: core.tenant_id(),
+        agent_id: &agent.agent_id,
+        mandate_id: &call.mandate_id,
+        record_id: &allowed.record.payload.record_id,
+        credential_id: allowed.credential_id,
+        audience: provider,
+        action: &call.action,
+        destination: &destination,
+        channel,
+        template_id: content,
+        expires_at: allowed.expires_at,
+        send_by: allowed.send_by,
+        now,
+    };
+    let gateway_held = deps
+        .gateway_held
+        .filter(|dispatch| dispatch.providers.contains(provider));
+    let issued = match issue_for_call(deps.broker, gateway_held, &credential_request).await {
+        Ok(issued) => issued,
         Err(err) => {
+            deps.observer.stage(Stage::Credential, started.elapsed());
             return not_executed(match err.class {
                 ErrorClass::Rejected => "credential_refused",
                 ErrorClass::Invalid => "credential_invalid",
                 ErrorClass::Unavailable => "credential_unavailable",
-            })
+            });
         }
     };
-
+    deps.observer.stage(Stage::Credential, started.elapsed());
     // A slow resolver or broker must not push the send past the deadline.
     let Some(now) = core.trusted_now() else {
         return not_executed("trusted_time_unavailable");
@@ -489,22 +579,70 @@ where
     if allowed.send_by.is_some_and(|send_by| now >= send_by) {
         return not_executed("send_by_passed");
     }
-    if now >= credential.expires_at {
+    if now >= issued.expires_at() {
         return not_executed("credential_expired");
     }
 
     let started = Instant::now();
-    let result = deps.forwarder.forward(provider, &credential.token).await;
-    deps.observer.stage(Stage::Forward, started.elapsed());
-    drop(credential);
-    let (outcome, reason, _) = classify(&result);
-    let message_id = match result {
-        ForwardResult::Responded { message_id, .. } => {
-            message_id.as_deref().and_then(bounded_message_id)
-        }
-        _ => None,
+    let Ok(result) =
+        forward_issued(deps.forwarder, gateway_held, &credential_request, &issued).await
+    else {
+        return not_executed("provider_mode_mismatch");
     };
+    deps.observer.stage(Stage::Forward, started.elapsed());
+    let (outcome, reason, _) = classify(&result);
+    let message_id = forwarded_message_id(&result);
     (outcome, reason, message_id)
+}
+
+async fn issue_for_call<B: CredentialBroker>(
+    broker: &B,
+    gateway_held: Option<&GatewayHeldDispatch<'_>>,
+    request: &CredentialRequest<'_>,
+) -> Result<IssuedForCall, kavach_ports::PortError> {
+    match gateway_held {
+        Some(dispatch) => dispatch
+            .broker
+            .issue_internal(request)
+            .await
+            .map(IssuedForCall::Internal),
+        None => broker.issue(request).await.map(IssuedForCall::Provider),
+    }
+}
+
+async fn forward_issued<F: Forwarder>(
+    forwarder: &F,
+    gateway_held: Option<&GatewayHeldDispatch<'_>>,
+    request: &CredentialRequest<'_>,
+    issued: &IssuedForCall,
+) -> Result<ForwardResult, ()> {
+    match (gateway_held, issued) {
+        (Some(dispatch), IssuedForCall::Internal(_)) => Ok(dispatch
+            .forwarder
+            .forward_gateway_held(
+                request.audience,
+                &GatewayHeldRequest {
+                    credential_id: request.credential_id,
+                    destination: request.destination,
+                    channel: request.channel,
+                    template_id: request.template_id,
+                },
+            )
+            .await),
+        (None, IssuedForCall::Provider(credential)) => Ok(send_forward_request(
+            forwarder,
+            request.audience,
+            CredentialAcceptingRequest {
+                credential_id: request.credential_id,
+                destination: request.destination,
+                channel: request.channel,
+                template_id: request.template_id,
+                credential: &credential.token,
+            },
+        )
+        .await),
+        _ => Err(()),
+    }
 }
 
 #[cfg(test)]
@@ -555,5 +693,40 @@ mod tests {
         ] {
             assert_eq!(bounded_message_id(bad), None, "{bad:?}");
         }
+    }
+
+    struct TokenlessGatewayHeldAdapter;
+
+    impl GatewayHeldForwarder for TokenlessGatewayHeldAdapter {
+        fn forward_gateway_held<'a>(
+            &'a self,
+            provider: &'a str,
+            request: &'a GatewayHeldRequest<'a>,
+        ) -> GatewayHeldForwardFuture<'a> {
+            Box::pin(async move {
+                assert_eq!(provider, "free-local-adapter");
+                assert_eq!(request.credential_id, "record-1");
+                assert_eq!(request.destination.expose(), "+919876543210");
+                assert_eq!(request.channel, "whatsapp");
+                assert_eq!(request.template_id, "reminder-v1");
+                responded(202)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn gateway_held_adapter_contract_has_no_kavach_token_parameter() {
+        let destination = kavach_ports::Destination::new("+919876543210");
+        let request = GatewayHeldRequest {
+            credential_id: "record-1",
+            destination: &destination,
+            channel: "whatsapp",
+            template_id: "reminder-v1",
+        };
+        let adapter: &dyn GatewayHeldForwarder = &TokenlessGatewayHeldAdapter;
+        let result = adapter
+            .forward_gateway_held("free-local-adapter", &request)
+            .await;
+        assert_eq!(result, responded(202));
     }
 }

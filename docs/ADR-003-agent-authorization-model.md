@@ -151,6 +151,10 @@ Reference hardware for PRD NFR-2: 4 CPU cores, 16 GB RAM, local PostgreSQL 16. `
   - ~~Add a note to `DECISION_EVENT_COMPAT.md` describing the §8 evaluate-path time change~~ — done in M1.2 (pack selection by server time; trusted `now` in CEL arrives with M1.5).
 - Developer experience on macOS requires the explicit `allow_unverified` profile; production deployments must run on hosts with kernel clock-sync status.
 
+## Implementation status (2026-11-17)
+
+The Cedar escalation path returns `HUMAN_REVIEW`; a 35% waiver against the 10% ceiling is recorded with no allow grant, while a within-ceiling request can pass. The first M4 regression assertion confirms the review decision is persisted and has no grant. The action-bound approval workflow is still pending: there is no WebAuthn step-up provider, approval record/store, reviewer surface, action-hash binding, or single-use approval credential yet. Acceptance scenario 6 remains partial; see [ACCEPTANCE.md](ACCEPTANCE.md).
+
 ## References
 
 - [PRD](PRD.md) D14, D15, D17, FR-2, FR-5, NFR-2, NFR-3, NFR-7

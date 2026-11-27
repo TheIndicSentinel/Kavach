@@ -18,12 +18,14 @@ mod keys;
 mod mandate;
 pub mod outcome_resolution;
 mod policy;
+pub mod provider_secret;
 mod reference;
 mod replay;
 mod time;
 
 pub use credential::{
-    CredentialBroker, CredentialRequest, Destination, IssuedCredential, StatusQuestions,
+    CredentialBroker, CredentialRequest, Destination, InternalCredentialBroker,
+    InternalCredentialFuture, InternalCredentialReceipt, IssuedCredential, StatusQuestions,
     TokenSecret, MAX_CREDENTIAL_TTL_SECONDS,
 };
 pub use error::{ErrorClass, PortError};
@@ -37,6 +39,7 @@ pub use mandate::{
     RevocationApply, RevocationCursor, ScopedRoot, StoredMandate, StoredRevocation,
 };
 pub use policy::PolicyEngine;
+pub use provider_secret::{ProviderSecretFuture, ProviderSecretStore};
 pub use reference::ReferenceResolver;
 pub use replay::ReplayGuard;
 pub use time::{SyncStatus, SystemClock, TimeSource, TrustedNow};

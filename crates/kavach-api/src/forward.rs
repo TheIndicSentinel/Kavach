@@ -33,6 +33,13 @@ pub struct HttpForwarder {
 /// An error names the endpoint by scheme, host and port only: it reaches
 /// stderr at startup, and the rest of the endpoint can carry a credential.
 pub fn messages_url(endpoint: &str) -> Result<(Url, bool), String> {
+    let (mut url, plain) = base_url(endpoint)?;
+    let path = format!("{}/v1/messages", url.path().trim_end_matches('/'));
+    url.set_path(&path);
+    Ok((url, plain))
+}
+
+fn base_url(endpoint: &str) -> Result<(Url, bool), String> {
     // `url::ParseError` displays a fixed phrase, never the input.
     let base = Url::parse(endpoint).map_err(|e| format!("endpoint does not parse: {e}"))?;
     let plain = match base.scheme() {
@@ -52,10 +59,7 @@ pub fn messages_url(endpoint: &str) -> Result<(Url, bool), String> {
             crate::hardening::shown_endpoint(endpoint)
         ));
     }
-    let mut url = base;
-    let path = format!("{}/v1/messages", url.path().trim_end_matches('/'));
-    url.set_path(&path);
-    Ok((url, plain))
+    Ok((base, plain))
 }
 
 impl HttpForwarder {

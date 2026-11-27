@@ -149,6 +149,42 @@ describe("UI-1 record views", () => {
     expect(text(render(<DecisionRecordView result={delivered} />))).toContain("Refused:");
   });
 
+  it("shows the signed ADR-017 resolution history without claiming to verify it", () => {
+    const resolved = {
+      ...decisionLookup,
+      outcome: {
+        tenant_id: "bank-1",
+        credential_id: "cred-1",
+        record_hash: "recordhash42",
+        outcome: "unknown" as const,
+        reason: "timeout_after_send",
+        ts: "2026-11-14T09:00:01Z",
+        key_id: "evidence-key-1",
+        sig: "outsig",
+      },
+      resolutions: [{
+        tenant_id: "bank-1",
+        credential_id: "cred-1",
+        outcome_ref: "a".repeat(64),
+        state: "confirmed_delivered" as const,
+        source: "operator_attested" as const,
+        reason: "provider_confirmation",
+        evidence_digest: "b".repeat(64),
+        resolved_by: "oidc:https://idp#operator-1",
+        ts: "2026-11-14T09:02:00Z",
+        key_id: "evidence-key-1",
+        sig: "resolutionsig",
+      }],
+    };
+    const html = render(<DecisionRecordView result={resolved} />);
+    expect(text(html)).toContain("Unknown outcome resolution history");
+    expect(text(html)).toContain("confirmed_delivered");
+    expect(text(html)).toContain("operator_attested");
+    expect(text(html)).toContain("provider_confirmation");
+    expect(text(html)).toContain("oidc:https://idp#operator-1");
+    expect(text(html)).not.toMatch(/signature verified/i);
+  });
+
   it("adds the bundle verify commands to a revocation record", () => {
     const html = render(<RevocationRecordView result={revocationLookup} />);
     expect(codeBlocks(html)).toContain(

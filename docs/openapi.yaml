@@ -415,7 +415,7 @@ paths:
     get:
       operationId: getAgentDecision
       tags: [evidence]
-      summary: One agent decision record and its outcome (admins; audited).
+      summary: One agent decision record, outcome, and ADR-017 resolution history (admins; audited).
       parameters:
         - name: record_id
           in: path
@@ -426,19 +426,55 @@ paths:
             pattern: "^adr:[A-Za-z0-9._-]+:[0-9]{1,9}:[0-9]{1,19}$"
       responses:
         "200":
-          description: The signed record and, if any, its signed outcome.
+          description: The signed record, its outcome, and every signed ADR-017 resolution (oldest first).
           content:
             application/json:
               schema:
                 type: object
                 additionalProperties: false
-                required: [record, outcome]
+                required: [record, outcome, resolutions]
                 properties:
                   record: { $ref: "#/components/schemas/AgentDecisionRecord" }
                   outcome:
                     oneOf:
                       - { $ref: "#/components/schemas/OutcomeRecord" }
                       - { type: "null" }
+                  resolutions:
+                    type: array
+                    items: { $ref: "#/components/schemas/OutcomeResolutionRecord" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/TooManyRequests" }
+        "500": { $ref: "#/components/responses/Internal" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /v1/unknown-outcomes:
+    get:
+      operationId: listUnknownOutcomes
+      tags: [evidence]
+      summary: A page of unknown outcomes and their ADR-017 governing state (admins; audited).
+      description: >-
+        Tenant scoped to the authenticated server configuration. Includes unresolved,
+        ambiguous, conflicted and confirmed histories. This is a read-only review; it never
+        resends a provider request or releases a contact slot. Reads require read_evidence,
+        are rate limited, and are audited before data is returned.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: cursor
+          in: query
+          required: false
+          schema: { type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9._:-]+$" }
+      responses:
+        "200":
+          description: Credential-id ordered page and the next cursor, if another page exists.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/UnknownOutcomeReviewPage" }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/Forbidden" }
@@ -1634,6 +1670,9 @@ components:
         - reinstate_agent
         - grant_role
         - revoke_role
+        - attest_outcome_delivered
+        - attest_outcome_not_delivered
+        - resolve_outcome_conflict
     ChangeStatus:
       type: string
       enum: [pending, applied, failed, rejected, cancelled, expired]
@@ -1893,7 +1932,14 @@ components:
         `erase_evidence` `{evidence_id}`; `reinstate_agent` `{agent_id, to: active |
         restricted, reason_code?, note?}` (never from `revoked`); `grant_role`
         `{role, subject: {kind: principal | group, issuer, value}}`; `revoke_role`
-        `{binding_id}`. A role change is refused (403) when it names the caller or a group
+        `{binding_id}`; `attest_outcome_delivered` and `attest_outcome_not_delivered`
+        `{credential_id, reason_code, reference}`; `resolve_outcome_conflict`
+        `{credential_id, resolution_state, reason_code, reference}`. References are digested before they are
+        stored or audited. The proposer completes a delivered attestation; a different
+        authenticated human approves a not-delivered attestation or conflict closure.
+        Conflict closure also requires `resolution_state` (`confirmed_delivered` or
+        `confirmed_not_delivered`) naming the state to govern. A role change is refused
+        (403) when it names the caller or a group
         in their token, and when it touches `superadmin` for anyone but a superadmin; it is
         a conflict (409) for a duplicate active binding or the tenant's last active person
         binding of `superadmin` or `user_admin` (ADR-019 §4). Unknown keys are refused.
@@ -2237,6 +2283,55 @@ components:
         ts: { $ref: "#/components/schemas/DateTime" }
         key_id: { type: string }
         sig: { type: string }
+
+    OutcomeResolutionRecord:
+      type: object
+      additionalProperties: false
+      required: [tenant_id, credential_id, outcome_ref, state, source, reason, ts, key_id, sig]
+      properties:
+        tenant_id: { type: string }
+        credential_id: { type: string }
+        outcome_ref: { type: string, pattern: "^[0-9a-f]{64}$" }
+        state: { type: string, enum: [confirmed_delivered, confirmed_not_delivered, ambiguous] }
+        source: { type: string, enum: [provider_status, operator_attested, conflict_resolution, reconciler] }
+        reason: { type: string, pattern: "^[a-z0-9_]{1,64}$" }
+        evidence_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+        resolved_by: { type: string }
+        approved_by: { type: string }
+        ts: { $ref: "#/components/schemas/DateTime" }
+        key_id: { type: string }
+        sig: { type: string }
+
+    UnknownOutcomeReviewPage:
+      type: object
+      additionalProperties: false
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/UnknownOutcomeReviewItem" }
+        next_cursor:
+          oneOf:
+            - { type: string }
+            - { type: "null" }
+
+    UnknownOutcomeReviewItem:
+      type: object
+      additionalProperties: false
+      required: [outcome, action, resolutions, governing_state, governing_source]
+      properties:
+        outcome: { $ref: "#/components/schemas/OutcomeRecord" }
+        action: { type: string }
+        resolutions:
+          type: array
+          items: { $ref: "#/components/schemas/OutcomeResolutionRecord" }
+        governing_state:
+          type: string
+          enum: [unresolved, ambiguous, conflicted, confirmed_delivered, confirmed_not_delivered]
+        governing_source:
+          oneOf:
+            - { type: string, enum: [provider_status, operator_attested, conflict_resolution] }
+            - { type: "null" }
 
     GatewayReply:
       type: object

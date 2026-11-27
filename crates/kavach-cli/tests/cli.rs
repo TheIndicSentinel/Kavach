@@ -1281,17 +1281,25 @@ fn demo_runs_every_step_as_scripted() {
     assert_eq!(out.status.code(), Some(0), "{doc}");
     assert_eq!(doc["all_as_scripted"], true, "{doc}");
     let steps = doc["steps"].as_array().unwrap();
-    assert_eq!(steps.len(), 9, "{doc}");
+    assert_eq!(steps.len(), 10, "{doc}");
     for s in steps {
         assert_eq!(s["ok"], true, "{s}");
         assert!(s["command"].as_str().unwrap().starts_with("kavach "), "{s}");
     }
+    let reconciliation = steps
+        .iter()
+        .find(|s| s["command"] == "kavach simulate run --builtin unknown-outcome-resolved")
+        .expect("the demo includes the unknown-outcome reconciliation scenario");
+    assert!(reconciliation["detail"]
+        .as_str()
+        .unwrap()
+        .contains("2 unknown outcomes resolved"));
     assert!(doc["kept"].is_null());
 
     let kept = kavach(&dir, &["--json", "demo", "--keep", "--no-attack"]);
     let doc = json(&kept);
     assert_eq!(kept.status.code(), Some(0), "{doc}");
-    assert_eq!(doc["steps"].as_array().unwrap().len(), 8, "no attack step");
+    assert_eq!(doc["steps"].as_array().unwrap().len(), 9, "no attack step");
     let path = PathBuf::from(doc["kept"].as_str().unwrap());
     assert!(path.join("kavach.toml").is_file(), "{}", path.display());
     assert!(!path.join(".kavach/run.json").exists(), "the stack stopped");

@@ -10,6 +10,7 @@
 use chrono::{DateTime, Utc};
 use kavach_domain::{GovernanceMode, ModelRecord, ModelStatus};
 use kavach_policy::{LoadedPolicyPack, PackLoader};
+use kavach_ports::agent_evidence::AgentEvidenceStore;
 use kavach_storage::{
     evidence_set_digest, grant_refusal, revoke_target, ApprovalCommit, AuditInsert, BindingSubject,
     ChangeKind, ChangeRequest, ChangeStatus, ChangeStoreError, CloseRequest, GovernanceEffect,
@@ -130,6 +131,29 @@ struct ReinstateAgentParams {
 #[serde(deny_unknown_fields)]
 struct EraseEvidenceParams {
     evidence_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AttestOutcomeDeliveredParams {
+    credential_id: String,
+    reason_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference_digest: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveOutcomeConflictParams {
+    credential_id: String,
+    resolution_state: String,
+    reason_code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reference_digest: Option<String>,
 }
 
 /// A grant's subject as the request carries it (ADR-019 §4).
@@ -302,6 +326,22 @@ impl AppState {
         proposal: ChangeProposal,
     ) -> Result<ChangeRequest, ApiError> {
         let reason = validate_reason(proposal.reason)?;
+        if matches!(
+            proposal.kind,
+            ChangeKind::AttestOutcomeDelivered
+                | ChangeKind::AttestOutcomeNotDelivered
+                | ChangeKind::ResolveOutcomeConflict
+        ) && (proposal
+            .params
+            .get("reference")
+            .and_then(Value::as_str)
+            .is_none()
+            || proposal.params.get("reference_digest").is_some())
+        {
+            return Err(ApiError::BadRequest(
+                "invalid params: an operator reference is required".into(),
+            ));
+        }
         if proposal.kind == ChangeKind::GrantRole {
             refuse_self_grant(proposer, &proposal.params, "proposer")?;
         }
@@ -359,6 +399,9 @@ impl AppState {
 
     /// Approves and applies a pending request. A retry by the same approver
     /// after success returns the applied request.
+    // One approval sequence (who may approve, digest echo, apply, record),
+    // read top to bottom; splitting it would scatter the checks.
+    #[allow(clippy::too_many_lines)]
     pub async fn approve_change(
         &self,
         approver: &Authorized,
@@ -385,7 +428,13 @@ impl AppState {
         if request.status != ChangeStatus::Pending {
             return Err(store_error(ChangeStoreError::NotPending(Box::new(request))));
         }
-        if approver_key == request.proposer_key || approver.id == request.proposer {
+        if request.kind == ChangeKind::AttestOutcomeDelivered {
+            if approver_key != request.proposer_key {
+                return Err(ApiError::ForbiddenBecause(
+                    "the proposer completes a delivered attestation alone".into(),
+                ));
+            }
+        } else if approver_key == request.proposer_key || approver.id == request.proposer {
             return Err(ApiError::ForbiddenBecause(
                 "the approver must be a different principal than the proposer".into(),
             ));
@@ -441,6 +490,74 @@ impl AppState {
                 return Err(err);
             }
         };
+
+        if matches!(
+            request.kind,
+            ChangeKind::AttestOutcomeDelivered
+                | ChangeKind::AttestOutcomeNotDelivered
+                | ChangeKind::ResolveOutcomeConflict
+        ) {
+            let core = self
+                .dataplane()
+                .ok_or_else(|| ApiError::NotFound("agent surfaces are not configured".into()))?
+                .core();
+            let result = match request.kind {
+                ChangeKind::AttestOutcomeDelivered => {
+                    let params: AttestOutcomeDeliveredParams = parse(&prepared.params)?;
+                    let digest = params.reference_digest.as_deref().ok_or_else(|| {
+                        ApiError::Internal("attestation has no reference digest".into())
+                    })?;
+                    core.attest_delivered(
+                        &params.credential_id,
+                        &params.reason_code,
+                        digest,
+                        &request.proposer_key,
+                    )
+                    .await
+                }
+                ChangeKind::AttestOutcomeNotDelivered => {
+                    let params: AttestOutcomeDeliveredParams = parse(&prepared.params)?;
+                    let digest = params.reference_digest.as_deref().ok_or_else(|| {
+                        ApiError::Internal("attestation has no reference digest".into())
+                    })?;
+                    core.attest_not_delivered(
+                        &params.credential_id,
+                        &params.reason_code,
+                        digest,
+                        &request.proposer_key,
+                        &approver_key,
+                    )
+                    .await
+                }
+                ChangeKind::ResolveOutcomeConflict => {
+                    let params: ResolveOutcomeConflictParams = parse(&prepared.params)?;
+                    let state = kavach_ports::outcome_resolution::ResolutionState::parse(
+                        &params.resolution_state,
+                    )
+                    .filter(|state| state.is_confirmed())
+                    .ok_or_else(|| {
+                        ApiError::BadRequest(
+                            "invalid params: resolution_state must be confirmed_delivered or confirmed_not_delivered".into(),
+                        )
+                    })?;
+                    let digest = params.reference_digest.as_deref().ok_or_else(|| {
+                        ApiError::Internal("conflict closure has no reference digest".into())
+                    })?;
+                    core.resolve_outcome_conflict(
+                        &params.credential_id,
+                        state,
+                        &params.reason_code,
+                        digest,
+                        &request.proposer_key,
+                        &approver_key,
+                    )
+                    .await
+                }
+                _ => unreachable!("only outcome resolution kinds enter this block"),
+            };
+            result
+                .map_err(|e| ApiError::Unavailable(format!("outcome resolution: {}", e.message)))?;
+        }
 
         self.commit(&request, approver, &approver_key, prepared, now)
             .await
@@ -620,7 +737,203 @@ impl AppState {
             }
             ChangeKind::GrantRole => self.prepare_grant_role(parse(params)?).await,
             ChangeKind::RevokeRole => self.prepare_revoke_role(parse(params)?).await,
+            ChangeKind::AttestOutcomeDelivered => {
+                self.prepare_attest_outcome(
+                    parse(params)?,
+                    kavach_ports::outcome_resolution::ResolutionState::ConfirmedDelivered,
+                )
+                .await
+            }
+            ChangeKind::AttestOutcomeNotDelivered => {
+                self.prepare_attest_outcome(
+                    parse(params)?,
+                    kavach_ports::outcome_resolution::ResolutionState::ConfirmedNotDelivered,
+                )
+                .await
+            }
+            ChangeKind::ResolveOutcomeConflict => {
+                self.prepare_resolve_outcome_conflict(parse(params)?).await
+            }
         }
+    }
+
+    async fn prepare_attest_outcome(
+        &self,
+        mut params: AttestOutcomeDeliveredParams,
+        state: kavach_ports::outcome_resolution::ResolutionState,
+    ) -> Result<Prepared, ApiError> {
+        let reason_ok = !params.reason_code.is_empty()
+            && params.reason_code.len() <= 64
+            && params
+                .reason_code
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+        if !reason_ok {
+            return Err(ApiError::BadRequest(
+                "invalid params: reason_code must be 1 to 64 lowercase letters, digits or underscores".into(),
+            ));
+        }
+        let reference_digest = if let Some(reference) = params.reference.take() {
+            if reference.is_empty()
+                || reference.len() > 2048
+                || reference.chars().any(char::is_control)
+            {
+                return Err(ApiError::BadRequest(
+                    "invalid params: reference must be 1 to 2048 characters without control characters".into(),
+                ));
+            }
+            format!("{:x}", Sha256::digest(reference.as_bytes()))
+        } else {
+            params.reference_digest.take().ok_or_else(|| {
+                ApiError::BadRequest("invalid params: reference is required".into())
+            })?
+        };
+        if reference_digest.len() != 64 || !reference_digest.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(ApiError::BadRequest(
+                "invalid params: reference digest is malformed".into(),
+            ));
+        }
+        let dp = self
+            .dataplane()
+            .ok_or_else(|| ApiError::NotFound("agent surfaces are not configured".into()))?;
+        let core = dp.core();
+        let outcome = core
+            .store()
+            .outcome(core.tenant_id(), &params.credential_id)
+            .await
+            .map_err(|e| ApiError::Unavailable(format!("outcome: {}", e.message)))?
+            .ok_or_else(|| ApiError::NotFound("unknown outcome".into()))?;
+        if outcome.outcome != kavach_ports::agent_evidence::Outcome::Unknown {
+            return Err(ApiError::Conflict(
+                "only an unknown outcome may be attested".into(),
+            ));
+        }
+        let mut resolutions = core
+            .store()
+            .resolutions(core.tenant_id(), &params.credential_id)
+            .await
+            .map_err(|e| ApiError::Unavailable(format!("resolutions: {}", e.message)))?;
+        resolutions.sort_by(|a, b| (&a.ts, &a.sig).cmp(&(&b.ts, &b.sig)));
+        let resolution_sigs: Vec<_> = resolutions.iter().map(|r| r.sig.as_str()).collect();
+        params.reference_digest = Some(reference_digest.clone());
+        let normalized = to_value(&params)?;
+        Ok(Prepared {
+            params: normalized,
+            binding: json!({
+                "outcome_ref": kavach_ports::outcome_resolution::outcome_ref(&outcome),
+                "resolution_sigs": resolution_sigs,
+            }),
+            expected_version: None,
+            effects: vec![],
+            live: None,
+            resource_type: "agent_outcome",
+            resource_id: params.credential_id.clone(),
+            audit_payload: json!({
+                "state": state.as_str(),
+                "reason_code": params.reason_code,
+                "reference_digest": reference_digest,
+            }),
+            outcome: json!({ "state": state.as_str() }),
+            agent_change: None,
+        })
+    }
+
+    async fn prepare_resolve_outcome_conflict(
+        &self,
+        mut params: ResolveOutcomeConflictParams,
+    ) -> Result<Prepared, ApiError> {
+        let state = kavach_ports::outcome_resolution::ResolutionState::parse(
+            &params.resolution_state,
+        )
+        .filter(|state| state.is_confirmed())
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "invalid params: resolution_state must be confirmed_delivered or confirmed_not_delivered".into(),
+            )
+        })?;
+        let reason_ok = !params.reason_code.is_empty()
+            && params.reason_code.len() <= 64
+            && params
+                .reason_code
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+        if !reason_ok {
+            return Err(ApiError::BadRequest(
+                "invalid params: reason_code must be 1 to 64 lowercase letters, digits or underscores".into(),
+            ));
+        }
+        let reference_digest = if let Some(reference) = params.reference.take() {
+            if reference.is_empty()
+                || reference.len() > 2048
+                || reference.chars().any(char::is_control)
+            {
+                return Err(ApiError::BadRequest(
+                    "invalid params: reference must be 1 to 2048 characters without control characters".into(),
+                ));
+            }
+            format!("{:x}", Sha256::digest(reference.as_bytes()))
+        } else {
+            params.reference_digest.take().ok_or_else(|| {
+                ApiError::BadRequest("invalid params: reference is required".into())
+            })?
+        };
+        if reference_digest.len() != 64 || !reference_digest.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(ApiError::BadRequest(
+                "invalid params: reference digest is malformed".into(),
+            ));
+        }
+        let dp = self
+            .dataplane()
+            .ok_or_else(|| ApiError::NotFound("agent surfaces are not configured".into()))?;
+        let core = dp.core();
+        let outcome = core
+            .store()
+            .outcome(core.tenant_id(), &params.credential_id)
+            .await
+            .map_err(|e| ApiError::Unavailable(format!("outcome: {}", e.message)))?
+            .ok_or_else(|| ApiError::NotFound("unknown outcome".into()))?;
+        if outcome.outcome != kavach_ports::agent_evidence::Outcome::Unknown {
+            return Err(ApiError::Conflict(
+                "only an unknown outcome may be attested".into(),
+            ));
+        }
+        let mut resolutions = core
+            .store()
+            .resolutions(core.tenant_id(), &params.credential_id)
+            .await
+            .map_err(|e| ApiError::Unavailable(format!("resolutions: {}", e.message)))?;
+        if kavach_ports::outcome_resolution::governing(&resolutions)
+            != kavach_ports::outcome_resolution::Governing::Conflicted
+        {
+            return Err(ApiError::Conflict(
+                "only a conflicted outcome can be closed".into(),
+            ));
+        }
+        resolutions.sort_by(|a, b| (&a.ts, &a.sig).cmp(&(&b.ts, &b.sig)));
+        let resolution_sigs: Vec<_> = resolutions.iter().map(|r| r.sig.as_str()).collect();
+        params.reference_digest = Some(reference_digest.clone());
+        let normalized = to_value(&params)?;
+        Ok(Prepared {
+            params: normalized,
+            binding: json!({
+                "outcome_ref": kavach_ports::outcome_resolution::outcome_ref(&outcome),
+                "resolution_sigs": resolution_sigs,
+            }),
+            expected_version: None,
+            effects: vec![],
+            live: None,
+            resource_type: "agent_outcome",
+            resource_id: params.credential_id.clone(),
+            audit_payload: json!({
+                "state": state.as_str(),
+                "reason_code": params.reason_code,
+                "reference_digest": reference_digest,
+            }),
+            outcome: json!({ "state": state.as_str() }),
+            agent_change: None,
+        })
     }
 
     /// The tenant's active bindings, for the checks of a grant or revoke. A

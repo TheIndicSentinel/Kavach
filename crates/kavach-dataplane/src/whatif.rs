@@ -10,7 +10,7 @@ use std::future::{ready, Future};
 use chrono::NaiveDate;
 use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
-    OutcomeRecord,
+    OutcomeRecord, UnknownOutcomeReview,
 };
 use kavach_ports::chain_record::{
     AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
@@ -105,6 +105,15 @@ impl AgentEvidenceStore for WhatIfStore {
         _limit: u32,
     ) -> impl Future<Output = Result<Vec<kavach_ports::agent_evidence::UnresolvedOutcome>, PortError>>
            + Send {
+        ready(Ok(Vec::new()))
+    }
+
+    fn unknown_outcome_reviews(
+        &self,
+        _tenant_id: &str,
+        _after: Option<&str>,
+        _limit: u32,
+    ) -> impl Future<Output = Result<Vec<UnknownOutcomeReview>, PortError>> + Send {
         ready(Ok(Vec::new()))
     }
 

@@ -24,8 +24,7 @@ use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus, InMemoryMa
 use kavach_mandate::{MandateDeps, MandateService};
 use kavach_ports::agent_evidence::{sign_outcome, AgentEvidenceStore, Outcome};
 use kavach_ports::outcome_resolution::{
-    governing, outcome_ref, sign_resolution, Governing, ResolutionDraft, ResolutionSource,
-    ResolutionState,
+    governing, outcome_ref, Governing, ResolutionSource, ResolutionState,
 };
 use kavach_ports::{PortError, StatusQuestions, TimeSource, TokenSecret};
 use kavach_ports_testkit::agent_evidence::TestSigner;
@@ -395,30 +394,35 @@ async fn an_attested_outcome_is_not_called_ambiguous() {
     let mut polls = PollState::default();
     let mandate = w.mandate_for("B-9382").await;
     let credential = w.unknown_send(&mandate, "r-1").await;
-    let outcome = w
+    assert!(w
         .core
-        .store()
-        .outcome(TENANT, &credential)
+        .attest_delivered(
+            &credential,
+            "receipt_reviewed",
+            &"cd".repeat(32),
+            "oidc:https://idp#ops-1",
+        )
         .await
-        .unwrap()
-        .unwrap();
-    let attested = sign_resolution(
-        ResolutionDraft {
-            tenant_id: TENANT.into(),
-            credential_id: credential.clone(),
-            outcome_ref: outcome_ref(&outcome),
-            state: ResolutionState::ConfirmedDelivered,
-            source: ResolutionSource::OperatorAttested,
-            reason: "console".into(),
-            evidence_digest: Some("cd".repeat(32)),
-            resolved_by: Some("oidc:https://idp#ops-1".into()),
-            approved_by: None,
-        },
-        w.clock.now().utc,
-        &w.signer,
-    )
-    .unwrap();
-    w.core.store().record_resolution(attested).await.unwrap();
+        .unwrap());
+    assert!(!w
+        .core
+        .attest_delivered(
+            &credential,
+            "receipt_reviewed",
+            &"cd".repeat(32),
+            "oidc:https://idp#ops-1",
+        )
+        .await
+        .unwrap());
+
+    let rows = w.resolutions(&credential).await;
+    let [attested] = rows.as_slice() else {
+        panic!("one signed operator resolution expected");
+    };
+    assert_eq!(
+        attested.resolved_by.as_deref(),
+        Some("oidc:https://idp#ops-1")
+    );
 
     w.advance(UNKNOWN_OUTCOME_AMBIGUOUS_AFTER + Duration::hours(1));
     let report = w.pass(&provider, &mut polls).await;
@@ -475,8 +479,6 @@ async fn a_pass_puts_a_bounded_number_of_questions() {
 #[tokio::test]
 async fn learning_that_nothing_was_delivered_does_not_free_a_contact_slot() {
     let w = world();
-    let provider = Provider::default();
-    let mut polls = PollState::default();
     let mandate = w.mandate_for("B-9382").await;
     // The window allows three contacts a day; use all three, each unknown.
     let mut credentials = Vec::new();
@@ -491,11 +493,18 @@ async fn learning_that_nothing_was_delivered_does_not_free_a_contact_slot() {
         .unwrap();
     assert_eq!(blocked.decision, Decision::Block, "the cap is used up");
 
-    w.advance(Duration::seconds(31));
-    provider.says(Some(ProviderStatus::NotDelivered));
-    let report = w.pass(&provider, &mut polls).await;
-    assert_eq!(report.confirmed_not_delivered, 3, "{report:?}");
     for credential in &credentials {
+        assert!(w
+            .core
+            .attest_not_delivered(
+                credential,
+                "receipt_reviewed",
+                &"cd".repeat(32),
+                "oidc:https://idp#operator-1",
+                "oidc:https://idp#operator-2",
+            )
+            .await
+            .unwrap());
         assert!(matches!(
             governing(&w.resolutions(credential).await),
             Governing::Confirmed {

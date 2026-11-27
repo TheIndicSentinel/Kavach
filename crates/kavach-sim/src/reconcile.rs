@@ -323,12 +323,14 @@ fn truth(delivery: Delivery) -> Option<&'static str> {
 }
 
 /// The resolutions of the run's unknown outcomes (ADR-017) against the
-/// world's ground truth: a confirmed state must be the provider's own
+/// world's ground truth: a confirmed state must match the provider's own
 /// behaviour (delivered for a lost response, not delivered for an error),
-/// from the provider's answer and nobody else (the reconciler may also say
-/// `ambiguous`, which confirms nothing); and when the run waited for the
+/// regardless of whether Kavach learned it from provider status, a human
+/// attestation, or a two-person conflict closure. The oracle never takes the
+/// expected state from Kavach's resolution. The reconciler may also say
+/// `ambiguous`, which confirms nothing; and when the run waited for the
 /// reconciler (`must_resolve`) every unknown outcome must have one. Returns
-/// the findings and how many unknown outcomes the provider's answer resolved.
+/// the findings and how many unknown outcomes have a correct resolution.
 #[must_use]
 pub fn reconcile_resolutions(
     ledger: &[Entry],
@@ -367,10 +369,14 @@ pub fn reconcile_resolutions(
             .filter(|r| r.state.starts_with("confirmed_"))
             .collect();
         for row in &confirmed {
-            if row.state != expected || row.source != "provider_status" {
+            if row.state != expected
+                || !matches!(
+                    row.source.as_str(),
+                    "provider_status" | "operator_attested" | "conflict_resolution"
+                )
+            {
                 findings.push(format!(
-                    "#{} {}: resolved as {} by {}; the provider's own behaviour says {expected} \
-                     from its status answer",
+                    "#{} {}: resolved as {} by {}; the provider's own behaviour says {expected}",
                     call.seq, call.borrower, row.state, row.source
                 ));
             }
@@ -383,10 +389,13 @@ pub fn reconcile_resolutions(
                     call.seq, call.borrower
                 ));
             }
-        } else if confirmed
-            .iter()
-            .any(|r| r.state == expected && r.source == "provider_status")
-        {
+        } else if confirmed.iter().any(|r| {
+            r.state == expected
+                && matches!(
+                    r.source.as_str(),
+                    "provider_status" | "operator_attested" | "conflict_resolution"
+                )
+        }) {
             resolved += 1;
         }
     }
@@ -826,13 +835,20 @@ mod tests {
             "provider_status",
         )];
         assert!(check(&flipped, false).0[0].contains("provider's own behaviour"));
-        // Right state, wrong source: only the provider's answer counts here.
+        // A human attestation is checked against the oracle's truth, not
+        // trusted or rejected based on the source label alone.
         let attested = [resolution(
             &lost,
             "confirmed_delivered",
             "operator_attested",
         )];
-        assert_eq!(check(&attested, false).0.len(), 1);
+        assert_eq!(check(&attested, false), (vec![], 1));
+        let closure = [resolution(
+            &erred,
+            "confirmed_not_delivered",
+            "conflict_resolution",
+        )];
+        assert_eq!(check(&closure, false), (vec![], 1));
         // A resolution for a send that did not end unknown.
         let stray = [RecordedResolution {
             credential_id: "cred-99".into(),

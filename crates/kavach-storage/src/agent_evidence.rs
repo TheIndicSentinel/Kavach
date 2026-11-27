@@ -10,7 +10,7 @@ use kavach_domain::Decision;
 use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding,
-    UnresolvedOutcome, GENESIS,
+    UnknownOutcomeReview, UnresolvedOutcome, GENESIS,
 };
 use kavach_ports::agent_state::{
     AgentChangeCursor, AgentState, AgentStateChange, AgentStateStore, Recording, StoredAgentChange,
@@ -244,6 +244,49 @@ impl MemoryAgentEvidenceStore {
         found.sort_by(|a, b| {
             (a.outcome.ts, &a.outcome.credential_id).cmp(&(b.outcome.ts, &b.outcome.credential_id))
         });
+        found.truncate(limit as usize);
+        Ok(found)
+    }
+
+    fn unknown_outcome_reviews_sync(
+        &self,
+        tenant_id: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<UnknownOutcomeReview>, PortError> {
+        let state = self.state.lock().map_err(poisoned)?;
+        let mut found = Vec::new();
+        for outcome in state.outcomes.values() {
+            if outcome.tenant_id != tenant_id
+                || outcome.outcome != Outcome::Unknown
+                || after.is_some_and(|cursor| outcome.credential_id.as_str() <= cursor)
+            {
+                continue;
+            }
+            let Some(action) = state.records.iter().find_map(|record| {
+                (record.payload.tenant_id == tenant_id
+                    && record.payload.credential_id.as_deref()
+                        == Some(outcome.credential_id.as_str()))
+                .then(|| record.payload.action.clone())
+            }) else {
+                continue;
+            };
+            let mut resolutions: Vec<_> = state
+                .resolutions
+                .iter()
+                .filter(|row| {
+                    row.tenant_id == tenant_id && row.credential_id == outcome.credential_id
+                })
+                .cloned()
+                .collect();
+            resolutions.sort_by_key(|r| (r.ts, r.source.as_str(), r.state.as_str()));
+            found.push(UnknownOutcomeReview {
+                outcome: outcome.clone(),
+                action,
+                resolutions,
+            });
+        }
+        found.sort_by(|a, b| a.outcome.credential_id.cmp(&b.outcome.credential_id));
         found.truncate(limit as usize);
         Ok(found)
     }
@@ -580,6 +623,15 @@ impl AgentEvidenceStore for MemoryAgentEvidenceStore {
         limit: u32,
     ) -> impl Future<Output = Result<Vec<UnresolvedOutcome>, PortError>> + Send {
         ready(self.unresolved_outcomes_sync(tenant_id, limit))
+    }
+
+    fn unknown_outcome_reviews(
+        &self,
+        tenant_id: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<UnknownOutcomeReview>, PortError>> + Send {
+        ready(self.unknown_outcome_reviews_sync(tenant_id, after, limit))
     }
 
     fn records(

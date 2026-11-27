@@ -188,10 +188,10 @@ test.describe("login mode: role hints from the session's groups", () => {
     await page.goto(`/agents/${agent.agent_id}`);
     await expect(page.getByRole("status").filter({ hasText: `Agent ${agent.agent_id} is quarantined.` })).toBeVisible();
     await expect(
-      page.getByText("Your groups (viewers) don't include one that may stop agents."),
+      page.getByText("Your roles (none) and groups (viewers) don't include one that may stop agents."),
     ).toBeVisible();
     await expect(
-      page.getByText("Your groups (viewers) don't include one that may propose reinstating an agent."),
+      page.getByText("Your roles (none) and groups (viewers) don't include one that may propose reinstating an agent."),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Revoke", exact: true })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Request reinstatement" })).toHaveCount(0);
@@ -205,7 +205,7 @@ test.describe("login mode: role hints from the session's groups", () => {
     await loginMode(page, api, true, body.viewerSession);
     await page.goto("/changes");
     await expect(
-      page.getByText("Your groups (viewers) don't include one that may approve or reject this change."),
+      page.getByText("Your roles (none) and groups (viewers) don't include one that may approve or reject this change."),
     ).toBeVisible();
     await expect(approve(page)).toHaveCount(0);
     await expect(reject(page)).toHaveCount(0);
@@ -219,12 +219,12 @@ test.describe("login mode: role hints from the session's groups", () => {
     await page.goto(`/agents/${agent.agent_id}`);
     await expect(page.getByRole("button", { name: "Revoke", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Request reinstatement" })).toBeVisible();
-    await expect(page.getByText(/Your groups \(/)).toHaveCount(0);
+    await expect(page.getByText(/don't include one that may/)).toHaveCount(0);
 
     await page.getByRole("link", { name: "Change requests" }).first().click();
     await expect(approve(page)).toBeVisible();
     await expect(reject(page)).toBeVisible();
-    await expect(page.getByText(/Your groups \(/)).toHaveCount(0);
+    await expect(page.getByText(/don't include one that may/)).toHaveCount(0);
     await expectNoViolations(page);
   });
 });

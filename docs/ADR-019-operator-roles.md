@@ -51,7 +51,7 @@ A role is a Cedar entity of its own type, `Kavach::Role::"<name>"`, **not** a `K
 
 ### 2. Role-to-action matrix
 
-New actions: `read_principals`, `read_access_review`, `propose_grant_role`, `approve_grant_role`, `propose_revoke_role` and `approve_revoke_role`. Approving includes rejecting, as in ADR-009.
+New actions: `read_principals`, `read_access_review`, `propose_grant_role`, `approve_grant_role`, `propose_revoke_role`, `approve_revoke_role`, `attest_outcome_delivered`, `attest_outcome_not_delivered` and `resolve_outcome_conflict` (ADR-017). Approving includes rejecting, as in ADR-009.
 
 | Action | superadmin | user_admin | policy_admin | approver | operator | auditor | viewer |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
@@ -68,6 +68,9 @@ New actions: `read_principals`, `read_access_review`, `propose_grant_role`, `app
 | `approve_*`, the eight governance kinds¹ | ✓ | | | ✓ | | | |
 | `read_audit`, `read_evidence` | ✓ | | | | | ✓ | |
 | `read_principals`, `read_access_review` | ✓ | ✓ | | | | ✓ | |
+| `attest_outcome_delivered` | ✓ | | | | ✓ | | |
+| `attest_outcome_not_delivered` | ✓ | | | | ✓ | | |
+| `resolve_outcome_conflict` | ✓ | | | | ✓ | | |
 | `propose_grant_role`, `propose_revoke_role` | ✓ | ✓ (not `superadmin`) | | | | | |
 | `approve_grant_role`, `approve_revoke_role` | ✓ | ✓ (not `superadmin`) | | | | | |
 | `set_dev_clock` (dev stacks only) | ✓ | | | | | | |

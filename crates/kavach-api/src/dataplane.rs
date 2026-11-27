@@ -576,6 +576,17 @@ impl AgentEvidenceStore for EvidenceBackend {
             Self::Postgres(s) => s.unresolved_outcomes(tenant_id, limit).await,
         }
     }
+    async fn unknown_outcome_reviews(
+        &self,
+        tenant_id: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<kavach_ports::agent_evidence::UnknownOutcomeReview>, PortError> {
+        match self {
+            Self::Memory(s) => s.unknown_outcome_reviews(tenant_id, after, limit).await,
+            Self::Postgres(s) => s.unknown_outcome_reviews(tenant_id, after, limit).await,
+        }
+    }
     async fn records(
         &self,
         tenant_id: &str,
@@ -2012,6 +2023,7 @@ pub async fn tool_call(
             resolver: &dp.resolver,
             broker: &*dp.broker,
             forwarder: &*dp.forwarder,
+            gateway_held: None,
             observer: task_state.metrics(),
         };
         execute(&deps, &task_agent, &task_tool, request).await

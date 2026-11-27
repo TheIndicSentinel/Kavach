@@ -35,10 +35,19 @@ pub enum ChangeKind {
     GrantRole,
     /// End an active role binding (ADR-019 §4).
     RevokeRole,
+    /// One-person operator attestation that an unknown contact was delivered
+    /// (ADR-017). The proposer completes this request themselves.
+    AttestOutcomeDelivered,
+    /// Two-person operator attestation that an unknown contact was not
+    /// delivered (ADR-017).
+    AttestOutcomeNotDelivered,
+    /// Two-person closure of contradictory resolutions on an unknown
+    /// outcome (ADR-017).
+    ResolveOutcomeConflict,
 }
 
 impl ChangeKind {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 13] = [
         Self::ActivatePack,
         Self::RollbackPack,
         Self::UpdateModel,
@@ -49,6 +58,9 @@ impl ChangeKind {
         Self::ReinstateAgent,
         Self::GrantRole,
         Self::RevokeRole,
+        Self::AttestOutcomeDelivered,
+        Self::AttestOutcomeNotDelivered,
+        Self::ResolveOutcomeConflict,
     ];
 
     #[must_use]
@@ -64,6 +76,9 @@ impl ChangeKind {
             Self::ReinstateAgent => "reinstate_agent",
             Self::GrantRole => "grant_role",
             Self::RevokeRole => "revoke_role",
+            Self::AttestOutcomeDelivered => "attest_outcome_delivered",
+            Self::AttestOutcomeNotDelivered => "attest_outcome_not_delivered",
+            Self::ResolveOutcomeConflict => "resolve_outcome_conflict",
         }
     }
 

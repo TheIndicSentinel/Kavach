@@ -40,6 +40,9 @@ const KIND_LABELS: Record<ChangeKind, string> = {
   reinstate_agent: "Reinstate agent",
   grant_role: "Grant role",
   revoke_role: "Revoke role",
+  attest_outcome_delivered: "Attest outcome as delivered",
+  attest_outcome_not_delivered: "Attest outcome as not delivered",
+  resolve_outcome_conflict: "Resolve outcome conflict",
 };
 
 function statusVariant(

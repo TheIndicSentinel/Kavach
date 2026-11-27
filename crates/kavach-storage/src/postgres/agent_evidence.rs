@@ -12,7 +12,7 @@ use kavach_domain::ReasonCode;
 use kavach_ports::agent_evidence::{
     complete_payload, finalise, is_allow, seal, AgentDecisionRecord, AgentEvidenceStore,
     CommitRequest, CommitResult, EvidenceSigner, Outcome, OutcomeRecord, RequestBinding,
-    UnresolvedOutcome, GENESIS,
+    UnknownOutcomeReview, UnresolvedOutcome, GENESIS,
 };
 use kavach_ports::agent_state::{
     AgentChangeCursor, AgentState, AgentStateChange, AgentStateStore, Recording, StoredAgentChange,
@@ -752,6 +752,84 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
                 })
             })
             .collect()
+    }
+
+    async fn unknown_outcome_reviews(
+        &self,
+        tenant_id: &str,
+        after: Option<&str>,
+        limit: u32,
+    ) -> Result<Vec<UnknownOutcomeReview>, PortError> {
+        let rows = sqlx::query(
+            "SELECT o.credential_id, o.record_hash, o.reason, o.ts, o.key_id, o.sig, \
+                d.payload->>'action' AS action \
+            FROM agent_outcomes o \
+            JOIN agent_decisions d \
+                ON d.tenant_id = o.tenant_id AND d.credential_id = o.credential_id \
+            WHERE o.tenant_id = $1 AND o.outcome = 'unknown' \
+                AND ($2::text IS NULL OR o.credential_id > $2) \
+            ORDER BY o.credential_id LIMIT $3",
+        )
+        .bind(tenant_id)
+        .bind(after)
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+
+        let mut outcomes = Vec::with_capacity(rows.len());
+        let mut credentials = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let credential_id: String =
+                row.try_get("credential_id").map_err(|e| unavailable(&e))?;
+            credentials.push(credential_id.clone());
+            outcomes.push((
+                OutcomeRecord {
+                    tenant_id: tenant_id.into(),
+                    credential_id,
+                    record_hash: row.try_get("record_hash").map_err(|e| unavailable(&e))?,
+                    outcome: Outcome::Unknown,
+                    reason: row.try_get("reason").map_err(|e| unavailable(&e))?,
+                    ts: row.try_get("ts").map_err(|e| unavailable(&e))?,
+                    key_id: row.try_get("key_id").map_err(|e| unavailable(&e))?,
+                    sig: row.try_get("sig").map_err(|e| unavailable(&e))?,
+                },
+                row.try_get::<String, _>("action")
+                    .map_err(|e| unavailable(&e))?,
+            ));
+        }
+        let mut by_credential: BTreeMap<String, Vec<ResolutionRecord>> = BTreeMap::new();
+        if !credentials.is_empty() {
+            let resolution_rows = sqlx::query(
+                "SELECT credential_id, outcome_ref, state, source, reason, evidence_digest, \
+                    resolved_by, approved_by, ts, key_id, sig \
+                FROM agent_outcome_resolutions WHERE tenant_id = $1 \
+                    AND credential_id = ANY($2) ORDER BY ts, source, state",
+            )
+            .bind(tenant_id)
+            .bind(&credentials)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| unavailable(&e))?;
+            for row in &resolution_rows {
+                let credential: String =
+                    row.try_get("credential_id").map_err(|e| unavailable(&e))?;
+                by_credential
+                    .entry(credential.clone())
+                    .or_default()
+                    .push(resolution_from_row(row, tenant_id, &credential)?);
+            }
+        }
+        Ok(outcomes
+            .into_iter()
+            .map(|(outcome, action)| UnknownOutcomeReview {
+                resolutions: by_credential
+                    .remove(&outcome.credential_id)
+                    .unwrap_or_default(),
+                outcome,
+                action,
+            })
+            .collect())
     }
 
     async fn records(

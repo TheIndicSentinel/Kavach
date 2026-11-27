@@ -469,6 +469,7 @@ async fn plans_need_a_waiver_and_large_waivers_need_review() {
         .await
         .unwrap();
     assert_eq!(d.decision, Decision::HumanReview);
+    assert!(d.record.is_some(), "the review decision is recorded");
     assert!(d.grant.is_none(), "review is not an allow");
     let d = w
         .core
@@ -621,6 +622,136 @@ impl kavach_dataplane::Forwarder for CountingForwarder {
     }
 }
 
+type CapturedGatewayHeldRequest = (String, String, String, String, String);
+
+#[derive(Default)]
+struct LocalOnlyGatewayHeldAdapter {
+    captured: std::sync::Mutex<Option<CapturedGatewayHeldRequest>>,
+    response: std::sync::Mutex<Option<kavach_dataplane::ForwardResult>>,
+}
+
+impl kavach_dataplane::GatewayHeldForwarder for LocalOnlyGatewayHeldAdapter {
+    fn forward_gateway_held<'a>(
+        &'a self,
+        provider: &'a str,
+        request: &'a kavach_dataplane::GatewayHeldRequest<'a>,
+    ) -> kavach_dataplane::GatewayHeldForwardFuture<'a> {
+        Box::pin(async move {
+            *self.captured.lock().unwrap() = Some((
+                provider.to_string(),
+                request.credential_id.to_string(),
+                request.destination.expose().to_string(),
+                request.channel.to_string(),
+                request.template_id.to_string(),
+            ));
+            self.response.lock().unwrap().clone().unwrap_or(
+                kavach_dataplane::ForwardResult::Responded {
+                    status: 202,
+                    message_id: Some("local-fake-1".into()),
+                },
+            )
+        })
+    }
+}
+
+#[tokio::test]
+async fn selected_gateway_held_provider_uses_internal_broker_and_tokenless_adapter() {
+    use kavach_ports::agent_evidence::Outcome;
+
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let mut keys = InMemoryKeyProvider::new();
+    keys.insert_seed("kavach-credential-1", [5u8; 32]).unwrap();
+    let broker = kavach_credential::JoseCredentialBroker::new(
+        keys,
+        "kavach-credential-1",
+        "kavach",
+        BTreeMap::new(),
+    );
+    let normal_forwarder = CountingForwarder::default();
+    let gateway_held_forwarder = LocalOnlyGatewayHeldAdapter::default();
+    let providers = BTreeSet::from(["mock-messaging".to_string()]);
+    let resolver = kavach_dataplane::FixtureResolver::from_json(&format!(
+        r#"{{"references":[{{"tenant_id":"{TENANT}","subject_ref":"{SUBJECT}","destinations":{{"whatsapp":"+910000000001"}}}}]}}"#
+    ))
+    .unwrap();
+    let dispatch = kavach_dataplane::GatewayHeldDispatch {
+        providers: &providers,
+        broker: &broker,
+        forwarder: &gateway_held_forwarder,
+    };
+    let deps = kavach_dataplane::GatewayDeps {
+        core: &w.core,
+        resolver: &resolver,
+        broker: &broker,
+        forwarder: &normal_forwarder,
+        gateway_held: Some(&dispatch),
+        observer: &NoMetrics,
+    };
+    let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
+        "mandate_id": mandate.clone(),
+        "request_id": "gateway-held-1",
+        "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" }
+    }))
+    .unwrap();
+
+    let reply =
+        kavach_dataplane::execute(&deps, &agent("collections-agent"), "send_reminder", request)
+            .await
+            .unwrap();
+
+    assert_eq!(reply.outcome, Some(Outcome::Delivered));
+    assert_eq!(reply.provider_message_id.as_deref(), Some("local-fake-1"));
+    assert_eq!(
+        normal_forwarder.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the credential-accepting forwarder is bypassed for this configured provider"
+    );
+    let captured = gateway_held_forwarder
+        .captured
+        .lock()
+        .unwrap()
+        .clone()
+        .unwrap();
+    assert!(
+        !captured.1.is_empty(),
+        "credential id is passed to the adapter"
+    );
+    assert_eq!(
+        (
+            captured.0.as_str(),
+            captured.2.as_str(),
+            captured.3.as_str(),
+            captured.4.as_str()
+        ),
+        (
+            "mock-messaging",
+            "+910000000001",
+            "whatsapp",
+            "emi_reminder_v1"
+        )
+    );
+
+    *gateway_held_forwarder.response.lock().unwrap() = Some(kavach_dataplane::ForwardResult::Lost);
+    let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
+        "mandate_id": mandate,
+        "request_id": "gateway-held-lost-response",
+        "params": { "subject_ref": SUBJECT, "channel": "whatsapp", "template_id": "emi_reminder_v1" }
+    }))
+    .unwrap();
+    let reply =
+        kavach_dataplane::execute(&deps, &agent("collections-agent"), "send_reminder", request)
+            .await
+            .unwrap();
+    assert_eq!(reply.outcome, Some(Outcome::Unknown));
+    assert_eq!(reply.outcome_reason.as_deref(), Some("timeout_after_send"));
+    assert_eq!(
+        normal_forwarder.0.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the local tokenless adapter remains the only forwarder for the selected provider"
+    );
+}
+
 struct NoMetrics;
 
 impl kavach_dataplane::GatewayObserver for NoMetrics {
@@ -659,6 +790,7 @@ async fn a_send_that_would_land_after_send_by_is_not_executed() {
         resolver: &resolver,
         broker: &broker,
         forwarder: &forwarder,
+        gateway_held: None,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -693,6 +825,7 @@ async fn a_send_that_would_land_after_send_by_is_not_executed() {
         resolver: &fast,
         broker: &slow_broker,
         forwarder: &forwarder,
+        gateway_held: None,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -831,6 +964,7 @@ async fn a_mandate_revoked_after_the_decision_mints_nothing_and_sends_nothing() 
         resolver: &resolver,
         broker: &broker,
         forwarder: &forwarder,
+        gateway_held: None,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -1282,6 +1416,7 @@ async fn an_agent_stopped_after_the_decision_mints_nothing_and_sends_nothing() {
         resolver: &resolver,
         broker: &broker,
         forwarder: &forwarder,
+        gateway_held: None,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({

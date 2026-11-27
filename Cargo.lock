@@ -2209,6 +2209,7 @@ dependencies = [
  "uuid",
  "walkdir",
  "x509-parser",
+ "zeroize",
 ]
 
 [[package]]

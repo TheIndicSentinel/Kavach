@@ -5,6 +5,7 @@ import type {
   AgentStopResult,
   ChangeRequest,
   RevocationLookup,
+  UnknownOutcomeReviewPage,
 } from "../lib/api";
 
 export const neverChanged: AgentStateView = {
@@ -70,6 +71,7 @@ export const decisionLookup: AgentDecisionLookup = {
     sig: "sig42",
   },
   outcome: null,
+  resolutions: [],
 };
 
 export const revocationLookup: RevocationLookup = {
@@ -95,6 +97,37 @@ export const revocationLookup: RevocationLookup = {
     hash: "recordhash43",
     sig: "sig43",
   },
+};
+
+export const unknownOutcomeReview: UnknownOutcomeReviewPage = {
+  items: [{
+    outcome: {
+      tenant_id: "bank-1",
+      credential_id: "cred-review-1",
+      record_hash: "recordhash42",
+      outcome: "unknown",
+      reason: "timeout_after_send",
+      ts: "2026-11-14T09:00:01Z",
+      key_id: "evidence-key-1",
+      sig: "outsig",
+    },
+    action: "send_reminder",
+    resolutions: [{
+      tenant_id: "bank-1",
+      credential_id: "cred-review-1",
+      outcome_ref: "a".repeat(64),
+      state: "confirmed_delivered",
+      source: "provider_status",
+      reason: "provider_confirmation",
+      evidence_digest: "b".repeat(64),
+      ts: "2026-11-14T09:02:00Z",
+      key_id: "evidence-key-1",
+      sig: "resolutionsig",
+    }],
+    governing_state: "conflicted",
+    governing_source: null,
+  }],
+  next_cursor: "cred-review-1",
 };
 
 export const quarantineApplied: AgentStopResult = {

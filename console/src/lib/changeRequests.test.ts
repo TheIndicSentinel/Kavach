@@ -81,21 +81,52 @@ describe("useViewer", () => {
 
   it("signed in: the session's principal and groups", () => {
     setSessionStateForTest({ status: "signed_in", session: SESSION });
-    expect(seen()).toEqual({ principal: "oidc-viewer-3", groups: ["viewers"] });
+    expect(seen()).toEqual({ principal: "oidc-viewer-3", groups: ["viewers"], roles: null });
   });
 
   it("development fallback and signed out: groups stay unknown", () => {
     for (const status of ["dev_token", "checking"] as const) {
       setSessionStateForTest({ status });
-      expect(seen()).toEqual(UNKNOWN_VIEWER);
+      expect(seen()).toEqual({ ...UNKNOWN_VIEWER, roles: null });
     }
     setSessionStateForTest({ status: "signed_out", ended: true });
-    expect(seen()).toEqual(UNKNOWN_VIEWER);
+    expect(seen()).toEqual({ ...UNKNOWN_VIEWER, roles: null });
   });
 });
 
 describe("changeRequestButtons: the proposer rule", () => {
   const pending = reinstateProposed; // proposed by operator-1
+
+  it("lets the proposer complete only the one-person delivered attestation", () => {
+    const delivered = { ...pending, kind: "attest_outcome_delivered" as const };
+    const buttons = changeRequestButtons(delivered, {
+      principal: "operator-1",
+      groups: null,
+      roles: ["operator"],
+    });
+    expect(buttons.actions).toEqual(["approve", "cancel"]);
+    expect(buttons.note).toMatch(/complete it yourself/);
+  });
+
+  it("does not offer another operator approval of a delivered attestation", () => {
+    const delivered = { ...pending, kind: "attest_outcome_delivered" as const };
+    const buttons = changeRequestButtons(delivered, {
+      principal: "operator-2",
+      groups: null,
+      roles: ["operator"],
+    });
+    expect(buttons.actions).toEqual(["reject"]);
+  });
+
+  it("keeps conflict closure on the two-person maker-checker path", () => {
+    const closure = { ...pending, kind: "resolve_outcome_conflict" as const };
+    expect(
+      changeRequestButtons(closure, { principal: "operator-1", groups: null }).actions,
+    ).toEqual(["cancel"]);
+    expect(
+      changeRequestButtons(closure, { principal: "operator-2", groups: null }).actions,
+    ).toEqual(["approve", "reject"]);
+  });
 
   it("offers the proposer cancel only, and says why approve is missing", () => {
     const buttons = changeRequestButtons(pending, { principal: "operator-1", groups: null });

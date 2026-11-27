@@ -290,3 +290,96 @@ export const agentPageTwo: Schemas["AgentStatePage"] = {
   items: [quarantined],
   next_cursor: null,
 };
+
+/** `GET /v1/me`: the current caller has no Kavach roles bound. */
+export const meNoRoles: Schemas["Me"] = { principal: "dev", roles: [] };
+
+/** One read-only page of the Users & roles directory. */
+export const principalPage: Schemas["PrincipalPage"] = {
+  items: [
+    {
+      issuer: "https://idp.example.test",
+      subject: "oidc-admin-2",
+      display_name: "Asha Rao",
+      first_seen_at: "2026-11-01T09:00:00Z",
+      last_seen_at: "2026-11-15T09:30:00Z",
+    },
+  ],
+  next_cursor: "principal-page-2",
+};
+
+export const principalPageTwo: Schemas["PrincipalPage"] = {
+  items: [
+    {
+      issuer: "https://idp.example.test",
+      subject: "oidc-auditor-5",
+      display_name: "Asha Rao (contractor)",
+      first_seen_at: "2026-11-02T09:00:00Z",
+      last_seen_at: "2026-11-14T16:00:00Z",
+    },
+  ],
+  next_cursor: null,
+};
+
+/** Active role assignments shown beside the principal directory. */
+export const roleBindings: Schemas["RoleBindingList"] = {
+  items: [
+    {
+      id: "rb-demo-1",
+      role: "superadmin",
+      subject: { kind: "principal", issuer: "https://idp.example.test", value: "oidc-admin-2" },
+      granted_by_change_request: null,
+      granted_at: "2026-11-01T09:15:00Z",
+      ended_by_change_request: null,
+      ended_at: null,
+    },
+    {
+      id: "rb-demo-2",
+      role: "auditor",
+      subject: { kind: "principal", issuer: "https://idp.example.test", value: "oidc-auditor-5" },
+      granted_by_change_request: "cr-role-1",
+      granted_at: "2026-11-02T10:00:00Z",
+      ended_by_change_request: null,
+      ended_at: null,
+    },
+  ],
+};
+
+/** Audited operator access snapshot shown on Users & roles. */
+export const accessReview: Schemas["AccessReview"] = {
+  tenant_id: "bank-1",
+  generated_at: "2026-11-16T10:00:00Z",
+  stale_after_days: 90,
+  alias_groups: ["admins", "change-approvers"],
+  note: "Group membership is held by the identity provider.",
+  rows: [
+    {
+      binding_id: "rb-demo-2",
+      role: "auditor",
+      subject_kind: "principal",
+      issuer: "https://idp.example.test",
+      subject: "oidc-auditor-5",
+      display_name: "Asha Rao (contractor)",
+      granted_at: "2026-11-02T10:00:00Z",
+      change_request_id: "cr-role-1",
+      proposer: "admin-1",
+      approver: "admin-2",
+      last_seen_at: "2026-11-14T16:00:00Z",
+      stale: false,
+    },
+    {
+      binding_id: "rb-demo-group",
+      role: "operator",
+      subject_kind: "group",
+      issuer: "https://idp.example.test",
+      subject: "collections-operators",
+      display_name: "",
+      granted_at: "2026-11-03T10:00:00Z",
+      change_request_id: "cr-role-2",
+      proposer: "admin-1",
+      approver: "admin-2",
+      last_seen_at: null,
+      stale: null,
+    },
+  ],
+};

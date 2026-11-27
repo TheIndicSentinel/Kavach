@@ -340,6 +340,10 @@ export type AgentListQuery = NonNullable<operations["listAgents"]["parameters"][
 /** `GET /v1/agent-decisions/{record_id}`: the signed record and its outcome, if any. */
 export type AgentDecisionLookup = Ok<"getAgentDecision">;
 
+/** One page of unknown outcomes and ADR-017 history. */
+export type UnknownOutcomeReviewPage = Ok<"listUnknownOutcomes">;
+export type UnknownOutcomeReviewQuery = NonNullable<operations["listUnknownOutcomes"]["parameters"]["query"]>;
+
 /** `GET /v1/agent-revocations/{system}/{event_id}`: the signed revocation record. */
 export type RevocationLookup = Ok<"getRevocationRecord">;
 
@@ -364,6 +368,21 @@ export function fetchAgent(agentId: string): Promise<AgentStateView> {
 /** Audited and rate limited by the API: call it once per lookup the operator asks for. */
 export function fetchAgentDecision(recordId: string): Promise<AgentDecisionLookup> {
   return request(`/v1/agent-decisions/${encodeURIComponent(recordId)}`);
+}
+
+export function unknownOutcomeReviewsPath(query: UnknownOutcomeReviewQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor) params.set("cursor", query.cursor);
+  const search = params.toString();
+  return search ? `/v1/unknown-outcomes?${search}` : "/v1/unknown-outcomes";
+}
+
+/** Audited and rate limited by the API; loads only when the operator asks. */
+export function fetchUnknownOutcomeReviews(
+  query: UnknownOutcomeReviewQuery = {},
+): Promise<UnknownOutcomeReviewPage> {
+  return request(unknownOutcomeReviewsPath(query));
 }
 
 /** Audited and rate limited by the API: call it once per lookup the operator asks for. */
@@ -450,6 +469,81 @@ export type Outcome = Schemas["Outcome"];
 
 /** `GET /v1/decision-events/{evidence_id}`: one evaluate decision event. */
 export type DecisionEventLookup = Ok<"getDecisionEvent">;
+
+/** `GET /v1/me`: the caller and the roles bound to them now. */
+export type RoleName = Schemas["RoleName"];
+export type Me = Schemas["Me"];
+
+export function fetchMe(): Promise<Me> {
+  return request("/v1/me");
+}
+
+export type Principal = Schemas["Principal"];
+export type PrincipalPage = Schemas["PrincipalPage"];
+export type RoleBinding = Schemas["RoleBinding"];
+export type PrincipalQuery = NonNullable<operations["listPrincipals"]["parameters"]["query"]>;
+
+export function principalsPath(query: PrincipalQuery = {}): string {
+  const params = new URLSearchParams();
+  if (query.q) params.set("q", query.q);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  if (query.cursor) params.set("cursor", query.cursor);
+  const search = params.toString();
+  return search ? `/v1/principals?${search}` : "/v1/principals";
+}
+
+/** The principals directory, a page at a time (`read_principals`). */
+export function fetchPrincipals(query: PrincipalQuery = {}): Promise<PrincipalPage> {
+  return request(principalsPath(query));
+}
+
+/** Active operator-role bindings (`read_principals`). */
+export async function fetchRoleBindings(): Promise<RoleBinding[]> {
+  const list: Schemas["RoleBindingList"] = await request("/v1/role-bindings");
+  return list.items;
+}
+
+export type AccessReview = Schemas["AccessReview"];
+
+/** One audited snapshot of active role bindings (`read_access_review`). */
+export function fetchAccessReview(): Promise<AccessReview> {
+  return request("/v1/access-review?format=json");
+}
+
+/** One audited CSV export (`read_access_review`); errors retain API request details. */
+export async function fetchAccessReviewCsv(): Promise<string> {
+  const path = "/v1/access-review?format=csv";
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method: "GET",
+      headers: { Accept: "text/csv", "X-Kavach-Console": "1", ...authHeaders() },
+      credentials: "same-origin",
+    });
+  } catch {
+    throw new ApiError("The API could not be reached", 0);
+  }
+
+  const contentType = response.headers.get("Content-Type") ?? "";
+  const payload: unknown = contentType.includes("json")
+    ? await response.json().catch(() => undefined)
+    : undefined;
+  if (!response.ok) {
+    if (response.status === 401 && authMode === "login") onUnauthorized?.();
+    const { text, requestId } = problemOf(payload);
+    const message = text ?? `GET ${path} failed (${response.status} ${response.statusText})`.trim();
+    throw new ApiError(
+      requestId ? `${message} (request ${requestId})` : message,
+      response.status,
+      requestId,
+      message,
+    );
+  }
+  if (!contentType.includes("text/csv")) {
+    throw new ApiError(`GET ${path} returned an unexpected content type`, response.status);
+  }
+  return response.text();
+}
 
 /** Rate limited and audited by the API (counts, never references). Reports only; revokes nothing. */
 export function reconcileClosedRecords(body: ClosedRecordsRequest): Promise<ClosedRecordsResult> {

@@ -26,11 +26,11 @@ const surfaces: Surface[] = [
   {
     name: "AgentEvidencePage",
     page: (viewer) => <AgentEvidencePage viewer={viewer} />,
-    buttons: ["Look up record", "Look up revocation"],
+    buttons: ["Load unknown outcomes", "Look up record", "Look up revocation"],
     allowed: ["admins"],
     denied: ["operators", "change-approvers"],
     line: "may read evidence records. The server decides",
-    lines: 2,
+    lines: 3,
   },
   {
     name: "DecisionEventsPage",

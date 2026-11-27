@@ -61,6 +61,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(crate::evidence_read::read_agent_decision),
         )
         .route(
+            "/v1/unknown-outcomes",
+            get(crate::evidence_read::list_unknown_outcomes),
+        )
+        .route(
             "/v1/agent-revocations/{system}/{event_id}",
             get(crate::evidence_read::read_revocation_record),
         )

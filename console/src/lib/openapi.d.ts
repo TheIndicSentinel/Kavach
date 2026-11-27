@@ -277,8 +277,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** One agent decision record and its outcome (admins; audited). */
+        /** One agent decision record, outcome, and ADR-017 resolution history (admins; audited). */
         get: operations["getAgentDecision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/unknown-outcomes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A page of unknown outcomes and their ADR-017 governing state (admins; audited).
+         * @description Tenant scoped to the authenticated server configuration. Includes unresolved, ambiguous, conflicted and confirmed histories. This is a read-only review; it never resends a provider request or releases a contact slot. Reads require read_evidence, are rate limited, and are audited before data is returned.
+         */
+        get: operations["listUnknownOutcomes"];
         put?: never;
         post?: never;
         delete?: never;
@@ -982,7 +1002,7 @@ export interface components {
             governed: boolean;
         };
         /** @enum {string} */
-        ChangeKind: "activate_pack" | "rollback_pack" | "update_model" | "update_retention" | "erase_evidence" | "apply_retention" | "activate_model" | "reinstate_agent" | "grant_role" | "revoke_role";
+        ChangeKind: "activate_pack" | "rollback_pack" | "update_model" | "update_retention" | "erase_evidence" | "apply_retention" | "activate_model" | "reinstate_agent" | "grant_role" | "revoke_role" | "attest_outcome_delivered" | "attest_outcome_not_delivered" | "resolve_outcome_conflict";
         /** @enum {string} */
         ChangeStatus: "pending" | "applied" | "failed" | "rejected" | "cancelled" | "expired";
         /** @enum {string} */
@@ -1150,7 +1170,14 @@ export interface components {
          *     `erase_evidence` `{evidence_id}`; `reinstate_agent` `{agent_id, to: active |
          *     restricted, reason_code?, note?}` (never from `revoked`); `grant_role`
          *     `{role, subject: {kind: principal | group, issuer, value}}`; `revoke_role`
-         *     `{binding_id}`. A role change is refused (403) when it names the caller or a group
+         *     `{binding_id}`; `attest_outcome_delivered` and `attest_outcome_not_delivered`
+         *     `{credential_id, reason_code, reference}`; `resolve_outcome_conflict`
+         *     `{credential_id, resolution_state, reason_code, reference}`. References are digested before they are
+         *     stored or audited. The proposer completes a delivered attestation; a different
+         *     authenticated human approves a not-delivered attestation or conflict closure.
+         *     Conflict closure also requires `resolution_state` (`confirmed_delivered` or
+         *     `confirmed_not_delivered`) naming the state to govern. A role change is refused
+         *     (403) when it names the caller or a group
          *     in their token, and when it touches `superadmin` for anyone but a superadmin; it is
          *     a conflict (409) for a duplicate active binding or the tenant's last active person
          *     binding of `superadmin` or `user_admin` (ADR-019 §4). Unknown keys are refused.
@@ -1347,6 +1374,34 @@ export interface components {
             ts: components["schemas"]["DateTime"];
             key_id: string;
             sig: string;
+        };
+        OutcomeResolutionRecord: {
+            tenant_id: string;
+            credential_id: string;
+            outcome_ref: string;
+            /** @enum {string} */
+            state: "confirmed_delivered" | "confirmed_not_delivered" | "ambiguous";
+            /** @enum {string} */
+            source: "provider_status" | "operator_attested" | "conflict_resolution" | "reconciler";
+            reason: string;
+            evidence_digest?: string;
+            resolved_by?: string;
+            approved_by?: string;
+            ts: components["schemas"]["DateTime"];
+            key_id: string;
+            sig: string;
+        };
+        UnknownOutcomeReviewPage: {
+            items: components["schemas"]["UnknownOutcomeReviewItem"][];
+            next_cursor: string | null;
+        };
+        UnknownOutcomeReviewItem: {
+            outcome: components["schemas"]["OutcomeRecord"];
+            action: string;
+            resolutions: components["schemas"]["OutcomeResolutionRecord"][];
+            /** @enum {string} */
+            governing_state: "unresolved" | "ambiguous" | "conflicted" | "confirmed_delivered" | "confirmed_not_delivered";
+            governing_source: ("provider_status" | "operator_attested" | "conflict_resolution") | null;
         };
         /** @description An allowlist of fields; never a destination or credential. */
         GatewayReply: {
@@ -1995,7 +2050,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The signed record and, if any, its signed outcome. */
+            /** @description The signed record, its outcome, and every signed ADR-017 resolution (oldest first). */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2004,7 +2059,38 @@ export interface operations {
                     "application/json": {
                         record: components["schemas"]["AgentDecisionRecord"];
                         outcome: components["schemas"]["OutcomeRecord"] | null;
+                        resolutions: components["schemas"]["OutcomeResolutionRecord"][];
                     };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    listUnknownOutcomes: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Credential-id ordered page and the next cursor, if another page exists. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnknownOutcomeReviewPage"];
                 };
             };
             400: components["responses"]["BadRequest"];

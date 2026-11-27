@@ -11,8 +11,9 @@
 //!   `send_by`, `send_by`) and the request itself (`req`: destination,
 //!   channel, template).
 //! - **Outer:** a JWE (`typ: kavach-credential+jwe`, `cty:
-//!   kavach-credential+jws`; ECDH-ES on X25519 with A256GCM) addressed to
-//!   the provider's encryption key.
+//!   kavach-credential+jws`; ECDH-ES on X25519 with A256GCM). Provider-mode
+//!   issuance addresses the provider's key; internal-only issuance addresses
+//!   a fresh Kavach key whose private half and ciphertext are discarded.
 //!
 //! Only the provider can read the destination, and it takes the request
 //! from the credential, so nothing in transit, in a log line or in a stolen
@@ -32,7 +33,8 @@ use std::sync::Mutex;
 use chrono::{DateTime, Duration, Utc};
 use kavach_jws::KeySet;
 use kavach_ports::{
-    CredentialBroker, CredentialRequest, Destination, IssuedCredential, KeyProvider, PortError,
+    CredentialBroker, CredentialRequest, Destination, InternalCredentialBroker,
+    InternalCredentialFuture, InternalCredentialReceipt, IssuedCredential, KeyProvider, PortError,
     StatusQuestions, TokenSecret, MAX_CREDENTIAL_TTL_SECONDS,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
@@ -513,5 +515,38 @@ impl<K: KeyProvider> CredentialBroker for JoseCredentialBroker<K> {
                 0
             });
         ready(result)
+    }
+}
+
+impl<K: KeyProvider> InternalCredentialBroker for JoseCredentialBroker<K> {
+    fn issue_internal<'a>(
+        &'a self,
+        request: &'a CredentialRequest<'a>,
+    ) -> InternalCredentialFuture<'a> {
+        Box::pin(async move {
+            Self::validate(request)?;
+            let exp = Self::expiry(request)?;
+            // This recipient belongs only to this issuance. The private half is
+            // dropped after sealing; neither it nor the ciphertext leaves the
+            // broker. The committed evidence record retains the credential id.
+            let ephemeral = DecryptionKey::generate("kavach-internal-ephemeral")?;
+            let recipient = ephemeral.recipient();
+            self.reserve(request)?;
+            let token = self.seal(request, &recipient, exp).await;
+            drop(ephemeral);
+            match token {
+                Ok(token) => {
+                    drop(token);
+                    Ok(InternalCredentialReceipt {
+                        credential_id: request.credential_id.to_string(),
+                        expires_at: exp,
+                    })
+                }
+                Err(err) => {
+                    self.release(request.credential_id);
+                    Err(err)
+                }
+            }
+        })
     }
 }

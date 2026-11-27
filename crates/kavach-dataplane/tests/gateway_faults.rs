@@ -318,6 +318,7 @@ impl World {
             resolver: &self.resolver,
             broker: &self.broker,
             forwarder: &self.forwarder,
+            gateway_held: None,
             observer: &self.observer,
         };
         execute(
