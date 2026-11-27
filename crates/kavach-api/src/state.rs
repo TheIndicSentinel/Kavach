@@ -160,6 +160,7 @@ mod changes;
 pub use changes::{ChangeProposal, DEFAULT_CHANGE_TTL_HOURS};
 
 impl AppState {
+    #[allow(clippy::too_many_lines)] // one linear wiring of the service state
     pub async fn from_config(config: &ApiConfig) -> Result<Self, ApiError> {
         let pack = PackLoader::load_from_path(config.pack_path())
             .map_err(|e| ApiError::Internal(format!("load pack: {e}")))?;

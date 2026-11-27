@@ -173,6 +173,8 @@ fn api_config(
     let keys = kavach.join("keys");
     ApiConfig {
         require_hardening: false,
+        review_snapshot_key_file: None,
+        review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: repo.join("packs/finance/v0.yaml"),
         model_path: repo.join("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,

@@ -857,6 +857,7 @@ pub struct Dataplane {
 impl Dataplane {
     /// Builds the agent surfaces. Without `insecure_dev`, refuses the
     /// development stand-ins (memory stores, an unreadable kernel clock).
+    #[allow(clippy::too_many_lines)] // one linear wiring of every agent surface
     pub async fn build(
         config: &DataplaneConfig,
         pool: Option<&StoragePool>,

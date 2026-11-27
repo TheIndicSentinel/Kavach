@@ -605,7 +605,7 @@ mod tests {
         serde_json::from_value(json!({ "keys": keys })).unwrap()
     }
 
-    fn signed_token(seed: u8, kid: &str, claims: Value) -> String {
+    fn signed_token(seed: u8, kid: &str, claims: &Value) -> String {
         // PKCS#8 v1 DER for an Ed25519 private key (RFC 8410).
         let mut der = vec![
             0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
@@ -614,7 +614,7 @@ mod tests {
         der.extend_from_slice(&[seed; 32]);
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(kid.into());
-        encode(&header, &claims, &EncodingKey::from_ed_der(&der)).unwrap()
+        encode(&header, claims, &EncodingKey::from_ed_der(&der)).unwrap()
     }
 
     fn token(seed: u8, kid: &str) -> String {
@@ -622,7 +622,7 @@ mod tests {
         signed_token(
             seed,
             kid,
-            json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice",
+            &json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice",
                     "groups": ["ops"], "exp": now + 300 }),
         )
     }
@@ -638,7 +638,7 @@ mod tests {
         signed_token(
             1,
             "good",
-            json!({ "iss": ISSUER, "aud": "kavach-console", "azp": "kavach-console",
+            &json!({ "iss": ISSUER, "aud": "kavach-console", "azp": "kavach-console",
                     "sub": sub, "nonce": nonce, "acr": acr, "auth_time": auth_time,
                     "iat": iat, "exp": now + 300 }),
         )
