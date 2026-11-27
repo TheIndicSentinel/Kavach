@@ -399,6 +399,9 @@ impl AppState {
 
     /// Approves and applies a pending request. A retry by the same approver
     /// after success returns the applied request.
+    // One approval sequence (who may approve, digest echo, apply, record),
+    // read top to bottom; splitting it would scatter the checks.
+    #[allow(clippy::too_many_lines)]
     pub async fn approve_change(
         &self,
         approver: &Authorized,

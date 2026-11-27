@@ -36,11 +36,12 @@ COPY crates/kavach-auth/policies/ crates/kavach-auth/policies/
 USER kavach
 EXPOSE 8080 50051
 # Liveness over plain HTTP on the operator listener, with bash's /dev/tcp (no
-# curl in the image): any HTTP status line means the server is up. (`/health`
-# itself requires an authorised principal, so an unauthenticated probe gets
-# 401, which still proves liveness.) With --tls, probe from the orchestrator.
+# curl in the image). `/health` requires an authorised principal, so this
+# unauthenticated probe expects 401; 200 is accepted too. Any other status,
+# 5xx included, marks the container unhealthy. With --tls, probe from the
+# orchestrator.
 HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-  CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] [0-9][0-9][0-9]'"]
+  CMD ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -qE '^HTTP/1\\.[01] (200|401) '"]
 ENTRYPOINT ["kavach-api"]
 # Access control is Cedar by default; policy, entities and OIDC settings come
 # from the environment (KAVACH_CEDAR_POLICY, KAVACH_CEDAR_ENTITIES,
