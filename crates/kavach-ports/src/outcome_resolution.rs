@@ -763,7 +763,7 @@ mod tests {
             resolved_by: Some("oidc:https://issuer#operator".into()),
             approved_by: None,
         };
-        let signed = sign_resolution(
+        let resolution = sign_resolution(
             draft,
             Utc.with_ymd_and_hms(2026, 11, 16, 0, 0, 0).unwrap(),
             &signer,
@@ -777,12 +777,12 @@ mod tests {
                 bytes: signer.0.verifying_key().to_bytes(),
             },
         )]);
-        assert!(resolution_verifies(&signed, &keys));
+        assert!(resolution_verifies(&resolution, &keys));
 
-        let mut forged = signed.clone();
+        let mut forged = resolution.clone();
         forged.state = Not;
         assert!(!resolution_verifies(&forged, &keys));
-        forged = signed;
+        forged = resolution;
         forged.sig.replace_range(0..2, "00");
         assert!(!resolution_verifies(&forged, &keys));
     }

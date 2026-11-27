@@ -1,10 +1,20 @@
 [advisories]
-# sqlx lockfile retains optional mysql driver metadata; build graph is postgres-only.
+# cargo audit reads Cargo.lock, which also lists optional crates that are never
+# compiled. cargo deny checks the build graph instead and needs no ignores.
+#
+# RUSTSEC-2023-0071 (rsa): compiled via jsonwebtoken 10 (rust_crypto) for OIDC
+# token verification, which uses public keys only; the flaw is in private-key
+# operations, which Kavach never performs. Also in the lockfile via the
+# optional sqlx-mysql. Reasoning and review trigger in deny.toml.
+#
+# RUSTSEC-2026-0387 (crypto-bigint 0.5.5): compiled via jsonwebtoken 10
+# (rust_crypto) for ES256/ES384 verification on public inputs only.
+# Reasoning and review trigger in deny.toml.
 #
 # RUSTSEC-2026-0459 (libsqlite3-sys): not compiled: lockfile only, via
 # sqlx-sqlite (optional dependency of sqlx 0.8.6, no feature enables it;
 # check: cargo tree -e features -i sqlx-sqlite prints nothing). Cannot be
 # updated: sqlx-sqlite 0.8.6 requires libsqlite3-sys 0.30. Review by
 # 2027-02-14, or when sqlx is upgraded.
-ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0459"]
+ignore = ["RUSTSEC-2023-0071", "RUSTSEC-2026-0387", "RUSTSEC-2026-0459"]
 informational_warnings = ["unmaintained"]
