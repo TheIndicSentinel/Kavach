@@ -797,14 +797,16 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         let tenant = &self.config.tenant_id;
 
         let verified = self.verifier.verify(tenant, &call.mandate_id).await;
-        let (policy_decision, reasons, mandate_view) = match verified {
+        // `approved`: Cedar's decision with `approval_valid = true`, computed
+        // only when a release is presented.
+        let (policy_decision, mut reasons, mandate_view, approved) = match verified {
             Err(err) => {
                 let reason = if err.class == ErrorClass::Unavailable {
                     "dependency_unavailable"
                 } else {
                     "mandate_invalid"
                 };
-                (Decision::Block, vec![reason.to_string()], None)
+                (Decision::Block, vec![reason.to_string()], None, None)
             }
             Ok(VerifiedChain {
                 mandate,
@@ -816,15 +818,24 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
                     Decision::Block,
                     vec!["dependency_unavailable".to_string()],
                     None,
+                    None,
                 ),
                 Ok(state) => {
-                    let (decision, mut reasons) = self
-                        .decide(agent, state, action, call, &mandate, &assessment)
+                    let (decision, mut reasons, approved) = self
+                        .decide(
+                            agent,
+                            state,
+                            action,
+                            call,
+                            &mandate,
+                            &assessment,
+                            release.is_some(),
+                        )
                         .await;
                     if state != AgentState::Active {
                         reasons.push(format!("agent_state:{}", state.as_str()));
                     }
-                    (decision, reasons, Some((mandate, ids)))
+                    (decision, reasons, Some((mandate, ids)), approved)
                 }
             },
         };
@@ -859,11 +870,17 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             None
         };
 
-        let decision = if policy_decision == Decision::HumanReview && released.is_some() {
-            Decision::Pass
-        } else {
-            policy_decision
+        // The lift is Cedar's call, not ours (AUTHZ-01): a valid release
+        // passes only if Cedar allows the call once approval is granted.
+        let decision = match (released, approved) {
+            (Some(_), Some(Decision::Pass)) => Decision::Pass,
+            (Some(_), _) => {
+                reasons.push("release_not_authorised".into());
+                Decision::Block
+            }
+            (None, _) => policy_decision,
         };
+        let released = released.filter(|_| decision == Decision::Pass);
 
         if mode == Mode::Precheck {
             self.prechecks.fetch_add(1, Ordering::Relaxed);
@@ -946,22 +963,27 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         call: &ToolCall,
         mandate: &Mandate,
         assessment: &Assessment,
-    ) -> (Decision, Vec<String>) {
+        with_approval: bool,
+    ) -> (Decision, Vec<String>, Option<Decision>) {
         if !assessment.violations.is_empty() {
-            return (Decision::Block, assessment.violations.clone());
+            return (Decision::Block, assessment.violations.clone(), None);
         }
         let Ok(now) = assessment
             .now
             .require_synced(self.config.max_clock_error_ms)
         else {
-            return (Decision::Block, vec!["trusted_time_unavailable".into()]);
+            return (
+                Decision::Block,
+                vec!["trusted_time_unavailable".into()],
+                None,
+            );
         };
         let Ok(contacts_today) = self
             .store
             .contacts_on(&self.config.tenant_id, &assessment.pseudonym, ist_date(now))
             .await
         else {
-            return (Decision::Block, vec!["dependency_unavailable".into()]);
+            return (Decision::Block, vec!["dependency_unavailable".into()], None);
         };
         let request = AuthzRequest {
             agent_id: &agent.agent_id,
@@ -977,13 +999,25 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             approval_valid: false,
             now,
         };
+        let approved = with_approval.then(|| {
+            self.authorizer
+                .authorize(&AuthzRequest {
+                    approval_valid: true,
+                    ..request.clone()
+                })
+                .map_or(Decision::Block, |outcome| outcome.decision)
+        });
         match self.authorizer.authorize(&request) {
             Ok(outcome) => {
                 let mut reasons = outcome.reason_codes;
                 reasons.extend(outcome.determining_policies);
-                (outcome.decision, reasons)
+                (outcome.decision, reasons, approved)
             }
-            Err(_) => (Decision::Block, vec!["policy_evaluation_error".into()]),
+            Err(_) => (
+                Decision::Block,
+                vec!["policy_evaluation_error".into()],
+                approved,
+            ),
         }
     }
 

@@ -3,8 +3,12 @@
 //! - Cedar (`Kavach::Agent`) decides "is this action authorised?" from a
 //!   context computed server-side ([`AuthzRequest`] → [`build_context`]).
 //! - A deny whose determining policies are **all** annotated
-//!   `@escalate("human_review")` becomes `HUMAN_REVIEW`; any other deny —
-//!   including default deny and any policy evaluation error — is `BLOCK`.
+//!   `@escalate("human_review")` becomes `HUMAN_REVIEW` only if the same
+//!   request with `approval_valid = true` is allowed, with no evaluation
+//!   error. Invariant (AUTHZ-01): `HUMAN_REVIEW` ⇒ a permit is satisfied once
+//!   approval is granted, so an approval can never stand in for a missing
+//!   permit. Any other deny — including default deny and any policy
+//!   evaluation error, on either run — is `BLOCK`.
 //! - CEL pack rules may only raise the outcome ([`refine`]); they can never
 //!   downgrade a Cedar result (PRD D15).
 
@@ -174,20 +178,7 @@ impl AgentAuthorizer {
 
     /// Cedar stage: authorised, escalated to review, or blocked.
     pub fn authorize(&self, req: &AuthzRequest<'_>) -> Result<AuthzOutcome, AuthzError> {
-        let action = uid("Kavach::Agent::Action", req.action.name())?;
-        let context = Context::from_json_value(build_context(req), Some((&self.schema, &action)))
-            .map_err(|e| AuthzError::Request(e.to_string()))?;
-        let request = Request::new(
-            uid("Kavach::Agent::Agent", req.agent_id)?,
-            action,
-            uid("Kavach::Agent::Subject", req.subject_ref)?,
-            context,
-            Some(&self.schema),
-        )
-        .map_err(|e| AuthzError::Request(e.to_string()))?;
-        let response = self
-            .authorizer
-            .is_authorized(&request, &self.policies, &Entities::empty());
+        let response = self.evaluate(req)?;
 
         let determining: Vec<PolicyId> = response.diagnostics().reason().cloned().collect();
         let names: Vec<String> = determining.iter().map(|id| self.policy_name(id)).collect();
@@ -203,10 +194,42 @@ impl AgentAuthorizer {
                 outcome(Decision::Block, names, "no_matching_permit")
             }
             CedarDecision::Deny if determining.iter().all(|id| self.escalate_ids.contains(id)) => {
-                outcome(Decision::HumanReview, names, "escalated")
+                // Cedar lists only satisfied forbids here, which says nothing
+                // about permits. Escalate only if approval would be enough.
+                let approved = self.evaluate(&AuthzRequest {
+                    approval_valid: true,
+                    ..req.clone()
+                })?;
+                if approved.diagnostics().errors().next().is_some() {
+                    outcome(Decision::Block, names, "policy_evaluation_error")
+                } else if approved.decision() == CedarDecision::Allow {
+                    outcome(Decision::HumanReview, names, "escalated")
+                } else if approved.diagnostics().reason().next().is_some() {
+                    outcome(Decision::Block, names, "forbidden")
+                } else {
+                    outcome(Decision::Block, names, "no_matching_permit")
+                }
             }
             CedarDecision::Deny => outcome(Decision::Block, names, "forbidden"),
         })
+    }
+
+    /// One Cedar evaluation of `req`.
+    fn evaluate(&self, req: &AuthzRequest<'_>) -> Result<cedar_policy::Response, AuthzError> {
+        let action = uid("Kavach::Agent::Action", req.action.name())?;
+        let context = Context::from_json_value(build_context(req), Some((&self.schema, &action)))
+            .map_err(|e| AuthzError::Request(e.to_string()))?;
+        let request = Request::new(
+            uid("Kavach::Agent::Agent", req.agent_id)?,
+            action,
+            uid("Kavach::Agent::Subject", req.subject_ref)?,
+            context,
+            Some(&self.schema),
+        )
+        .map_err(|e| AuthzError::Request(e.to_string()))?;
+        Ok(self
+            .authorizer
+            .is_authorized(&request, &self.policies, &Entities::empty()))
     }
 
     fn policy_name(&self, id: &PolicyId) -> String {

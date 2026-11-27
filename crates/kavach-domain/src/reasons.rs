@@ -56,7 +56,7 @@ const PREFIXED: [Reason; 5] = [
 ];
 
 /// Every other code, by exact name.
-const EXACT: [Reason; 38] = [
+const EXACT: [Reason; 39] = [
     // Agent policies: decision words.
     r("authorized", "The agent policies permit this action under the mandate.", ""),
     r("forbidden", "An agent policy forbids this action; the policy ids listed with it say which.", "See the policy ids listed alongside."),
@@ -89,6 +89,7 @@ const EXACT: [Reason; 38] = [
     r("mandate_invalid", "The mandate did not verify: unknown, expired, revoked, or its chain is broken.", "Act under a current mandate; check `kavach sor event` or the system of record."),
     r("trusted_time_unavailable", "Trusted time was not available or not synchronised within the limit, so nothing time-bound could be decided.", "Fix the clock synchronisation (NTP or chrony)."),
     r("dependency_unavailable", "A dependency (the evidence store, the mandate store) did not answer, so the call was blocked.", "Check the dependency and retry with the same request_id."),
+    r("release_not_authorised", "An approval was released for this call, but the agent policies no longer allow it even with the approval: the mandate, the agent's state or the call changed since review.", "Check the mandate and the agent's state; a new review is needed if the call is still wanted."),
     r("policy_evaluation_error", "The agent policies could not be evaluated.", "Report it: this is a fault, not a decision about the call."),
     r("request_id_conflict", "The request_id was already used for a different call.", "Use a new request_id for a different call."),
     r("connect_failed", "The resource provider could not be reached; nothing was sent.", "Check the provider and retry."),
