@@ -314,7 +314,8 @@ fn fixture_preferences() -> Vec<ContactPreferenceRecord> {
 /// With a database, issuance and the gateway read consents and contact
 /// preferences from it, never from the fixture files: post the fixture's
 /// records as signed SoR authority updates, timed `at` on the stack clock.
-async fn seed_fixture_authority(state: &Arc<AppState>, tag: &str, at: DateTime<Utc>) {
+/// A test that posts its own authority does not call this.
+pub async fn seed_fixture_authority(state: &Arc<AppState>, tag: &str, at: DateTime<Utc>) {
     if !matches!(
         state.review_snapshot_store(),
         kavach_api::state::ReviewSnapshotBackend::Postgres(_)
@@ -635,7 +636,6 @@ pub async fn issue_at(
     event_id: &str,
     at: chrono::DateTime<chrono::Utc>,
 ) -> String {
-    seed_fixture_authority(state, event_id, at).await;
     let (status, body) = send(
         sor_router(state.clone()),
         "/v1/sor/events",
@@ -747,6 +747,7 @@ pub async fn gateway_with(
     )
     .unwrap();
     let state = Arc::new(AppState::from_config(&api).await.expect("state"));
+    seed_fixture_authority(&state, "gw", clock.now().utc).await;
     let mandate = issue_at(&state, "evt-gw", clock.now().utc).await;
     Gw {
         state,

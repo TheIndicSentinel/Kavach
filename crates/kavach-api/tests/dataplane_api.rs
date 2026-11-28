@@ -528,6 +528,7 @@ async fn agent_surfaces_on_postgres() {
             .await
             .expect("production-shaped start"),
     );
+    seed_fixture_authority(&s, "pg", chrono::Utc::now()).await;
     let mandate = issue(&s, "evt-pg").await;
     let (status, body) = send(
         agent_router(s.clone()),
@@ -585,6 +586,7 @@ async fn mandates_signed_before_a_rotation_verify_only_while_the_old_key_is_list
     };
 
     let before = Arc::new(AppState::from_config(&config).await.expect("start"));
+    seed_fixture_authority(&before, "rot", chrono::Utc::now()).await;
     let old = issue(&before, "evt-rot-1").await;
     drop(before);
 
