@@ -107,6 +107,7 @@ fn api_config(project: &Project, clock: Option<Arc<DevClock>>) -> ApiConfig {
         require_hardening: false,
         review_snapshot_key_file: None,
         review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
+        review_snapshot_previous_keys: Vec::new(),
         pack_path: project.bundle().join(PACK_FILE),
         model_path: project.bundle().join(MODEL_FILE),
         hmac_secret: None,
