@@ -114,12 +114,12 @@ async fn signed_destination_updates_are_fresh_scoped_and_redacted() {
     let signed = jws::sign(&f.sor, "lms-issuer-1", TYP_AUTHORITY_UPDATE, &event)
         .await
         .unwrap();
-    let verified = verifier
+    let accepted = verifier
         .verify(&signed, now(SyncStatus::Synced { max_error_ms: 0 }))
         .unwrap();
-    assert_eq!(verified.event(), &event);
+    assert_eq!(accepted.event(), &event);
     assert!(!format!("{event:?}").contains("+919876543210"));
-    assert!(!format!("{verified:?}").contains("+919876543210"));
+    assert!(!format!("{accepted:?}").contains("+919876543210"));
 
     let mut wrong_tenant = reference_destination_update();
     if let AuthorityChange::ReferenceDestination(record) = &mut wrong_tenant.change {

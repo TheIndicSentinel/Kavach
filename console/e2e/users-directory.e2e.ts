@@ -31,7 +31,7 @@ test("the directory searches by name or subject and pages by cursor", async ({ p
   await page.getByRole("button", { name: "Next page" }).click();
   await expect(page.getByRole("row", { name: /Asha Rao \(contractor\)/ })).toBeVisible();
   await expect.poll(() => queries).toEqual(["|", "Asha|", "Asha|principal-page-2"]);
-  await expect(page.getByRole("status")).toContainText("1 person on this page.");
+  await expect(page.getByRole("status").filter({ hasText: "1 person on this page." })).toBeVisible();
 });
 
 test("a role grant is proposed for the selected directory principal", async ({ page, api }) => {
@@ -47,8 +47,8 @@ test("a role grant is proposed for the selected directory principal", async ({ p
   await page.getByLabel("Role", { exact: true }).selectOption("auditor");
   await page.getByRole("button", { name: "Propose grant" }).click();
 
-  await expect(page.getByRole("status")).toContainText("cr-grant-1 is pending");
-  await expect(page.getByRole("status")).toContainText("different authorized person approves it");
+  await expect(page.getByRole("status").filter({ hasText: "cr-grant-1 is pending" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "different authorized person approves it" })).toBeVisible();
   expect(proposal).toEqual({
     kind: "grant_role",
     params: {
@@ -70,8 +70,8 @@ test("a role revoke is proposed for the selected active binding", async ({ page,
   await page.getByRole("button", { name: "Propose revoke for auditor role held by oidc-auditor-5" }).click();
   await page.getByRole("alertdialog").getByRole("button", { name: "Propose revoke" }).click();
 
-  await expect(page.getByRole("status")).toContainText("cr-revoke-1 is pending");
-  await expect(page.getByRole("status")).toContainText("binding remains active");
+  await expect(page.getByRole("status").filter({ hasText: "cr-revoke-1 is pending" })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "binding remains active" })).toBeVisible();
   expect(proposal).toEqual({ kind: "revoke_role", params: { binding_id: "rb-demo-2" } });
 });
 
@@ -90,6 +90,6 @@ test("the access review loads only on request and downloads the audited CSV", as
   await page.getByRole("button", { name: "Download CSV" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toBe("access-review.csv");
-  await expect(page.getByRole("status")).toContainText("recorded in the audit log");
+  await expect(page.getByRole("status").filter({ hasText: "recorded in the audit log" })).toBeVisible();
   expect(api.calls.filter((call) => call.key === "GET /v1/access-review")).toHaveLength(2);
 });

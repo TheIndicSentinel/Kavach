@@ -931,7 +931,7 @@ fn attack_catalog_is_refused_against_a_dev_stack() {
         };
         assert_eq!(o["verdict"], expected, "{o}");
     }
-    assert_eq!(doc["catalog_version"], "8");
+    assert_eq!(doc["catalog_version"], "9");
     // Again on the same stack: nothing a run sends is reused by the next.
     let again = kavach(&dir, &["--json", "attack"]);
     let doc = json(&again);
@@ -1412,6 +1412,19 @@ fn evidence_export_from_postgres_verifies_and_a_changed_copy_fails() {
     assert_eq!(doc["signed_with"], "dev-export-1", "{doc}");
     assert!(doc["records"].as_u64().unwrap() >= 1, "{doc}");
     drop(stack);
+
+    // A restart on the same database keeps the stored consent and
+    // preferences: the re-seed is not newer, and the stack still starts.
+    let restart = kavach(
+        &dir,
+        &["--json", "dev", "up", "--at", "11:00", "--exit-when-ready"],
+    );
+    assert_eq!(
+        restart.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&restart.stderr)
+    );
 
     // A second export into the same directory is refused, not merged.
     let again = kavach(&dir, &["evidence", "export", bundle.to_str().unwrap()]);

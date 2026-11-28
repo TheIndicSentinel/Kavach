@@ -160,8 +160,9 @@ services:
         ipv4_address: 172.30.20.10
     healthcheck:
       # The image probes 127.0.0.1, which this stack deliberately does not
-      # bind; probe the operator listener on the backend IP instead.
-      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/172.30.20.10/8080 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '^HTTP/1\\.[01] [0-9][0-9][0-9]'"]
+      # bind; probe the operator listener on the backend IP instead. Same
+      # rule as the image: 401 (unauthenticated) or 200 is healthy, 5xx is not.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/172.30.20.10/8080 && printf 'GET /health HTTP/1.0\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -qE '^HTTP/1\\.[01] (200|401) '"]
       interval: 3s
       timeout: 3s
       retries: 60
@@ -196,7 +197,9 @@ services:
       timeout: 3s
       retries: 30
 
-  # One-shot, as the system of record: issues the agent's mandate.
+  # One-shot, as the system of record: seeds the synthetic consent and
+  # contact preferences (signed authority updates), then issues the
+  # agent's mandate.
   issue-mandate:
     <<: *e2e
     profiles: ["run"]
@@ -206,6 +209,8 @@ services:
       - sh
       - -c
       - >-
+        kavach-dev seed-authority --bundle /bundle
+        --url http://172.30.20.10:8090/v1/sor/authority-updates &&
         kavach-dev sor-event --bundle /bundle
         --url http://172.30.20.10:8090/v1/sor/events
         --event-id "evt-isolation-$$(date +%s)"

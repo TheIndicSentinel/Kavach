@@ -9,11 +9,20 @@
 //! environment in the schema. Sanity checks then weaken the shipped policies on
 //! purpose and require the analysis to report a violation, so a vacuous pass
 //! (e.g. a mis-stated property) fails the job.
+//!
+//! The review lift (AUTHZ-01, ADR-003) adds two checks on the agent
+//! policies: (i) over requests with `approval_valid == true`, the shipped set
+//! and the shipped set without its `@escalate` forbids allow exactly the same
+//! requests; (ii) no policy reads `approval_valid` except in the `unless`
+//! clause of an `@escalate` forbid. With "no policy can raise an evaluation
+//! error", they mean an approval lifts the escalate forbids and nothing else:
+//! the combiner's re-run with `approval_valid = true` is Allow exactly when a
+//! permit is satisfied and no other forbid is.
 
 use std::process::ExitCode;
 use std::str::FromStr;
 
-use cedar_policy::{PolicySet, Schema};
+use cedar_policy::{Policy, PolicyId, PolicySet, Schema};
 use cedar_policy_symcc::{
     solver::LocalSolver, CedarSymCompiler, CompiledPolicy, CompiledPolicySet,
 };
@@ -120,7 +129,7 @@ const PROPERTIES: [(&str, &str); 18] = [
 ];
 
 /// Weakened variants that must be caught: (label, anchor to replace, replacement).
-const SANITY_VARIANTS: [(&str, &str, &str); 9] = [
+const SANITY_VARIANTS: [(&str, &str, &str); 12] = [
     (
         "waiver ceiling relaxed by 500 bps",
         r"context.waiver_bps > context.waiver_ceiling_bps",
@@ -165,6 +174,21 @@ const SANITY_VARIANTS: [(&str, &str, &str); 9] = [
         "negative contact count allowed",
         r"when { context.contacts_today < 0 };",
         r"when { false };",
+    ),
+    (
+        "propose_plan permit drops the holder condition",
+        "principal == context.mandate_holder &&\n  context.mandate_actions.contains(\"propose_plan\")",
+        "context.mandate_actions.contains(\"propose_plan\")",
+    ),
+    (
+        "a permit reads approval_valid",
+        "context.mandate_actions.contains(\"propose_plan\")\n};",
+        "context.mandate_actions.contains(\"propose_plan\") &&\n  !context.approval_valid\n};",
+    ),
+    (
+        "escalate forbid without its unless",
+        "when { context.task_tainted }\nunless { context.approval_valid };",
+        "when { context.task_tainted };",
     ),
 ];
 
@@ -298,6 +322,56 @@ async fn never_errors(
     Ok(true)
 }
 
+/// (i): over requests with `approval_valid == true`, `policies` and
+/// `policies` without its `@escalate` forbids allow the same requests.
+async fn approval_lifts_only_escalations(
+    compiler: &mut Compiler,
+    schema: &Schema,
+    policies: &PolicySet,
+) -> Result<bool, String> {
+    let guard = Policy::parse(
+        Some(PolicyId::new("analysis-approval-granted")),
+        "forbid (principal, action, resource) unless { context.approval_valid };",
+    )
+    .map_err(|e| e.to_string())?;
+    let with_guard = |keep_escalate: bool| -> Result<PolicySet, String> {
+        let kept = policies
+            .policies()
+            .filter(|p| keep_escalate || p.annotation("escalate").is_none())
+            .cloned()
+            .chain(std::iter::once(guard.clone()));
+        PolicySet::from_policies(kept).map_err(|e| e.to_string())
+    };
+    let (all, lifted) = (with_guard(true)?, with_guard(false)?);
+    for env in schema.request_envs() {
+        let all = CompiledPolicySet::compile(&all, &env, schema).map_err(|e| e.to_string())?;
+        let lifted =
+            CompiledPolicySet::compile(&lifted, &env, schema).map_err(|e| e.to_string())?;
+        if !compiler
+            .check_equivalent_opt(&all, &lifted)
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// (ii): `approval_valid` is read only by the `unless` clause of an
+/// `@escalate` forbid, once per such forbid. Syntactic, so needs no solver.
+fn approval_read_only_by_escalations(policies: &PolicySet) -> bool {
+    policies.policies().all(|p| {
+        let text = p.to_string();
+        let reads = text.matches("approval_valid").count();
+        if p.annotation("escalate").is_some() {
+            reads == 1 && text.contains("unless { context.approval_valid }")
+        } else {
+            reads == 0
+        }
+    })
+}
+
 /// One policy set to analyse: its schema, the shipped policies, the
 /// properties and the weakened variants that must be caught.
 struct Suite<'a> {
@@ -306,6 +380,8 @@ struct Suite<'a> {
     policies: &'a str,
     properties: Vec<(&'a str, String)>,
     sanity: &'a [(&'a str, &'a str, &'a str)],
+    /// Whether the policies carry `@escalate` forbids lifted by an approval.
+    approval_lift: bool,
 }
 
 async fn run() -> Result<bool, String> {
@@ -321,6 +397,7 @@ async fn run() -> Result<bool, String> {
                 .map(|(name, text)| (*name, (*text).to_string()))
                 .collect(),
             sanity: &SANITY_VARIANTS,
+            approval_lift: true,
         },
         Suite {
             label: "operator",
@@ -331,6 +408,7 @@ async fn run() -> Result<bool, String> {
                 .map(|(name, text)| (*name, text.replace("{ROLE_CHANGES}", ROLE_CHANGES)))
                 .collect(),
             sanity: &OPERATOR_SANITY_VARIANTS,
+            approval_lift: false,
         },
     ];
     let mut ok = true;
@@ -371,6 +449,20 @@ async fn analyse(compiler: &mut Compiler, suite: &Suite<'_>) -> Result<bool, Str
     );
     ok &= no_errors;
 
+    if suite.approval_lift {
+        let lift = approval_lifts_only_escalations(compiler, &schema, &shipped).await?;
+        println!(
+            "{} an approval lifts the escalate forbids and nothing else",
+            if lift { "PROVEN  " } else { "VIOLATED" }
+        );
+        let reads = approval_read_only_by_escalations(&shipped);
+        println!(
+            "{} only escalate forbids read approval_valid, in their unless clause",
+            if reads { "PROVEN  " } else { "VIOLATED" }
+        );
+        ok &= lift && reads;
+    }
+
     for (label, anchor, replacement) in suite.sanity {
         // Exactly once, so the variant weakens the policy it names.
         if suite.policies.matches(anchor).count() != 1 {
@@ -383,6 +475,10 @@ async fn analyse(compiler: &mut Compiler, suite: &Suite<'_>) -> Result<bool, Str
         let mut caught = false;
         for (_, forbidden) in &bad {
             caught |= !property_holds(compiler, &schema, &weakened, forbidden).await?;
+        }
+        if suite.approval_lift {
+            caught |= !approval_read_only_by_escalations(&weakened)
+                || !approval_lifts_only_escalations(compiler, &schema, &weakened).await?;
         }
         println!(
             "{} weakened variant detected: {label}",
@@ -428,6 +524,27 @@ mod tests {
                     .unwrap_or_else(|e| panic!("'{label}' does not parse: {e}"));
             }
         }
+    }
+
+    #[test]
+    fn approval_valid_is_read_only_by_escalate_unless_clauses() {
+        let shipped = PolicySet::from_str(AGENT_POLICIES).unwrap();
+        assert!(approval_read_only_by_escalations(&shipped));
+        assert_eq!(
+            shipped
+                .policies()
+                .filter(|p| p.annotation("escalate").is_some())
+                .count(),
+            2,
+            "the two escalate forbids"
+        );
+        let (_, anchor, replacement) = SANITY_VARIANTS
+            .iter()
+            .find(|(label, _, _)| *label == "a permit reads approval_valid")
+            .unwrap();
+        let weakened =
+            PolicySet::from_str(&AGENT_POLICIES.replacen(anchor, replacement, 1)).unwrap();
+        assert!(!approval_read_only_by_escalations(&weakened));
     }
 
     #[test]

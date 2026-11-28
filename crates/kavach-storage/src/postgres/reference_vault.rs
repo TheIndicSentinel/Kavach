@@ -137,44 +137,7 @@ impl PostgresReferenceDestinationStore {
             return Ok(AppliedReferenceDestination { replayed: true });
         }
 
-        let current = sqlx::query(
-            "SELECT version, source_system, source_occurred_at FROM reference_destinations \
-             WHERE tenant_id = $1 AND subject_ref = $2 AND channel = $3 FOR UPDATE",
-        )
-        .bind(&event.tenant_id)
-        .bind(&record.subject_ref)
-        .bind(&record.channel)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|_| reference_unavailable())?;
-        let previous_version = if let Some(row) = current {
-            let version: i64 = row
-                .try_get("version")
-                .map_err(|_| reference_unavailable())?;
-            let source_system: Option<String> = row
-                .try_get("source_system")
-                .map_err(|_| reference_unavailable())?;
-            let source_occurred_at: Option<DateTime<Utc>> = row
-                .try_get("source_occurred_at")
-                .map_err(|_| reference_unavailable())?;
-            let source_system = source_system.ok_or_else(|| {
-                PortError::rejected("reference destination has no signed source binding")
-            })?;
-            let source_occurred_at = source_occurred_at.ok_or_else(|| reference_unavailable())?;
-            if source_system != event.system {
-                return Err(PortError::rejected(
-                    "reference destination source system changed",
-                ));
-            }
-            if event.occurred_at <= source_occurred_at {
-                return Err(PortError::rejected(
-                    "reference destination update is not newer than the current record",
-                ));
-            }
-            version
-        } else {
-            0
-        };
+        let previous_version = current_reference_version(&mut tx, verified, record).await?;
         let next_version = previous_version
             .checked_add(1)
             .ok_or_else(reference_unavailable)?;
@@ -257,6 +220,53 @@ impl PostgresReferenceDestinationStore {
         tx.commit().await.map_err(|_| reference_unavailable())?;
         Ok(AppliedReferenceDestination { replayed: false })
     }
+}
+
+/// The current version of a subject's reference destination (0 when none),
+/// locked for update, after checking the update keeps its signed source
+/// binding and is newer than what is stored.
+async fn current_reference_version(
+    tx: &mut Transaction<'_, Postgres>,
+    verified: &VerifiedAuthorityUpdate,
+    record: &kavach_domain::authority::ReferenceDestinationRecord,
+) -> Result<i64, PortError> {
+    let event = verified.event();
+    let current = sqlx::query(
+        "SELECT version, source_system, source_occurred_at FROM reference_destinations \
+         WHERE tenant_id = $1 AND subject_ref = $2 AND channel = $3 FOR UPDATE",
+    )
+    .bind(&event.tenant_id)
+    .bind(&record.subject_ref)
+    .bind(&record.channel)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|_| reference_unavailable())?;
+    let Some(row) = current else {
+        return Ok(0);
+    };
+    let version: i64 = row
+        .try_get("version")
+        .map_err(|_| reference_unavailable())?;
+    let source_system: Option<String> = row
+        .try_get("source_system")
+        .map_err(|_| reference_unavailable())?;
+    let source_occurred_at: Option<DateTime<Utc>> = row
+        .try_get("source_occurred_at")
+        .map_err(|_| reference_unavailable())?;
+    let source_system = source_system
+        .ok_or_else(|| PortError::rejected("reference destination has no signed source binding"))?;
+    let source_occurred_at = source_occurred_at.ok_or_else(reference_unavailable)?;
+    if source_system != event.system {
+        return Err(PortError::rejected(
+            "reference destination source system changed",
+        ));
+    }
+    if event.occurred_at <= source_occurred_at {
+        return Err(PortError::rejected(
+            "reference destination update is not newer than the current record",
+        ));
+    }
+    Ok(version)
 }
 
 fn reference_unavailable() -> PortError {
@@ -680,7 +690,7 @@ mod tests {
                 .expose(),
             "+910000000001"
         );
-        assert!(
+        assert_eq!(
             active
                 .seal(
                     "tenant-a",
@@ -690,8 +700,8 @@ mod tests {
                     &Destination::new("+910000000002"),
                 )
                 .expect("seal with active key")
-                .key_id
-                == "reference-v2"
+                .key_id,
+            "reference-v2"
         );
         assert!(active
             .add_previous(key(&"ef".repeat(32), "duplicate-material"))

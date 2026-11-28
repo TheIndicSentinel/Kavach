@@ -105,7 +105,8 @@ pub enum OidcError {
 /// An exhaustive match on both enums (no wildcard, no string comparison): a
 /// new variant in the library stops this compiling until it is decided. The
 /// key-management algorithms of JWE (`RSA1_5`, `RSA-OAEP`…) sign nothing, so a
-/// key that names one verifies no token.
+/// key that names one verifies no token, and neither does a key whose `alg`
+/// the library does not know (`UNKNOWN_ALGORITHM`).
 fn key_allows(key: KeyAlgorithm, token: Algorithm) -> bool {
     let signs_with = match key {
         KeyAlgorithm::HS256 => Algorithm::HS256,
@@ -120,7 +121,10 @@ fn key_allows(key: KeyAlgorithm, token: Algorithm) -> bool {
         KeyAlgorithm::PS384 => Algorithm::PS384,
         KeyAlgorithm::PS512 => Algorithm::PS512,
         KeyAlgorithm::EdDSA => Algorithm::EdDSA,
-        KeyAlgorithm::RSA1_5 | KeyAlgorithm::RSA_OAEP | KeyAlgorithm::RSA_OAEP_256 => return false,
+        KeyAlgorithm::RSA1_5
+        | KeyAlgorithm::RSA_OAEP
+        | KeyAlgorithm::RSA_OAEP_256
+        | KeyAlgorithm::UNKNOWN_ALGORITHM => return false,
     };
     signs_with == token
 }
@@ -466,6 +470,7 @@ impl OidcVerifier {
         let claims = decode::<Map<String, Value>>(token, &key, &validation)
             .map_err(|e| OidcError::Invalid(e.to_string()))?
             .claims;
+        check_not_before(&claims, self.config.leeway_seconds)?;
         if claims.get("nonce").and_then(Value::as_str) != Some(nonce) {
             return Err(OidcError::Claim("nonce".into(), "does not match".into()));
         }
@@ -489,6 +494,7 @@ impl OidcVerifier {
         let claims = decode::<Map<String, Value>>(token, &key, &validation)
             .map_err(|e| OidcError::Invalid(e.to_string()))?
             .claims;
+        check_not_before(&claims, self.config.leeway_seconds)?;
 
         let principal = claims
             .get(&self.config.principal_claim)
@@ -537,6 +543,34 @@ impl OidcVerifier {
     }
 }
 
+/// `jsonwebtoken` before 10.3 checked `nbf` only when it parsed as an
+/// unsigned integer: a string or fractional `nbf` counted as absent, so its
+/// check was skipped (GHSA-h395-gr6q-cpjc; `exp`, `iss` and `aud` are required
+/// claims and are refused when malformed). Kept on 10.x so the refusal does
+/// not depend on the library version: an integer is checked by the library,
+/// any other number is compared here, and anything that is not a number is
+/// refused.
+fn check_not_before(claims: &Map<String, Value>, leeway_seconds: u64) -> Result<(), OidcError> {
+    match claims.get("nbf") {
+        None => Ok(()),
+        Some(nbf) if nbf.is_u64() => Ok(()),
+        Some(Value::Number(nbf)) => {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0.0, |d| d.as_secs_f64());
+            let latest = now + f64::from(u32::try_from(leeway_seconds).unwrap_or(u32::MAX));
+            match nbf.as_f64() {
+                Some(nbf) if nbf.is_finite() && nbf <= latest => Ok(()),
+                _ => Err(OidcError::Claim("nbf".into(), "is in the future".into())),
+            }
+        }
+        Some(_) => Err(OidcError::Claim(
+            "nbf".into(),
+            "is not a NumericDate".into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ed25519_dalek::{Signer, SigningKey};
@@ -571,7 +605,7 @@ mod tests {
         serde_json::from_value(json!({ "keys": keys })).unwrap()
     }
 
-    fn signed_token(seed: u8, kid: &str, claims: Value) -> String {
+    fn signed_token(seed: u8, kid: &str, claims: &Value) -> String {
         // PKCS#8 v1 DER for an Ed25519 private key (RFC 8410).
         let mut der = vec![
             0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
@@ -580,7 +614,7 @@ mod tests {
         der.extend_from_slice(&[seed; 32]);
         let mut header = Header::new(Algorithm::EdDSA);
         header.kid = Some(kid.into());
-        encode(&header, &claims, &EncodingKey::from_ed_der(&der)).unwrap()
+        encode(&header, claims, &EncodingKey::from_ed_der(&der)).unwrap()
     }
 
     fn token(seed: u8, kid: &str) -> String {
@@ -588,7 +622,7 @@ mod tests {
         signed_token(
             seed,
             kid,
-            json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice",
+            &json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice",
                     "groups": ["ops"], "exp": now + 300 }),
         )
     }
@@ -604,7 +638,7 @@ mod tests {
         signed_token(
             1,
             "good",
-            json!({ "iss": ISSUER, "aud": "kavach-console", "azp": "kavach-console",
+            &json!({ "iss": ISSUER, "aud": "kavach-console", "azp": "kavach-console",
                     "sub": sub, "nonce": nonce, "acr": acr, "auth_time": auth_time,
                     "iat": iat, "exp": now + 300 }),
         )
@@ -762,6 +796,7 @@ mod tests {
             (KeyAlgorithm::RSA1_5, None),
             (KeyAlgorithm::RSA_OAEP, None),
             (KeyAlgorithm::RSA_OAEP_256, None),
+            (KeyAlgorithm::UNKNOWN_ALGORITHM, None),
         ];
         for (key, own) in key_algorithms {
             for token in EVERY_ALGORITHM {
@@ -882,6 +917,38 @@ mod tests {
         );
         let signature = SigningKey::from_bytes(&[seed; 32]).sign(input.as_bytes());
         format!("{input}.{}", URL_SAFE_NO_PAD.encode(signature.to_bytes()))
+    }
+
+    /// GHSA-h395-gr6q-cpjc: a signed token whose `nbf` is a string or a
+    /// fraction is not left unchecked. A future `nbf` is refused in every
+    /// form, a string `nbf` is refused even in the past, a past fractional
+    /// `nbf` is accepted like an integer one, and a negative `nbf` (no
+    /// NumericDate a provider issues) is refused.
+    #[test]
+    fn a_malformed_not_before_is_never_skipped() {
+        let verifier = verifier();
+        let now = chrono::Utc::now().timestamp();
+        let header = br#"{"alg":"EdDSA","kid":"good"}"#;
+        let with_nbf = |nbf: Value| {
+            let claims = json!({ "iss": ISSUER, "aud": AUDIENCE, "sub": "alice",
+                                 "exp": now + 300, "nbf": nbf });
+            verifier.verify(&raw_token(1, header, claims.to_string().as_bytes()))
+        };
+        let future = now + 3600;
+        let fraction = |secs: i64| serde_json::from_str::<Value>(&format!("{secs}.5")).unwrap();
+        for nbf in [
+            json!(future),
+            json!(future.to_string()),
+            fraction(future),
+            json!((now - 60).to_string()),
+            json!(null),
+            json!(true),
+            json!(-1),
+        ] {
+            assert!(with_nbf(nbf.clone()).is_err(), "nbf {nbf} was accepted");
+        }
+        assert!(with_nbf(json!(now - 60)).is_ok());
+        assert!(with_nbf(fraction(now - 60)).is_ok());
     }
 
     /// Found by the `agent_token` fuzz target: a correctly signed token whose

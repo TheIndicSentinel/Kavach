@@ -198,9 +198,11 @@ mod tests {
         let provider = FakeStepUpProvider::default();
         let mut request = request(now);
         request.action_hash = "sha256:other".into();
-        assert_eq!(
-            provider.begin(request).await.unwrap_err().class,
-            ErrorClass::Invalid
-        );
+        // `StepUpChallenge` has no `Debug` on purpose (its authorization URL
+        // carries the raw OIDC state and nonce), so `unwrap_err` can't be used.
+        let Err(err) = provider.begin(request).await else {
+            panic!("begin must refuse a malformed action hash");
+        };
+        assert_eq!(err.class, ErrorClass::Invalid);
     }
 }

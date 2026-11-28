@@ -238,18 +238,15 @@ pub async fn list_unknown_outcomes(
         return refuse(StatusCode::NOT_FOUND, "agent surfaces are not configured");
     };
     let core = dp.core();
-    let mut rows = match core
+    let Ok(mut rows) = core
         .store()
         .unknown_outcome_reviews(core.tenant_id(), query.cursor.as_deref(), limit + 1)
         .await
-    {
-        Ok(rows) => rows,
-        Err(_) => {
-            return refuse(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "evidence store unavailable",
-            )
-        }
+    else {
+        return refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "evidence store unavailable",
+        );
     };
     let has_more = rows.len() > limit as usize;
     rows.truncate(limit as usize);

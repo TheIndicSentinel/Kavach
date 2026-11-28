@@ -499,6 +499,33 @@ where
     }
 }
 
+/// The reason code for a destination the resolver could not give.
+fn resolve_refusal(class: ErrorClass) -> &'static str {
+    match class {
+        ErrorClass::Rejected => "no_destination",
+        ErrorClass::Invalid => "invalid_reference",
+        ErrorClass::Unavailable => "resolver_unavailable",
+    }
+}
+
+/// The reason code when contact preferences refuse this send, if they do.
+async fn contact_refusal<C: ContactPreferenceSource>(
+    preferences: &C,
+    tenant_id: &str,
+    call: &crate::authorize::ToolCall,
+    channel: &str,
+    now: DateTime<Utc>,
+) -> Option<&'static str> {
+    let error = require_contact_permission(preferences, tenant_id, &call.subject_ref, channel, now)
+        .await
+        .err()?;
+    Some(if error.class == ErrorClass::Unavailable {
+        "contact_preference_unavailable"
+    } else {
+        "contact_preference_denied"
+    })
+}
+
 /// Resolve → credential → deadline re-check → forward → classify. Never
 /// fails: every path ends in an outcome and a reason code.
 async fn run_allowed<V, S, R, C, B, F, O>(
@@ -532,20 +559,16 @@ where
     let Some(now) = core.trusted_now() else {
         return not_executed("trusted_time_unavailable");
     };
-    if let Err(error) = require_contact_permission(
+    if let Some(reason) = contact_refusal(
         deps.contact_preferences,
         core.tenant_id(),
-        &call.subject_ref,
+        call,
         channel,
         now,
     )
     .await
     {
-        return not_executed(if error.class == ErrorClass::Unavailable {
-            "contact_preference_unavailable"
-        } else {
-            "contact_preference_denied"
-        });
+        return not_executed(reason);
     }
 
     let started = Instant::now();
@@ -556,13 +579,7 @@ where
     deps.observer.stage(Stage::Resolve, started.elapsed());
     let destination = match resolved {
         Ok(destination) => destination,
-        Err(err) => {
-            return not_executed(match err.class {
-                ErrorClass::Rejected => "no_destination",
-                ErrorClass::Invalid => "invalid_reference",
-                ErrorClass::Unavailable => "resolver_unavailable",
-            })
-        }
+        Err(err) => return not_executed(resolve_refusal(err.class)),
     };
 
     let Some(now) = core.trusted_now() else {

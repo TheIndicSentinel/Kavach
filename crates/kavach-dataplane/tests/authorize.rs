@@ -1759,3 +1759,90 @@ async fn a_mandate_that_expired_while_its_agent_was_stopped_stays_expired() {
     assert_eq!(d, Decision::Block);
     assert!(why.contains(&"mandate_invalid".to_string()), "{why:?}");
 }
+
+/// AUTHZ-01: an agent that does not hold the mandate gets a plain BLOCK. No
+/// review decision is signed, so nothing reaches the approval queue.
+#[tokio::test]
+async fn authz01_a_non_holder_over_the_ceiling_is_blocked_and_never_queued() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let plan = ToolCall {
+        action: "propose_plan".into(),
+        channel: None,
+        waiver_bps: Some(3500),
+        extra: BTreeMap::new(),
+        ..reminder(&mandate, "authz01-non-holder")
+    };
+    let d = w
+        .core
+        .authorize(&agent("translator-agent"), &plan, Mode::Commit)
+        .await
+        .unwrap();
+    assert_eq!(d.decision, Decision::Block, "{:?}", d.reasons);
+    assert!(
+        d.reasons.iter().any(|r| r == "no_matching_permit"),
+        "{:?}",
+        d.reasons
+    );
+    assert!(
+        !d.reasons.iter().any(|r| r == "escalated"),
+        "{:?}",
+        d.reasons
+    );
+    assert!(d.grant.is_none());
+    let record = d.record.expect("only the BLOCK record");
+    assert_eq!(record.payload.policy_decision, Decision::Block);
+    assert_eq!(record.payload.returned_decision, Decision::Block);
+    assert!(
+        record.payload.review_action_hash.is_none(),
+        "no review digest"
+    );
+}
+
+/// AUTHZ-01: a release is only an input. If Cedar no longer allows the action
+/// with the approval (here the mandate was revoked after the review), the
+/// release is refused with its own reason and nothing is minted.
+#[tokio::test]
+async fn authz01_a_release_cedar_no_longer_allows_is_blocked() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let a = agent("collections-agent");
+    let original = ToolCall {
+        action: "propose_plan".into(),
+        waiver_bps: Some(3500),
+        ..reminder(&mandate, "authz01-revoked-review")
+    };
+    let review = w.core.authorize(&a, &original, Mode::Commit).await.unwrap();
+    assert_eq!(review.decision, Decision::HumanReview);
+    let review = review.record.expect("review evidence");
+    let mut approved = original.clone();
+    approved.approval_id = Some("approval-revoked".into());
+    approved.execution_id = Some("execution-revoked".into());
+    let release = kavach_ports::ReviewReleaseRecord {
+        tenant_id: review.payload.tenant_id.clone(),
+        approval_id: "approval-revoked".into(),
+        review_record_id: review.payload.record_id,
+        execution_id: "execution-revoked".into(),
+        action_hash: w.core.review_action_digest(&a, &approved).unwrap(),
+        single_use_credential_id: "credential-revoked".into(),
+        approver: "https://idp#reviewer".into(),
+        released_at: w.clock.now().utc,
+    };
+    w.mandates
+        .revoke(TENANT, &mandate, RevocationReason::Dispute)
+        .await
+        .unwrap();
+
+    let d = w
+        .core
+        .authorize_released(&a, &approved, &release)
+        .await
+        .unwrap();
+    assert_eq!(d.decision, Decision::Block, "{:?}", d.reasons);
+    assert!(
+        d.reasons.iter().any(|r| r == "release_not_authorised"),
+        "{:?}",
+        d.reasons
+    );
+    assert!(d.grant.is_none(), "nothing is minted");
+}

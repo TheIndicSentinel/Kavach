@@ -1012,6 +1012,7 @@ struct SignedAuthorityUpdates {
 impl Dataplane {
     /// Builds the agent surfaces. Without `insecure_dev`, refuses the
     /// development stand-ins (memory stores, an unreadable kernel clock).
+    #[allow(clippy::too_many_lines)] // one linear wiring of every agent surface
     pub async fn build(
         config: &DataplaneConfig,
         pool: Option<&StoragePool>,
@@ -1219,6 +1220,12 @@ impl Dataplane {
 
     pub fn core(&self) -> &Arc<AuthorizeCore<Arc<Mandates>, EvidenceBackend>> {
         &self.core
+    }
+
+    /// The stack's trusted time: the clock evidence records carry (a fixed
+    /// development clock or a test clock where one is configured).
+    pub fn now(&self) -> DateTime<Utc> {
+        self.clock.now().utc
     }
 
     /// Loads a D17 review record using this dataplane's configured tenant.
@@ -2450,6 +2457,66 @@ async fn revoke_by_event(
 /// Router for the agent listener (`--agent-listen`, the only listener on the
 /// agent network): agent routes and liveness — never operator, admin,
 /// change-request, metrics or system-of-record routes (ADR-007).
+/// Consumes the release named by `request`, only if it matches this
+/// authenticated caller's extracted action. Missing, expired or unavailable
+/// releases leave the original HUMAN_REVIEW request untouched and therefore
+/// non-forwardable.
+async fn consume_release(
+    state: &AppState,
+    dp: &Dataplane,
+    agent: &AgentIdentity,
+    request: &ToolRequest,
+    call: &kavach_dataplane::ToolCall,
+) -> Option<kavach_ports::ReviewReleaseRecord> {
+    let (Some(approval_id), Some(execution_id), Some(now)) = (
+        request.approval_id.as_deref(),
+        request.execution_id.as_deref(),
+        dp.core.trusted_now(),
+    ) else {
+        return None;
+    };
+    let action_hash = dp.core.review_action_digest(agent, call).ok()?;
+    state
+        .review_approval_store()
+        .release(&dp.tenant, approval_id, execution_id, &action_hash, now)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// One log line per gateway call: its decision and outcome, or why it was
+/// refused. Names the registry's tool, never the caller's path text.
+fn log_gateway_result(
+    tool_label: &str,
+    agent: &AgentIdentity,
+    result: &Result<GatewayReply, GatewayError>,
+) {
+    match result {
+        Ok(reply) => {
+            tracing::info!(
+            tool = %tool_label,
+            agent = %agent.agent_id,
+            request_id = %reply.request_id,
+            record_id = reply.record_id.as_deref().unwrap_or("-"),
+            decision = ?reply.decision,
+            outcome = reply.outcome.map_or("none", kavach_ports::agent_evidence::Outcome::as_str),
+            outcome_reason = reply.outcome_reason.as_deref().unwrap_or("-"),
+            replayed = reply.replayed,
+            outcome_recorded = reply.outcome_recorded,
+            "gateway call"
+            );
+        }
+        Err(error) => {
+            tracing::info!(
+                tool = %tool_label,
+                agent = %agent.agent_id,
+                refused = error_kind(error),
+                "gateway call refused"
+            );
+        }
+    }
+}
+
 /// `POST /v1/tools/{tool}`: decides and records. Proposal-trust tools stop
 /// there; external-effect tools (allow, first call only) resolve, obtain a
 /// credential, forward once and record the outcome. The reply is an allowlist
@@ -2482,27 +2549,7 @@ pub async fn tool_call(
             return Err(refuse_tool(refusal));
         }
     };
-    // Consume only a release matching this authenticated caller's extracted
-    // action. Missing, expired or unavailable releases leave the original
-    // HUMAN_REVIEW request untouched and therefore non-forwardable.
-    let release = match (
-        request.approval_id.as_deref(),
-        request.execution_id.as_deref(),
-        dp.core.trusted_now(),
-    ) {
-        (Some(approval_id), Some(execution_id), Some(now)) => {
-            match dp.core.review_action_digest(&agent, &checked_call) {
-                Ok(action_hash) => state
-                    .review_approval_store()
-                    .release(&dp.tenant, approval_id, execution_id, &action_hash, now)
-                    .await
-                    .ok()
-                    .flatten(),
-                Err(_) => None,
-            }
-        }
-        _ => None,
-    };
+    let release = consume_release(&state, dp, &agent, &request, &checked_call).await;
     if release.is_none() {
         // Do not key an unapproved HUMAN_REVIEW retry by execution id.
         request.approval_id = None;
@@ -2554,30 +2601,7 @@ pub async fn tool_call(
             ));
         }
     };
-    match &result {
-        Ok(reply) => {
-            tracing::info!(
-            tool = %tool_label,
-            agent = %agent.agent_id,
-            request_id = %reply.request_id,
-            record_id = reply.record_id.as_deref().unwrap_or("-"),
-            decision = ?reply.decision,
-            outcome = reply.outcome.map_or("none", kavach_ports::agent_evidence::Outcome::as_str),
-            outcome_reason = reply.outcome_reason.as_deref().unwrap_or("-"),
-            replayed = reply.replayed,
-            outcome_recorded = reply.outcome_recorded,
-            "gateway call"
-            );
-        }
-        Err(error) => {
-            tracing::info!(
-                tool = %tool_label,
-                agent = %agent.agent_id,
-                refused = error_kind(error),
-                "gateway call refused"
-            );
-        }
-    }
+    log_gateway_result(&tool_label, &agent, &result);
     persist_gateway_review_snapshot(&state, dp, &agent, &review_tool, review_request, &result)
         .await?;
     match result {
@@ -2671,7 +2695,7 @@ async fn persist_review_snapshot(
         ));
     }
     let expires_at = record.payload.ts + chrono::Duration::seconds(REVIEW_SNAPSHOT_TTL_SECONDS);
-    let now = Utc::now();
+    let now = dataplane.now();
     if expires_at <= now {
         return Err(PortError::rejected(
             "review snapshot lifetime already expired",

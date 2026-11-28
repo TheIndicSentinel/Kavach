@@ -254,8 +254,8 @@ mod tests {
             subject_ref: "ref:borrower:B-9382".into(),
             channel: None,
             waiver_bps: Some(3500),
-            requested_fields: Default::default(),
-            parameters: Default::default(),
+            requested_fields: std::collections::BTreeSet::new(),
+            parameters: std::collections::BTreeMap::new(),
         };
         let action_hash = snapshot.action_hash().expect("digest");
         let store = kavach_storage::MemoryReviewSnapshotStore::default();

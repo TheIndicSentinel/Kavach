@@ -58,4 +58,13 @@ pub mod calendar {
             .num_minutes();
         (local.date_naive(), u32::try_from(minute).unwrap_or(0))
     }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn the_dev_stack_fixtures_cover_the_whole_calendar() {
+            // The first slot is 1 October 00:00 IST, before 1 October UTC.
+            assert!(kavach_devkit::fixture_valid_from() <= super::slot(1, 0));
+        }
+    }
 }

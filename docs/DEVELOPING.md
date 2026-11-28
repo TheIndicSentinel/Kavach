@@ -139,7 +139,7 @@ Without Postgres, `kavach dev up --export-on-exit <dir>` writes the same kind of
 
 ### Known attacks (`kavach attack`)
 
-`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 8, 35 attacks) is the same one the acceptance suite runs in CI.
+`kavach attack` runs the attack catalog against the running `kavach dev up`. The catalog (`crates/kavach-attacks`, version 9, 36 attacks) is the same one the acceptance suite runs in CI.
 
 ```bash
 kavach attack --list            # the scope: every attack, nothing run

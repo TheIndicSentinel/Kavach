@@ -1245,8 +1245,8 @@ paths:
                   agent_id: { type: string }
                   action: { type: string }
                   subject_ref: { type: string }
-                  channel: { type: string, nullable: true }
-                  waiver_bps: { type: integer, format: int64, nullable: true }
+                  channel: { type: [string, "null"] }
+                  waiver_bps: { type: [integer, "null"], format: int64 }
                   requested_fields:
                     type: array
                     items: { type: string }
@@ -1337,7 +1337,7 @@ paths:
                 required: [approval_id, execution_id, decision, expires_at]
                 properties:
                   approval_id: { type: string }
-                  execution_id: { type: string, nullable: true }
+                  execution_id: { type: [string, "null"] }
                   decision: { type: string, enum: [approve, reject] }
                   expires_at: { type: string, format: date-time }
         "400": { $ref: "#/components/responses/BadRequest" }

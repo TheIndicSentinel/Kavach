@@ -178,7 +178,8 @@ async fn find<'e>(
 ) -> Result<Option<Existing>, PortError> {
     let row = sqlx::query(
         "SELECT payload, hash, sig, binding FROM agent_decisions \
-        WHERE tenant_id = $1 AND agent_id = $2 AND mode = 'commit' AND idempotency_key = $3",
+        WHERE tenant_id = $1 AND agent_id = $2 AND mode = 'commit' AND kind = 'agent_decision' \
+        AND COALESCE(idempotency_key, request_id) = $3",
     )
     .bind(tenant_id)
     .bind(agent_id)
@@ -286,7 +287,8 @@ impl PostgresAgentEvidenceStore {
                 .await
                 .map_err(|e| sqlx::Error::Protocol(e.message))?;
         // No second request lookup here: a concurrent duplicate is stopped
-        // by the unique key on (tenant, agent, mode, idempotency_key), which
+        // by the unique key on (tenant, agent, mode, idempotency_key or, for
+        // rows from before migration 030, request_id), which
         // aborts this transaction (and any slot it reserved); `commit`
         // then reads the stored record on a fresh connection.
         let now = clock.now();

@@ -1581,6 +1581,7 @@ async fn d17_live_step_up_decision_and_approved_agent_execution_on_postgres() {
     .await;
 }
 
+#[allow(clippy::too_many_lines)] // one D17 ceremony, sign-in to agent release, read top to bottom
 async fn d17_live_step_up_decision_and_approved_agent_execution(
     store: EvidenceStoreKind,
     migration_database_url: Option<String>,
@@ -1612,6 +1613,7 @@ async fn d17_live_step_up_decision_and_approved_agent_execution(
     .await;
 
     let session_cookie = sign_in(&h).await;
+    agent_fixture::seed_fixture_authority(&h.state, "d17", at).await;
     let mandate = agent_fixture::issue_at(&h.state, "d17-live-review", at).await;
     let request_id = "d17-live-request";
     let action = json!({

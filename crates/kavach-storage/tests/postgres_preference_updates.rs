@@ -100,10 +100,8 @@ async fn signed_preference_updates_are_atomic_idempotent_and_fail_closed() {
         .unwrap()
         .is_none());
 
-    let mut changed = initial.clone();
-    if let AuthorityChange::ContactPreference(record) = &mut changed.change {
-        record.status = ContactPreferenceStatus::OptedOut;
-    }
+    // Same update id, nonce and time as `initial`; only the status differs.
+    let changed = event(now, "pref-1", ContactPreferenceStatus::OptedOut);
     let token = jws::sign(&signer, "lms-1", TYP_AUTHORITY_UPDATE, &changed)
         .await
         .unwrap();

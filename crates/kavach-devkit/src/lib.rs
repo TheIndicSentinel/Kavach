@@ -30,8 +30,9 @@ use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use kavach_credential::DecryptionKey;
+use kavach_domain::authority::{AuthorityChange, AuthorityUpdateEvent};
 use kavach_domain::mandate::{
     AgentPassport, ConsentArtefactSubset, ConsentRecord, ConsentStatus, ContactPreferenceRecord,
     ContactPreferenceStatus, ContactWindow, DelegationRules, MandateTemplate, SorEvent, TimeZoneId,
@@ -41,6 +42,16 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 pub const TENANT: &str = "default";
+
+/// When the dev stack's consents and contact preferences start to apply. The
+/// simulator replays a fixed calendar from 2026-10-01 against the stack, so a
+/// window measured back from today would leave its early days uncovered.
+#[must_use]
+pub fn fixture_valid_from() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+        .single()
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+}
 pub const ISSUER: &str = "https://idp.dev.kavach.local";
 pub const OPERATOR_AUDIENCE: &str = "kavach-api";
 pub const AGENT_AUDIENCE: &str = "kavach-agents";
@@ -564,7 +575,7 @@ fn write_kavach_config(
                     active: true,
                     artefact: Some(ConsentArtefactSubset {
                         data_types: set(&["loan_account"]),
-                        valid_from: Utc::now() - Duration::days(1),
+                        valid_from: fixture_valid_from(),
                         data_from: Utc::now() - Duration::days(30),
                         data_to: Utc::now(),
                         status: ConsentStatus::Active,
@@ -593,7 +604,7 @@ fn write_kavach_config(
                         subject_ref: borrower.subject_ref.clone(),
                         channel: channel.into(),
                         status: ContactPreferenceStatus::Allowed,
-                        valid_from: Utc::now() - Duration::days(1),
+                        valid_from: fixture_valid_from(),
                         expires_at: Utc::now() + Duration::days(30),
                     })
                 })
@@ -741,6 +752,58 @@ pub async fn attack_event(bundle: &Path, spec: &AttackEvent) -> Result<String, S
         kavach_mandate::jws::sign(&keys, SOR_KID, typ, &event).await
     }
     .map_err(|e| e.to_string())
+}
+
+/// The bundle's synthetic active consents and contact preferences, each
+/// signed as a system-of-record authority update at `occurred_at`. A stack
+/// with a database reads consent and preferences only from these updates.
+pub async fn authority_updates(
+    bundle: &Path,
+    occurred_at: DateTime<Utc>,
+) -> Result<Vec<String>, String> {
+    let read = |name: &str| {
+        let path = bundle.join("kavach").join(name);
+        std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))
+    };
+    let consents: Vec<ConsentRecord> =
+        serde_json::from_slice(&read("consents.json")?).map_err(|e| format!("consents: {e}"))?;
+    let preferences: Vec<ContactPreferenceRecord> =
+        serde_json::from_slice(&read("contact-preferences.json")?)
+            .map_err(|e| format!("contact preferences: {e}"))?;
+    let changes = consents
+        .into_iter()
+        .filter(|record| record.active)
+        .map(AuthorityChange::Consent)
+        .chain(
+            preferences
+                .into_iter()
+                .map(AuthorityChange::ContactPreference),
+        );
+    let keys = LocalFileKeyProvider::new(bundle.join("sor"));
+    let stamp = occurred_at.timestamp_micros();
+    let mut tokens = Vec::new();
+    for (index, change) in changes.enumerate() {
+        let update_id = format!("dev-authority-{stamp}-{index}");
+        let event = AuthorityUpdateEvent {
+            update_id: update_id.clone(),
+            tenant_id: TENANT.into(),
+            system: "lms".into(),
+            occurred_at,
+            nonce: format!("n-{update_id}"),
+            change,
+        };
+        tokens.push(
+            kavach_mandate::jws::sign(
+                &keys,
+                SOR_KID,
+                kavach_mandate::jws::TYP_AUTHORITY_UPDATE,
+                &event,
+            )
+            .await
+            .map_err(|e| e.to_string())?,
+        );
+    }
+    Ok(tokens)
 }
 
 /// A signed system-of-record event that assigns `agent` to `subject_ref`.

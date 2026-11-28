@@ -144,7 +144,9 @@ fn open_snapshot(
         .ts
         .checked_add_signed(Duration::seconds(REVIEW_SNAPSHOT_TTL_SECONDS))
         .ok_or_else(|| ApiError::NotFound("no eligible HUMAN_REVIEW record".into()))?;
-    if stored.expires_at != expected_expiry || stored.expires_at <= now {
+    // Postgres keeps microseconds; the record time may carry nanoseconds.
+    let same_expiry = (stored.expires_at - expected_expiry).num_microseconds() == Some(0);
+    if !same_expiry || stored.expires_at <= now {
         return Err(ApiError::NotFound("no eligible HUMAN_REVIEW record".into()));
     }
     let envelope = EncryptedReviewSnapshot {
@@ -251,6 +253,7 @@ async fn approve_inner(
     // Reload and re-verify the signed record and encrypted snapshot at the
     // decision boundary. This also enforces the current Cedar permission.
     let view = read_inner(state, headers, record_id, credentials).await?;
+    // The step-up proof's freshness runs on the login clock (the host).
     let now = Utc::now();
     let proof = login
         .take_verified_step_up(session_cookie, &view.action_hash)
@@ -383,7 +386,7 @@ async fn read_inner(
         .human_review_record(record_id)
         .await
         .map_err(|_| ApiError::Unavailable("review evidence is unavailable".into()))?;
-    let now = Utc::now();
+    let now = dataplane.now();
     let stored = state
         .review_snapshot_store()
         .get_live(state.tenant_id(), record_id, now)
@@ -544,9 +547,19 @@ mod tests {
         (record, BTreeMap::from([(public.kid.clone(), public)]))
     }
 
-    #[test]
-    fn opens_only_signed_tenant_action_bound_snapshot_and_returns_display_fields() {
-        let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
+    type SealedReview = (
+        crate::review_snapshot_key::ReviewSnapshotKey,
+        AgentDecisionRecord,
+        StoredReviewSnapshot,
+        std::collections::BTreeMap<String, kavach_ports::PublicKey>,
+    );
+
+    /// A signed HUMAN_REVIEW record decided at `now` and its sealed snapshot,
+    /// stored with the expiry `stored_expiry` gives for the expected one.
+    fn sealed_review(
+        now: DateTime<Utc>,
+        stored_expiry: impl Fn(DateTime<Utc>) -> DateTime<Utc>,
+    ) -> SealedReview {
         let snapshot = ReviewActionSnapshot {
             tenant_id: "tenant-1".into(),
             agent_id: "collections-agent".into(),
@@ -558,8 +571,8 @@ mod tests {
             subject_ref: "ref:borrower:B-9382".into(),
             channel: None,
             waiver_bps: Some(3500),
-            requested_fields: Default::default(),
-            parameters: Default::default(),
+            requested_fields: std::collections::BTreeSet::new(),
+            parameters: std::collections::BTreeMap::new(),
         };
         let (record, keys) = signed_review(&snapshot, now);
         let path =
@@ -580,8 +593,15 @@ mod tests {
             action_hash,
             nonce: sealed.nonce,
             ciphertext: sealed.ciphertext,
-            expires_at: now + Duration::seconds(REVIEW_SNAPSHOT_TTL_SECONDS),
+            expires_at: stored_expiry(now + Duration::seconds(REVIEW_SNAPSHOT_TTL_SECONDS)),
         };
+        (key, record, stored, keys)
+    }
+
+    #[test]
+    fn opens_only_signed_tenant_action_bound_snapshot_and_returns_display_fields() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
+        let (key, record, stored, keys) = sealed_review(now, |expiry| expiry);
         let view =
             open_snapshot(&key, &record, &stored, "tenant-1", now, &keys, false).expect("open");
         let json = serde_json::to_value(&view).expect("serialize");
@@ -606,6 +626,25 @@ mod tests {
         );
     }
 
+    /// Postgres keeps microseconds; a Linux clock gives nanoseconds. The
+    /// stored expiry still binds to the record time, to the microsecond.
+    #[test]
+    fn snapshot_expiry_read_back_at_microsecond_precision_still_opens() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap()
+            + Duration::nanoseconds(123_456_789);
+        let (key, record, stored, keys) = sealed_review(now, |expiry| {
+            expiry - Duration::nanoseconds(i64::from(expiry.timestamp_subsec_nanos() % 1_000))
+        });
+        open_snapshot(&key, &record, &stored, "tenant-1", now, &keys, false)
+            .expect("an expiry stored at microsecond precision opens");
+        let (key, record, stored, keys) =
+            sealed_review(now, |expiry| expiry - Duration::microseconds(1));
+        assert!(
+            open_snapshot(&key, &record, &stored, "tenant-1", now, &keys, false).is_err(),
+            "an expiry a whole microsecond off is not the record's"
+        );
+    }
+
     #[test]
     fn approval_record_requires_exact_live_step_up_and_is_short_lived() {
         let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
@@ -617,8 +656,8 @@ mod tests {
             subject_ref: "ref:borrower:B-1".into(),
             channel: None,
             waiver_bps: Some(3500),
-            requested_fields: Default::default(),
-            parameters: Default::default(),
+            requested_fields: std::collections::BTreeSet::new(),
+            parameters: std::collections::BTreeMap::new(),
             expires_at: now + Duration::minutes(30),
         };
         let proof = VerifiedStepUp {

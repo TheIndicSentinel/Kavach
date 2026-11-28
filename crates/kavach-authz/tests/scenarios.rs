@@ -403,3 +403,96 @@ fn h4_every_schema_action_needs_exactly_one_permit() {
         .expect("refused");
     assert!(err.to_string().contains("2 permits"), "{err}");
 }
+
+// ---- AUTHZ-01: HUMAN_REVIEW only where approval would lead to a permit ----
+
+fn reasons(r: &AuthzRequest<'_>) -> (Decision, Vec<String>) {
+    let o = AgentAuthorizer::bundled().unwrap().authorize(r).unwrap();
+    (o.decision, o.reason_codes)
+}
+
+#[test]
+fn authz01_a_non_holder_over_the_ceiling_is_blocked_not_escalated() {
+    let m = mandate();
+    let mut r = request(&m, AgentAction::ProposePlan);
+    r.agent_id = "translator-agent";
+    r.waiver_bps = Some(3500);
+    assert_eq!(
+        reasons(&r),
+        (Decision::Block, vec!["no_matching_permit".to_string()])
+    );
+    // An approval would not change that: no permit is satisfied.
+    r.approval_valid = true;
+    assert_eq!(decide(&r).0, Decision::Block);
+}
+
+#[test]
+fn authz01_an_action_outside_the_mandate_is_blocked_even_when_an_escalation_applies() {
+    let mut m = mandate();
+    m.actions = set(&["read_fields", "send_reminder"]);
+    let mut r = request(&m, AgentAction::ProposePlan);
+    r.waiver_bps = Some(3500);
+    assert_eq!(
+        reasons(&r),
+        (Decision::Block, vec!["no_matching_permit".to_string()])
+    );
+    let mut r = request(&m, AgentAction::UpdateStatus);
+    r.task_tainted = true;
+    assert_eq!(
+        reasons(&r),
+        (Decision::Block, vec!["no_matching_permit".to_string()])
+    );
+}
+
+#[test]
+fn authz01_the_combiner_keeps_its_three_arms() {
+    let m = mandate();
+    // Allow.
+    assert_eq!(
+        reasons(&request(&m, AgentAction::SendReminder)),
+        (Decision::Pass, vec!["authorized".to_string()])
+    );
+    // Escalation alone, for the holder with the action: review.
+    let mut r = request(&m, AgentAction::ProposePlan);
+    r.waiver_bps = Some(3500);
+    assert_eq!(
+        reasons(&r),
+        (Decision::HumanReview, vec!["escalated".to_string()])
+    );
+    // Escalation next to a hard forbid: blocked as forbidden.
+    r.subject_ref = "ref:borrower:B-5511";
+    assert_eq!(
+        reasons(&r),
+        (Decision::Block, vec!["forbidden".to_string()])
+    );
+}
+
+/// The permit errors only once `approval_valid` is true (integer overflow),
+/// so the first evaluation escalates and the approval re-run errors.
+#[test]
+fn authz01_an_evaluation_error_on_the_approval_rerun_blocks() {
+    let permit = "@id(\"permit-propose-plan\")
+permit (principal, action == Kavach::Agent::Action::\"propose_plan\", resource)
+when {
+  principal == context.mandate_holder &&
+  context.mandate_actions.contains(\"propose_plan\")
+};";
+    let erroring = "@id(\"permit-propose-plan\")
+permit (principal, action == Kavach::Agent::Action::\"propose_plan\", resource)
+when {
+  principal == context.mandate_holder &&
+  context.mandate_actions.contains(\"propose_plan\") &&
+  (!context.approval_valid || context.waiver_bps * 9223372036854775807 > 0)
+};";
+    assert!(kavach_authz::AGENT_POLICIES.contains(permit));
+    let policies = kavach_authz::AGENT_POLICIES.replace(permit, erroring);
+    let authorizer = AgentAuthorizer::new(kavach_authz::AGENT_SCHEMA, &policies).unwrap();
+    let m = mandate();
+    let mut r = request(&m, AgentAction::ProposePlan);
+    r.waiver_bps = Some(3500);
+    let o = authorizer.authorize(&r).unwrap();
+    assert_eq!(
+        (o.decision, o.reason_codes),
+        (Decision::Block, vec!["policy_evaluation_error".to_string()])
+    );
+}
