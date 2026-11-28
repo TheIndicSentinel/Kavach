@@ -261,3 +261,44 @@ async fn neither_process_serves_or_promotes_when_both_database_pools_are_lost() 
     let _ = standby_stop_tx.send(true);
     let _ = standby_task.await;
 }
+
+/// REL-04: a lease task that dies (a panic, an abort) leaves nothing to
+/// renew or fence. The fence must expire on its own monotonic deadline, so
+/// the process stops serving within the lease TTL instead of staying active.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_dead_lease_task_fences_its_process_within_the_ttl() {
+    let Some((owner_url, runtime_url)) = isolated_database_urls().await else {
+        return;
+    };
+    let tls = DatabaseTls::development();
+    let _owner = kavach_storage::StoragePool::connect(&owner_url, &tls)
+        .await
+        .expect("migrate isolated schema");
+    let pool = connect_runtime(&runtime_url, &tls)
+        .await
+        .expect("connect active");
+
+    let (_stop_tx, stop_rx) = watch::channel(false);
+    let (fence, task) = ha_lease::start(
+        pool.active_lease_store(),
+        "tenant-ha-dead-task-test".into(),
+        stop_rx,
+    )
+    .await
+    .expect("start active lease lifecycle");
+    assert_eq!(fence.status(), "active");
+    assert!(fence.is_active());
+
+    task.abort();
+    let fenced = tokio::time::timeout(std::time::Duration::from_secs(12), async {
+        while fence.is_active() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert!(
+        fenced.is_ok(),
+        "a process whose lease task died still reports active"
+    );
+    assert_eq!(fence.status(), "fenced");
+}
