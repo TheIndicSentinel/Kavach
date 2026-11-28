@@ -432,7 +432,8 @@ async fn record_kinds_keep_grants_triggers_and_one_record_per_position() {
 }
 
 /// The kinds changed no grant and no trigger: the runtime role may read and
-/// append, nothing more, and both append-only triggers are in place.
+/// append, nothing more, and both append-only triggers (plus the 040 HA
+/// write guard) are in place.
 async fn grants_and_triggers_are_unchanged(owner_pool: &sqlx::PgPool) {
     // The runtime role may read and append, nothing more.
     for (privilege, granted) in [
@@ -459,9 +460,15 @@ async fn grants_and_triggers_are_unchanged(owner_pool: &sqlx::PgPool) {
     .await
     .unwrap();
     triggers.sort();
+    // 040 adds the HA write guard to every runtime-writable table; it passes
+    // every write unless active/passive fencing is enabled for the session.
     assert_eq!(
         triggers,
-        ["agent_decisions_append_only", "agent_decisions_no_truncate"]
+        [
+            "agent_decisions_append_only",
+            "agent_decisions_no_truncate",
+            "kavach_active_write_guard"
+        ]
     );
 }
 

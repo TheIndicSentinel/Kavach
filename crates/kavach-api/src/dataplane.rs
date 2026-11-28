@@ -2739,6 +2739,10 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
         .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
         .layer(crate::http::api_security_headers())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::ha_lease::http_gate,
+        ))
         .with_state(state)
 }
 
@@ -2756,5 +2760,9 @@ pub fn sor_router(state: Arc<AppState>) -> Router {
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
         .layer(crate::http::api_security_headers())
         .layer(DefaultBodyLimit::max(SOR_BODY_LIMIT))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::ha_lease::http_gate,
+        ))
         .with_state(state)
 }

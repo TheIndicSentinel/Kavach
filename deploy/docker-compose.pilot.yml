@@ -46,7 +46,7 @@ services:
       - ./postgres/tls-entrypoint.sh:/usr/local/bin/kavach-pg-tls.sh:ro
       - ./postgres/pg_hba.conf:/etc/kavach-pg/pg_hba.conf:ro
       # Only Postgres gets the key; Kavach gets the CA certificate.
-      - ./pilot-db-tls:/run/kavach-tls-src:ro
+      - ${KAVACH_PILOT_DB_TLS_DIR:-./pilot-db-tls}:/run/kavach-tls-src:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-kavach} -d ${POSTGRES_DB:-kavach}"]
       interval: 5s
@@ -75,8 +75,8 @@ services:
       KAVACH_OIDC_GROUPS_CLAIM: ${KAVACH_OIDC_GROUPS_CLAIM:-groups}
       KAVACH_DATABASE_CA: /etc/kavach-db/ca.pem
     volumes:
-      - ./pilot-config:/etc/kavach:ro
-      - ./pilot-db-tls/ca.pem:/etc/kavach-db/ca.pem:ro
+      - ${KAVACH_PILOT_CONFIG_DIR:-./pilot-config}:/etc/kavach:ro
+      - ${KAVACH_PILOT_DB_TLS_DIR:-./pilot-db-tls}/ca.pem:/etc/kavach-db/ca.pem:ro
     ports:
       - "${KAVACH_BIND_ADDRESS:-127.0.0.1}:${KAVACH_HTTP_PORT:-8080}:8080"
       - "${KAVACH_BIND_ADDRESS:-127.0.0.1}:${KAVACH_GRPC_PORT:-50051}:50051"
@@ -114,7 +114,7 @@ services:
       KAVACH_DATABASE_CA: /etc/kavach-db/ca.pem
     volumes:
       - pilot-batch-out:/tmp
-      - ./pilot-db-tls/ca.pem:/etc/kavach-db/ca.pem:ro
+      - ${KAVACH_PILOT_DB_TLS_DIR:-./pilot-db-tls}/ca.pem:/etc/kavach-db/ca.pem:ro
 
 volumes:
   kavach-pilot-pg:

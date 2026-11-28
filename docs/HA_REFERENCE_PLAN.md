@@ -1,0 +1,76 @@
+# High-availability reference plan
+
+**Status:** Approved direction; implementation in progress (2026-11-19). The owner approved an active/passive API topology with one Postgres writer. This plan records the state boundaries and gates that must be complete before a multi-instance deployment is enabled.
+
+## Scope and limits
+
+- Keep Kavach a modular monolith. Run one active `kavach-api` process and one warm standby against the same Postgres primary. The standby receives no application traffic until promoted.
+- This reference covers API process failure only. Postgres, the load balancer, the IdP and host failure are not made highly available by adding an API standby. Do not describe the result as production HA until those dependencies and recovery objectives are separately addressed.
+- Do not enable two active API instances until replay protection, console failover behavior, runtime-pointer convergence, single-active fencing, readiness and failover tests are complete.
+- A database-backed process uses the same configured tenant and signing/encryption keys. Postgres remains the single serialization point for governed writes and evidence.
+
+## Process state and failover behavior
+
+| State | Current storage | HA behavior required |
+|---|---|---|
+| HMAC `/v1/evaluate` nonce | Process-local cache | Database-backed instances reserve tenant-scoped nonces in the shared Postgres replay guard. An unavailable guard refuses the request. Memory development mode remains process-local. |
+| OIDC login transaction and console session tokens | Process memory (`ADR-018`) | Keep tokens out of Postgres and files. A promoted process cannot resume a session from the failed process; the operator signs in again. Never extend token/session lifetime during failover. |
+| In-progress D17 OIDC step-up flow and session-bound proof | Process memory, bound to the console session | Failover invalidates an incomplete ceremony and any unconsumed session-bound proof. The reviewer signs in and completes a new exact-action step-up. |
+| Durable D17 challenge, review snapshot, approval and release | Postgres in database-backed mode | Preserve existing one-use and exact-action checks across processes. A release remains bound to its original request, action hash and execution ID. |
+| Runtime pack/model pointers and loaded evaluators | Postgres pointer plus each process's in-memory evaluator | Before enabling replicas, every process must detect and apply committed pointer changes, validate the loaded assets, and stop serving governed requests while stale or unable to converge. |
+
+The API standby must not accept traffic until it is promoted. Once promoted, an old session cookie is unauthorized on the new process and the console directs the operator to sign in again. This follows ADR-018's rule that OIDC tokens remain process memory only; this plan does not relax that rule to persist secrets for failover.
+
+## Implementation order
+
+1. **Shared HMAC replay guard — implemented in this slice.** Use the existing tenant-scoped Postgres `ReplayGuard` for database-backed `/v1/evaluate`; namespace HMAC keys; retain the bounded in-memory cache only without Postgres. Fail closed if the database reservation fails. Purge expired reservations opportunistically on a bounded interval.
+2. **Session and step-up failover semantics — verified in this slice.** A promoted process returns 401 for a session cookie it did not issue; operators sign in again. In-progress callback secrets and verified step-up proofs stay bound to the original process session and cannot be used after promotion. The durable challenge may remain until its short expiry, but cannot authorize without those secrets and that session. Completed approvals/releases remain shared and single use in Postgres. Do not persist OIDC tokens.
+3. **Runtime-pointer convergence — implemented.** A one-second background watcher and runtime-dependent pack/model catalog, change-request, retention, batch-job, incident, audit, decision-event, and evaluation routes compare the shared pointer version. A newer pointer triggers validation of the pinned pack/model bytes, configured signatures, and governed model state before swapping the evaluator. Backward movement, read errors, or invalid assets refuse the request. Postgres-backed replica coverage verifies lagging processes reload after an approved pack activation. Agent evidence/revocation reads remain on their independent data plane; agent-only audit remains available without the credit pointer. `/v1/runtime`, health, metrics, development clock, and the independent agent/role routes do not consume the credit runtime pointer. Keep maker-checker pointer-version checks authoritative.
+4. **Active/passive fencing and readiness — implemented.** `/ready` checks runtime-pointer availability, convergence, and lease ownership; `/health` remains a liveness signal. Migration 039 supplies shared claim/renewal primitives, migration 040 guards every runtime-writable table, and `--ha-active-passive` enables standby claim retries plus active renewal/self-fencing across HTTP and gRPC routes. The Postgres tests prove an in-flight guarded write delays promotion and stale-holder writes fail afterwards. The Compose deployment acceptance remains gated on step 5.
+5. **Reference deployment and fault tests — in progress.** Real-Postgres API integration tests simulate abrupt active-process loss, active and both-API Postgres connection-path loss, process rejoin after failover, a committed pack change before promotion, and an actual shared-Postgres process outage/restart on a disposable cluster. They verify active self-fencing by the 10-second local lease deadline, lease-expiry-gated promotion, refusal to promote while Postgres is down, stale-writer rejection, successful writes after recovery, and a restarted API rejoining after database recovery before a second promotion. A gated Compose overlay defines one API active and one opt-in standby sharing the existing Postgres service; it exposes separate loopback ports and leaves endpoint switching to the operator. `scripts/test-ha-compose-acceptance.sh` now starts this stack with disposable config, TLS material, and a uniquely named database volume, stops the active API, and checks that the standby takes the next lease epoch and serves HTTP. CI runs this acceptance script. The deployment acceptance is still pending a successful CI execution; keep the replica gate closed until it passes and record the observed result. Do not make unmeasured SLO or data-loss claims.
+
+### Gated Compose reference
+
+`deploy/docker-compose.ha-reference.yml` overlays the existing pilot stack. The active API listens on the pilot ports (HTTP 8080, gRPC 50051); the standby is in the `ha-reference-gated` profile and defaults to HTTP 8081 and gRPC 50052. Both use the same Postgres writer, governed files, OIDC configuration, and TLS material. Both set `KAVACH_HA_ACTIVE_PASSIVE=true`.
+
+The traffic switch is manual between the two addresses. Check `/ready` with an operator credential before directing application traffic to an address. The standby returns 503 for `/ready` and application routes until it acquires the lease. After promotion, the operator must direct traffic to the standby address and sign in again because console sessions remain process-local. This example adds no automatic load balancer behavior and does not make Postgres, the host, or the IdP highly available.
+
+The replica deployment gate remains closed until CI has successfully run the acceptance harness. To run it locally, use `scripts/test-ha-compose-acceptance.sh`; it requires Docker Compose, Rust, OpenSSL, and curl. It builds and starts a separate temporary stack and removes its uniquely named volume on exit. The API container image is built by Compose. To validate only the merged configuration without starting containers:
+
+```bash
+POSTGRES_PASSWORD=compose-check \
+KAVACH_RUNTIME_DB_PASSWORD=compose-check \
+KAVACH_OIDC_ISSUER=https://issuer.example.test \
+KAVACH_OIDC_AUDIENCE=kavach-api \
+docker compose -f deploy/docker-compose.pilot.yml \
+  -f deploy/docker-compose.ha-reference.yml \
+  --profile ha-reference-gated config --quiet
+```
+
+### Failover test record
+
+- **Active process stops renewing:** passed against the temporary Postgres cluster on 2026-11-19. The warm standby promoted after lease expiry; the test completed in 12.95 seconds with the configured 10-second lease. The former active's still-open pool was rejected by the migration 040 write guard (SQLSTATE `55000`). This verifies process-loss promotion and stale-writer fencing only; it does not measure data loss or cover database, pointer-change, or recovery failures.
+- **Active API loses its Postgres pool:** passed against the temporary Postgres cluster on 2026-11-19. The active fenced itself after its renewal failed, while the connected standby remained standby until lease expiry and then promoted. Both failover tests passed in 14.17 seconds when run together. This simulates loss of one API's database path; it does not simulate a total shared-Postgres outage or establish data-loss behavior.
+- **Both API processes lose their Postgres pools:** passed against the temporary Postgres cluster on 2026-11-19. Both API pools were closed for more than the 10-second lease TTL; the active fenced itself, the standby remained standby, and the owner-observed holder and epoch did not change. All three failover tests passed in 15.28 seconds when run together. This simulates total API-to-database path loss, not a stopped shared-Postgres server.
+- **Process rejoin after failover:** passed against the temporary Postgres cluster on 2026-11-19. After the first standby promoted, a new API process joined as standby. When that active process stopped, the rejoined process promoted after lease expiry, advanced the epoch, and successfully committed a guarded write. The focused recovery test completed in 25.28 seconds. This verifies API process rejoin and another promotion; it does not cover database restart or data-loss behavior.
+- **Runtime pointer change before promotion:** passed against the temporary Postgres cluster on 2026-11-19. After an approved pack activation, the standby remained not-ready. Following promotion, `/ready` converged it from pointer version 1 to 2 and reported ready only after the governed pack was loaded. Test completed in 13.47 seconds.
+- **Postgres API integration target:** all 16 tests passed on 2026-11-19 in 25.50 seconds against the temporary Postgres cluster after monotonic lease-deadline fencing was added.
+- **Focused HA failover suite:** all three tests passed on 2026-11-19 in 26.40 seconds against the temporary Postgres cluster after bounded standby claim retries were added.
+- **Shared Postgres outage, restart, and process rejoin:** passed using `scripts/test-ha-postgres-outage.sh` on a dedicated disposable cluster. The active fenced itself 9.990 seconds after the server stopped. The standby stayed standby during the outage, then promoted after Postgres restarted. A restarted API rejoined as standby, promoted after the recovered active stopped, advanced the epoch to 3, and wrote successfully; both older holders' writes were rejected. The test completed in 27.68 seconds. The harness verifies a test-only marker and exact data-directory match, is included in CI, and removes its temporary cluster on exit.
+- **Gated Compose reference:** merged pilot and HA overlay configuration passed `docker compose config --quiet` on 2026-11-19. This validates service/profile/port composition only; no containers or replicas were started.
+
+## First slice verification
+
+`crates/kavach-api/tests/hmac_postgres.rs` races two independently selected HMAC stores against one Postgres database using the same signed nonce. Exactly one request succeeds and the other receives 401. API unit coverage verifies signature binding, timestamp bounds, and replay refusal in memory mode. Postgres failure maps to 503 rather than accepting the request without replay protection.
+
+The console-login tests also send a valid active-process cookie to a fresh API state and assert 401, and prove that a new process cannot read the old session, pending step-up callback secrets, or verified proof. Existing Postgres human-review tests verify that completed releases remain durable under concurrent retries and retain one exact execution record.
+
+The runtime-pointer unit test supplies an invalid newer pointer and confirms `/v1/evaluate` and `/ready` return 503 while `/health` remains 200. A watcher test confirms a process converges without waiting for an evaluation request and exits on the shared shutdown signal. The Postgres replica test confirms retention settings/tombstone reads, batch-job and incident listing, audit reads, decision-event reads, change-request listing, pack/model list/detail routes, and evaluation converge to an approved pack activation; `/v1/runtime` then reports `pointer_drift: false`. The operator-route dependency review found no remaining credit-runtime-dependent route outside this list.
+
+## References
+
+- [ADR-002](ADR-002-deployment-architecture.md): modular monolith and one shared Postgres.
+- [ADR-008](ADR-008-api-authentication.md): HMAC v2 scope and request signature.
+- [ADR-009](ADR-009-change-requests.md): runtime-pointer versioning and current replica drift behavior.
+- [ADR-018](ADR-018-console-login-and-token-storage.md): process-memory-only OIDC tokens and session lifetime.
+- [Security properties](SECURITY_PROPERTIES.md): current guarantees and known replica-convergence limitation.

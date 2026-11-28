@@ -37,6 +37,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .is_some_and(crate::dataplane::Dataplane::agent_only);
     let router = Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/metrics", get(metrics))
         .route("/v1/runtime", get(runtime))
         .route(
@@ -163,6 +164,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))
         .layer(api_security_headers())
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::ha_lease::http_gate,
+        ))
         .with_state(state)
 }
 
@@ -209,6 +214,25 @@ async fn health(
     Ok(Json(serde_json::json!({ "status": "ok" })))
 }
 
+async fn ready(
+    State(state): State<Arc<AppState>>,
+    credentials: Credentials,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    authorize_credentials(&state, &credentials, KavachAction::ReadHealth).await?;
+    if !state.ha_fence().is_active() {
+        return Err(ApiError::Unavailable(format!(
+            "API process is {} and cannot accept traffic",
+            state.ha_fence().status()
+        )));
+    }
+    state.ensure_runtime_pointer_current().await?;
+    let runtime = state.runtime()?;
+    Ok(Json(serde_json::json!({
+        "status": "ready",
+        "runtime_pointer_version": runtime.pointer_version,
+    })))
+}
+
 async fn metrics(
     State(state): State<Arc<AppState>>,
     credentials: Credentials,
@@ -236,17 +260,23 @@ async fn evaluate(
 ) -> Result<Json<kavach_domain::EvaluateResponse>, ApiError> {
     if let Some(secret) = state.hmac_secret() {
         let path = uri.path_and_query().map_or(uri.path(), |pq| pq.as_str());
+        let now = chrono::Utc::now();
         crate::hmac_auth::verify(
             secret,
-            state.nonces(),
-            &credentials.headers,
-            method.as_str(),
-            path,
-            &body,
-            chrono::Utc::now().timestamp(),
-        )?;
+            state.hmac_nonces(),
+            crate::hmac_auth::HmacVerification {
+                tenant_id: state.tenant_id(),
+                headers: &credentials.headers,
+                method: method.as_str(),
+                path_and_query: path,
+                body: &body,
+                now,
+            },
+        )
+        .await?;
     }
     authorize_credentials(state.as_ref(), &credentials, KavachAction::Evaluate).await?;
+    state.ensure_runtime_pointer_current().await?;
     if crate::strict_json::uses_raw_value_key(&body) {
         return Err(ApiError::BadRequest(crate::strict_json::refusal_message()));
     }

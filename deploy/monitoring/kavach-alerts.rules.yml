@@ -48,6 +48,19 @@ groups:
             the bound (check trusted time) or a store is unreachable. No new mandate is
             made while `kind="issuing"` rises; the sender retries. A `revoking` event is
             refused only when the store is down, never for the clock.
+      - alert: KavachBackgroundTaskExited
+        expr: increase(kavach_background_task_exits_total[10m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: 'A Kavach background task ended before shutdown (task: {{ $labels.task }})'
+          description: >-
+            With `task="ha_lease"` the API lost or could not keep its active/passive
+            lease (or the lease task died), fenced itself and is draining to exit
+            non-zero; the orchestrator should restart it as a standby. The counter is
+            set just before the exit and resets on restart, so a scrape can miss it:
+            watch the container restart count too. Look for the error log line naming
+            the task.
       - alert: KavachClosedLoanWithLiveAuthority
         expr: kavach_snapshot_mismatches > 0
         for: 0m

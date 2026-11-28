@@ -28,6 +28,12 @@ pub async fn list_audit_log(
     Query(query): Query<AuditQuery>,
 ) -> Result<Json<Vec<AuditEntry>>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadAudit).await?;
+    if !state
+        .dataplane()
+        .is_some_and(crate::dataplane::Dataplane::agent_only)
+    {
+        state.ensure_runtime_pointer_current().await?;
+    }
     let limit = query.limit.clamp(1, 200);
     let entries = state
         .admin()

@@ -27,6 +27,7 @@ pub async fn get_retention_settings(
     credentials: Credentials,
 ) -> Result<Json<RetentionSettings>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadRetention).await?;
+    state.ensure_runtime_pointer_current().await?;
     let settings = state
         .retention()
         .get_settings()
@@ -41,6 +42,7 @@ pub async fn list_tombstones(
     Query(query): Query<TombstoneQuery>,
 ) -> Result<Json<Vec<TombstoneRecord>>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadTombstones).await?;
+    state.ensure_runtime_pointer_current().await?;
     let limit = query.limit.clamp(1, 200);
     let records = state
         .retention()

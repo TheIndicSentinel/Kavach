@@ -112,6 +112,7 @@ pub async fn list_policy_packs(
     credentials: Credentials,
 ) -> Result<Json<Vec<crate::registry::PackSummary>>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance).await?;
+    state.ensure_runtime_pointer_current().await?;
     let runtime = state.runtime()?;
     let packs = list_packs(state.packs_dir(), &runtime.pack_id, &runtime.pack_version)?;
     Ok(Json(packs))
@@ -123,6 +124,7 @@ pub async fn get_policy_pack(
     Path(pack_id): Path<String>,
 ) -> Result<Json<PolicyPack>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance).await?;
+    state.ensure_runtime_pointer_current().await?;
     let pack = get_pack_by_id(state.packs_dir(), &pack_id)?;
     Ok(Json(pack))
 }
@@ -132,6 +134,7 @@ pub async fn list_model_records(
     credentials: Credentials,
 ) -> Result<Json<Vec<crate::registry::ModelSummary>>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance).await?;
+    state.ensure_runtime_pointer_current().await?;
     let runtime = state.runtime()?;
     let models = list_models(
         state.models_dir(),
@@ -155,6 +158,7 @@ pub async fn get_model_record(
     Path(model_id): Path<String>,
 ) -> Result<Json<ModelDetail>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadGovernance).await?;
+    state.ensure_runtime_pointer_current().await?;
     let states = state.model_states().await?;
     let model = get_model_by_id(state.models_dir(), &model_id)?;
     Ok(Json(ModelDetail {

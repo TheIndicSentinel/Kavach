@@ -41,6 +41,14 @@ cargo test --workspace
 
 The tests create a `kavach_runtime` role to check least-privilege access. Use a throwaway database, never a shared one.
 
+To run the HA shared-server outage test, use its dedicated harness. It creates a temporary local Postgres cluster, stops and restarts only that cluster, and removes its temporary data directory on exit; it does not use `KAVACH_TEST_DATABASE_URL` from your shell:
+
+```bash
+scripts/test-ha-postgres-outage.sh
+```
+
+The harness requires `initdb`, `pg_ctl`, `python3`, and Cargo. Do not set `KAVACH_HA_TEST_PGDATA` manually unless it points to a disposable cluster created for this test; the test intentionally stops the server at that data directory.
+
 ## 3b. A one-minute tour (`kavach demo`)
 
 ```bash

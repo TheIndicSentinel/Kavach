@@ -35,6 +35,7 @@ async fn health_returns_ok() {
     let app = router(state);
 
     let response = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/health")
@@ -45,6 +46,62 @@ async fn health_returns_ok() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn standby_is_live_but_not_ready_and_does_not_serve_application_routes() {
+    let (pack, model) = fixture_paths();
+    let state = AppState::from_paths_for_tests(&pack, &model, None)
+        .await
+        .expect("state")
+        .with_ha_fence(kavach_api::ha_lease::HaFence::standby());
+    let app = router(Arc::new(state));
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    let response = app
+        .oneshot(
+            Request::builder()
+                .uri("/v1/runtime")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -1527,7 +1584,10 @@ async fn ungoverned_models_and_pack_mismatch_are_visible() {
         .unwrap();
     let text =
         String::from_utf8(raw.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
-    assert!(text.contains("kavach_model_pack_mismatch 1"), "{text}");
+    assert!(
+        text.contains("kavach_model_pack_mismatch{tenant_id=\"default\"} 1"),
+        "{text}"
+    );
 
     // Supplier controls run at proposal: the vendor draft is in enforce.
     let admin = as_principal("admin-1");

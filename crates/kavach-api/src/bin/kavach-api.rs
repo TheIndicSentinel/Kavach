@@ -562,6 +562,10 @@ struct Cli {
     #[arg(long, env = "KAVACH_DATABASE_URL")]
     database_url: Option<String>,
 
+    /// Enable active/passive Postgres lease ownership (HA reference plan).
+    #[arg(long, env = "KAVACH_HA_ACTIVE_PASSIVE")]
+    ha_active_passive: bool,
+
     /// Owner role that runs migrations. When set, `--database-url` should be
     /// the least-privilege `kavach_runtime` role and never migrates.
     #[arg(long, env = "KAVACH_MIGRATION_DATABASE_URL")]
@@ -876,6 +880,7 @@ impl Cli {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let cli = Cli::parse();
     kavach_telemetry::init(cli.log_format)?;
+    let ha_active_passive = cli.ha_active_passive;
     let http_listen = cli.listen;
     let grpc_listen = cli.grpc_listen;
     let sor_listen = cli.agents.sor_listen;
@@ -885,6 +890,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let invalid = |msg: String| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg);
     let limits = cli.listener_limits().map_err(invalid)?;
     let (config, console_login) = cli.into_config().map_err(invalid)?;
+    if ha_active_passive && !matches!(&config.evidence_store, EvidenceStoreKind::Postgres { .. }) {
+        return Err(invalid("--ha-active-passive requires Postgres storage".into()).into());
+    }
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     validate_request_timeout(&limits, &config).map_err(invalid)?;
     let hardening_violations = |built: &[kavach_api::relaxations::Relaxation]| {
         let mut violations = kavach_api::hardening::violations(&config, built);
@@ -908,6 +917,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         );
         state = state.with_console_login(Arc::new(login));
     }
+    let ha_lease_task = if ha_active_passive {
+        let lease_store = state
+            .active_lease_store()
+            .ok_or_else(|| invalid("HA lease store is unavailable".into()))?;
+        let (fence, task) = kavach_api::ha_lease::start(
+            lease_store,
+            config.roles.tenant_id.clone(),
+            stop_rx.clone(),
+        )
+        .await
+        .map_err(|_| std::io::Error::other("HA lease token could not be generated"))?;
+        state = state.with_ha_fence(fence);
+        Some(task)
+    } else {
+        None
+    };
     let state = Arc::new(state);
     if config.require_hardening {
         // What only the build knows (a relaxation of the agent surfaces).
@@ -956,9 +981,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tls_ref = config.tls.as_ref();
     // One signal stops every listener. A listener stops accepting at once
     // and lets its requests finish.
-    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    // REL-04: the lease task is supervised below. It ends only on stop or
+    // after fencing; any other end (panic, abort) must not leave a process
+    // that believes it holds the lease.
+    let ha_lease_exit = async move {
+        match ha_lease_task {
+            Some(task) => task.await,
+            None => std::future::pending().await,
+        }
+    };
     let _review_snapshot_cleanup =
         kavach_api::review_snapshot_cleanup::start(review_snapshot_store, stop_rx.clone());
+    let _runtime_pointer_sync =
+        kavach_api::runtime_pointer_sync::start(stopping.clone(), stop_rx.clone());
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stop| *stop).await;
     };
@@ -1014,20 +1049,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
     };
     tokio::pin!(servers);
-    let told_to_stop = tokio::select! {
+    tokio::pin!(ha_lease_exit);
+    let lease_task_ended = tokio::select! {
         served = &mut servers => {
             served?;
-            false
+            return Ok(());
         }
-        () = shutdown::termination() => true,
+        () = shutdown::termination() => None,
+        ended = &mut ha_lease_exit => Some(ended),
     };
-    if !told_to_stop {
-        return Ok(());
+    if let Some(ended) = &lease_task_ended {
+        // Readiness and every gated route answer 503 from here on.
+        stopping.ha_fence().fence();
+        stopping.metrics().observe_background_task_exit("ha_lease");
+        match ended {
+            Ok(()) => tracing::error!(
+                "HA lease task ended (lease lost or fenced); process is fenced and shutting down for a restart"
+            ),
+            Err(error) => tracing::error!(
+                %error,
+                "HA lease task died; process is fenced and shutting down for a restart"
+            ),
+        }
     }
 
-    shutdown::stop_and_checkpoint(servers.as_mut(), &stop_tx, grace, stopping.dataplane())
-        .await
-        .map_err(Into::into)
+    shutdown::stop_and_checkpoint(servers.as_mut(), &stop_tx, grace, stopping.dataplane()).await?;
+    if lease_task_ended.is_some() {
+        return Err(std::io::Error::other(
+            "HA lease task ended before shutdown; restart as standby",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Prints every violation and exits with `EX_CONFIG`; returns when there is
@@ -1138,6 +1191,20 @@ fn print_banner(
 #[cfg(test)]
 mod review_snapshot_cli_tests {
     use super::*;
+
+    #[test]
+    fn ha_active_passive_is_an_explicit_opt_in() {
+        let cli = Cli::try_parse_from([
+            "kavach-api",
+            "--pack",
+            "pack.yaml",
+            "--model",
+            "model.yaml",
+            "--ha-active-passive",
+        ])
+        .expect("parse HA opt-in");
+        assert!(cli.ha_active_passive);
+    }
 
     #[test]
     fn parses_repeated_previous_snapshot_keys() {

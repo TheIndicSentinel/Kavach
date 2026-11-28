@@ -11,7 +11,9 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use chrono::Utc;
 use kavach_api::{AccessControlKind, ApiConfig, AppState, EvidenceStoreKind};
+use kavach_domain::EvaluateRequest;
 use kavach_storage::testing::isolated_database_url;
 use tower::ServiceExt;
 
@@ -201,6 +203,112 @@ async fn evaluate_writes_postgres_evidence_and_replays() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn promoted_standby_converges_runtime_pointer_before_readiness() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let root = registry();
+    let active_state = start(&root, &url, "v0.yaml").await.expect("active process");
+    let standby_state = start(&root, &url, "v0.yaml")
+        .await
+        .expect("standby process");
+
+    let (active_stop_tx, active_stop_rx) = tokio::sync::watch::channel(false);
+    let (active_fence, active_task) = kavach_api::ha_lease::start(
+        active_state
+            .active_lease_store()
+            .expect("Postgres lease store"),
+        "default".into(),
+        active_stop_rx,
+    )
+    .await
+    .expect("start active lease");
+    let Ok(active_state) = Arc::try_unwrap(active_state) else {
+        panic!("active state unexpectedly shared during setup");
+    };
+    let active_state = Arc::new(active_state.with_ha_fence(active_fence));
+
+    let (standby_stop_tx, standby_stop_rx) = tokio::sync::watch::channel(false);
+    let (standby_fence, standby_task) = kavach_api::ha_lease::start(
+        standby_state
+            .active_lease_store()
+            .expect("Postgres lease store"),
+        "default".into(),
+        standby_stop_rx,
+    )
+    .await
+    .expect("start standby lease");
+    let Ok(standby_state) = Arc::try_unwrap(standby_state) else {
+        panic!("standby state unexpectedly shared during setup");
+    };
+    let standby_state = Arc::new(standby_state.with_ha_fence(standby_fence.clone()));
+    let active_app = router(active_state.clone());
+    let standby_app = router(standby_state.clone());
+    assert_eq!(standby_fence.status(), "standby");
+    assert_eq!(standby_state.runtime().unwrap().pointer_version, 1);
+
+    let (not_ready, _) = call(
+        &standby_app,
+        "GET",
+        "/ready",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(not_ready, StatusCode::SERVICE_UNAVAILABLE);
+
+    assert_eq!(
+        apply_as_admins(
+            &active_app,
+            "activate_pack",
+            json!({ "pack_id": "finance-v1" }),
+        )
+        .await,
+        StatusCode::OK
+    );
+    assert_eq!(active_state.runtime().unwrap().pointer_version, 2);
+    assert_eq!(
+        standby_state.runtime().unwrap().pointer_version,
+        1,
+        "standby has not synchronized the committed pointer yet"
+    );
+
+    // Simulate active-process loss. Promotion alone is insufficient for
+    // readiness: /ready must first load the committed pointer and its assets.
+    active_task.abort();
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while standby_fence.status() != "active" {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .expect("standby did not promote after lease expiry");
+    assert_eq!(
+        standby_state.runtime().unwrap().pointer_version,
+        1,
+        "the route performs convergence before reporting readiness"
+    );
+
+    let (ready, body) = call(
+        &standby_app,
+        "GET",
+        "/ready",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(ready, StatusCode::OK, "{body}");
+    assert_eq!(body["runtime_pointer_version"], 2, "{body}");
+    assert_eq!(standby_state.runtime().unwrap().pack_id, "finance-v1");
+
+    let _ = active_stop_tx.send(true);
+    let _ = standby_stop_tx.send(true);
+    let _ = active_task.await;
+    let _ = standby_task.await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)] // two replicas, one approval race, read top to bottom
 async fn concurrent_approvals_on_two_replicas_apply_once() {
     let Some(url) = isolated_database_url().await else {
         return;
@@ -208,7 +316,17 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     let root = registry();
     let replica_a = start(&root, &url, "v0.yaml").await.expect("replica a");
     let replica_b = start(&root, &url, "v0.yaml").await.expect("replica b");
+    let replica_c = start(&root, &url, "v0.yaml").await.expect("replica c");
+    let replica_d = start(&root, &url, "v0.yaml").await.expect("replica d");
+    let replica_e = start(&root, &url, "v0.yaml").await.expect("replica e");
+    let replica_f = start(&root, &url, "v0.yaml").await.expect("replica f");
+    let replica_g = start(&root, &url, "v0.yaml").await.expect("replica g");
     let (app_a, app_b) = (router(replica_a.clone()), router(replica_b.clone()));
+    let app_c = router(replica_c.clone());
+    let app_d = router(replica_d.clone());
+    let app_e = router(replica_e.clone());
+    let app_f = router(replica_f.clone());
+    let app_g = router(replica_g.clone());
 
     let (status, request) = propose(
         &app_a,
@@ -250,12 +368,120 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
         .count();
     assert_eq!(activations, 1);
 
-    // The replica that did not apply reports drift until restarted.
+    // A separate stale replica converges through the retention API.
+    let (status, retention) = call(
+        &app_c,
+        "GET",
+        "/v1/admin/retention",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{retention}");
+    let (status, tombstones) = call(
+        &app_c,
+        "GET",
+        "/v1/admin/tombstones",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{tombstones}");
+    assert_eq!(
+        replica_c.runtime().expect("runtime").pointer_version,
+        2,
+        "retention route must converge the stale replica"
+    );
+    let (status, batch_jobs) = call(
+        &app_e,
+        "GET",
+        "/v1/admin/batch-jobs",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{batch_jobs}");
+    assert_eq!(
+        replica_e.runtime().expect("runtime").pointer_version,
+        2,
+        "batch-job route must converge the stale replica"
+    );
+    let (status, incidents) = call(
+        &app_f,
+        "GET",
+        "/v1/admin/incidents",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{incidents}");
+    assert_eq!(
+        replica_f.runtime().expect("runtime").pointer_version,
+        2,
+        "incident route must converge the stale replica"
+    );
+    let (status, audit) = call(
+        &app_g,
+        "GET",
+        "/v1/admin/audit",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{audit}");
+    assert_eq!(
+        replica_g.runtime().expect("runtime").pointer_version,
+        2,
+        "audit route must converge the stale replica"
+    );
+
+    let active = if a.0 == StatusCode::OK {
+        &app_a
+    } else {
+        &app_b
+    };
+    let golden: serde_json::Value =
+        serde_json::from_str(include_str!("../../../golden/finance/v0/credit_clean.json"))
+            .expect("golden evaluate fixture");
+    let mut evaluate_body: EvaluateRequest =
+        serde_json::from_value(golden["request"].clone()).expect("golden request");
+    let now = Utc::now();
+    evaluate_body.decision_time = now;
+    evaluate_body.consent.as_mut().expect("consent").timestamp = now;
+    let (status, decision) = call(
+        active,
+        "POST",
+        "/v1/evaluate",
+        &as_principal("admin-1"),
+        Some(serde_json::to_value(evaluate_body).expect("serialize evaluate request")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{decision}");
+    let evidence_id = decision["evidence_id"].as_str().expect("evidence id");
+    let (status, event) = call(
+        &app_d,
+        "GET",
+        &format!("/v1/decision-events/{evidence_id}"),
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{event}");
+    assert_eq!(event["event"]["evidence_id"], evidence_id);
+    assert_eq!(
+        replica_d.runtime().expect("runtime").pointer_version,
+        2,
+        "decision-event read must converge the stale replica"
+    );
+
+    // The replica that did not apply detects the committed pointer and
+    // validates/reloads the shared pack and governed model before serving.
     let lagging = if a.0 == StatusCode::OK {
         &app_b
     } else {
         &app_a
     };
+
     let (_, runtime) = call(
         lagging,
         "GET",
@@ -265,6 +491,86 @@ async fn concurrent_approvals_on_two_replicas_apply_once() {
     )
     .await;
     assert_eq!(runtime["pointer_drift"], true, "{runtime}");
+
+    let (status, changes) = call(
+        lagging,
+        "GET",
+        "/v1/change-requests",
+        &as_principal("admin-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{changes}");
+
+    let (status, packs) = call(lagging, "GET", "/v1/packs", &as_principal("viewer-1"), None).await;
+    assert_eq!(status, StatusCode::OK, "{packs}");
+    assert!(packs
+        .as_array()
+        .is_some_and(|items| items.iter().any(|pack| pack["id"] == "finance-v1")));
+    let (status, pack) = call(
+        lagging,
+        "GET",
+        "/v1/packs/finance-v1",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{pack}");
+    assert_eq!(pack["id"], "finance-v1");
+    let (status, models) = call(
+        lagging,
+        "GET",
+        "/v1/models",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{models}");
+    assert!(models
+        .as_array()
+        .is_some_and(|items| items.iter().any(|model| {
+            model["model_id"] == "credit-underwriting-v1" && model["active"].as_bool() == Some(true)
+        })));
+    let (status, model) = call(
+        lagging,
+        "GET",
+        "/v1/models/credit-underwriting-v1",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{model}");
+    assert_eq!(model["model_id"], "credit-underwriting-v1");
+
+    let golden: serde_json::Value =
+        serde_json::from_str(include_str!("../../../golden/finance/v0/credit_clean.json"))
+            .expect("golden evaluate fixture");
+    let mut evaluate_body: EvaluateRequest =
+        serde_json::from_value(golden["request"].clone()).expect("golden request");
+    let now = Utc::now();
+    evaluate_body.decision_time = now;
+    evaluate_body.consent.as_mut().expect("consent").timestamp = now;
+    let (status, response) = call(
+        lagging,
+        "POST",
+        "/v1/evaluate",
+        &as_principal("viewer-1"),
+        Some(serde_json::to_value(evaluate_body).expect("serialize evaluate request")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{response}");
+    assert_eq!(response["returned_decision"], "PASS", "{response}");
+
+    let (_, converged) = call(
+        lagging,
+        "GET",
+        "/v1/runtime",
+        &as_principal("viewer-1"),
+        None,
+    )
+    .await;
+    assert_eq!(converged["pointer_drift"], false, "{converged}");
+    assert_eq!(converged["pack_id"], "finance-v1", "{converged}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

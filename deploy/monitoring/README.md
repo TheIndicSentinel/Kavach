@@ -42,6 +42,7 @@ Several things fail *closed*, which is correct but looks like an outage without 
 | Behaviour | Signal |
 |---|---|
 | New mandates refused (an unsynchronised clock or an unreachable store) | `KavachSorEventsUnavailable` (`kavach_sor_events_unavailable_total`) |
+| The HA lease task ended and the API exits for a restart (REL-04) | `KavachBackgroundTaskExited` (`kavach_background_task_exits_total{task}`); also the container restart count, since the counter resets on restart |
 | A revocation has no evidence record | `KavachRevocationRecordMissing` |
 | A revocation has no audit entry | `KavachRevocationAuditEntryMissing` |
 | A reconciler has stopped | `KavachRevocationReconcilerStopped`, `KavachRevocationAuditReconcilerStopped`, `KavachAgentStateReconcilerStopped`, `KavachOutcomeReconcilerStopped` |

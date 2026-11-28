@@ -1,5 +1,6 @@
 //! Postgres persistence for evidence chain, incidents, and batch jobs.
 
+mod active_lease;
 mod admin;
 mod agent_evidence;
 mod authority_updates;
@@ -19,6 +20,9 @@ mod roles;
 mod step_up;
 mod tls;
 
+use active_lease::LeaseConnectionContext;
+
+pub use active_lease::{ActiveApiLease, PostgresActiveLeaseStore};
 pub use admin::PostgresAdminStore;
 pub use agent_evidence::PostgresAgentEvidenceStore;
 pub use authority_updates::{
@@ -55,6 +59,7 @@ use sqlx::PgPool;
 #[derive(Clone)]
 pub struct StoragePool {
     pub pool: PgPool,
+    write_context: LeaseConnectionContext,
 }
 
 impl StoragePool {
@@ -109,6 +114,10 @@ impl StoragePool {
 
     pub fn admin_store(&self) -> PostgresAdminStore {
         PostgresAdminStore::new(self.pool.clone())
+    }
+
+    pub fn active_lease_store(&self) -> PostgresActiveLeaseStore {
+        PostgresActiveLeaseStore::new(self.pool.clone(), self.write_context.clone())
     }
 
     pub fn retention_store(&self) -> PostgresRetentionStore {

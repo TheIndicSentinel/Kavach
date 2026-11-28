@@ -142,22 +142,31 @@ async fn the_running_writer_covers_new_records_and_reports_it() {
     let mut metrics = String::new();
     for _ in 0..50 {
         metrics = get(&gw.state, "/metrics").await.1;
-        if metrics.contains(&format!("kavach_checkpoint_last_seq {head_seq}")) {
+        if metrics.contains(&format!(
+            "kavach_checkpoint_last_seq{{tenant_id=\"default\"}} {head_seq}"
+        )) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(
-        metrics.contains(&format!("kavach_checkpoint_last_seq {head_seq}")),
+        metrics.contains(&format!(
+            "kavach_checkpoint_last_seq{{tenant_id=\"default\"}} {head_seq}"
+        )),
         "{metrics}"
     );
-    assert!(metrics.contains("kavach_checkpoint_stalled 0"), "{metrics}");
-    assert!(metrics.contains("kavach_checkpoint_uncovered_records 0"));
     assert!(
-        !metrics.contains("kavach_checkpoints_written_total 0"),
+        metrics.contains("kavach_checkpoint_stalled{tenant_id=\"default\"} 0"),
         "{metrics}"
     );
-    assert!(metrics.contains("kavach_checkpoint_last_covered_timestamp_seconds"));
+    assert!(metrics.contains("kavach_checkpoint_uncovered_records{tenant_id=\"default\"} 0"));
+    assert!(
+        !metrics.contains("kavach_checkpoints_written_total{tenant_id=\"default\"} 0"),
+        "{metrics}"
+    );
+    assert!(
+        metrics.contains("kavach_checkpoint_last_covered_timestamp_seconds{tenant_id=\"default\"}")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -191,17 +200,22 @@ async fn a_stalled_writer_is_visible_and_blocks_nothing_it_does_not_own() {
     // Operator surfaces answer as before: the stall is information only.
     assert_eq!(get(&gw.state, "/health").await.0, health_before);
     // The stall can show a moment before the first due checkpoint is skipped.
-    let skipped = r#"kavach_checkpoints_skipped_total{reason="time"}"#;
+    let skipped = r#"kavach_checkpoints_skipped_total{reason="time",tenant_id="default"}"#;
     let mut metrics = String::new();
     for _ in 0..50 {
         metrics = get(&gw.state, "/metrics").await.1;
-        if metrics.contains(skipped) && metrics.contains("kavach_checkpoint_stalled 1") {
+        if metrics.contains(skipped)
+            && metrics.contains("kavach_checkpoint_stalled{tenant_id=\"default\"} 1")
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     assert!(metrics.contains(skipped), "{metrics}");
-    assert!(metrics.contains("kavach_checkpoint_stalled 1"), "{metrics}");
+    assert!(
+        metrics.contains("kavach_checkpoint_stalled{tenant_id=\"default\"} 1"),
+        "{metrics}"
+    );
 
     // Time returns: the record is covered, the stall ends, and agents carry on.
     gw.clock.set_sync(SyncStatus::Synced { max_error_ms: 10 });

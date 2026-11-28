@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::Mutex;
 
 use chrono::{Duration, Utc};
@@ -164,6 +164,8 @@ pub struct AppState {
     access_control: Option<KavachAuthorizer>,
     metrics: Metrics,
     runtime: Mutex<RuntimeResponse>,
+    runtime_pointer_version: AtomicI64,
+    runtime_reload_lock: tokio::sync::Mutex<()>,
     packs_dir: PathBuf,
     models_dir: PathBuf,
     admin: AdminBackend,
@@ -177,7 +179,7 @@ pub struct AppState {
     require_hardening: bool,
     relaxations: std::collections::BTreeSet<crate::relaxations::Relaxation>,
     mtls_principal_san: Option<crate::mtls::MtlsSanKind>,
-    nonces: crate::hmac_auth::NonceCache,
+    hmac_nonces: crate::hmac_auth::HmacNonceBackend,
     changes: ChangeRequestBackend,
     change_ttl: Duration,
     /// Operator role bindings and the principals directory (ADR-019).
@@ -200,6 +202,9 @@ pub struct AppState {
     review_snapshot_store: ReviewSnapshotBackend,
     /// Runtime-selected persistence for exact-action D17 approvals.
     review_approval_store: ReviewApprovalBackend,
+    /// Postgres lease ownership; disabled for existing single-instance mode.
+    ha_fence: crate::ha_lease::HaFence,
+    lease_store: Option<kavach_storage::PostgresActiveLeaseStore>,
     /// Console sign-in (ADR-018); `None` unless configured.
     console_login: Option<std::sync::Arc<crate::console_login::ConsoleLogin>>,
 }
@@ -301,7 +306,11 @@ impl AppState {
             model_pack_mismatch: model.pack_id != pack.pack.id,
         };
 
-        let metrics = start_metrics(runtime.model_pack_mismatch, dataplane.as_ref())?;
+        let metrics = start_metrics(
+            runtime.model_pack_mismatch,
+            dataplane.as_ref(),
+            &config.roles.tenant_id,
+        )?;
         let service = EvaluateService::new(
             pack,
             model,
@@ -325,6 +334,7 @@ impl AppState {
         };
 
         let relaxations = report_relaxations(config, dataplane.as_ref(), &metrics);
+        let lease_store = pool.as_ref().map(StoragePool::active_lease_store);
         Ok(Self {
             relaxations,
             service: Mutex::new(service),
@@ -332,6 +342,8 @@ impl AppState {
             access_control,
             metrics,
             runtime: Mutex::new(runtime),
+            runtime_pointer_version: AtomicI64::new(pointer_version),
+            runtime_reload_lock: tokio::sync::Mutex::new(()),
             packs_dir,
             models_dir,
             admin,
@@ -343,7 +355,7 @@ impl AppState {
             insecure_dev: config.insecure_dev,
             require_hardening: config.require_hardening,
             mtls_principal_san: config.mtls_principal_san,
-            nonces: crate::hmac_auth::NonceCache::default(),
+            hmac_nonces: crate::hmac_auth::HmacNonceBackend::from_pool(pool.as_ref()),
             roles,
             seen: crate::auth::SeenThrottle::default(),
             tenant_id: config.roles.tenant_id.clone(),
@@ -358,6 +370,8 @@ impl AppState {
             review_snapshot_key,
             review_snapshot_store,
             review_approval_store,
+            ha_fence: crate::ha_lease::HaFence::default(),
+            lease_store,
             console_login: None,
         })
     }
@@ -403,6 +417,24 @@ impl AppState {
     ) -> Self {
         self.console_login = Some(login);
         self
+    }
+
+    #[must_use]
+    pub fn with_ha_fence(mut self, fence: crate::ha_lease::HaFence) -> Self {
+        self.ha_fence = fence;
+        self
+    }
+
+    #[must_use]
+    pub fn ha_fence(&self) -> &crate::ha_lease::HaFence {
+        &self.ha_fence
+    }
+
+    #[must_use]
+    pub fn active_lease_store(&self) -> Option<kavach_storage::PostgresActiveLeaseStore> {
+        // The configured persistence adapters share the same database pool;
+        // retain only the narrow lease API for HA lifecycle work.
+        self.lease_store.clone()
     }
 
     pub fn console_login(&self) -> Option<&std::sync::Arc<crate::console_login::ConsoleLogin>> {
@@ -459,8 +491,8 @@ impl AppState {
         self.mtls_principal_san
     }
 
-    pub fn nonces(&self) -> &crate::hmac_auth::NonceCache {
-        &self.nonces
+    pub fn hmac_nonces(&self) -> &crate::hmac_auth::HmacNonceBackend {
+        &self.hmac_nonces
     }
 
     pub fn metrics(&self) -> &Metrics {
@@ -474,6 +506,100 @@ impl AppState {
             .lock()
             .map(|runtime| runtime.clone())
             .map_err(|_| RUNTIME_LOCK.poisoned())
+    }
+
+    /// Converge to another process's committed runtime pointer before an
+    /// evaluation. The assets are validated before the live evaluator swaps;
+    /// failed or backward convergence refuses the request.
+    pub async fn ensure_runtime_pointer_current(&self) -> Result<(), ApiError> {
+        let _reload = self.runtime_reload_lock.lock().await;
+        let pointers = self
+            .admin
+            .get_runtime_pointers()
+            .await
+            .map_err(|_| ApiError::Unavailable("runtime pointer is unavailable".into()))?;
+        let local_version = self.runtime_pointer_version.load(Ordering::Acquire);
+        let stored_version = pointers.as_ref().map_or(0, |p| p.version);
+        if stored_version == local_version {
+            return Ok(());
+        }
+        if stored_version < local_version {
+            return Err(ApiError::Unavailable(
+                "stored runtime pointer moved backwards; operator recovery is required".into(),
+            ));
+        }
+        let pointers = pointers.ok_or_else(|| {
+            ApiError::Unavailable(
+                "runtime pointer disappeared; operator recovery is required".into(),
+            )
+        })?;
+        self.reload_runtime_pointer(pointers).await
+    }
+
+    async fn reload_runtime_pointer(&self, pointers: RuntimePointers) -> Result<(), ApiError> {
+        let pack_path = std::path::Path::new(&pointers.pack_path);
+        let pack = PackLoader::load_from_path(pack_path).map_err(|_| {
+            ApiError::Unavailable("committed runtime pack could not be loaded".into())
+        })?;
+        pack.verify_pin(pointers.pack_sha256.as_deref())
+            .map_err(|_| ApiError::Unavailable("committed runtime pack digest mismatch".into()))?;
+        if let Some(signers) = &self.pack_signers {
+            verify_signed(&pack, pack_path, signers).map_err(|_| {
+                ApiError::Unavailable("committed runtime pack signature is invalid".into())
+            })?;
+        }
+
+        let model_path = std::path::Path::new(&pointers.model_path);
+        let (mut model, model_digest) = read_model_file(model_path, self.pack_signers.as_ref())
+            .map_err(|_| {
+                ApiError::Unavailable("committed runtime model could not be loaded".into())
+            })?;
+        if pointers.model_sha256.as_deref() != Some(model_digest.as_str()) {
+            return Err(ApiError::Unavailable(
+                "committed runtime model digest mismatch".into(),
+            ));
+        }
+        let governed = self
+            .admin
+            .get_model_state(&model.model_id)
+            .await
+            .map_err(|_| ApiError::Unavailable("governed model state is unavailable".into()))?
+            .ok_or_else(|| {
+                ApiError::Unavailable("committed runtime model has no governed state".into())
+            })?;
+        model.status = governed.status;
+        model.governance_mode = governed.governance_mode;
+        precheck_model(&model).map_err(|_| {
+            ApiError::Unavailable("committed runtime model failed validation".into())
+        })?;
+
+        let latest_version = self
+            .admin
+            .get_runtime_pointers()
+            .await
+            .map_err(|_| ApiError::Unavailable("runtime pointer is unavailable".into()))?
+            .map_or(0, |latest| latest.version);
+        if latest_version != pointers.version {
+            return Err(ApiError::Unavailable(
+                "runtime pointer changed during reload; retry after convergence".into(),
+            ));
+        }
+
+        let runtime = RuntimeResponse {
+            pack_id: pack.pack.id.clone(),
+            pack_version: pack.pack.version.clone(),
+            model_id: model.model_id.clone(),
+            model_version: model.version.clone(),
+            sector: model.sector.clone(),
+            governance_mode: model.governance_mode,
+            pack_path: pointers.pack_path,
+            model_path: pointers.model_path,
+            pack_sha256: pack.digest.clone(),
+            pointer_version: pointers.version,
+            model_sha256: Some(model_digest),
+            model_pack_mismatch: model.pack_id != pack.pack.id,
+        };
+        self.swap_live(pack, model, &runtime)
     }
 
     pub fn packs_dir(&self) -> &std::path::Path {
@@ -629,6 +755,8 @@ impl AppState {
             .reload_pack_and_model(loaded_pack, model)
             .map_err(|e| ApiError::Internal(format!("reload evaluate service: {e}")))?;
         *self.runtime.lock().map_err(|_| RUNTIME_LOCK.poisoned())? = runtime.clone();
+        self.runtime_pointer_version
+            .store(runtime.pointer_version, Ordering::Release);
         Ok(())
     }
 
@@ -795,8 +923,10 @@ fn select_review_stores(
 fn start_metrics(
     model_pack_mismatch: bool,
     dataplane: Option<&crate::dataplane::Dataplane>,
+    tenant_id: &str,
 ) -> Result<Metrics, ApiError> {
-    let metrics = Metrics::new().map_err(|e| ApiError::Internal(format!("metrics: {e}")))?;
+    let metrics =
+        Metrics::new(tenant_id).map_err(|e| ApiError::Internal(format!("metrics: {e}")))?;
     metrics.set_model_pack_mismatch(model_pack_mismatch);
     crate::checkpoints::start(dataplane, &metrics);
     crate::revocation_evidence::start(dataplane, &metrics);
@@ -1153,7 +1283,9 @@ mod poisoned_lock_tests {
 
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
+    use chrono::Utc;
     use http_body_util::BodyExt;
+    use kavach_storage::RuntimePointers;
     use serde_json::{json, Value};
     use tower::ServiceExt;
 
@@ -1171,6 +1303,50 @@ mod poisoned_lock_tests {
             .await
             .expect("state"),
         )
+    }
+
+    #[tokio::test]
+    async fn evaluate_refuses_when_stored_runtime_pointer_is_newer() {
+        let state = state().await;
+        state
+            .admin()
+            .set_runtime_pointers(RuntimePointers {
+                pack_path: "packs/finance/v1.yaml".into(),
+                model_path: "models/finance/model.yaml".into(),
+                previous_pack_path: None,
+                pack_sha256: Some("sha256:new".into()),
+                previous_pack_sha256: None,
+                model_sha256: Some("sha256:model".into()),
+                updated_at: Utc::now(),
+                updated_by: "test-proposer".into(),
+                approved_by: "test-approver".into(),
+                version: 0,
+            })
+            .await
+            .unwrap();
+
+        let (status, body) = send(
+            &state,
+            "POST",
+            "/v1/evaluate",
+            None,
+            Some(json!({"correlation_id":"drift-test"})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+        assert_eq!(body["code"], "unavailable", "{body}");
+        let (ready_status, ready_body) = send(&state, "GET", "/ready", None, None).await;
+        assert_eq!(
+            ready_status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "{ready_body}"
+        );
+        let (health_status, _) = send(&state, "GET", "/health", None, None).await;
+        assert_eq!(health_status, StatusCode::OK);
+        assert!(matches!(
+            state.ensure_runtime_pointer_current().await,
+            Err(ApiError::Unavailable(_))
+        ));
     }
 
     /// Panics in another thread while holding `lock`, which poisons it.

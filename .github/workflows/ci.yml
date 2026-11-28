@@ -223,6 +223,34 @@ jobs:
           KAVACH_TEST_PKCS11_MODULE: /usr/lib/softhsm/libsofthsm2.so
         run: cargo test --workspace --verbose
 
+      # This scenario must be allowed to stop Postgres, so it provisions and
+      # controls its own disposable cluster instead of touching the shared CI service.
+      # It installs the runner distro's default major version (the image no longer
+      # carries postgresql-16); the version-pinned contracts run on the service above.
+      - name: HA shared-Postgres outage and recovery
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql
+          major="$(ls /usr/lib/postgresql | sort -n | tail -1)"
+          echo "outage scenario uses PostgreSQL ${major}"
+          sudo pg_ctlcluster "${major}" main stop || true
+          PATH="/usr/lib/postgresql/${major}/bin:$PATH" scripts/test-ha-postgres-outage.sh
+
+      - name: Validate gated HA Compose reference
+        env:
+          POSTGRES_PASSWORD: compose-check
+          KAVACH_RUNTIME_DB_PASSWORD: compose-check
+          KAVACH_OIDC_ISSUER: https://issuer.example.test
+          KAVACH_OIDC_AUDIENCE: kavach-api
+        run: >
+          docker compose
+          -f deploy/docker-compose.pilot.yml
+          -f deploy/docker-compose.ha-reference.yml
+          --profile ha-reference-gated config --quiet
+
+      - name: Exercise gated HA Compose promotion
+        run: scripts/test-ha-compose-acceptance.sh
+
       # The HSM goes away mid-run and comes back (calls BLOCK, /v1/runtime
       # unhealthy, recovery without a restart). It rewrites its token's
       # configuration, so it gets a token of its own.

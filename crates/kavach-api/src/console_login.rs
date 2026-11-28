@@ -2010,6 +2010,37 @@ mod tests {
             .authorization_url
             .contains(callback_cookie.expose()));
 
+        // A promoted API process has a new in-memory session table and does
+        // not inherit callback secrets or verified step-up proof. The durable
+        // challenge alone cannot authorize an approval after failover.
+        let promoted = ConsoleLogin::build(
+            &settings,
+            IdpEndpoints {
+                authorization: "https://idp.example/authorize".into(),
+                token: "https://idp.example/token".into(),
+                revocation: None,
+                end_session: None,
+            },
+            TokenSecret::new("client-secret"),
+            false,
+        )
+        .unwrap()
+        .with_clock(Arc::new(move || now));
+        assert_eq!(
+            promoted
+                .step_up_principal_key(session_cookie)
+                .err()
+                .unwrap(),
+            StepUpSessionError::NoSession
+        );
+        assert_eq!(
+            promoted
+                .take_step_up_callback(callback_cookie.expose(), callback_state)
+                .err()
+                .unwrap(),
+            StepUpSessionError::Expired
+        );
+
         assert_eq!(
             login
                 .take_step_up_callback(callback_cookie.expose(), "wrong-state")
@@ -2042,6 +2073,13 @@ mod tests {
         login
             .store_verified_step_up(&secrets.session_key, verified.clone())
             .unwrap();
+        assert_eq!(
+            promoted
+                .take_verified_step_up(session_cookie, &action_hash)
+                .err()
+                .unwrap(),
+            StepUpSessionError::NoSession
+        );
         assert!(login
             .take_verified_step_up(session_cookie, "different-action")
             .is_err());

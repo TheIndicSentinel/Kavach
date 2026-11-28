@@ -41,11 +41,15 @@ async fn refused_issuing_on_an_unsynchronised_clock_is_a_503_and_is_counted() {
 
     let metrics = gw.state.metrics().gather_text().unwrap();
     assert!(
-        metrics.contains("kavach_sor_events_unavailable_total{kind=\"issuing\"} 1"),
+        metrics.contains(
+            "kavach_sor_events_unavailable_total{kind=\"issuing\",tenant_id=\"default\"} 1"
+        ),
         "{metrics}"
     );
     assert!(
-        !metrics.contains("kavach_sor_events_unavailable_total{kind=\"revoking\"}"),
+        !metrics.contains(
+            "kavach_sor_events_unavailable_total{kind=\"revoking\",tenant_id=\"default\"}"
+        ),
         "no revocation was refused: {metrics}"
     );
 
@@ -88,7 +92,9 @@ async fn a_revocation_applies_on_an_unsynchronised_clock_and_is_not_counted() {
     assert_eq!(body["revoked"][0], gw.mandate.as_str(), "{body}");
     let metrics = gw.state.metrics().gather_text().unwrap();
     assert!(
-        !metrics.contains("kavach_sor_events_unavailable_total{kind=\"revoking\"}"),
+        !metrics.contains(
+            "kavach_sor_events_unavailable_total{kind=\"revoking\",tenant_id=\"default\"}"
+        ),
         "{metrics}"
     );
 }

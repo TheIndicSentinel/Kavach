@@ -73,6 +73,12 @@ impl EvaluateService for GrpcEvaluateService {
         &self,
         request: Request<ProtoEvaluateRequest>,
     ) -> Result<Response<ProtoEvaluateResponse>, Status> {
+        if !self.state.ha_fence().is_active() {
+            return Err(Status::unavailable(format!(
+                "API process is {} and cannot serve application requests",
+                self.state.ha_fence().status()
+            )));
+        }
         let (_in_progress, _permit) =
             crate::limits::grpc_enter(&self.gate, connection(&request).as_ref())
                 .map_err(|status| *status)?;
@@ -85,6 +91,10 @@ impl EvaluateService for GrpcEvaluateService {
         )
         .await
         .map_err(|e| status_from_api(&e))?;
+        self.state
+            .ensure_runtime_pointer_current()
+            .await
+            .map_err(|e| status_from_api(&e))?;
         let domain_request =
             proto_to_domain(request.into_inner()).map_err(|e| status_from_api(&e))?;
         let response = self

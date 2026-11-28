@@ -2,6 +2,7 @@ use kavach_domain::Decision;
 use prometheus::{
     Encoder, HistogramOpts, HistogramVec, IntCounterVec, Opts, Registry, TextEncoder,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
 
 const METRIC_EVALUATE_TOTAL: &str = "kavach_evaluate_requests_total";
@@ -28,6 +29,22 @@ pub struct Metrics {
     agent_state_evidence: AgentStateEvidenceMetrics,
     outcomes: OutcomeMetrics,
     relaxations: RelaxationMetrics,
+    background_task_exits: IntCounterVec,
+}
+
+/// Background tasks that ended while the process was still meant to run
+/// (REL-04). `task` is a fixed name chosen by the code, never request data.
+fn background_task_exit_counter(registry: &Registry) -> Result<IntCounterVec, prometheus::Error> {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "kavach_background_task_exits_total",
+            "ALERT: a background task ended (panic or return) before shutdown, by task. \
+             A critical task (ha_lease) fences the process and shuts it down",
+        ),
+        &["task"],
+    )?;
+    registry.register(Box::new(counter.clone()))?;
+    Ok(counter)
 }
 
 /// How long each stage of a gateway call takes (`stage` is the fixed list
@@ -365,8 +382,16 @@ fn operator_counters() -> Result<(IntCounterVec, IntCounterVec), prometheus::Err
 }
 
 impl Metrics {
-    pub fn new() -> Result<Self, prometheus::Error> {
-        let registry = Registry::new();
+    /// Creates all process metrics with the tenant label from startup
+    /// configuration. Request data must never select or change this value.
+    pub fn new(tenant_id: &str) -> Result<Self, prometheus::Error> {
+        let registry = Registry::new_custom(
+            None,
+            Some(HashMap::from([(
+                "tenant_id".to_string(),
+                tenant_id.to_string(),
+            )])),
+        )?;
         let evaluate_total = IntCounterVec::new(
             Opts::new(
                 METRIC_EVALUATE_TOTAL,
@@ -452,6 +477,7 @@ impl Metrics {
             outcomes,
             relaxations,
             agent_state_evidence: AgentStateEvidenceMetrics::register(&registry)?,
+            background_task_exits: background_task_exit_counter(&registry)?,
             registry: Arc::new(registry),
         })
     }
@@ -630,6 +656,10 @@ impl Metrics {
             .inc();
     }
 
+    pub fn observe_background_task_exit(&self, task: &str) {
+        self.background_task_exits.with_label_values(&[task]).inc();
+    }
+
     pub fn gather_text(&self) -> Result<String, prometheus::Error> {
         let metric_families = self.registry.gather();
         let mut buffer = Vec::new();
@@ -649,7 +679,7 @@ fn decision_label(decision: Decision) -> &'static str {
 
 impl Default for Metrics {
     fn default() -> Self {
-        Self::new().expect("metrics init")
+        Self::new("default").expect("metrics init")
     }
 }
 
@@ -690,30 +720,37 @@ mod tests {
 
     #[test]
     fn gather_contains_evaluate_metrics() {
-        let metrics = Metrics::new().expect("metrics");
+        let metrics = Metrics::new("tenant-a").expect("metrics");
+        let other_tenant_metrics = Metrics::new("tenant-b").expect("other tenant metrics");
         metrics.observe_success("http", Decision::Pass, 3);
+        other_tenant_metrics.observe_success("http", Decision::Pass, 3);
         let text = metrics.gather_text().expect("gather");
+        let other_tenant_text = other_tenant_metrics.gather_text().expect("gather");
         assert!(text.contains(METRIC_EVALUATE_TOTAL));
         assert!(text.contains(METRIC_EVALUATE_LATENCY));
+        assert!(text.contains("tenant_id=\"tenant-a\""));
+        assert!(!text.contains("tenant_id=\"tenant-b\""));
+        assert!(other_tenant_text.contains("tenant_id=\"tenant-b\""));
+        assert!(!other_tenant_text.contains("tenant_id=\"tenant-a\""));
     }
 
     #[test]
     fn gateway_stages_are_a_histogram_labelled_by_stage_only() {
         use kavach_dataplane::GatewayObserver;
-        let metrics = Metrics::new().expect("metrics");
+        let metrics = Metrics::new("default").expect("metrics");
         for stage in kavach_dataplane::Stage::ALL {
             metrics.stage(stage, std::time::Duration::from_millis(3));
         }
         let text = metrics.gather_text().expect("gather");
         for stage in kavach_dataplane::Stage::ALL {
             let count = format!(
-                "kavach_gateway_stage_seconds_count{{stage=\"{}\"}} 1",
+                "kavach_gateway_stage_seconds_count{{stage=\"{}\",tenant_id=\"default\"}} 1",
                 stage.as_str()
             );
             assert!(text.contains(&count), "{text}");
         }
         assert!(
-            text.contains("kavach_gateway_stage_seconds_bucket{stage=\"commit\",le=\"0.005\"} 1"),
+            text.contains("kavach_gateway_stage_seconds_bucket{stage=\"commit\",tenant_id=\"default\",le=\"0.005\"} 1"),
             "{text}"
         );
     }

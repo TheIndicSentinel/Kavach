@@ -96,6 +96,35 @@ Run once, on a fixed cloud VM matching NFR-2, then whenever a release is tagged.
 5. **Also once with `--provider-delay-ms 50`,** to show the gateway behind a realistic provider.
 6. **Record** in this file: the commit, the date, the VM (provider, instance type, region), the three reports, and each NFR-2 target as met or not met.
 
+## Developer-host smoke diagnostic (not an NFR result)
+
+On 2026-11-19, `authorize` completed on commit `5250f9a` using the memory store on an Intel Core i5-5250U Mac (4 logical CPUs, x86_64). Command: `cargo run -p kavach-bench -- --scenarios authorize --concurrency 1,8,32 --duration-seconds 3 --warmup-seconds 1 --subjects 100`. All three runs had zero errors.
+
+| Concurrency | Requests | Req/s | p50 ms | p95 ms | p99 ms | max ms |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 764 | 254.7 | 3.67 | 4.75 | 6.64 | 10.37 |
+| 8 | 1,704 | 568.0 | 6.40 | 9.38 | 17.53 | 34.92 |
+| 32 | 1,745 | 581.7 | 6.35 | 8.90 | 12.24 | 38.12 |
+
+This short memory-store smoke run checks that the in-process measurement works; its host, storage, duration, and workload do not match the reference procedure above. It does not satisfy or fail any NFR-2 target, and these numbers are not performance claims. The reference-machine run with local Postgres 16 remains pending.
+
+**Local Postgres diagnostic (2026-11-19, not an NFR result):** The available host is macOS with 4 logical CPUs (Intel Core i5-5250U); Homebrew PostgreSQL 16.16 ran locally without TLS. After the initial optimized build exhausted disk space, the partial release artifacts were removed and the already-built debug harness was used. It exposed and fixed a Postgres setup gap: benchmark fixtures were not being applied to the persistent consent and preference projections. The harness now sends those synthetic records through the signed authority-update route before issuing benchmark mandates.
+
+The diagnostic ran `delivered`, `precheck`, `commit` and `authorize`, pool size 5, concurrency 1 and 8, 100 subjects, no warm-up and 1 second per run. Every row had zero errors. These short, plaintext, single-pool results are local diagnostics only; they do not meet the fixed-host/TLS procedure or establish any NFR-2 target.
+
+| Scenario | Concurrency | Requests/s | p50 ms | p99 ms |
+|---|---:|---:|---:|---:|
+| delivered | 1 | 35 | 26.74 | 60.99 |
+| delivered | 8 | 93 | 79.98 | 173.58 |
+| precheck | 1 | 90 | 10.51 | 32.87 |
+| precheck | 8 | 219 | 34.76 | 58.07 |
+| commit | 1 | 203 | 4.52 | 8.72 |
+| commit | 8 | 280 | 27.90 | 60.65 |
+| authorize | 1 | 125 | 7.43 | 15.55 |
+| authorize | 8 | 265 | 29.10 | 48.61 |
+
+A qualifying run still requires the fixed Ubuntu 24.04, 4-vCPU/16-GB machine and TLS PostgreSQL described above. No paid resource was provisioned.
+
 ## CI trends
 
 The *Benchmarks* workflow runs on demand (`gh workflow run bench.yml --ref <branch>`), when a change or decision needs the data, on a shared GitHub runner. A pull request that changes the harness gets a short run that checks it still works. A full run is one run against Postgres with TLS (`verify-full`), every scenario at pool sizes 5, 16 and 32, and one without TLS (the baseline), the gateway scenarios at pool size 5. Each run's tables appear in its summary, and the JSON reports are kept for 90 days.

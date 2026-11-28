@@ -1,0 +1,36 @@
+# Gated on-prem active/passive reference overlay.
+# Usage and the release gate: docs/HA_REFERENCE_PLAN.md.
+# The standby is available only through the explicit profile below.
+
+services:
+  # Keep the pilot API's single host address for the current active holder.
+  kavach-api:
+    environment:
+      KAVACH_HA_ACTIVE_PASSIVE: "true"
+
+  kavach-api-standby:
+    profiles: [ha-reference-gated]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    stop_grace_period: 45s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      KAVACH_HA_ACTIVE_PASSIVE: "true"
+      KAVACH_MIGRATION_DATABASE_URL: postgres://${POSTGRES_USER:-kavach}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
+      KAVACH_DATABASE_URL: postgres://kavach_runtime:${KAVACH_RUNTIME_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-kavach}
+      KAVACH_CEDAR_POLICY: crates/kavach-auth/policies/kavach.cedar
+      KAVACH_CEDAR_ENTITIES: /etc/kavach/entities.json
+      KAVACH_OIDC_ISSUER: ${KAVACH_OIDC_ISSUER:?set KAVACH_OIDC_ISSUER in deploy/.env}
+      KAVACH_OIDC_AUDIENCE: ${KAVACH_OIDC_AUDIENCE:?set KAVACH_OIDC_AUDIENCE in deploy/.env}
+      KAVACH_OIDC_JWKS_FILE: /etc/kavach/jwks.json
+      KAVACH_OIDC_GROUPS_CLAIM: ${KAVACH_OIDC_GROUPS_CLAIM:-groups}
+      KAVACH_DATABASE_CA: /etc/kavach-db/ca.pem
+    volumes:
+      - ${KAVACH_PILOT_CONFIG_DIR:-./pilot-config}:/etc/kavach:ro
+      - ${KAVACH_PILOT_DB_TLS_DIR:-./pilot-db-tls}/ca.pem:/etc/kavach-db/ca.pem:ro
+    ports:
+      - "${KAVACH_BIND_ADDRESS:-127.0.0.1}:${KAVACH_HA_STANDBY_HTTP_PORT:-8081}:8080"
+      - "${KAVACH_BIND_ADDRESS:-127.0.0.1}:${KAVACH_HA_STANDBY_GRPC_PORT:-50052}:50051"

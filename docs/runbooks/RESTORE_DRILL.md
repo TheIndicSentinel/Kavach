@@ -1,6 +1,6 @@
 # Runbook: Restore Drill
 
-**Status: Draft, not yet rehearsed.** No step here has been run end to end. The first drill is a later task; it will correct this text and record its results in section 6.
+**Status: Draft.** A synthetic-only local rehearsal passed on 2026-11-19 (recorded below); the deployment restore drill has not been run. The synthetic rehearsal does not measure deployment recovery objectives or satisfy SLO E-6.
 
 **For:** the operator of a single-instance `kavach-api` with Postgres. **Goal:** show that a backup of the deployment's database can be restored into a scratch instance, that the restored evidence chain verifies against a checkpoint kept off-host, and how much was lost (recovery point) and how long it took (recovery time).
 
@@ -161,6 +161,29 @@ Both are inputs to the evidence-durability objectives proposed in `docs/SLO.md` 
 | Non-evidence table counts (scratch, deployment) | |
 | Recovery point; recovery time | |
 | Corrections to this runbook | |
+
+### Synthetic local rehearsal (non-qualifying)
+
+This validates the basic schema backup/restore and offline agent-evidence verification flow with generated data. It does not use a deployment backup, off-host checkpoint store, production keys, TLS, or a separate scratch host. Do not use these measurements as RPO/RTO evidence or to mark the restore drill complete.
+
+| Item | Result |
+|---|---|
+| Date and run type | 2026-11-19; automated, synthetic local rehearsal |
+| Backup source | Disposable demo schema; `pg_dump --format=custom --schema=<schema>`; 153,354 bytes |
+| PostgreSQL | 16.16 (Homebrew), macOS x86_64; loopback with trust auth; TLS disabled |
+| Restored migration | 040, `active api write guards` |
+| Evidence rows after restore | 1 agent decision, 1 outcome, 1 checkpoint; source and restored counts matched |
+| Checkpoint compared | sequence 1; `2026-11-19T11:15:55.681612Z`; checkpoint matched after restore |
+| `pg_restore` | Exit 0; approximately 1 second |
+| `verify-bundle` | Exit 0; 1 record, 1 outcome, 1 checkpoint; no warnings |
+| Independent `kavach_verify.py` | Exit 0; same verified result |
+| Recovery point/time | End-to-end values not measured; this isolated snapshot had no later writes to lose |
+| Temporary artifacts | Removed from `/tmp` after verification |
+| Runbook/setup finding | The initial empty-database demo attempt rejected its assignment with `unknown consent C-dev-1`: fixtures were not imported into Postgres projections. Resolved in the following slice by adding `kavach-dev seed-authority`; see the verification record below. |
+
+The actual drill still needs the deployment's backup, an off-host checkpoint copy, trusted public keys, and a scratch host. Repeat the procedure against those materials before recording SLO E-6 as rehearsed.
+
+**Demo bootstrap follow-up (2026-11-19):** `scripts/demo.sh` now applies the generated consent and contact-preference fixtures through `kavach-dev seed-authority`, using the bundle's registered SoR key and the existing signed-update route before the assignment event. A fresh disposable PostgreSQL 16.16 run of the unmodified demo start/seed/stop path passed: 8 authority updates (2 consent grants and 6 preferences), 5 agent decisions, and 1 outcome. The test used local loopback PostgreSQL and the demo's development credentials; it verifies the bootstrap path only and does not change the synthetic-only/non-qualifying status above.
 
 ## 7. After the drill
 

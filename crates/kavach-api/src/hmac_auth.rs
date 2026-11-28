@@ -9,16 +9,28 @@
 //! OIDC token or mTLS certificate.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::future::Future;
+use std::sync::{
+    atomic::{AtomicI64, Ordering},
+    Mutex,
+};
 use std::time::{Duration, Instant};
 
 use axum::http::HeaderMap;
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
+use kavach_ports::{ErrorClass, PortError, ReplayGuard};
+use kavach_storage::{PostgresReplayGuard, StoragePool};
 
 use crate::error::ApiError;
 
 pub const MAX_SKEW_SECONDS: i64 = 300;
-const NONCE_TTL: Duration = Duration::from_secs(600);
+// Keep a nonce through the full inclusive past/future timestamp window. The
+// extra second means a request timestamp exactly at the skew boundary cannot
+// become replayable when the reservation expires at that same instant.
+const NONCE_TTL: Duration = Duration::from_secs(MAX_SKEW_SECONDS.unsigned_abs() * 2 + 1);
 const MAX_NONCES: usize = 100_000;
+const POSTGRES_PURGE_INTERVAL_SECONDS: i64 = 300;
+const HMAC_NONCE_PREFIX: &str = "hmac-v2:evaluate:";
 
 /// Remembers nonces for the replay window. When full (after pruning expired
 /// entries) new requests are rejected rather than accepted unchecked.
@@ -45,6 +57,92 @@ impl NonceCache {
             _ => {
                 seen.insert(nonce.to_string(), now);
                 true
+            }
+        }
+    }
+}
+
+impl ReplayGuard for NonceCache {
+    fn check_and_record(
+        &self,
+        tenant_id: &str,
+        key: &str,
+        now: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> impl Future<Output = Result<(), PortError>> + Send {
+        let result = if expires_at <= now {
+            Err(PortError::invalid("nonce expiry must be in the future"))
+        } else if self.check_and_insert(&format!("{tenant_id}:{key}")) {
+            Ok(())
+        } else {
+            Err(PortError::rejected("request nonce was already used"))
+        };
+        std::future::ready(result)
+    }
+}
+
+/// Runtime-selected replay protection. Database-backed APIs share nonce
+/// reservations through Postgres; development mode keeps the bounded cache.
+pub enum HmacNonceBackend {
+    Memory(NonceCache),
+    Postgres {
+        guard: PostgresReplayGuard,
+        last_purge_at: AtomicI64,
+    },
+}
+
+impl HmacNonceBackend {
+    #[must_use]
+    pub fn from_pool(pool: Option<&StoragePool>) -> Self {
+        pool.map_or_else(
+            || Self::Memory(NonceCache::default()),
+            |pool| Self::Postgres {
+                guard: pool.replay_guard(),
+                last_purge_at: AtomicI64::new(0),
+            },
+        )
+    }
+}
+
+impl ReplayGuard for HmacNonceBackend {
+    async fn check_and_record(
+        &self,
+        tenant_id: &str,
+        key: &str,
+        now: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), PortError> {
+        match self {
+            Self::Memory(cache) => {
+                cache
+                    .check_and_record(tenant_id, key, now, expires_at)
+                    .await
+            }
+            Self::Postgres {
+                guard,
+                last_purge_at,
+            } => {
+                let reserved = guard
+                    .check_and_record(tenant_id, key, now, expires_at)
+                    .await;
+                let previous = last_purge_at.load(Ordering::Relaxed);
+                let purge_due =
+                    now.timestamp().saturating_sub(previous) >= POSTGRES_PURGE_INTERVAL_SECONDS;
+                if purge_due
+                    && last_purge_at
+                        .compare_exchange(
+                            previous,
+                            now.timestamp(),
+                            Ordering::Relaxed,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
+                {
+                    if let Err(error) = guard.purge_expired(now).await {
+                        tracing::warn!(error = %error, "could not purge expired replay reservations");
+                    }
+                }
+                reserved
             }
         }
     }
@@ -89,22 +187,37 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Verifies a v2 signature; `now_unix` is trusted server time.
-pub fn verify(
+/// Inputs to HMAC verification; kept together so signing context cannot be
+/// accidentally omitted when replay protection changes backends.
+pub struct HmacVerification<'a> {
+    pub tenant_id: &'a str,
+    pub headers: &'a HeaderMap,
+    pub method: &'a str,
+    pub path_and_query: &'a str,
+    pub body: &'a [u8],
+    pub now: DateTime<Utc>,
+}
+
+/// Verifies a v2 signature; `request.now` is trusted server time.
+pub async fn verify<G: ReplayGuard>(
     secret: &str,
-    nonces: &NonceCache,
-    headers: &HeaderMap,
-    method: &str,
-    path_and_query: &str,
-    body: &[u8],
-    now_unix: i64,
+    nonces: &G,
+    request: HmacVerification<'_>,
 ) -> Result<(), ApiError> {
+    let HmacVerification {
+        tenant_id,
+        headers,
+        method,
+        path_and_query,
+        body,
+        now,
+    } = request;
     let signature = header(headers, "x-kavach-signature").ok_or(ApiError::Unauthorized)?;
     let timestamp = header(headers, "x-kavach-timestamp").ok_or(ApiError::Unauthorized)?;
     let nonce = header(headers, "x-kavach-nonce").ok_or(ApiError::Unauthorized)?;
     let ts: i64 = timestamp.parse().map_err(|_| ApiError::Unauthorized)?;
     // `abs_diff`: the caller chooses `ts`, and a subtraction could overflow.
-    if now_unix.abs_diff(ts) > MAX_SKEW_SECONDS.unsigned_abs() || !valid_nonce(nonce) {
+    if now.timestamp().abs_diff(ts) > MAX_SKEW_SECONDS.unsigned_abs() || !valid_nonce(nonce) {
         return Err(ApiError::Unauthorized);
     }
     let expected = sign(
@@ -116,10 +229,20 @@ pub fn verify(
     }
     // Record the nonce only after the signature verifies, so unauthenticated
     // traffic cannot fill the cache.
-    if nonces.check_and_insert(nonce) {
-        Ok(())
-    } else {
-        Err(ApiError::Unauthorized)
+    let key = format!("{HMAC_NONCE_PREFIX}{nonce}");
+    let expires_at = now
+        .checked_add_signed(ChronoDuration::from_std(NONCE_TTL).expect("valid nonce TTL"))
+        .ok_or_else(|| ApiError::Internal("HMAC nonce expiry overflow".into()))?;
+    match nonces
+        .check_and_record(tenant_id, &key, now, expires_at)
+        .await
+    {
+        Ok(()) => Ok(()),
+        Err(error) if error.class == ErrorClass::Rejected => Err(ApiError::Unauthorized),
+        Err(error) if error.class == ErrorClass::Unavailable => Err(ApiError::Unavailable(
+            "HMAC replay protection is unavailable".into(),
+        )),
+        Err(_) => Err(ApiError::Internal("HMAC nonce reservation failed".into())),
     }
 }
 
@@ -127,6 +250,38 @@ pub fn verify(
 mod tests {
     use super::*;
     use axum::http::HeaderValue;
+
+    struct UnavailableReplayGuard;
+
+    impl ReplayGuard for UnavailableReplayGuard {
+        fn check_and_record(
+            &self,
+            _tenant_id: &str,
+            _key: &str,
+            _now: DateTime<Utc>,
+            _expires_at: DateTime<Utc>,
+        ) -> impl Future<Output = Result<(), PortError>> + Send {
+            std::future::ready(Err(PortError::unavailable("test replay store unavailable")))
+        }
+    }
+
+    fn verification<'a>(
+        tenant_id: &'a str,
+        headers: &'a HeaderMap,
+        method: &'a str,
+        path_and_query: &'a str,
+        body: &'a [u8],
+        now: DateTime<Utc>,
+    ) -> HmacVerification<'a> {
+        HmacVerification {
+            tenant_id,
+            headers,
+            method,
+            path_and_query,
+            body,
+            now,
+        }
+    }
 
     fn headers(sig: &str, ts: i64, nonce: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
@@ -176,11 +331,17 @@ mod tests {
     }
 
     #[test]
-    fn v2_signatures_verify_once_and_bind_method_path_time() {
+    fn nonce_retention_covers_the_inclusive_timestamp_skew_window() {
+        assert!(NONCE_TTL > Duration::from_secs(MAX_SKEW_SECONDS.unsigned_abs() * 2));
+    }
+
+    #[tokio::test]
+    async fn v2_signatures_verify_once_and_bind_method_path_time() {
         let secret = "s3cret";
         let body = br#"{"a":1}"#;
         let nonce = "nonce-0123456789abcdef";
         let now = 1_790_000_000;
+        let now_utc = DateTime::from_timestamp(now, 0).expect("test timestamp");
         let sig = sign(
             secret,
             &string_to_sign(&now.to_string(), nonce, "POST", "/v1/evaluate", body),
@@ -190,23 +351,31 @@ mod tests {
         let ok = verify(
             secret,
             &cache,
-            &headers(&sig, now, nonce),
-            "POST",
-            "/v1/evaluate",
-            body,
-            now,
-        );
+            verification(
+                "tenant-a",
+                &headers(&sig, now, nonce),
+                "POST",
+                "/v1/evaluate",
+                body,
+                now_utc,
+            ),
+        )
+        .await;
         assert!(ok.is_ok());
         // Replay of the same nonce.
         assert!(verify(
             secret,
             &cache,
-            &headers(&sig, now, nonce),
-            "POST",
-            "/v1/evaluate",
-            body,
-            now
+            verification(
+                "tenant-a",
+                &headers(&sig, now, nonce),
+                "POST",
+                "/v1/evaluate",
+                body,
+                now_utc,
+            )
         )
+        .await
         .is_err());
 
         let fresh = NonceCache::default();
@@ -214,53 +383,70 @@ mod tests {
         assert!(verify(
             secret,
             &fresh,
-            &headers(&sig, now, nonce),
-            "POST",
-            "/v1/other",
-            body,
-            now
+            verification(
+                "tenant-a",
+                &headers(&sig, now, nonce),
+                "POST",
+                "/v1/other",
+                body,
+                now_utc,
+            )
         )
+        .await
         .is_err());
         assert!(verify(
             secret,
             &fresh,
-            &headers(&sig, now, nonce),
-            "POST",
-            "/v1/evaluate",
-            body,
-            now + 301
+            verification(
+                "tenant-a",
+                &headers(&sig, now, nonce),
+                "POST",
+                "/v1/evaluate",
+                body,
+                now_utc + ChronoDuration::seconds(301),
+            )
         )
+        .await
         .is_err());
         let v1 = sign(secret, body);
         assert!(verify(
             secret,
             &fresh,
-            &headers(&v1, now, nonce),
-            "POST",
-            "/v1/evaluate",
-            body,
-            now
+            verification(
+                "tenant-a",
+                &headers(&v1, now, nonce),
+                "POST",
+                "/v1/evaluate",
+                body,
+                now_utc,
+            )
         )
+        .await
         .is_err());
         // Malformed nonce.
         assert!(verify(
             secret,
             &fresh,
-            &headers(&sig, now, "short"),
-            "POST",
-            "/v1/evaluate",
-            body,
-            now
+            verification(
+                "tenant-a",
+                &headers(&sig, now, "short"),
+                "POST",
+                "/v1/evaluate",
+                body,
+                now_utc,
+            )
         )
+        .await
         .is_err());
     }
 
     /// The skew check must not overflow on an extreme timestamp. Before
     /// `abs_diff`, `now - ts` panicked with overflow checks on and, without
     /// them, wrapped so that one timestamp passed the skew check.
-    #[test]
-    fn extreme_timestamps_are_refused_without_overflow() {
+    #[tokio::test]
+    async fn extreme_timestamps_are_refused_without_overflow() {
         let (secret, nonce, body, now) = ("s", "nonce-0123456789abcdef", b"{}", 1_790_000_000_i64);
+        let now_utc = DateTime::from_timestamp(now, 0).expect("test timestamp");
         for ts in [i64::MIN, i64::MAX, now.wrapping_add(i64::MIN), -1] {
             let sig = sign(
                 secret,
@@ -270,15 +456,56 @@ mod tests {
                 verify(
                     secret,
                     &NonceCache::default(),
-                    &headers(&sig, ts, nonce),
-                    "POST",
-                    "/v1/evaluate",
-                    body,
-                    now
+                    verification(
+                        "tenant-a",
+                        &headers(&sig, ts, nonce),
+                        "POST",
+                        "/v1/evaluate",
+                        body,
+                        now_utc,
+                    )
                 )
+                .await
                 .is_err(),
                 "{ts}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn replay_store_outage_refuses_a_valid_signed_request() {
+        let secret = "s3cret";
+        let body = b"{}";
+        let now = DateTime::from_timestamp(1_790_000_000, 0).expect("test timestamp");
+        let nonce = "nonce-0123456789abcdef";
+        let signature = sign(
+            secret,
+            &string_to_sign(
+                &now.timestamp().to_string(),
+                nonce,
+                "POST",
+                "/v1/evaluate",
+                body,
+            ),
+        );
+
+        let error = verify(
+            secret,
+            &UnavailableReplayGuard,
+            verification(
+                "tenant-a",
+                &headers(&signature, now.timestamp(), nonce),
+                "POST",
+                "/v1/evaluate",
+                body,
+                now,
+            ),
+        )
+        .await
+        .expect_err("unavailable replay guard must fail closed");
+        assert_eq!(
+            error.status_code(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
     }
 }

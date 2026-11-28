@@ -28,6 +28,7 @@ pub async fn list_batch_jobs(
     Query(query): Query<BatchJobQuery>,
 ) -> Result<Json<Vec<BatchJobRecord>>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadBatchJobs).await?;
+    state.ensure_runtime_pointer_current().await?;
     let limit = query.limit.clamp(1, 200);
     let records = state
         .batch_jobs()
@@ -43,6 +44,7 @@ pub async fn get_batch_job(
     Path(job_id): Path<String>,
 ) -> Result<Json<BatchJobRecord>, ApiError> {
     authorize_credentials(&state, &credentials, KavachAction::ReadBatchJobs).await?;
+    state.ensure_runtime_pointer_current().await?;
     let record = state
         .batch_jobs()
         .get(&job_id)
