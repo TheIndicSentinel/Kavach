@@ -840,34 +840,9 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
             },
         };
 
-        let released = if let Some(release) = release {
-            let expected_hash = self
-                .versions
-                .tools
-                .as_deref()
-                .and_then(|digest| crate::review_action_hash(tenant, agent, digest, call).ok());
-            let source = self
-                .store
-                .get_by_request(tenant, &agent.agent_id, &call.request_id)
-                .await
-                .ok()
-                .flatten();
-            let valid = call.approval_id.as_deref() == Some(release.approval_id.as_str())
-                && call.execution_id.as_deref() == Some(release.execution_id.as_str())
-                && release.tenant_id == *tenant
-                && expected_hash.as_deref() == Some(release.action_hash.as_str())
-                && source.as_ref().is_some_and(|record| {
-                    record.payload.record_id == release.review_record_id
-                        && record.payload.tenant_id == *tenant
-                        && record.payload.actor.agent_id == agent.agent_id
-                        && record.payload.policy_decision == Decision::HumanReview
-                        && record.payload.returned_decision == Decision::HumanReview
-                        && record.payload.review_action_hash.as_deref()
-                            == Some(release.action_hash.as_str())
-                });
-            valid.then_some(release)
-        } else {
-            None
+        let released = match release {
+            Some(release) => self.valid_release(agent, call, release).await,
+            None => None,
         };
 
         // The lift is Cedar's call, not ours (AUTHZ-01): a valid release
@@ -955,6 +930,43 @@ impl<V: MandateVerifier, S: AgentEvidenceStore + AgentStateStore> AuthorizeCore<
         })
     }
 
+    /// The presented release, if it matches this call, this tenant, the
+    /// exact action and the signed HUMAN_REVIEW record it was approved from.
+    async fn valid_release<'r>(
+        &self,
+        agent: &AgentIdentity,
+        call: &ToolCall,
+        release: &'r kavach_ports::ReviewReleaseRecord,
+    ) -> Option<&'r kavach_ports::ReviewReleaseRecord> {
+        let tenant = &self.config.tenant_id;
+        let expected_hash = self
+            .versions
+            .tools
+            .as_deref()
+            .and_then(|digest| crate::review_action_hash(tenant, agent, digest, call).ok());
+        let source = self
+            .store
+            .get_by_request(tenant, &agent.agent_id, &call.request_id)
+            .await
+            .ok()
+            .flatten();
+        let valid = call.approval_id.as_deref() == Some(release.approval_id.as_str())
+            && call.execution_id.as_deref() == Some(release.execution_id.as_str())
+            && release.tenant_id == *tenant
+            && expected_hash.as_deref() == Some(release.action_hash.as_str())
+            && source.as_ref().is_some_and(|record| {
+                record.payload.record_id == release.review_record_id
+                    && record.payload.tenant_id == *tenant
+                    && record.payload.actor.agent_id == agent.agent_id
+                    && record.payload.policy_decision == Decision::HumanReview
+                    && record.payload.returned_decision == Decision::HumanReview
+                    && record.payload.review_action_hash.as_deref()
+                        == Some(release.action_hash.as_str())
+            });
+        valid.then_some(release)
+    }
+
+    #[allow(clippy::too_many_arguments)] // one policy evaluation; `with_approval` adds the AUTHZ-01 re-run
     async fn decide(
         &self,
         agent: &AgentIdentity,
