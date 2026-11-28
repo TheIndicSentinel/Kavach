@@ -692,15 +692,6 @@ impl Stack for Live {
     async fn settle(&self, resolved: usize) -> Result<(), String> {
         // The reconciler passes every 15 seconds on wall-clock time and asks
         // on the stack's clock; wait for its own gauges to say it is done.
-        let gauge = |text: &str, name: &str| {
-            text.lines().find_map(|l| {
-                l.strip_prefix(name)?
-                    .strip_prefix(' ')?
-                    .trim()
-                    .parse::<i64>()
-                    .ok()
-            })
-        };
         for _ in 0..180 {
             let response = self
                 .client
@@ -710,8 +701,8 @@ impl Stack for Live {
                 .await
                 .map_err(|e| e.to_string())?;
             let text = response.text().await.map_err(|e| e.to_string())?;
-            let unresolved = gauge(&text, "kavach_outcomes_unresolved");
-            let done = gauge(&text, "kavach_outcomes_resolved");
+            let unresolved = metric_value(&text, "kavach_outcomes_unresolved");
+            let done = metric_value(&text, "kavach_outcomes_resolved");
             if unresolved == Some(0)
                 && done.is_some_and(|d| usize::try_from(d).is_ok_and(|d| d >= resolved))
             {
@@ -775,5 +766,34 @@ impl Stack for Live {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = at;
         Ok(())
+    }
+}
+
+/// The value of an unlabelled sample, or of one whose only labels are the
+/// registry's constant ones (`tenant_id`), in Prometheus text format.
+fn metric_value(text: &str, name: &str) -> Option<i64> {
+    text.lines().find_map(|line| {
+        let rest = line.strip_prefix(name)?;
+        let value = match rest.strip_prefix('{') {
+            Some(labelled) => labelled.split_once("} ")?.1,
+            None => rest.strip_prefix(' ')?,
+        };
+        value.trim().parse::<i64>().ok()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::metric_value;
+
+    #[test]
+    fn a_gauge_is_read_with_or_without_the_tenant_label() {
+        let text = "# HELP kavach_outcomes_unresolved x\n\
+                    kavach_outcomes_unresolved_total 9\n\
+                    kavach_outcomes_unresolved{tenant_id=\"default\"} 0\n\
+                    kavach_outcomes_resolved 3\n";
+        assert_eq!(metric_value(text, "kavach_outcomes_unresolved"), Some(0));
+        assert_eq!(metric_value(text, "kavach_outcomes_resolved"), Some(3));
+        assert_eq!(metric_value(text, "kavach_outcomes_ambiguous"), None);
     }
 }
