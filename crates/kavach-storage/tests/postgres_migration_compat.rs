@@ -199,19 +199,20 @@ async fn agent_evidence_recorded_before_migration_030_survives_the_upgrade() {
         .await
         .expect("an upgrade over existing agent evidence must succeed");
 
-    let insert = |seq: i64, record_id: &'static str, request_id: &'static str, key: &'static str| {
-        sqlx::query(
-            "INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, prev_hash, \
+    let insert =
+        |seq: i64, record_id: &'static str, request_id: &'static str, key: &'static str| {
+            sqlx::query(
+                "INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, prev_hash, \
                 hash, sig, key_id, payload, agent_id, request_id, idempotency_key, binding, \
                 credential_id, returned_decision) \
             VALUES ('compat', 0, $1, $2, 'p', 'h', 's', 'k', '{\"kind\":\"agent_decision\"}', \
                 'agent-old', $3, $4, '{}', NULL, 'BLOCK')",
-        )
-        .bind(seq)
-        .bind(record_id)
-        .bind(request_id)
-        .bind(key)
-    };
+            )
+            .bind(seq)
+            .bind(record_id)
+            .bind(request_id)
+            .bind(key)
+        };
 
     // A new record with a fresh key is accepted, so the refusal below is the key's.
     insert(2, "rec-fresh", "req-fresh", "req-fresh")
