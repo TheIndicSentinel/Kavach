@@ -12,9 +12,14 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::extract::State;
+use axum::http::StatusCode;
 use chrono::{DateTime, FixedOffset, NaiveTime, TimeZone, Utc};
-use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig};
+use kavach_api::dataplane::{
+    agent_router, sor_authority_update, sor_router, DataplaneConfig, SorEventBody,
+};
 use kavach_api::dev_clock::{DevClock, DevClockKind};
+use kavach_api::strict_json::StrictJson;
 use kavach_api::{
     router, serve_http_on, AccessControlKind, ApiConfig, AppState, DatabaseTls, EvidenceStoreKind,
     JwksSource, OidcConfig, DEFAULT_POOL_SIZE,
@@ -578,6 +583,40 @@ fn bind_all(project: &Project) -> Result<[TcpListener; 5], CliError> {
     ])
 }
 
+/// With a database, the stack reads consent and contact preferences only
+/// from signed authority updates: post the bundle's synthetic records.
+/// A stricter record already stored (a withdrawal, an opt-out, a later
+/// update) is kept.
+async fn seed_authority(
+    bundle: &Path,
+    state: &Arc<AppState>,
+    at: DateTime<Utc>,
+) -> Result<(), CliError> {
+    let refused =
+        |why: String| CliError::new("Kavach refused the dev consent and preferences", why);
+    for event in kavach_devkit::authority_updates(bundle, at)
+        .await
+        .map_err(refused)?
+    {
+        let mut waits = 0;
+        loop {
+            let body = Ok(StrictJson(SorEventBody {
+                event: event.clone(),
+            }));
+            match sor_authority_update(State(Arc::clone(state)), body).await {
+                Ok(_) => break,
+                Err(p) if p.status() == StatusCode::TOO_MANY_REQUESTS && waits < 50 => {
+                    waits += 1;
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+                Err(p) if p.detail().ends_with("is not a new authority") => break,
+                Err(p) => return Err(refused(p.detail().to_string())),
+            }
+        }
+    }
+    Ok(())
+}
+
 pub async fn up(
     ui: &Ui,
     dir: &Path,
@@ -604,6 +643,9 @@ pub async fn up(
             .await
             .map_err(|e| CliError::new("Kavach did not start", e).fix("run `kavach doctor`"))?,
     );
+    if project.file.database.is_some() {
+        seed_authority(&project.bundle(), &state, clock.now().utc).await?;
+    }
 
     let l = &project.file.listen;
     let bundle = project.bundle();
