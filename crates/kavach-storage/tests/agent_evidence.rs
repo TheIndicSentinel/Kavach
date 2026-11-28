@@ -320,12 +320,15 @@ async fn insert_row(
     source_system: Option<&str>,
     event_id: Option<&str>,
 ) -> Result<(), sqlx::Error> {
+    // A decision always carries an idempotency key (migration 030), so a
+    // decision row without a request breaks only the request rule.
     sqlx::query(
         "INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, prev_hash, \
             hash, sig, key_id, payload, kind, agent_id, request_id, idempotency_key, binding, \
             returned_decision, source_system, event_id) \
         VALUES ('kinds', 0, $1, $2, 'p', 'h', 's', 'k', $3, $4, $5, $6, \
-            CASE WHEN $4 = 'agent_decision' THEN $6 ELSE NULL END, $7, $8, $9, $10)",
+            CASE WHEN $4 = 'agent_decision' THEN COALESCE($6, 'no-request') ELSE NULL END, \
+            $7, $8, $9, $10)",
     )
     .bind(seq)
     .bind(format!("kinds-{seq}-{kind}-{}", event_id.unwrap_or("none")))
