@@ -23,7 +23,10 @@ done
 
 test_config="$STATE/config"
 test_tls="$STATE/db-tls"
-mkdir -m 700 "$test_config"
+# The image runs as a non-root user (uid 10001), which must read this bind
+# mount. It holds only the public JWKS and example entities; the OIDC client
+# secret stays in the private $STATE directory.
+mkdir -m 755 "$test_config"
 cp "$ROOT/crates/kavach-auth/policies/entities.example.json" "$test_config/entities.json"
 # Generate an actual signing key/JWKS using the repository's OIDC test double.
 # The process is stopped as soon as the JWKS file is written.
@@ -41,6 +44,7 @@ for _ in $(seq 1 100); do
   sleep 0.1
 done
 [[ -s "$test_config/jwks.json" ]] || { cat "$STATE/oidc.log" >&2; exit 1; }
+chmod 0644 "$test_config/entities.json" "$test_config/jwks.json"
 kill "$OIDC_PID" 2>/dev/null || true
 wait "$OIDC_PID" 2>/dev/null || true
 OIDC_PID=
