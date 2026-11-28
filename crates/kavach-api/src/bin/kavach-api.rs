@@ -590,6 +590,10 @@ struct Cli {
     )]
     review_snapshot_key_id: String,
 
+    /// Previous owner-only D17 keys used only to decrypt live envelopes (repeatable `KEY_ID=PATH`).
+    #[arg(long = "review-snapshot-previous-key", value_name = "KEY_ID=PATH", action = clap::ArgAction::Append)]
+    review_snapshot_previous_keys: Vec<String>,
+
     /// Cedar policy file (required when --access-control cedar).
     #[arg(long, env = "KAVACH_CEDAR_POLICY")]
     cedar_policy: Option<PathBuf>,
@@ -680,6 +684,16 @@ struct Cli {
             .range(1..=i64::from(kavach_api::config::MAX_ACCESS_REVIEW_STALE_DAYS))
     )]
     access_review_stale_days: u32,
+}
+
+fn parse_review_snapshot_previous_key(entry: &str) -> Result<(String, PathBuf), String> {
+    let (key_id, path) = entry
+        .split_once('=')
+        .ok_or_else(|| "--review-snapshot-previous-key must be KEY_ID=PATH".to_owned())?;
+    if key_id.is_empty() || path.is_empty() {
+        return Err("--review-snapshot-previous-key must be KEY_ID=PATH".into());
+    }
+    Ok((key_id.to_owned(), PathBuf::from(path)))
 }
 
 impl Cli {
@@ -791,6 +805,11 @@ impl Cli {
             require_hardening: self.require_hardening,
             review_snapshot_key_file: self.review_snapshot_key_file,
             review_snapshot_key_id: self.review_snapshot_key_id,
+            review_snapshot_previous_keys: self
+                .review_snapshot_previous_keys
+                .into_iter()
+                .map(|entry| parse_review_snapshot_previous_key(&entry))
+                .collect::<Result<Vec<_>, _>>()?,
             roles,
         };
         validate_principal_sources(&config)?;
@@ -871,6 +890,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             dp.resolver().describe()
         )
     });
+    let review_snapshot_store = state.review_snapshot_store().clone();
     let stopping = state.clone();
     let grpc_service = GrpcEvaluateService::with_limits(state, &limits);
 
@@ -887,6 +907,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // One signal stops every listener. A listener stops accepting at once
     // and lets its requests finish.
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let _review_snapshot_cleanup =
+        kavach_api::review_snapshot_cleanup::start(review_snapshot_store, stop_rx.clone());
     let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
         let _ = rx.wait_for(|stop| *stop).await;
     };
@@ -1061,4 +1083,40 @@ fn print_banner(
         insecure,
         pack_sha256
     );
+}
+
+#[cfg(test)]
+mod review_snapshot_cli_tests {
+    use super::*;
+
+    #[test]
+    fn parses_repeated_previous_snapshot_keys() {
+        let cli = Cli::try_parse_from([
+            "kavach-api",
+            "--pack",
+            "pack.yaml",
+            "--model",
+            "model.yaml",
+            "--review-snapshot-previous-key",
+            "review-old=/keys/old.key",
+            "--review-snapshot-previous-key",
+            "review-older=/keys/older.key",
+        ])
+        .expect("parse CLI");
+        assert_eq!(
+            cli.review_snapshot_previous_keys,
+            ["review-old=/keys/old.key", "review-older=/keys/older.key"]
+        );
+    }
+
+    #[test]
+    fn parses_key_id_and_path_and_rejects_malformed_values() {
+        assert_eq!(
+            parse_review_snapshot_previous_key("old=/keys/old.key").expect("key spec"),
+            ("old".into(), PathBuf::from("/keys/old.key"))
+        );
+        for value in ["", "no-separator", "=path", "id="] {
+            assert!(parse_review_snapshot_previous_key(value).is_err());
+        }
+    }
 }

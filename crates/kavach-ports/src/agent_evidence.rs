@@ -292,6 +292,14 @@ pub struct RequestBinding {
     pub params_mac: Option<String>,
     pub subject_pseudonym: String,
     pub mandate_id: String,
+    /// D17 metadata present only for execution-idempotent commits. Defaults
+    /// preserve deserialization of pre-D17 stored bindings.
+    #[serde(default)]
+    pub request_id: Option<String>,
+    #[serde(default)]
+    pub approval_id: Option<String>,
+    #[serde(default)]
+    pub execution_id: Option<String>,
 }
 
 /// A contact-slot reservation, made only when the decision allows.
@@ -306,6 +314,10 @@ pub struct ContactReservation {
 pub struct CommitRequest {
     pub tenant_id: String,
     pub partition_id: i32,
+    /// Storage idempotency identity. Normally the request ID; approved
+    /// execution retries use the server-issued execution ID while the signed
+    /// payload retains the original request ID.
+    pub idempotency_key: String,
     pub binding: RequestBinding,
     /// Draft payload: `seq`, `prev_hash`, `record_id`, final decisions,
     /// credential fields, `time_sync` and `ts` are set by the store.
@@ -317,6 +329,48 @@ pub struct CommitRequest {
     pub credential_ttl: chrono::Duration,
     /// Maximum clock error accepted at commit.
     pub max_clock_error_ms: u64,
+}
+
+impl CommitRequest {
+    /// Keeps the database idempotency key and signed action identity aligned.
+    pub fn validate_idempotency(&self) -> Result<(), PortError> {
+        let valid_key = |value: &str| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-')
+                })
+        };
+        let valid_approval_id = |value: &str| {
+            !value.is_empty()
+                && value.len() <= 128
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        };
+        if !valid_key(&self.idempotency_key) {
+            return Err(PortError::invalid("idempotency key is malformed"));
+        }
+        match (
+            self.binding.request_id.as_deref(),
+            self.binding.approval_id.as_deref(),
+            self.binding.execution_id.as_deref(),
+        ) {
+            (None, None, None) if self.idempotency_key == self.draft.request_id => Ok(()),
+            (Some(request_id), Some(approval_id), Some(execution_id))
+                if valid_key(request_id)
+                    && valid_approval_id(approval_id)
+                    && valid_approval_id(execution_id)
+                    && request_id == self.draft.request_id
+                    && execution_id == self.idempotency_key =>
+            {
+                Ok(())
+            }
+            _ => Err(PortError::invalid(
+                "execution idempotency metadata must bind the approval and original request",
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -677,7 +731,11 @@ pub fn complete_payload(
     payload.prev_hash = prev_hash.to_string();
     payload.kind = KIND_AGENT_DECISION.into();
     payload.hash_alg = HASH_ALG_V2.into();
-    payload.policy_decision = final_decision;
+    // A released D17 action remains a policy HUMAN_REVIEW. The approval
+    // changes the returned authorization result, not what policy decided.
+    if request.binding.approval_id.is_none() {
+        payload.policy_decision = final_decision;
+    }
     payload.returned_decision = final_decision;
     if let Some(reason) = reason {
         payload.signals.push(reason.to_string());
@@ -693,7 +751,7 @@ pub fn complete_payload(
         payload.credential_id = None;
         payload.credential_expires_at = None;
     }
-    if final_decision != Decision::HumanReview {
+    if payload.policy_decision != Decision::HumanReview {
         payload.review_action_hash = None;
     }
     payload.time_sync = now.sync.into();

@@ -292,6 +292,8 @@ pub struct GatewayDeps<'a, V, S, R, B, F, O> {
     pub forwarder: &'a F,
     /// Optional per-provider dispatch for gateway-held provider tokens.
     pub gateway_held: Option<&'a GatewayHeldDispatch<'a>>,
+    /// A release atomically consumed by the host for this exact request.
+    pub approval_release: Option<&'a kavach_ports::ReviewReleaseRecord>,
     pub observer: &'a O,
 }
 
@@ -316,7 +318,8 @@ impl IssuedForCall {
     }
 }
 
-/// Executes one tool call. `Err` only for calls that get no decision reply.
+/// Executes an external effect once, or records a proposal without
+/// forwarding it. `Err` only for calls that get no decision reply.
 pub async fn execute<V, S, R, B, F, O>(
     deps: &GatewayDeps<'_, V, S, R, B, F, O>,
     agent: &AgentIdentity,
@@ -338,7 +341,8 @@ where
         .tool(tool)
         .ok_or_else(|| GatewayError::Invalid("unknown tool".into()))?
         .clone();
-    if spec.trust != Trust::ExternalEffect {
+    let proposal_only = spec.trust == Trust::Proposal;
+    if !proposal_only && spec.trust != Trust::ExternalEffect {
         return Err(GatewayError::NotForwardable(format!(
             "tool {} is not executed by the gateway yet",
             spec.name
@@ -349,10 +353,12 @@ where
         .extract(tool, request)
         .map_err(|e| GatewayError::Invalid(e.message))?;
     let started = Instant::now();
-    let decided = core
-        .authorize(agent, &call, Mode::Commit)
-        .await
-        .map_err(|e| GatewayError::Invalid(e.message))?;
+    let decided = if let Some(release) = deps.approval_release {
+        core.authorize_released(agent, &call, release).await
+    } else {
+        core.authorize(agent, &call, Mode::Commit).await
+    }
+    .map_err(|e| GatewayError::Invalid(e.message))?;
     let authorize_time = started.elapsed();
     let commit_time = decided.commit_time.unwrap_or_default();
     deps.observer
@@ -374,6 +380,14 @@ where
     };
     if decided.status == CommitStatus::Conflict {
         return Err(GatewayError::Conflict);
+    }
+    if proposal_only {
+        // A proposal is decided and evidenced, but has no external effect.
+        // In particular, do not resolve references, issue provider
+        // credentials, forward, or record a provider outcome.
+        reply.outcome_recorded = false;
+        deps.observer.call(&spec.name, reply.decision, None);
+        return Ok(reply);
     }
     let (Some(record), Some(grant)) = (decided.record.as_ref(), decided.grant.as_ref()) else {
         // A refusal (or an evidence failure, which is BLOCK-shaped).

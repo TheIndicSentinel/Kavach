@@ -262,6 +262,21 @@ async fn world(
     Ok((what_if, mandate_id))
 }
 
+/// A what-if call: never carries a review approval or execution id.
+fn what_if_request(
+    mandate_id: String,
+    request_id: &str,
+    params: Map<String, Value>,
+) -> ToolRequest {
+    ToolRequest {
+        mandate_id,
+        request_id: request_id.into(),
+        approval_id: None,
+        execution_id: None,
+        params,
+    }
+}
+
 pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
     let project = Project::find(dir)?;
     let at = match ask.at {
@@ -284,11 +299,7 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
         .precheck(
             ask.agent,
             ask.tool,
-            ToolRequest {
-                mandate_id: mandate_id.clone(),
-                request_id: "what-if-1".into(),
-                params: params.clone(),
-            },
+            what_if_request(mandate_id.clone(), "what-if-1", params.clone()),
         )
         .await
         .map_err(|e| usage("the gateway would refuse this request", e))?;
@@ -327,11 +338,7 @@ pub async fn run(ui: &Ui, dir: &Path, ask: &Ask<'_>) -> Result<i32, CliError> {
                     .precheck(
                         ask.agent,
                         ask.tool,
-                        ToolRequest {
-                            mandate_id,
-                            request_id: "what-if-cf".into(),
-                            params: params.clone(),
-                        },
+                        what_if_request(mandate_id, "what-if-cf", params.clone()),
                     )
                     .await
                     .ok()?;

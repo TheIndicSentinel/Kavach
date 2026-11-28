@@ -113,6 +113,8 @@ fn reminder(mandate_id: &str, request_id: &str) -> ToolCall {
         mandate_id: mandate_id.into(),
         action: "send_reminder".into(),
         request_id: request_id.into(),
+        approval_id: None,
+        execution_id: None,
         subject_ref: SUBJECT.into(),
         channel: Some("whatsapp".into()),
         waiver_bps: None,
@@ -494,6 +496,65 @@ async fn plans_need_a_waiver_and_large_waivers_need_review() {
 }
 
 #[tokio::test]
+async fn exact_d17_release_lifts_only_the_recorded_review_and_keeps_policy_evidence() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let a = agent("collections-agent");
+    let original = ToolCall {
+        action: "propose_plan".into(),
+        waiver_bps: Some(3500),
+        ..reminder(&mandate, "approved-review")
+    };
+    let review = w.core.authorize(&a, &original, Mode::Commit).await.unwrap();
+    let review = review.record.expect("review evidence");
+    let mut approved = original.clone();
+    approved.approval_id = Some("approval-test".into());
+    approved.execution_id = Some("execution-test".into());
+    let release = kavach_ports::ReviewReleaseRecord {
+        tenant_id: review.payload.tenant_id.clone(),
+        approval_id: "approval-test".into(),
+        review_record_id: review.payload.record_id,
+        execution_id: "execution-test".into(),
+        action_hash: w.core.review_action_digest(&a, &approved).unwrap(),
+        single_use_credential_id: "credential-test".into(),
+        approver: "https://idp#reviewer".into(),
+        released_at: w.clock.now().utc,
+    };
+
+    let decided = w
+        .core
+        .authorize_released(&a, &approved, &release)
+        .await
+        .unwrap();
+    assert_eq!(decided.decision, Decision::Pass);
+    let record = decided.record.expect("released action evidence");
+    assert_eq!(record.payload.policy_decision, Decision::HumanReview);
+    assert_eq!(record.payload.returned_decision, Decision::Pass);
+    assert_eq!(
+        record.payload.review_action_hash.as_deref(),
+        Some(release.action_hash.as_str())
+    );
+    assert_eq!(
+        record.payload.credential_id.as_deref(),
+        Some("credential-test")
+    );
+    assert_eq!(decided.grant.unwrap().credential_id, "credential-test");
+
+    let mut mismatched = approved;
+    mismatched.execution_id = Some("execution-mismatch".into());
+    let mut forged_release = release.clone();
+    forged_release.execution_id = "execution-mismatch".into();
+    forged_release.action_hash = format!("{}0", release.action_hash);
+    let refused = w
+        .core
+        .authorize_released(&a, &mismatched, &forged_release)
+        .await
+        .unwrap();
+    assert_eq!(refused.decision, Decision::HumanReview);
+    assert!(refused.grant.is_none());
+}
+
+#[tokio::test]
 async fn malformed_requests_are_invalid() {
     let w = world();
     let mandate = w.mandate_for("B-9382").await;
@@ -696,6 +757,7 @@ async fn selected_gateway_held_provider_uses_internal_broker_and_tokenless_adapt
         broker: &broker,
         forwarder: &normal_forwarder,
         gateway_held: Some(&dispatch),
+        approval_release: None,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -801,6 +863,7 @@ async fn a_send_that_would_land_after_send_by_is_not_executed() {
         broker: &broker,
         forwarder: &forwarder,
         gateway_held: None,
+        approval_release: None,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -836,6 +899,7 @@ async fn a_send_that_would_land_after_send_by_is_not_executed() {
         broker: &slow_broker,
         forwarder: &forwarder,
         gateway_held: None,
+        approval_release: None,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -975,6 +1039,7 @@ async fn a_mandate_revoked_after_the_decision_mints_nothing_and_sends_nothing() 
         broker: &broker,
         forwarder: &forwarder,
         gateway_held: None,
+        approval_release: None,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -1427,6 +1492,7 @@ async fn an_agent_stopped_after_the_decision_mints_nothing_and_sends_nothing() {
         broker: &broker,
         forwarder: &forwarder,
         gateway_held: None,
+        approval_release: None,
         observer: &NoMetrics,
     };
     let request: kavach_dataplane::ToolRequest = serde_json::from_value(serde_json::json!({
@@ -1673,4 +1739,91 @@ async fn a_mandate_that_expired_while_its_agent_was_stopped_stays_expired() {
     let (d, why) = decide(&w, "collections-agent", &read(&mandate, "after-expiry")).await;
     assert_eq!(d, Decision::Block);
     assert!(why.contains(&"mandate_invalid".to_string()), "{why:?}");
+}
+
+/// AUTHZ-01: an agent that does not hold the mandate gets a plain BLOCK. No
+/// review decision is signed, so nothing reaches the approval queue.
+#[tokio::test]
+async fn authz01_a_non_holder_over_the_ceiling_is_blocked_and_never_queued() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let plan = ToolCall {
+        action: "propose_plan".into(),
+        channel: None,
+        waiver_bps: Some(3500),
+        extra: BTreeMap::new(),
+        ..reminder(&mandate, "authz01-non-holder")
+    };
+    let d = w
+        .core
+        .authorize(&agent("translator-agent"), &plan, Mode::Commit)
+        .await
+        .unwrap();
+    assert_eq!(d.decision, Decision::Block, "{:?}", d.reasons);
+    assert!(
+        d.reasons.iter().any(|r| r == "no_matching_permit"),
+        "{:?}",
+        d.reasons
+    );
+    assert!(
+        !d.reasons.iter().any(|r| r == "escalated"),
+        "{:?}",
+        d.reasons
+    );
+    assert!(d.grant.is_none());
+    let record = d.record.expect("only the BLOCK record");
+    assert_eq!(record.payload.policy_decision, Decision::Block);
+    assert_eq!(record.payload.returned_decision, Decision::Block);
+    assert!(
+        record.payload.review_action_hash.is_none(),
+        "no review digest"
+    );
+}
+
+/// AUTHZ-01: a release is only an input. If Cedar no longer allows the action
+/// with the approval (here the mandate was revoked after the review), the
+/// release is refused with its own reason and nothing is minted.
+#[tokio::test]
+async fn authz01_a_release_cedar_no_longer_allows_is_blocked() {
+    let w = world();
+    let mandate = w.mandate_for("B-9382").await;
+    let a = agent("collections-agent");
+    let original = ToolCall {
+        action: "propose_plan".into(),
+        waiver_bps: Some(3500),
+        ..reminder(&mandate, "authz01-revoked-review")
+    };
+    let review = w.core.authorize(&a, &original, Mode::Commit).await.unwrap();
+    assert_eq!(review.decision, Decision::HumanReview);
+    let review = review.record.expect("review evidence");
+    let mut approved = original.clone();
+    approved.approval_id = Some("approval-revoked".into());
+    approved.execution_id = Some("execution-revoked".into());
+    let release = kavach_ports::ReviewReleaseRecord {
+        tenant_id: review.payload.tenant_id.clone(),
+        approval_id: "approval-revoked".into(),
+        review_record_id: review.payload.record_id,
+        execution_id: "execution-revoked".into(),
+        action_hash: w.core.review_action_digest(&a, &approved).unwrap(),
+        single_use_credential_id: "credential-revoked".into(),
+        approver: "https://idp#reviewer".into(),
+        released_at: w.clock.now().utc,
+    };
+    w.mandates
+        .revoke(TENANT, &mandate, RevocationReason::Dispute)
+        .await
+        .unwrap();
+
+    let d = w
+        .core
+        .authorize_released(&a, &approved, &release)
+        .await
+        .unwrap();
+    assert_eq!(d.decision, Decision::Block, "{:?}", d.reasons);
+    assert!(
+        d.reasons.iter().any(|r| r == "release_not_authorised"),
+        "{:?}",
+        d.reasons
+    );
+    assert!(d.grant.is_none(), "nothing is minted");
 }

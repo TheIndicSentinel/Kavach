@@ -22,6 +22,7 @@ use axum::routing::post;
 use axum::{Json, Router};
 use chrono::{DateTime, NaiveDate, Utc};
 use kavach_credential::{JoseCredentialBroker, RecipientKey};
+use kavach_dataplane::ReviewActionSnapshot;
 use kavach_dataplane::{
     execute, AgentIdentity, AuthorizeConfig, AuthorizeCore, CheckpointPolicy, Checkpointer,
     Decided, FixtureResolver, GatewayDeps, GatewayError, GatewayReply, Mode, RegistryTrust,
@@ -44,6 +45,7 @@ use kavach_ports::chain_record::{
 };
 use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
 use kavach_ports::CredentialBroker;
+use kavach_ports::ReviewApprovalStore as _;
 use kavach_ports::{
     ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey, ReplayGuard,
     RevocationCursor, StoredMandate, StoredRevocation, SyncStatus, TimeSource, TrustedNow,
@@ -59,6 +61,8 @@ use crate::state::AppState;
 
 /// Size limit for a system-of-record event request.
 pub const SOR_BODY_LIMIT: usize = 16 * 1024;
+/// Review projections expire after 30 minutes, limiting retained action data.
+pub const REVIEW_SNAPSHOT_TTL_SECONDS: i64 = 30 * 60;
 
 #[derive(Debug, Clone)]
 pub struct DataplaneConfig {
@@ -1836,6 +1840,11 @@ pub struct AuthorizeBody {
     pub tool: String,
     pub mandate_id: String,
     pub request_id: String,
+    /// Optional D17 approval identifier; pre-checks do not consume or apply it.
+    #[serde(default)]
+    pub approval_id: Option<String>,
+    #[serde(default)]
+    pub execution_id: Option<String>,
     #[serde(default)]
     pub params: serde_json::Map<String, serde_json::Value>,
 }
@@ -1863,7 +1872,7 @@ pub async fn authorize(
     let StrictJson(body) = body.map_err(|_| {
         refuse(
             StatusCode::BAD_REQUEST,
-            "malformed body: expected JSON with exactly tool, mandate_id, request_id, params",
+            "malformed body: expected JSON with tool, mandate_id, request_id, optional approval_id and execution_id, params",
         )
     })?;
     let call = dp
@@ -1874,6 +1883,8 @@ pub async fn authorize(
             ToolRequest {
                 mandate_id: body.mandate_id,
                 request_id: body.request_id,
+                approval_id: body.approval_id,
+                execution_id: body.execution_id,
                 params: body.params,
             },
         )
@@ -2071,77 +2082,41 @@ async fn revoke_by_event(
 /// Router for the agent listener (`--agent-listen`, the only listener on the
 /// agent network): agent routes and liveness — never operator, admin,
 /// change-request, metrics or system-of-record routes (ADR-007).
-/// `POST /v1/tools/{tool}`: the gateway (H5b step 8). Decides and records,
-/// then (allow, first call only) resolves, obtains a credential, forwards
-/// once and records the outcome. The reply is an allowlist of fields.
-pub async fn tool_call(
-    State(state): State<Arc<AppState>>,
-    axum::extract::Path(tool): axum::extract::Path<String>,
-    headers: HeaderMap,
-    body: Result<StrictJson<ToolRequest>, StrictJsonRejection>,
-) -> Result<Json<GatewayReply>, Refusal> {
-    let dp = dataplane(&state)?;
-    let agent = authenticate_agent(dp, &headers)?;
-    let metrics = state.metrics();
-    let malformed = |message: String| {
-        metrics.observe_gateway_malformed();
-        refuse(StatusCode::BAD_REQUEST, message)
+/// Consumes the release named by `request`, only if it matches this
+/// authenticated caller's extracted action. Missing, expired or unavailable
+/// releases leave the original HUMAN_REVIEW request untouched and therefore
+/// non-forwardable.
+async fn consume_release(
+    state: &AppState,
+    dp: &Dataplane,
+    agent: &AgentIdentity,
+    request: &ToolRequest,
+    call: &kavach_dataplane::ToolCall,
+) -> Option<kavach_ports::ReviewReleaseRecord> {
+    let (Some(approval_id), Some(execution_id), Some(now)) = (
+        request.approval_id.as_deref(),
+        request.execution_id.as_deref(),
+        dp.core.trusted_now(),
+    ) else {
+        return None;
     };
-    // The parser's message can quote values, so it is not echoed.
-    let StrictJson(request) = body.map_err(|_| {
-        malformed(
-            "malformed body: expected JSON with exactly mandate_id, request_id, params".into(),
-        )
-    })?;
-    // The registry's own check first, for a refusal with its code; the
-    // gateway runs the same check (one validation path).
-    if let Err(refusal) = dp.core.tools().check(&tool, request.clone()) {
-        metrics.observe_gateway_malformed();
-        return Err(refuse_tool(refusal));
-    }
-    // Log the registry's tool name, never the caller's path text.
-    let tool_label = dp
-        .core
-        .tools()
-        .tool(&tool)
-        .map_or("unknown", |t| t.name.as_str())
-        .to_string();
-    // The call runs in a task of its own and is counted while it runs. Once
-    // its decision is recorded it completes (forward, outcome) even if the
-    // client disconnects or the process is told to stop: a request that
-    // is dropped halfway would leave an allow with no outcome, and its
-    // retry would be refused as in flight for good.
-    let guard = dp.in_flight.enter();
-    let task_state = Arc::clone(&state);
-    let (task_agent, task_tool) = (agent.clone(), tool.clone());
-    let started = tokio::spawn(async move {
-        let _counted = guard;
-        let Some(dp) = task_state.dataplane() else {
-            return Err(GatewayError::Invalid(
-                "agent surfaces are not configured".into(),
-            ));
-        };
-        let deps = GatewayDeps {
-            core: &dp.core,
-            resolver: &dp.resolver,
-            broker: &*dp.broker,
-            forwarder: &*dp.forwarder,
-            gateway_held: None,
-            observer: task_state.metrics(),
-        };
-        execute(&deps, &task_agent, &task_tool, request).await
-    });
-    let result = match started.await {
-        Ok(result) => result,
-        Err(error) => {
-            tracing::error!(tool = %tool_label, error = %error, "gateway call task failed");
-            return Err(crate::problem::Problem::for_status(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal error",
-            ));
-        }
-    };
-    match &result {
+    let action_hash = dp.core.review_action_digest(agent, call).ok()?;
+    state
+        .review_approval_store()
+        .release(&dp.tenant, approval_id, execution_id, &action_hash, now)
+        .await
+        .ok()
+        .flatten()
+}
+
+/// One log line per gateway call: its decision and outcome, or why it was
+/// refused. Names the registry's tool, never the caller's path text.
+fn log_gateway_result(
+    tool_label: &str,
+    agent: &AgentIdentity,
+    result: &Result<GatewayReply, GatewayError>,
+) {
+    match result {
         Ok(reply) => {
             tracing::info!(
             tool = %tool_label,
@@ -2165,6 +2140,94 @@ pub async fn tool_call(
             );
         }
     }
+}
+
+/// `POST /v1/tools/{tool}`: decides and records. Proposal-trust tools stop
+/// there; external-effect tools (allow, first call only) resolve, obtain a
+/// credential, forward once and record the outcome. The reply is an allowlist
+/// of fields.
+pub async fn tool_call(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(tool): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: Result<StrictJson<ToolRequest>, StrictJsonRejection>,
+) -> Result<Json<GatewayReply>, Refusal> {
+    let dp = dataplane(&state)?;
+    let agent = authenticate_agent(dp, &headers)?;
+    let metrics = state.metrics();
+    let malformed = |message: String| {
+        metrics.observe_gateway_malformed();
+        refuse(StatusCode::BAD_REQUEST, message)
+    };
+    // The parser's message can quote values, so it is not echoed.
+    let StrictJson(mut request) = body.map_err(|_| {
+        malformed(
+            "malformed body: expected JSON with mandate_id, request_id, optional approval_id and execution_id, params".into(),
+        )
+    })?;
+    // The registry's own check first, for a refusal with its code; the
+    // gateway runs the same check (one validation path).
+    let checked_call = match dp.core.tools().check(&tool, request.clone()) {
+        Ok(call) => call,
+        Err(refusal) => {
+            metrics.observe_gateway_malformed();
+            return Err(refuse_tool(refusal));
+        }
+    };
+    let release = consume_release(&state, dp, &agent, &request, &checked_call).await;
+    if release.is_none() {
+        // Do not key an unapproved HUMAN_REVIEW retry by execution id.
+        request.approval_id = None;
+        request.execution_id = None;
+    }
+    // Log the registry's tool name, never the caller's path text.
+    let tool_label = dp
+        .core
+        .tools()
+        .tool(&tool)
+        .map_or("unknown", |t| t.name.as_str())
+        .to_string();
+    // The call runs in a task of its own and is counted while it runs. Once
+    // its decision is recorded it completes (forward, outcome) even if the
+    // client disconnects or the process is told to stop: a request that
+    // is dropped halfway would leave an allow with no outcome, and its
+    // retry would be refused as in flight for good.
+    let guard = dp.in_flight.enter();
+    let task_state = Arc::clone(&state);
+    let (task_agent, task_tool) = (agent.clone(), tool.clone());
+    let (review_tool, review_request) = (tool.clone(), request.clone());
+    let approval_release = release;
+    let started = tokio::spawn(async move {
+        let _counted = guard;
+        let Some(dp) = task_state.dataplane() else {
+            return Err(GatewayError::Invalid(
+                "agent surfaces are not configured".into(),
+            ));
+        };
+        let deps = GatewayDeps {
+            core: &dp.core,
+            resolver: &dp.resolver,
+            broker: &*dp.broker,
+            forwarder: &*dp.forwarder,
+            gateway_held: None,
+            approval_release: approval_release.as_ref(),
+            observer: task_state.metrics(),
+        };
+        execute(&deps, &task_agent, &task_tool, request).await
+    });
+    let result = match started.await {
+        Ok(result) => result,
+        Err(error) => {
+            tracing::error!(tool = %tool_label, error = %error, "gateway call task failed");
+            return Err(crate::problem::Problem::for_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal error",
+            ));
+        }
+    };
+    log_gateway_result(&tool_label, &agent, &result);
+    persist_gateway_review_snapshot(&state, dp, &agent, &review_tool, review_request, &result)
+        .await?;
     match result {
         Ok(reply) => Ok(Json(reply)),
         Err(GatewayError::Invalid(message)) => Err(malformed(message)),
@@ -2182,6 +2245,96 @@ pub async fn tool_call(
              later for its outcome",
         )),
     }
+}
+
+async fn persist_gateway_review_snapshot(
+    state: &AppState,
+    dataplane: &Dataplane,
+    agent: &AgentIdentity,
+    tool: &str,
+    request: ToolRequest,
+    result: &Result<GatewayReply, GatewayError>,
+) -> Result<(), Refusal> {
+    if state.review_snapshot_key().is_none() {
+        return Ok(());
+    }
+    let Ok(reply) = result else {
+        return Ok(());
+    };
+    if reply.decision != Decision::HumanReview {
+        return Ok(());
+    }
+    let record_id = reply.record_id.as_deref().ok_or_else(|| {
+        crate::problem::Problem::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unavailable",
+            "review record is unavailable",
+        )
+    })?;
+    persist_review_snapshot(state, dataplane, agent, tool, request, record_id)
+        .await
+        .map_err(|_| {
+            crate::problem::Problem::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                "review snapshot could not be stored",
+            )
+        })
+}
+
+async fn persist_review_snapshot(
+    state: &AppState,
+    dataplane: &Dataplane,
+    agent: &AgentIdentity,
+    tool: &str,
+    request: ToolRequest,
+    record_id: &str,
+) -> Result<(), PortError> {
+    let key = state
+        .review_snapshot_key()
+        .ok_or_else(|| PortError::unavailable("review snapshot encryption is not configured"))?;
+    let call = dataplane
+        .core()
+        .tools()
+        .extract(tool, request)
+        .map_err(|_| PortError::rejected("review action could not be reconstructed"))?;
+    let projection = ReviewActionSnapshot::from_request(
+        state.tenant_id(),
+        agent,
+        dataplane.core().tools().digest(),
+        &call,
+    )?;
+    let action_hash = projection.action_hash()?;
+    let record = dataplane
+        .human_review_record(record_id)
+        .await?
+        .ok_or_else(|| PortError::rejected("review record is unavailable"))?;
+    if record.payload.tenant_id != state.tenant_id()
+        || record.payload.policy_decision != Decision::HumanReview
+        || record.payload.returned_decision != Decision::HumanReview
+        || record.payload.review_action_hash.as_deref() != Some(action_hash.as_str())
+    {
+        return Err(PortError::rejected(
+            "review projection does not match the committed record",
+        ));
+    }
+    let expires_at = record.payload.ts + chrono::Duration::seconds(REVIEW_SNAPSHOT_TTL_SECONDS);
+    let now = Utc::now();
+    if expires_at <= now {
+        return Err(PortError::rejected(
+            "review snapshot lifetime already expired",
+        ));
+    }
+    crate::review_snapshot_key::persist(
+        key,
+        state.review_snapshot_store(),
+        &projection,
+        record_id,
+        &action_hash,
+        expires_at,
+        now,
+    )
+    .await
 }
 
 /// A fixed label for a refusal (never its message, which may quote input).

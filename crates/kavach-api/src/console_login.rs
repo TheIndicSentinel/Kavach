@@ -1773,7 +1773,7 @@ async fn begin_step_up_inner(
         return Err(ApiError::NotFound("no eligible HUMAN_REVIEW record".into()));
     }
 
-    let now = Utc::now();
+    let now = login.now();
     let expires_at = now + Duration::seconds(MAX_STEP_UP_TTL_SECONDS);
     let request = request_for_human_review(
         &record,

@@ -1,9 +1,9 @@
 //! Human-review approval record contract (PRD D17 / FR-6).
 //!
 //! This defines the record shape, structural checks, and durable-store port.
-//! Storage adapters enforce one-time consumption. The approval service that
-//! authenticates reviewers, verifies step-up, and wires consumption to
-//! authorization and credential issuance is still pending.
+//! Storage adapters enforce one-time consumption. The API creates records
+//! after authenticated exact-action step-up; authorization consumption and
+//! credential issuance wiring remain pending.
 
 use std::future::Future;
 
@@ -15,6 +15,62 @@ use crate::PortError;
 /// A one-time proof used to complete a step-up ceremony. It is a secret and
 /// must never be logged or returned to an agent.
 pub type StepUpProof = crate::TokenSecret;
+
+/// Ciphertext-only review projection suitable for durable storage. Cleartext
+/// action fields deliberately have no representation in this storage port.
+#[derive(Clone, PartialEq, Eq)]
+pub struct EncryptedReviewSnapshot {
+    pub version: u8,
+    pub key_id: String,
+    pub tenant_id: String,
+    pub record_id: String,
+    pub action_hash: String,
+    pub nonce: [u8; 12],
+    pub ciphertext: Vec<u8>,
+    pub expires_at: DateTime<Utc>,
+}
+
+impl EncryptedReviewSnapshot {
+    pub fn validate(&self, now: DateTime<Utc>) -> Result<(), PortError> {
+        if self.version != 1
+            || self.key_id.is_empty()
+            || self.key_id.len() > 128
+            || self.key_id.chars().any(char::is_control)
+            || self.tenant_id.is_empty()
+            || self.record_id.is_empty()
+            || !is_action_hash(&self.action_hash)
+            || self.ciphertext.len() < 16
+            || self.ciphertext.len() > 65_552
+            || self.expires_at <= now
+        {
+            return Err(PortError::invalid(
+                "encrypted review snapshot is invalid or expired",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Durable store for tenant-scoped encrypted D17 review projections.
+pub trait ReviewSnapshotStore: Send + Sync {
+    fn insert(
+        &self,
+        snapshot: EncryptedReviewSnapshot,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<(), PortError>> + Send;
+
+    fn get_live(
+        &self,
+        tenant_id: &str,
+        record_id: &str,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<Option<EncryptedReviewSnapshot>, PortError>> + Send;
+
+    fn purge_expired(
+        &self,
+        now: DateTime<Utc>,
+    ) -> impl Future<Output = Result<u64, PortError>> + Send;
+}
 
 /// The reviewer's explicit decision for one rendered action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -196,6 +252,10 @@ pub trait StepUpProvider: Send + Sync {
 pub struct ReviewApprovalRecord {
     pub tenant_id: String,
     pub approval_id: String,
+    /// The committed HUMAN_REVIEW record this decision displays.
+    pub review_record_id: String,
+    /// Server-issued idempotency identity for releasing this approved action.
+    pub execution_id: Option<String>,
     pub action_hash: String,
     /// The action shown to the person at approval time. It must be rendered
     /// from the same extracted action used to produce `action_hash`.
@@ -216,6 +276,7 @@ impl ReviewApprovalRecord {
     pub fn validate(&self) -> Result<(), PortError> {
         if self.tenant_id.is_empty()
             || self.approval_id.is_empty()
+            || self.review_record_id.is_empty()
             || self.rendered_action.is_empty()
             || self.approver.is_empty()
             || self.step_up_ref.is_empty()
@@ -229,14 +290,22 @@ impl ReviewApprovalRecord {
                 "action_hash must be a version 1 SHA-256 action digest",
             ));
         }
-        match (self.decision, self.single_use_credential_id.as_deref()) {
-            (ReviewDecision::Approve, Some(id)) if !id.is_empty() => Ok(()),
-            (ReviewDecision::Reject, None) => Ok(()),
-            (ReviewDecision::Approve, _) => Err(PortError::invalid(
-                "an approved record requires a single-use credential id",
+        match (
+            self.decision,
+            self.single_use_credential_id.as_deref(),
+            self.execution_id.as_deref(),
+        ) {
+            (ReviewDecision::Approve, Some(credential), Some(execution))
+                if is_approval_id(credential) && is_approval_id(execution) =>
+            {
+                Ok(())
+            }
+            (ReviewDecision::Reject, None, None) => Ok(()),
+            (ReviewDecision::Approve, _, _) => Err(PortError::invalid(
+                "an approved record requires a credential and execution id",
             )),
-            (ReviewDecision::Reject, Some(_)) => Err(PortError::invalid(
-                "a rejected record cannot carry a credential id",
+            (ReviewDecision::Reject, _, _) => Err(PortError::invalid(
+                "a rejected record cannot carry credential or execution ids",
             )),
         }
     }
@@ -266,6 +335,45 @@ impl ReviewApprovalRecord {
     }
 }
 
+/// Append-only release of one approved review for one separate execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewReleaseRecord {
+    pub tenant_id: String,
+    pub approval_id: String,
+    pub review_record_id: String,
+    pub execution_id: String,
+    pub action_hash: String,
+    /// One-use resource credential identity retained for the later broker handoff.
+    pub single_use_credential_id: String,
+    pub approver: String,
+    pub released_at: DateTime<Utc>,
+}
+
+impl ReviewReleaseRecord {
+    pub fn validate(&self) -> Result<(), PortError> {
+        if self.tenant_id.is_empty()
+            || self.approval_id.is_empty()
+            || self.review_record_id.is_empty()
+            || !is_approval_id(&self.execution_id)
+            || self.approver.is_empty()
+            || !is_action_hash(&self.action_hash)
+            || !is_approval_id(&self.single_use_credential_id)
+        {
+            return Err(PortError::invalid("human-review release record is invalid"));
+        }
+        Ok(())
+    }
+}
+
+fn is_approval_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
 fn is_action_hash(value: &str) -> bool {
     const PREFIX: &str = "sha256-action-v1:";
     value.starts_with(PREFIX)
@@ -284,26 +392,29 @@ fn is_sha256_digest(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-/// Durable storage for completed human-review decisions (PRD FR-6).
+/// Durable storage for completed human-review decisions and releases (PRD FR-6).
 ///
-/// Implementations preserve records and atomically return an approved record
-/// at most once. The caller supplies `now` from Kavach's trusted clock.
+/// Implementations preserve approval and release records. A release consumes
+/// the approval once and is idempotently retrievable only by its execution id.
+/// The caller supplies `now` from Kavach's trusted clock.
 pub trait ReviewApprovalStore: Send + Sync {
     fn insert(
         &self,
         record: ReviewApprovalRecord,
     ) -> impl Future<Output = Result<(), PortError>> + Send;
 
-    /// Atomically consumes a live approval for exactly this tenant and action.
-    /// Missing, rejected, expired, mismatched, or previously consumed records
-    /// return `Ok(None)`; storage failures return `Err` and must fail closed.
-    fn consume(
+    /// Atomically consumes a live approval and appends its release record for
+    /// exactly this execution id. A retry with that same id returns the
+    /// existing release; another execution, a mismatch, or an expired record
+    /// returns `Ok(None)`.
+    fn release(
         &self,
         tenant_id: &str,
         approval_id: &str,
+        execution_id: &str,
         action_hash: &str,
         now: DateTime<Utc>,
-    ) -> impl Future<Output = Result<Option<ReviewApprovalRecord>, PortError>> + Send;
+    ) -> impl Future<Output = Result<Option<ReviewReleaseRecord>, PortError>> + Send;
 }
 
 #[cfg(test)]
@@ -316,6 +427,8 @@ mod tests {
         ReviewApprovalRecord {
             tenant_id: "tenant-1".into(),
             approval_id: "approval-1".into(),
+            review_record_id: "adr:tenant-1:0:1".into(),
+            execution_id: Some("execution-1".into()),
             action_hash: format!("sha256-action-v1:{}", "a".repeat(64)),
             rendered_action: "Propose a 35% waiver for borrower ref:B-9382".into(),
             approver: "oidc:https://idp.example#user-1".into(),
@@ -363,6 +476,7 @@ mod tests {
         let mut rejected = record();
         rejected.decision = ReviewDecision::Reject;
         rejected.single_use_credential_id = None;
+        rejected.execution_id = None;
         let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
         assert!(rejected.validate().is_ok());
         assert!(rejected

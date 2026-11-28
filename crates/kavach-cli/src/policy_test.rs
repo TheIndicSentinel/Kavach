@@ -384,6 +384,8 @@ async fn tool_decision(
     let request = ToolRequest {
         mandate_id,
         request_id: "policy-test".into(),
+        approval_id: None,
+        execution_id: None,
         params: case.params.clone(),
     };
     if let Err(refusal) = what_if.tools().check(&case.tool, request.clone()) {

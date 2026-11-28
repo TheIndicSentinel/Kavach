@@ -4,6 +4,9 @@ import {
   ApiError,
   fetchAgent,
   fetchAgentDecision,
+  fetchHumanReviewSnapshot,
+  beginHumanReviewStepUp,
+  decideHumanReview,
   fetchAgents,
   fetchAccessReviewCsv,
   fetchRevocationRecord,
@@ -161,14 +164,41 @@ describe("agent calls", () => {
     expect(seen.mock.calls[0][0]).toBe("/v1/unknown-outcomes?limit=50&cursor=cred-7");
   });
 
+  it("starts session-bound step-up with a POST and console CSRF header", async () => {
+    const seen = capture({
+      authorization_url: "https://idp.example/authorize?state=opaque",
+      expires_at: "2026-11-17T12:30:00Z",
+    });
+    await beginHumanReviewStepUp("adr:t:0:1");
+    expect(seen.mock.calls[0][0]).toBe("/auth/step-up/adr%3At%3A0%3A1");
+    expect(seen.mock.calls[0][1]?.method).toBe("POST");
+    expect((seen.mock.calls[0][1]?.headers as Record<string, string>)["X-Kavach-Console"]).toBe("1");
+  });
+
+  it("submits an explicit exact-action decision with the console CSRF header", async () => {
+    const seen = capture({
+      approval_id: "approval-1",
+      execution_id: "execution-1",
+      decision: "approve",
+      expires_at: "2026-11-17T12:30:00Z",
+    });
+    await decideHumanReview("adr:t:0:1", "approve");
+    expect(seen.mock.calls[0][0]).toBe("/auth/human-review/adr%3At%3A0%3A1/approval");
+    expect(seen.mock.calls[0][1]?.method).toBe("POST");
+    expect(seen.mock.calls[0][1]?.body).toBe(JSON.stringify({ decision: "approve" }));
+    expect((seen.mock.calls[0][1]?.headers as Record<string, string>)["X-Kavach-Console"]).toBe("1");
+  });
+
   it("encodes ids in the path, never in a query string", async () => {
     const seen = capture({});
     await fetchAgent("a/b?c");
     await fetchAgentDecision("adr:t:0:1");
+    await fetchHumanReviewSnapshot("adr:t:0:1");
     await fetchRevocationRecord("los:core", "evt/1");
     expect(seen.mock.calls.map((call) => call[0])).toEqual([
       "/v1/agents/a%2Fb%3Fc",
       "/v1/agent-decisions/adr%3At%3A0%3A1",
+      "/auth/human-review/adr%3At%3A0%3A1",
       "/v1/agent-revocations/los%3Acore/evt%2F1",
     ]);
   });

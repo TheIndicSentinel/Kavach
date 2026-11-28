@@ -281,6 +281,7 @@ async fn cedar_test_state() -> Arc<AppState> {
     let config = ApiConfig {
         require_hardening: false,
         review_snapshot_key_file: None,
+        review_snapshot_previous_keys: Vec::new(),
         review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: pack,
         model_path: model,
@@ -638,6 +639,7 @@ async fn change_requests_can_be_cancelled_rejected_and_expire() {
     let mut config = ApiConfig {
         require_hardening: false,
         review_snapshot_key_file: None,
+        review_snapshot_previous_keys: Vec::new(),
         review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: pack,
         model_path: model,
@@ -1290,6 +1292,7 @@ async fn signed_packs_required_when_signers_configured() {
     let config = ApiConfig {
         require_hardening: false,
         review_snapshot_key_file: None,
+        review_snapshot_previous_keys: Vec::new(),
         review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: v0_path.clone(),
         model_path: model_path.clone(),

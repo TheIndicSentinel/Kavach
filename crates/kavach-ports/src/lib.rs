@@ -25,9 +25,9 @@ mod replay;
 mod time;
 
 pub use approval::{
-    ReviewApprovalRecord, ReviewApprovalStore, ReviewDecision, StepUpChallenge,
-    StepUpChallengeState, StepUpChallengeStore, StepUpProof, StepUpProvider, StepUpRequest,
-    VerifiedStepUp,
+    EncryptedReviewSnapshot, ReviewApprovalRecord, ReviewApprovalStore, ReviewDecision,
+    ReviewReleaseRecord, ReviewSnapshotStore, StepUpChallenge, StepUpChallengeState,
+    StepUpChallengeStore, StepUpProof, StepUpProvider, StepUpRequest, VerifiedStepUp,
 };
 pub use credential::{
     CredentialBroker, CredentialRequest, Destination, InternalCredentialBroker,

@@ -3,6 +3,7 @@ import type {
   AgentDecisionLookup,
   AgentStateView,
   AgentStopResult,
+  HumanReviewSnapshot,
   ChangeRequest,
   RevocationLookup,
   UnknownOutcomeReviewPage,
@@ -72,6 +73,19 @@ export const decisionLookup: AgentDecisionLookup = {
   },
   outcome: null,
   resolutions: [],
+};
+
+export const humanReviewSnapshot: HumanReviewSnapshot = {
+  record_id: "adr:bank-1:0:44",
+  action_hash: `sha256-action-v1:${"a".repeat(64)}`,
+  agent_id: "agent:collections-bot",
+  action: "waive_interest",
+  subject_ref: "subj-pseudo-4",
+  channel: "sms",
+  waiver_bps: 3500,
+  requested_fields: ["balance", "due_date"],
+  parameters: { waiver_bps: "3500" },
+  expires_at: "2026-11-17T12:30:00Z",
 };
 
 export const revocationLookup: RevocationLookup = {

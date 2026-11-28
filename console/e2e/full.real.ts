@@ -95,7 +95,7 @@ test("agent evidence: a seeded decision record and the revocation", async ({ pag
 
   await signInAs(page, context, ADMIN);
   await open(page, "/agent-evidence", "Agent evidence");
-  await page.getByLabel("Record id").fill(recordId);
+  await page.getByLabel("Record id", { exact: true }).fill(recordId);
   await page.getByRole("button", { name: "Look up record" }).click();
   await expect(status(page, `Found record ${recordId}.`)).toBeVisible();
 

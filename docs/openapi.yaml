@@ -1097,6 +1097,53 @@ paths:
         "303":
           $ref: "#/components/responses/ConsoleRedirect"
 
+  /auth/human-review/{record_id}:
+    get:
+      operationId: readHumanReviewSnapshot
+      tags: [console-auth]
+      summary: Reads one encrypted, exact-action HUMAN_REVIEW projection (D17).
+      description: |
+        Requires a live console session, `X-Kavach-Console: 1`, same-origin
+        request metadata, and Cedar permission for `approve_human_review`.
+        The API loads and verifies the signed record from its configured
+        tenant, decrypts only a live snapshot whose action digest and 30-minute
+        expiry match that record, and audits the read before returning the
+        minimum display projection. The response is never included in general
+        evidence APIs and is not cached.
+      security:
+        - consoleSession: []
+      parameters:
+        - { name: record_id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/ConsoleHeader"
+      responses:
+        "200":
+          description: Exact-action reviewer projection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [record_id, action_hash, agent_id, action, subject_ref, requested_fields, parameters, expires_at]
+                properties:
+                  record_id: { type: string }
+                  action_hash: { type: string }
+                  agent_id: { type: string }
+                  action: { type: string }
+                  subject_ref: { type: string }
+                  channel: { type: [string, "null"] }
+                  waiver_bps: { type: [integer, "null"], format: int64 }
+                  requested_fields:
+                    type: array
+                    items: { type: string }
+                  parameters:
+                    type: object
+                    additionalProperties: { type: string }
+                  expires_at: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
   /auth/step-up/{record_id}:
     post:
       operationId: beginHumanReviewStepUp
@@ -1131,6 +1178,51 @@ paths:
                 required: [authorization_url, expires_at]
                 properties:
                   authorization_url: { type: string, format: uri }
+                  expires_at: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409": { $ref: "#/components/responses/Conflict" }
+        "503": { $ref: "#/components/responses/Unavailable" }
+
+  /auth/human-review/{record_id}/approval:
+    post:
+      operationId: decideHumanReview
+      tags: [console-auth]
+      summary: Records one exact-action HUMAN_REVIEW decision (D17).
+      description: |
+        Requires a live reviewer session, Cedar permission and a fresh
+        session-bound step-up proof for the signed action. Approval creates a
+        short-lived release and execution ID; rejection records the decision
+        without permitting agent execution.
+      security:
+        - consoleSession: []
+      parameters:
+        - { name: record_id, in: path, required: true, schema: { type: string } }
+        - $ref: "#/components/parameters/ConsoleHeader"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              additionalProperties: false
+              properties:
+                decision: { type: string, enum: [approve, reject] }
+      responses:
+        "200":
+          description: The decision was recorded.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [approval_id, execution_id, decision, expires_at]
+                properties:
+                  approval_id: { type: string }
+                  execution_id: { type: [string, "null"] }
+                  decision: { type: string, enum: [approve, reject] }
                   expires_at: { type: string, format: date-time }
         "400": { $ref: "#/components/responses/BadRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }

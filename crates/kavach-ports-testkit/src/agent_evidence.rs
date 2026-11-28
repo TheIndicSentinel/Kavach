@@ -140,7 +140,11 @@ pub fn request(tenant: &str, request_id: &str, max: u32) -> CommitRequest {
             params_mac: Some("mac:params".into()),
             subject_pseudonym: SUBJECT.into(),
             mandate_id: "m-root".into(),
+            request_id: None,
+            approval_id: None,
+            execution_id: None,
         },
+        idempotency_key: request_id.into(),
         draft,
         contact: Some(ContactReservation {
             ist_date: day(),
@@ -164,6 +168,7 @@ pub async fn conformance<S: AgentEvidenceStore + 'static>(store: Arc<S>) {
     let signer = TestSigner::new(KID, 9);
     let clock = FakeClock::synced_at(t0());
     allow_replay_conflict_and_outcome(&*store, &clock, &signer).await;
+    execution_idempotency_preserves_original_request(&*store, &clock, &signer).await;
     commit_time_checks(&*store, &clock, &signer).await;
     nothing_is_kept_when_signing_fails(&*store, &clock).await;
     every_outcome_kind_is_stored(&*store, &clock, &signer).await;
@@ -430,6 +435,53 @@ async fn allow_replay_conflict_and_outcome<S: AgentEvidenceStore>(
         )
         .is_err(),
         "a truncated tail is caught when the head is known"
+    );
+}
+
+async fn execution_idempotency_preserves_original_request<S: AgentEvidenceStore>(
+    store: &S,
+    clock: &FakeClock,
+    signer: &TestSigner,
+) {
+    let tenant = "ae-execution-id";
+    let request_id = "reviewed-request";
+    let original = committed(
+        store
+            .commit(request(tenant, request_id, 3), clock, signer)
+            .await
+            .unwrap(),
+    );
+    let mut execution = request(tenant, request_id, 3);
+    execution.idempotency_key = "execution-approved-1".into();
+    // The release carries its own one-use credential id (migration 031).
+    execution.credential_id = "cred-execution-approved-1".into();
+    execution.binding.request_id = Some(request_id.into());
+    execution.binding.approval_id = Some("approval-1".into());
+    execution.binding.execution_id = Some("execution-approved-1".into());
+    let executed = committed(
+        store
+            .commit(execution.clone(), clock, signer)
+            .await
+            .unwrap(),
+    );
+    assert_eq!(executed.payload.request_id, request_id);
+    assert_ne!(executed.payload.record_id, original.payload.record_id);
+    assert!(matches!(
+        store.commit(execution.clone(), clock, signer).await.unwrap(),
+        CommitResult::Replayed(record) if *record == executed
+    ));
+    execution.binding.approval_id = Some("different-approval".into());
+    assert!(matches!(
+        store.commit(execution, clock, signer).await.unwrap(),
+        CommitResult::Conflict(_)
+    ));
+    assert_eq!(
+        store
+            .get_by_request(tenant, "collections-agent", request_id)
+            .await
+            .unwrap(),
+        Some(original),
+        "the original reviewed record remains addressable by request id"
     );
 }
 

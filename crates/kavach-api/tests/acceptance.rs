@@ -25,7 +25,10 @@ use kavach_evidence_cli::writer::BundleWriter;
 use kavach_ports::agent_evidence::{AgentEvidenceStore, Outcome, SegmentStart};
 use kavach_ports::bundle::Exporter;
 use kavach_ports::checkpoint::{CheckpointStore, Scope, CHAIN_AGENT_DECISIONS};
-use kavach_ports::{SyncStatus, TimeSource};
+use kavach_ports::{
+    ReviewApprovalRecord, ReviewApprovalStore, ReviewDecision, ReviewSnapshotStore, SyncStatus,
+    TimeSource,
+};
 use serde_json::{json, Value};
 
 use agent_fixture::*;
@@ -44,7 +47,11 @@ enum Store {
 
 /// The stack for one scenario, or `None` (Postgres without a database).
 async fn world(store: Store, destination: Option<&str>, provider_up: bool) -> Option<Gw> {
-    Some(world_and_database(store, destination, provider_up).await?.0)
+    Some(
+        world_and_database(store, destination, provider_up, false)
+            .await?
+            .0,
+    )
 }
 
 /// [`world`], with the owner's database URL when the store is Postgres.
@@ -52,6 +59,7 @@ async fn world_and_database(
     store: Store,
     destination: Option<&str>,
     provider_up: bool,
+    review_snapshots: bool,
 ) -> Option<(Gw, Option<String>)> {
     let (mut api, owner) = match store {
         Store::Memory => (config_for_gateway(), None),
@@ -68,6 +76,9 @@ async fn world_and_database(
             (api, Some(owner))
         }
     };
+    if review_snapshots {
+        enable_review_snapshots(&mut api);
+    }
     // A machine principal that presents a client certificate holds the
     // approver role in the policy (the certificate-principal attack).
     api.mtls_principal_san = Some(kavach_api::MtlsSanKind::Uri);
@@ -298,16 +309,109 @@ async fn scenario05_another_borrower_is_blocked_without_a_human(store: Store) {
 /// PASS. Pre-check only; WebAuthn step-up and approvals bound to the action
 /// hash are M4.
 async fn scenario06_partial_large_waiver_needs_human_review(store: Store) {
-    let Some(gw) = world(store, Some(NUMBER), true).await else {
+    let Some((gw, _)) = world_and_database(store, Some(NUMBER), true, true).await else {
         return;
     };
     let plan = |request_id: &str, bps: i64| {
-        json!({ "tool": "propose_plan", "mandate_id": gw.mandate, "request_id": request_id,
+        json!({ "mandate_id": gw.mandate, "request_id": request_id,
                 "params": { "subject_ref": SUBJECT, "waiver_bps": bps } })
     };
-    let (_, reply) = precheck(&gw, plan("s6-35", 3500)).await;
+    let (status, reply) = gw.call("propose_plan", plan("s6-35", 3500)).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(decision(&reply), "HUMAN_REVIEW", "{reply}");
-    let (_, reply) = precheck(&gw, plan("s6-5", 500)).await;
+    assert_eq!(reply["outcome_recorded"], false);
+    let review_record_id = reply["record_id"].as_str().expect("review record id");
+    let snapshot = gw
+        .state
+        .review_snapshot_store()
+        .get_live("default", review_record_id, gw.clock_now())
+        .await
+        .expect("snapshot lookup")
+        .expect("encrypted committed review snapshot");
+    assert_eq!(snapshot.record_id, review_record_id);
+    assert!(gw.provider.inbox().is_empty(), "a proposal never forwards");
+
+    // Seed the durable store with an approved record (the reviewer session
+    // and step-up ceremony have separate route tests), then exercise the
+    // agent envelope -> release -> authorization path for the same action.
+    let approval_id = "approval-s6";
+    let execution_id = "execution-s6";
+    let credential_id = "credential-s6";
+    gw.state
+        .review_approval_store()
+        .insert(ReviewApprovalRecord {
+            tenant_id: "default".into(),
+            approval_id: approval_id.into(),
+            review_record_id: review_record_id.into(),
+            execution_id: Some(execution_id.into()),
+            action_hash: snapshot.action_hash.clone(),
+            rendered_action: "propose_plan: 3500 bps".into(),
+            approver: "https://idp.test/realms/kavach#reviewer".into(),
+            step_up_ref: "test-step-up-ref".into(),
+            decision: ReviewDecision::Approve,
+            single_use_credential_id: Some(credential_id.into()),
+            expires: gw.clock_now() + Duration::minutes(5),
+        })
+        .await
+        .expect("approved exact-action record");
+
+    let mut approved_call = plan("s6-35", 3500);
+    approved_call["approval_id"] = json!(approval_id);
+    approved_call["execution_id"] = json!(execution_id);
+    let (status, approved_reply) = gw.call("propose_plan", approved_call.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{approved_reply}");
+    assert_eq!(decision(&approved_reply), "PASS", "{approved_reply}");
+    assert_eq!(approved_reply["outcome_recorded"], false);
+    assert!(
+        gw.provider.inbox().is_empty(),
+        "approval does not dispatch a proposal"
+    );
+    let approved_record_id = approved_reply["record_id"]
+        .as_str()
+        .expect("approved record id");
+    assert_ne!(approved_record_id, review_record_id);
+    let records = gw
+        .state
+        .dataplane()
+        .unwrap()
+        .core()
+        .store()
+        .records("default", 0)
+        .await
+        .expect("agent evidence records");
+    let approved_record = records
+        .into_iter()
+        .filter_map(kavach_ports::chain_record::ChainRecord::into_decision)
+        .find(|record| record.payload.record_id == approved_record_id)
+        .expect("approved signed record");
+    assert_eq!(
+        approved_record.payload.policy_decision,
+        kavach_domain::Decision::HumanReview
+    );
+    assert_eq!(
+        approved_record.payload.returned_decision,
+        kavach_domain::Decision::Pass
+    );
+    assert_eq!(
+        approved_record.payload.review_action_hash.as_deref(),
+        Some(snapshot.action_hash.as_str())
+    );
+    assert_eq!(
+        approved_record.payload.credential_id.as_deref(),
+        Some(credential_id)
+    );
+
+    let (status, retried) = gw.call("propose_plan", approved_call.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{retried}");
+    assert!(retried["replayed"].as_bool().unwrap_or(false));
+    assert_eq!(retried["record_id"], approved_record_id);
+
+    approved_call["params"]["waiver_bps"] = json!(3400);
+    let (status, altered) = gw.call("propose_plan", approved_call).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{altered}");
+
+    let (status, reply) = gw.call("propose_plan", plan("s6-5", 500)).await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
     assert_eq!(decision(&reply), "PASS", "{reply}");
 }
 
@@ -520,7 +624,7 @@ fn changes_to_the_bundle_are_caught(request: &VerifyRequest<'_>, bundle: &std::p
 /// as the read-only auditor role. Any change to the bundle is caught.
 /// Remaining: crypto-shredding (B).
 async fn scenario10_a_full_run_verifies_offline_from_public_keys(store: Store) {
-    let Some((gw, owner)) = world_and_database(store, Some(NUMBER), true).await else {
+    let Some((gw, owner)) = world_and_database(store, Some(NUMBER), true, false).await else {
         return;
     };
     gw.remind("s10-a").await;

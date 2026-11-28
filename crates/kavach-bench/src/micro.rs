@@ -266,6 +266,8 @@ async fn run_authorize(
             let request = ToolRequest {
                 mandate_id: subject.mandate_id.clone(),
                 request_id: format!("bench-authorize-{n}"),
+                approval_id: None,
+                execution_id: None,
                 params,
             };
             let started = Instant::now();

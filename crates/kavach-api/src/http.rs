@@ -62,6 +62,14 @@ pub fn router(state: Arc<AppState>) -> Router {
             post(crate::console_login::begin_step_up),
         )
         .route(
+            "/auth/human-review/{record_id}",
+            get(crate::human_review::read),
+        )
+        .route(
+            "/auth/human-review/{record_id}/approval",
+            post(crate::human_review::approve),
+        )
+        .route(
             "/v1/agent-decisions/{record_id}",
             get(crate::evidence_read::read_agent_decision),
         )

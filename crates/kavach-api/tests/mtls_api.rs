@@ -130,6 +130,7 @@ fn config(pki: &Pki) -> ApiConfig {
     ApiConfig {
         require_hardening: false,
         review_snapshot_key_file: None,
+        review_snapshot_previous_keys: Vec::new(),
         review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: repo("packs/finance/v0.yaml"),
         model_path: repo("models/finance/credit-underwriting-v1.yaml"),

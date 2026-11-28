@@ -89,8 +89,13 @@ pub fn listeners(item: &Value) -> Vec<&str> {
 /// one segment).
 pub fn template_for(listener: &str, path: &str) -> Option<&'static str> {
     let segments: Vec<&str> = path.split('/').collect();
-    spec()["paths"]
-        .as_object()?
+    let paths = spec()["paths"].as_object()?;
+    if let Some((template, item)) = paths.get_key_value(path) {
+        return listeners(item)
+            .contains(&listener)
+            .then_some(template.as_str());
+    }
+    paths
         .iter()
         .filter(|(_, item)| listeners(item).contains(&listener))
         .map(|(template, _)| template)

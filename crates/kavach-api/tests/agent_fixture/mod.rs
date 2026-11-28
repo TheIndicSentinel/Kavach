@@ -353,6 +353,7 @@ pub fn config(store: EvidenceStoreKind, insecure_dev: bool, rate: u32) -> ApiCon
     ApiConfig {
         require_hardening: false,
         review_snapshot_key_file: None,
+        review_snapshot_previous_keys: Vec::new(),
         review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
         pack_path: repo("packs/finance/v0.yaml"),
         model_path: repo("models/finance/credit-underwriting-v1.yaml"),
@@ -660,6 +661,18 @@ pub async fn gateway_with(
 
 pub fn config_for_gateway() -> kavach_api::ApiConfig {
     config(EvidenceStoreKind::Memory, true, 50)
+}
+
+/// Enables the encrypted D17 review projection in a fixture before startup.
+pub fn enable_review_snapshots(api: &mut kavach_api::ApiConfig) {
+    let path = api
+        .dataplane
+        .as_ref()
+        .expect("gateway dataplane config")
+        .providers
+        .with_file_name("review-snapshot-test.key");
+    std::fs::write(&path, "42".repeat(32)).expect("write test review key");
+    api.review_snapshot_key_file = Some(path);
 }
 
 pub fn reminder(mandate: &str, request_id: &str) -> Value {

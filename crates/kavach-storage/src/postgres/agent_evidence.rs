@@ -174,15 +174,16 @@ async fn find<'e>(
     executor: impl sqlx::PgExecutor<'e>,
     tenant_id: &str,
     agent_id: &str,
-    request_id: &str,
+    idempotency_key: &str,
 ) -> Result<Option<Existing>, PortError> {
     let row = sqlx::query(
         "SELECT payload, hash, sig, binding FROM agent_decisions \
-        WHERE tenant_id = $1 AND agent_id = $2 AND mode = 'commit' AND request_id = $3",
+        WHERE tenant_id = $1 AND agent_id = $2 AND mode = 'commit' AND kind = 'agent_decision' \
+        AND COALESCE(idempotency_key, request_id) = $3",
     )
     .bind(tenant_id)
     .bind(agent_id)
-    .bind(request_id)
+    .bind(idempotency_key)
     .fetch_optional(executor)
     .await
     .map_err(|e| unavailable(&e))?;
@@ -286,7 +287,8 @@ impl PostgresAgentEvidenceStore {
                 .await
                 .map_err(|e| sqlx::Error::Protocol(e.message))?;
         // No second request lookup here: a concurrent duplicate is stopped
-        // by the unique key on (tenant, agent, mode, request_id), which
+        // by the unique key on (tenant, agent, mode, idempotency_key or, for
+        // rows from before migration 030, request_id), which
         // aborts this transaction (and any slot it reserved); `commit`
         // then reads the stored record on a fresh connection.
         let now = clock.now();
@@ -313,9 +315,9 @@ impl PostgresAgentEvidenceStore {
         let advanced = sqlx::query(
             "WITH inserted AS ( \
                 INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, \
-                    prev_hash, hash, sig, key_id, payload, agent_id, request_id, binding, \
+                    prev_hash, hash, sig, key_id, payload, agent_id, request_id, idempotency_key, binding, \
                     credential_id, returned_decision) \
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) \
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
                 RETURNING tenant_id, partition_id, seq, hash) \
             UPDATE agent_evidence_chains AS c SET head_seq = inserted.seq, \
                 head_hash = inserted.hash \
@@ -333,6 +335,7 @@ impl PostgresAgentEvidenceStore {
         .bind(json(p).map_err(|e| sqlx::Error::Protocol(e.message))?)
         .bind(&p.actor.agent_id)
         .bind(&p.request_id)
+        .bind(&request.idempotency_key)
         .bind(json(&request.binding).map_err(|e| sqlx::Error::Protocol(e.message))?)
         .bind(&p.credential_id)
         .bind(decision_str(p.returned_decision))
@@ -436,13 +439,14 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         clock: &dyn TimeSource,
         signer: &dyn EvidenceSigner,
     ) -> Result<CommitResult, PortError> {
+        request.validate_idempotency()?;
         // Retries are answered without queueing on the partition lock.
         let agent = request.draft.actor.agent_id.clone();
         if let Some((record, binding)) = find(
             &self.pool,
             &request.tenant_id,
             &agent,
-            &request.draft.request_id,
+            &request.idempotency_key,
         )
         .await?
         {
@@ -463,7 +467,7 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
                     &self.pool,
                     &request.tenant_id,
                     &agent,
-                    &request.draft.request_id,
+                    &request.idempotency_key,
                 )
                 .await?
                 {
@@ -482,9 +486,18 @@ impl AgentEvidenceStore for PostgresAgentEvidenceStore {
         agent_id: &str,
         request_id: &str,
     ) -> Result<Option<AgentDecisionRecord>, PortError> {
-        Ok(find(&self.pool, tenant_id, agent_id, request_id)
-            .await?
-            .map(|(record, _)| record))
+        let row = sqlx::query(
+            "SELECT payload, hash, sig FROM agent_decisions \
+             WHERE tenant_id = $1 AND agent_id = $2 AND mode = 'commit' AND request_id = $3 \
+             ORDER BY created_at ASC, partition_id ASC, seq ASC LIMIT 1",
+        )
+        .bind(tenant_id)
+        .bind(agent_id)
+        .bind(request_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        row.as_ref().map(row_to_record).transpose()
     }
 
     async fn record(
