@@ -981,7 +981,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let tls_ref = config.tls.as_ref();
     // One signal stops every listener. A listener stops accepting at once
     // and lets its requests finish.
-    let _ha_lease_task = ha_lease_task;
+    // REL-04: the lease task is supervised below. It ends only on stop or
+    // after fencing; any other end (panic, abort) must not leave a process
+    // that believes it holds the lease.
+    let ha_lease_exit = async move {
+        match ha_lease_task {
+            Some(task) => task.await,
+            None => std::future::pending().await,
+        }
+    };
     let _review_snapshot_cleanup =
         kavach_api::review_snapshot_cleanup::start(review_snapshot_store, stop_rx.clone());
     let _runtime_pointer_sync =
@@ -1041,20 +1049,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
     };
     tokio::pin!(servers);
-    let told_to_stop = tokio::select! {
+    tokio::pin!(ha_lease_exit);
+    let lease_task_ended = tokio::select! {
         served = &mut servers => {
             served?;
-            false
+            return Ok(());
         }
-        () = shutdown::termination() => true,
+        () = shutdown::termination() => None,
+        ended = &mut ha_lease_exit => Some(ended),
     };
-    if !told_to_stop {
-        return Ok(());
+    if let Some(ended) = &lease_task_ended {
+        // Readiness and every gated route answer 503 from here on.
+        stopping.ha_fence().fence();
+        stopping.metrics().observe_background_task_exit("ha_lease");
+        match ended {
+            Ok(()) => tracing::error!(
+                "HA lease task ended (lease lost or fenced); process is fenced and shutting down for a restart"
+            ),
+            Err(error) => tracing::error!(
+                %error,
+                "HA lease task died; process is fenced and shutting down for a restart"
+            ),
+        }
     }
 
-    shutdown::stop_and_checkpoint(servers.as_mut(), &stop_tx, grace, stopping.dataplane())
-        .await
-        .map_err(Into::into)
+    shutdown::stop_and_checkpoint(servers.as_mut(), &stop_tx, grace, stopping.dataplane()).await?;
+    if lease_task_ended.is_some() {
+        return Err(std::io::Error::other(
+            "HA lease task ended before shutdown; restart as standby",
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Prints every violation and exits with `EX_CONFIG`; returns when there is

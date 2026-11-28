@@ -29,6 +29,22 @@ pub struct Metrics {
     agent_state_evidence: AgentStateEvidenceMetrics,
     outcomes: OutcomeMetrics,
     relaxations: RelaxationMetrics,
+    background_task_exits: IntCounterVec,
+}
+
+/// Background tasks that ended while the process was still meant to run
+/// (REL-04). `task` is a fixed name chosen by the code, never request data.
+fn background_task_exit_counter(registry: &Registry) -> Result<IntCounterVec, prometheus::Error> {
+    let counter = IntCounterVec::new(
+        Opts::new(
+            "kavach_background_task_exits_total",
+            "ALERT: a background task ended (panic or return) before shutdown, by task. \
+             A critical task (ha_lease) fences the process and shuts it down",
+        ),
+        &["task"],
+    )?;
+    registry.register(Box::new(counter.clone()))?;
+    Ok(counter)
 }
 
 /// How long each stage of a gateway call takes (`stage` is the fixed list
@@ -461,6 +477,7 @@ impl Metrics {
             outcomes,
             relaxations,
             agent_state_evidence: AgentStateEvidenceMetrics::register(&registry)?,
+            background_task_exits: background_task_exit_counter(&registry)?,
             registry: Arc::new(registry),
         })
     }
@@ -637,6 +654,10 @@ impl Metrics {
         self.agent_state_changes
             .with_label_values(&[to, result])
             .inc();
+    }
+
+    pub fn observe_background_task_exit(&self, task: &str) {
+        self.background_task_exits.with_label_values(&[task]).inc();
     }
 
     pub fn gather_text(&self) -> Result<String, prometheus::Error> {

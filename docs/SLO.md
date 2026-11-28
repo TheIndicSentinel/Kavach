@@ -24,6 +24,7 @@ The metrics used below (all in `metrics.rs`, labels are fixed vocabularies):
 - `kavach_gateway_outcome_write_failures_total`, `kavach_gateway_jti_conflicts_total`.
 - `kavach_evaluate_requests_total{transport, outcome, status_class}` (credit track, full mode only).
 - `kavach_sor_events_unavailable_total{kind}`: system-of-record events answered 503 (`issuing`, `revoking`).
+- `kavach_background_task_exits_total{task}`: background tasks that ended before shutdown (`ha_lease`); the process then exits for a restart.
 - `kavach_checkpoint_*`: `last_seq`, `uncovered_records`, `last_covered_timestamp_seconds`, `stalled`, `written_total`, `skipped_total{reason}`.
 - `kavach_revocation_records_missing`, `kavach_agent_state_records_missing`, `kavach_revocation_audit_entries_missing`, and the `*_last_pass_timestamp_seconds` gauge of each reconciler.
 - `kavach_outcomes_{unresolved,ambiguous,conflicted,resolved}`, `kavach_outcome_oldest_unconfirmed_age_seconds`, `kavach_allows_without_outcome_beyond_lookback`.
