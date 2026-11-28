@@ -558,8 +558,8 @@ mod tests {
             subject_ref: "ref:borrower:B-9382".into(),
             channel: None,
             waiver_bps: Some(3500),
-            requested_fields: Default::default(),
-            parameters: Default::default(),
+            requested_fields: std::collections::BTreeSet::new(),
+            parameters: std::collections::BTreeMap::new(),
         };
         let (record, keys) = signed_review(&snapshot, now);
         let path =
@@ -617,8 +617,8 @@ mod tests {
             subject_ref: "ref:borrower:B-1".into(),
             channel: None,
             waiver_bps: Some(3500),
-            requested_fields: Default::default(),
-            parameters: Default::default(),
+            requested_fields: std::collections::BTreeSet::new(),
+            parameters: std::collections::BTreeMap::new(),
             expires_at: now + Duration::minutes(30),
         };
         let proof = VerifiedStepUp {

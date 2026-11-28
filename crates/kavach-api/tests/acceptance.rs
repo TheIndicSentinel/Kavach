@@ -401,10 +401,10 @@ async fn scenario06_partial_large_waiver_needs_human_review(store: Store) {
         Some(credential_id)
     );
 
-    let (status, replay) = gw.call("propose_plan", approved_call.clone()).await;
-    assert_eq!(status, StatusCode::OK, "{replay}");
-    assert!(replay["replayed"].as_bool().unwrap_or(false));
-    assert_eq!(replay["record_id"], approved_record_id);
+    let (status, retried) = gw.call("propose_plan", approved_call.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{retried}");
+    assert!(retried["replayed"].as_bool().unwrap_or(false));
+    assert_eq!(retried["record_id"], approved_record_id);
 
     approved_call["params"]["waiver_bps"] = json!(3400);
     let (status, altered) = gw.call("propose_plan", approved_call).await;

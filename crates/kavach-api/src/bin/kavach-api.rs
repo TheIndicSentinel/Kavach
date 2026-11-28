@@ -821,42 +821,6 @@ impl Cli {
     }
 }
 
-#[cfg(test)]
-mod review_snapshot_cli_tests {
-    use super::*;
-
-    #[test]
-    fn parses_repeated_previous_snapshot_keys() {
-        let cli = Cli::try_parse_from([
-            "kavach-api",
-            "--pack",
-            "pack.yaml",
-            "--model",
-            "model.yaml",
-            "--review-snapshot-previous-key",
-            "review-old=/keys/old.key",
-            "--review-snapshot-previous-key",
-            "review-older=/keys/older.key",
-        ])
-        .expect("parse CLI");
-        assert_eq!(
-            cli.review_snapshot_previous_keys,
-            ["review-old=/keys/old.key", "review-older=/keys/older.key"]
-        );
-    }
-
-    #[test]
-    fn parses_key_id_and_path_and_rejects_malformed_values() {
-        assert_eq!(
-            parse_review_snapshot_previous_key("old=/keys/old.key").expect("key spec"),
-            ("old".into(), PathBuf::from("/keys/old.key"))
-        );
-        for value in ["", "no-separator", "=path", "id="] {
-            assert!(parse_review_snapshot_previous_key(value).is_err());
-        }
-    }
-}
-
 #[tokio::main]
 #[allow(clippy::too_many_lines)] // one startup sequence, read top to bottom
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -1119,4 +1083,40 @@ fn print_banner(
         insecure,
         pack_sha256
     );
+}
+
+#[cfg(test)]
+mod review_snapshot_cli_tests {
+    use super::*;
+
+    #[test]
+    fn parses_repeated_previous_snapshot_keys() {
+        let cli = Cli::try_parse_from([
+            "kavach-api",
+            "--pack",
+            "pack.yaml",
+            "--model",
+            "model.yaml",
+            "--review-snapshot-previous-key",
+            "review-old=/keys/old.key",
+            "--review-snapshot-previous-key",
+            "review-older=/keys/older.key",
+        ])
+        .expect("parse CLI");
+        assert_eq!(
+            cli.review_snapshot_previous_keys,
+            ["review-old=/keys/old.key", "review-older=/keys/older.key"]
+        );
+    }
+
+    #[test]
+    fn parses_key_id_and_path_and_rejects_malformed_values() {
+        assert_eq!(
+            parse_review_snapshot_previous_key("old=/keys/old.key").expect("key spec"),
+            ("old".into(), PathBuf::from("/keys/old.key"))
+        );
+        for value in ["", "no-separator", "=path", "id="] {
+            assert!(parse_review_snapshot_previous_key(value).is_err());
+        }
+    }
 }
