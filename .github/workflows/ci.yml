@@ -225,12 +225,16 @@ jobs:
 
       # This scenario must be allowed to stop Postgres, so it provisions and
       # controls its own disposable cluster instead of touching the shared CI service.
+      # It installs the runner distro's default major version (the image no longer
+      # carries postgresql-16); the version-pinned contracts run on the service above.
       - name: HA shared-Postgres outage and recovery
         run: |
           sudo apt-get update
-          sudo apt-get install -y postgresql-16
-          sudo pg_ctlcluster 16 main stop || true
-          PATH="/usr/lib/postgresql/16/bin:$PATH" scripts/test-ha-postgres-outage.sh
+          sudo apt-get install -y postgresql
+          major="$(ls /usr/lib/postgresql | sort -n | tail -1)"
+          echo "outage scenario uses PostgreSQL ${major}"
+          sudo pg_ctlcluster "${major}" main stop || true
+          PATH="/usr/lib/postgresql/${major}/bin:$PATH" scripts/test-ha-postgres-outage.sh
 
       - name: Validate gated HA Compose reference
         env:
