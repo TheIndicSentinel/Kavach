@@ -197,7 +197,9 @@ services:
       timeout: 3s
       retries: 30
 
-  # One-shot, as the system of record: issues the agent's mandate.
+  # One-shot, as the system of record: seeds the synthetic consent and
+  # contact preferences (signed authority updates), then issues the
+  # agent's mandate.
   issue-mandate:
     <<: *e2e
     profiles: ["run"]
@@ -207,6 +209,8 @@ services:
       - sh
       - -c
       - >-
+        kavach-dev seed-authority --bundle /bundle
+        --url http://172.30.20.10:8090/v1/sor/authority-updates &&
         kavach-dev sor-event --bundle /bundle
         --url http://172.30.20.10:8090/v1/sor/events
         --event-id "evt-isolation-$$(date +%s)"
