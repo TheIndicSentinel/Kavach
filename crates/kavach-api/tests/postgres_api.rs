@@ -223,10 +223,10 @@ async fn promoted_standby_converges_runtime_pointer_before_readiness() {
     )
     .await
     .expect("start active lease");
-    let active_state = match Arc::try_unwrap(active_state) {
-        Ok(state) => Arc::new(state.with_ha_fence(active_fence)),
-        Err(_) => panic!("active state unexpectedly shared during setup"),
+    let Ok(active_state) = Arc::try_unwrap(active_state) else {
+        panic!("active state unexpectedly shared during setup");
     };
+    let active_state = Arc::new(active_state.with_ha_fence(active_fence));
 
     let (standby_stop_tx, standby_stop_rx) = tokio::sync::watch::channel(false);
     let (standby_fence, standby_task) = kavach_api::ha_lease::start(
@@ -238,10 +238,10 @@ async fn promoted_standby_converges_runtime_pointer_before_readiness() {
     )
     .await
     .expect("start standby lease");
-    let standby_state = match Arc::try_unwrap(standby_state) {
-        Ok(state) => Arc::new(state.with_ha_fence(standby_fence.clone())),
-        Err(_) => panic!("standby state unexpectedly shared during setup"),
+    let Ok(standby_state) = Arc::try_unwrap(standby_state) else {
+        panic!("standby state unexpectedly shared during setup");
     };
+    let standby_state = Arc::new(standby_state.with_ha_fence(standby_fence.clone()));
     let active_app = router(active_state.clone());
     let standby_app = router(standby_state.clone());
     assert_eq!(standby_fence.status(), "standby");
@@ -308,6 +308,7 @@ async fn promoted_standby_converges_runtime_pointer_before_readiness() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)] // two replicas, one approval race, read top to bottom
 async fn concurrent_approvals_on_two_replicas_apply_once() {
     let Some(url) = isolated_database_url().await else {
         return;

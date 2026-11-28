@@ -32,12 +32,11 @@ fn start_with_interval(
                         tracing::info!("runtime pointer synchronization recovered");
                         unavailable = false;
                     }
-                    Ok(()) => {}
                     Err(error) if !unavailable => {
                         tracing::warn!(%error, "runtime pointer synchronization failed; governed evaluations remain unavailable");
                         unavailable = true;
                     }
-                    Err(_) => {}
+                    Ok(()) | Err(_) => {}
                 },
                 result = stop.changed() => {
                     if result.is_err() || *stop.borrow() {

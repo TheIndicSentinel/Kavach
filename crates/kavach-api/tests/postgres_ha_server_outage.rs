@@ -60,6 +60,7 @@ impl Drop for DisposablePostgres {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)] // one outage and restart, read top to bottom
 async fn apis_stay_fenced_during_shared_postgres_outage_and_recover_after_restart() {
     let Ok(data_dir) = std::env::var("KAVACH_HA_TEST_PGDATA") else {
         eprintln!("skipping server-outage test: KAVACH_HA_TEST_PGDATA is not set");

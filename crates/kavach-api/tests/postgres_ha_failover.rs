@@ -5,6 +5,7 @@ use kavach_storage::{connect_runtime, testing::isolated_database_urls};
 use tokio::sync::watch;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(clippy::too_many_lines)] // one failover, active to standby, read top to bottom
 async fn standby_promotes_after_active_stops_and_old_pool_is_fenced() {
     let Some((owner_url, runtime_url)) = isolated_database_urls().await else {
         return;
