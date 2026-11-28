@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use kavach_credential::DecryptionKey;
 use kavach_domain::mandate::{
     AgentPassport, ConsentArtefactSubset, ConsentRecord, ConsentStatus, ContactPreferenceRecord,
@@ -41,6 +41,16 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 pub const TENANT: &str = "default";
+
+/// When the dev stack's consents and contact preferences start to apply. The
+/// simulator replays a fixed calendar from 2026-10-01 against the stack, so a
+/// window measured back from today would leave its early days uncovered.
+#[must_use]
+pub fn fixture_valid_from() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+        .single()
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+}
 pub const ISSUER: &str = "https://idp.dev.kavach.local";
 pub const OPERATOR_AUDIENCE: &str = "kavach-api";
 pub const AGENT_AUDIENCE: &str = "kavach-agents";
@@ -564,7 +574,7 @@ fn write_kavach_config(
                     active: true,
                     artefact: Some(ConsentArtefactSubset {
                         data_types: set(&["loan_account"]),
-                        valid_from: Utc::now() - Duration::days(1),
+                        valid_from: fixture_valid_from(),
                         data_from: Utc::now() - Duration::days(30),
                         data_to: Utc::now(),
                         status: ConsentStatus::Active,
@@ -593,7 +603,7 @@ fn write_kavach_config(
                         subject_ref: borrower.subject_ref.clone(),
                         channel: channel.into(),
                         status: ContactPreferenceStatus::Allowed,
-                        valid_from: Utc::now() - Duration::days(1),
+                        valid_from: fixture_valid_from(),
                         expires_at: Utc::now() + Duration::days(30),
                     })
                 })
