@@ -150,3 +150,86 @@ async fn rows_and_statements_from_the_previous_version_survive_migrations_020_to
         applied.stored.revoked
     );
 }
+
+/// Migration 030 adds `idempotency_key` to `agent_decisions`, which is
+/// append-only (`kavach_append_only()`, migration 010). A database that
+/// already holds agent evidence must still upgrade, and a request recorded
+/// before the upgrade keeps its one-record-per-request key.
+#[tokio::test(flavor = "multi_thread")]
+async fn agent_evidence_recorded_before_migration_030_survives_the_upgrade() {
+    let Some(url) = isolated_database_url().await else {
+        return;
+    };
+    let raw = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await
+        .expect("connect");
+    let full = Migrator::new(Path::new(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/migrations"
+    )))
+    .await
+    .expect("migrations");
+    let old = Migrator {
+        migrations: Cow::Owned(
+            full.migrations
+                .iter()
+                .filter(|m| m.version < 30)
+                .cloned()
+                .collect(),
+        ),
+        ..Migrator::DEFAULT
+    };
+    old.run(&raw).await.expect("migrate to 029");
+
+    // An agent decision as the previous version wrote it (no idempotency_key).
+    sqlx::query(
+        "INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, prev_hash, hash, \
+            sig, key_id, payload, agent_id, request_id, binding, credential_id, returned_decision) \
+        VALUES ('compat', 0, 1, 'rec-old', 'p', 'h', 's', 'k', '{\"kind\":\"agent_decision\"}', \
+            'agent-old', 'req-old', '{}', NULL, 'BLOCK')",
+    )
+    .execute(&raw)
+    .await
+    .expect("old agent decision insert");
+
+    // Expand: the new migrations on top, through the real pool.
+    let pool = StoragePool::connect(&url, &kavach_storage::DatabaseTls::development())
+        .await
+        .expect("an upgrade over existing agent evidence must succeed");
+
+    let insert =
+        |seq: i64, record_id: &'static str, request_id: &'static str, key: &'static str| {
+            sqlx::query(
+                "INSERT INTO agent_decisions (tenant_id, partition_id, seq, record_id, prev_hash, \
+                hash, sig, key_id, payload, agent_id, request_id, idempotency_key, binding, \
+                credential_id, returned_decision) \
+            VALUES ('compat', 0, $1, $2, 'p', 'h', 's', 'k', '{\"kind\":\"agent_decision\"}', \
+                'agent-old', $3, $4, '{}', NULL, 'BLOCK')",
+            )
+            .bind(seq)
+            .bind(record_id)
+            .bind(request_id)
+            .bind(key)
+        };
+
+    // A new record with a fresh key is accepted, so the refusal below is the key's.
+    insert(2, "rec-fresh", "req-fresh", "req-fresh")
+        .execute(&pool.pool)
+        .await
+        .expect("a new agent decision with a fresh key");
+
+    // The old record keeps its one-per-request uniqueness under the new key.
+    let duplicate = insert(3, "rec-new", "req-other", "req-old")
+        .execute(&pool.pool)
+        .await
+        .expect_err("a new record must not reuse the request key of a record from before 030");
+    assert_eq!(
+        duplicate
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("agent_decisions_one_per_idempotency_key"),
+        "{duplicate}"
+    );
+}

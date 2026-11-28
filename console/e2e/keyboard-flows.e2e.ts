@@ -144,7 +144,7 @@ test.describe("lookups from the keyboard", () => {
     const key = `GET /v1/agent-decisions/${id}`;
     api.set(key, { json: body.decisionLookup });
     await page.goto("/agent-evidence");
-    await tabTo(page, page.getByLabel("Record id"));
+    await tabTo(page, page.getByLabel("Record id", { exact: true }));
     await page.keyboard.type(id);
     await page.keyboard.press("Tab");
     const button = page.getByRole("button", { name: "Look up record" });
@@ -177,11 +177,11 @@ test.describe("lookups from the keyboard", () => {
 
   test("a refused id puts focus on its field and sends nothing", async ({ page, api }: Fixtures) => {
     await page.goto("/agent-evidence");
-    await tabTo(page, page.getByLabel("Record id"));
+    await tabTo(page, page.getByLabel("Record id", { exact: true }));
     await page.keyboard.type("not a record id");
     await page.keyboard.press("Enter");
-    await expect(page.getByLabel("Record id")).toHaveAttribute("aria-invalid", "true");
-    await expect(page.getByLabel("Record id")).toBeFocused();
+    await expect(page.getByLabel("Record id", { exact: true })).toHaveAttribute("aria-invalid", "true");
+    await expect(page.getByLabel("Record id", { exact: true })).toBeFocused();
     expect(api.calls.filter((call) => call.key.startsWith("GET /v1/agent-decisions/"))).toEqual([]);
   });
 

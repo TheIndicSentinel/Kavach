@@ -3,10 +3,29 @@
 
 [advisories]
 version = 2
-# No ignored advisories. (RUSTSEC-2024-0436 and RUSTSEC-2023-0071 were
-# ignored until the 2026-10 dependency updates removed the affected crates;
-# if either returns, this check fails instead of staying silent.)
-ignore = []
+# cargo deny checks the build graph, so crates that are only in Cargo.lock do
+# not match; .cargo/audit.toml lists those for cargo audit, which reads the
+# lockfile. RUSTSEC-2024-0436 left the graph in the 2026-10 dependency updates.
+#
+# RUSTSEC-2023-0071 (rsa, Marvin timing side channel): compiled since
+# jsonwebtoken 10 with its rust_crypto backend (OIDC). The flaw is in RSA
+# private-key operations (decrypt, sign); Kavach only verifies RS*/PS* tokens
+# with the identity provider's public keys and never holds an RSA private key
+# (check: grep for from_rsa / EncodingKey in crates/ finds Ed25519 and test
+# HMAC only). No fixed rsa release exists. Review when rsa 0.10 is stable or if
+# any code starts signing or decrypting with RSA.
+#
+# RUSTSEC-2026-0387 (crypto-bigint 0.5.5, timing variability in operations
+# meant to be constant-time): compiled via jsonwebtoken rust_crypto -> p256 /
+# p384 -> ecdsa for ES256/ES384 verification. Verification's inputs (the
+# provider's public key, the token, its signature) are all public, so timing
+# reveals nothing secret; Kavach holds no EC private key for tokens. Fixed only
+# in 0.7.6, which the p256/p384 0.13 line jsonwebtoken 10.4 uses cannot take.
+# Review when jsonwebtoken moves to p256 0.14, or if any code signs with EC.
+ignore = [
+    { id = "RUSTSEC-2023-0071", reason = "rsa via jsonwebtoken rust_crypto: public-key verification only, no private-key operations" },
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint via jsonwebtoken rust_crypto: ES256/ES384 verification on public inputs only" },
+]
 unmaintained = "none"
 
 [licenses]

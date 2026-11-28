@@ -95,7 +95,7 @@ test("agent evidence: a seeded decision record and the revocation", async ({ pag
 
   await signInAs(page, context, ADMIN);
   await open(page, "/agent-evidence", "Agent evidence");
-  await page.getByLabel("Record id").fill(recordId);
+  await page.getByLabel("Record id", { exact: true }).fill(recordId);
   await page.getByRole("button", { name: "Look up record" }).click();
   await expect(status(page, `Found record ${recordId}.`)).toBeVisible();
 
@@ -190,7 +190,7 @@ test("a viewer sees what their groups may not do", async ({ page, context }) => 
   await page.goto("/reconciliation");
   await expect(page.getByRole("heading", { level: 1, name: "Closed loans" })).toBeVisible();
   await expect(
-    page.getByText(`Your groups (${VIEWER.groups.join(", ")}) don't include one that may reconcile closed loans.`),
+    page.getByText(`Your roles (none) and groups (${VIEWER.groups.join(", ")}) don't include one that may reconcile closed loans.`),
   ).toBeVisible();
   await signOut(page);
 });

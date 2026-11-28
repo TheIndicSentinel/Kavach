@@ -47,7 +47,7 @@ test("agents, evidence and a stop", async ({ page, context }) => {
   const recordId = records[SEEDED.forged] ?? Object.values(records)[0];
   expect(recordId, "the seed saved a record id").toBeTruthy();
   await open(page, "/agent-evidence", "Agent evidence");
-  await page.getByLabel("Record id").fill(recordId);
+  await page.getByLabel("Record id", { exact: true }).fill(recordId);
   await page.getByRole("button", { name: "Look up record" }).click();
   await expect(status(page, `Found record ${recordId}.`)).toBeVisible();
   await page.getByLabel("System").fill("lms");

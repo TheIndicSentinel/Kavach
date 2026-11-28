@@ -453,6 +453,8 @@ async fn execution_idempotency_preserves_original_request<S: AgentEvidenceStore>
     );
     let mut execution = request(tenant, request_id, 3);
     execution.idempotency_key = "execution-approved-1".into();
+    // The release carries its own one-use credential id (migration 031).
+    execution.credential_id = "cred-execution-approved-1".into();
     execution.binding.request_id = Some(request_id.into());
     execution.binding.approval_id = Some("approval-1".into());
     execution.binding.execution_id = Some("execution-approved-1".into());

@@ -767,6 +767,7 @@ async fn unknown_outcome_review_is_admin_only_paged_and_audited() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // one change-request lifecycle, read top to bottom
 async fn a_delivered_attestation_is_a_digest_only_one_person_change_request() {
     use axum::body::Body;
     use axum::http::Request;
@@ -793,7 +794,7 @@ async fn a_delivered_attestation_is_a_digest_only_one_person_change_request() {
     let reference = "private receipt value must never persist";
 
     let app = contract::router(gw.state.clone());
-    let send = |method: &str, uri: String, body: Value, caller: &str| {
+    let call = |method: &str, uri: String, body: Value, caller: &str| {
         let app = app.clone();
         let method: axum::http::Method = method.parse().unwrap();
         let caller = caller.to_string();
@@ -815,7 +816,7 @@ async fn a_delivered_attestation_is_a_digest_only_one_person_change_request() {
             (status, String::from_utf8_lossy(&bytes).into_owned())
         }
     };
-    let (status, proposed) = send(
+    let (status, proposed) = call(
         "POST",
         "/v1/change-requests".into(),
         json!({
@@ -854,7 +855,7 @@ async fn a_delivered_attestation_is_a_digest_only_one_person_change_request() {
         .await
         .is_err());
     let other = token("kavach-api", json!({ "sub": "ops-2" }));
-    let (status, denied) = send(
+    let (status, denied) = call(
         "POST",
         format!("/v1/change-requests/{id}/approve"),
         json!({ "change_digest": digest }),
@@ -863,7 +864,7 @@ async fn a_delivered_attestation_is_a_digest_only_one_person_change_request() {
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{denied}");
 
-    let (status, applied) = send(
+    let (status, applied) = call(
         "POST",
         format!("/v1/change-requests/{id}/approve"),
         json!({ "change_digest": digest }),
@@ -917,7 +918,7 @@ async fn a_not_delivered_attestation_requires_a_distinct_operator() {
         .unwrap();
     let credential = reviews[0].outcome.credential_id.clone();
     let app = contract::router(gw.state.clone());
-    let send = |method: Method, uri: String, body: Value, bearer: String| {
+    let call = |method: Method, uri: String, body: Value, bearer: String| {
         let app = app.clone();
         async move {
             let response = app
@@ -937,7 +938,7 @@ async fn a_not_delivered_attestation_requires_a_distinct_operator() {
             (status, String::from_utf8_lossy(&bytes).into_owned())
         }
     };
-    let (status, proposed) = send(
+    let (status, proposed) = call(
         Method::POST,
         "/v1/change-requests".into(),
         json!({
@@ -958,7 +959,7 @@ async fn a_not_delivered_attestation_requires_a_distinct_operator() {
     let id = proposed["id"].as_str().unwrap();
     let digest = proposed["change_digest"].as_str().unwrap();
 
-    let (status, same_person) = send(
+    let (status, same_person) = call(
         Method::POST,
         format!("/v1/change-requests/{id}/approve"),
         json!({ "change_digest": digest }),
@@ -968,7 +969,7 @@ async fn a_not_delivered_attestation_requires_a_distinct_operator() {
     assert_eq!(status, StatusCode::FORBIDDEN, "{same_person}");
 
     let other_operator = token("kavach-api", json!({ "sub": "ops-2" }));
-    let (status, applied) = send(
+    let (status, applied) = call(
         Method::POST,
         format!("/v1/change-requests/{id}/approve"),
         json!({ "change_digest": digest }),
@@ -1005,6 +1006,7 @@ async fn a_not_delivered_attestation_requires_a_distinct_operator() {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // one conflict-closure lifecycle, read top to bottom
 async fn a_conflict_closure_requires_two_operators_and_names_the_governing_state() {
     use axum::body::Body;
     use axum::http::{Method, Request};
@@ -1068,7 +1070,7 @@ async fn a_conflict_closure_requires_two_operators_and_names_the_governing_state
     assert_eq!(governing(&rows), Governing::Conflicted);
 
     let app = contract::router(gw.state.clone());
-    let send = |method: Method, uri: String, body: Value, bearer: String| {
+    let call = |method: Method, uri: String, body: Value, bearer: String| {
         let app = app.clone();
         async move {
             let response = app
@@ -1089,7 +1091,7 @@ async fn a_conflict_closure_requires_two_operators_and_names_the_governing_state
         }
     };
     let reference = "joint review record 77";
-    let (status, proposed) = send(
+    let (status, proposed) = call(
         Method::POST,
         "/v1/change-requests".into(),
         json!({
@@ -1109,7 +1111,7 @@ async fn a_conflict_closure_requires_two_operators_and_names_the_governing_state
     assert!(!proposed.to_string().contains(reference));
     let id = proposed["id"].as_str().unwrap();
     let digest = proposed["change_digest"].as_str().unwrap();
-    let (status, same_person) = send(
+    let (status, same_person) = call(
         Method::POST,
         format!("/v1/change-requests/{id}/approve"),
         json!({ "change_digest": digest }),
@@ -1118,7 +1120,7 @@ async fn a_conflict_closure_requires_two_operators_and_names_the_governing_state
     .await;
     assert_eq!(status, StatusCode::FORBIDDEN, "{same_person}");
     let other = token("kavach-api", json!({ "sub": "ops-4" }));
-    let (status, applied) = send(
+    let (status, applied) = call(
         Method::POST,
         format!("/v1/change-requests/{id}/approve"),
         json!({ "change_digest": digest }),

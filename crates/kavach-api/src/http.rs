@@ -30,6 +30,7 @@ use crate::state::AppState;
 /// health, metrics, runtime, change requests, the audit log and the evidence
 /// reads. Every other API route is an unknown path. The console is served
 /// in both modes (see [`crate::console`]).
+#[allow(clippy::too_many_lines)] // the route table reads best as one list
 pub fn router(state: Arc<AppState>) -> Router {
     let agent_only = state
         .dataplane()

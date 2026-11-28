@@ -37,7 +37,7 @@ const LOOKUPS: Lookup[] = [
     key: `GET /v1/agent-decisions/${RECORD_ID}`,
     result: body.decisionLookup,
     submit: async (page) => {
-      await page.getByLabel("Record id").fill(RECORD_ID);
+      await page.getByLabel("Record id", { exact: true }).fill(RECORD_ID);
       await page.getByRole("button", { name: "Look up record" }).click();
     },
     found: `Found record ${RECORD_ID}.`,

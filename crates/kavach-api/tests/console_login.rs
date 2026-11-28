@@ -1569,6 +1569,7 @@ async fn d17_live_step_up_decision_and_approved_agent_execution_on_postgres() {
     .await;
 }
 
+#[allow(clippy::too_many_lines)] // one D17 ceremony, sign-in to agent release, read top to bottom
 async fn d17_live_step_up_decision_and_approved_agent_execution(
     store: EvidenceStoreKind,
     migration_database_url: Option<String>,

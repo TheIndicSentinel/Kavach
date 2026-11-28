@@ -140,37 +140,38 @@ impl ReviewApprovalStore for PostgresReviewApprovalStore {
         tx.commit()
             .await
             .map_err(|_| PortError::unavailable("review release storage is unavailable"))?;
-        existing
-            .map(|row| {
-                let release = ReviewReleaseRecord {
-                    tenant_id: row.try_get("tenant_id").map_err(|_| {
-                        PortError::unavailable("stored review release is malformed")
-                    })?,
-                    approval_id: row.try_get("approval_id").map_err(|_| {
-                        PortError::unavailable("stored review release is malformed")
-                    })?,
-                    review_record_id: row.try_get("review_record_id").map_err(|_| {
-                        PortError::unavailable("stored review release is malformed")
-                    })?,
-                    execution_id: row.try_get("execution_id").map_err(|_| {
-                        PortError::unavailable("stored review release is malformed")
-                    })?,
-                    action_hash: row.try_get("action_hash").map_err(|_| {
-                        PortError::unavailable("stored review release is malformed")
-                    })?,
-                    single_use_credential_id: row.try_get("single_use_credential_id").map_err(
-                        |_| PortError::unavailable("stored review release is malformed"),
-                    )?,
-                    approver: row.try_get("approver").map_err(|_| {
-                        PortError::unavailable("stored review release is malformed")
-                    })?,
-                    released_at: row.try_get("released_at").map_err(|_| {
-                        PortError::unavailable("stored review release is malformed")
-                    })?,
-                };
-                release.validate()?;
-                Ok(release)
-            })
-            .transpose()
+        existing.as_ref().map(stored_release).transpose()
     }
+}
+
+/// A release row read back from `human_review_releases`, validated.
+fn stored_release(row: &sqlx::postgres::PgRow) -> Result<ReviewReleaseRecord, PortError> {
+    let release = ReviewReleaseRecord {
+        tenant_id: row
+            .try_get("tenant_id")
+            .map_err(|_| PortError::unavailable("stored review release is malformed"))?,
+        approval_id: row
+            .try_get("approval_id")
+            .map_err(|_| PortError::unavailable("stored review release is malformed"))?,
+        review_record_id: row
+            .try_get("review_record_id")
+            .map_err(|_| PortError::unavailable("stored review release is malformed"))?,
+        execution_id: row
+            .try_get("execution_id")
+            .map_err(|_| PortError::unavailable("stored review release is malformed"))?,
+        action_hash: row
+            .try_get("action_hash")
+            .map_err(|_| PortError::unavailable("stored review release is malformed"))?,
+        single_use_credential_id: row
+            .try_get("single_use_credential_id")
+            .map_err(|_| PortError::unavailable("stored review release is malformed"))?,
+        approver: row
+            .try_get("approver")
+            .map_err(|_| PortError::unavailable("stored review release is malformed"))?,
+        released_at: row
+            .try_get("released_at")
+            .map_err(|_| PortError::unavailable("stored review release is malformed"))?,
+    };
+    release.validate()?;
+    Ok(release)
 }

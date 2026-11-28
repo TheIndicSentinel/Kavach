@@ -810,6 +810,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/human-review/{record_id}/approval": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Records one exact-action HUMAN_REVIEW decision (D17).
+         * @description Requires a live reviewer session, Cedar permission and a fresh
+         *     session-bound step-up proof for the signed action. Approval creates a
+         *     short-lived release and execution ID; rejection records the decision
+         *     without permitting agent execution.
+         */
+        post: operations["decideHumanReview"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/session": {
         parameters: {
             query?: never;
@@ -2948,6 +2971,51 @@ export interface operations {
                     "application/json": {
                         /** Format: uri */
                         authorization_url: string;
+                        /** Format: date-time */
+                        expires_at: string;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    decideHumanReview: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The console's CSRF header; must be `1`. */
+                "X-Kavach-Console": components["parameters"]["ConsoleHeader"];
+            };
+            path: {
+                record_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    decision: "approve" | "reject";
+                };
+            };
+        };
+        responses: {
+            /** @description The decision was recorded. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        approval_id: string;
+                        execution_id: string | null;
+                        /** @enum {string} */
+                        decision: "approve" | "reject";
                         /** Format: date-time */
                         expires_at: string;
                     };

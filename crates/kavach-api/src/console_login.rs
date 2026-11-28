@@ -1595,7 +1595,7 @@ pub async fn step_up_callback(
     let Ok(secrets) = login.take_step_up_callback(handle, state_value) else {
         return step_up_callback_failure();
     };
-    let Some(verifier) = state.oidc().cloned() else {
+    let Some(oidc_verifier) = state.oidc().cloned() else {
         return step_up_callback_failure();
     };
     let callback = KeycloakStepUpCallback::new(
@@ -1606,7 +1606,7 @@ pub async fn step_up_callback(
             client_secret: TokenSecret::new(login.client_secret.expose().to_owned()),
             redirect_uri: format!("{}{STEP_UP_CALLBACK_PATH}", login.origin),
             expected_acr: login.step_up_acr().unwrap_or_default().to_owned(),
-            verifier,
+            verifier: oidc_verifier,
             allow_http_loopback: state.insecure_dev(),
         },
     );
@@ -1926,6 +1926,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::too_many_lines)] // one step-up session lifecycle, read top to bottom
     async fn step_up_secrets_stay_in_the_bound_console_session_and_are_taken_once() {
         let now = Utc.with_ymd_and_hms(2026, 11, 17, 12, 0, 0).unwrap();
         let mut settings = ConsoleLoginSettings::new(
