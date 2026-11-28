@@ -73,7 +73,12 @@ export KAVACH_GRPC_PORT="$active_grpc"
 export KAVACH_HA_STANDBY_HTTP_PORT="$standby_http"
 export KAVACH_HA_STANDBY_GRPC_PORT="$standby_grpc"
 
-"${COMPOSE[@]}" up --build --detach --wait --wait-timeout 300 kavach-api kavach-api-standby
+if ! "${COMPOSE[@]}" up --build --detach --wait --wait-timeout 300 kavach-api kavach-api-standby; then
+  echo 'HA Compose stack did not become healthy' >&2
+  "${COMPOSE[@]}" ps --all >&2 || true
+  "${COMPOSE[@]}" logs --no-color kavach-api kavach-api-standby >&2 || true
+  exit 1
+fi
 
 lease() {
   "${COMPOSE[@]}" exec -T postgres psql -U "${POSTGRES_USER:-kavach}" -d "${POSTGRES_DB:-kavach}" \
