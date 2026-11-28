@@ -28,8 +28,13 @@ touch "$DATA/.kavach-ha-outage-test-cluster"
 cat >>"$DATA/postgresql.conf" <<EOF
 listen_addresses = '127.0.0.1'
 port = $PORT
+unix_socket_directories = '$STATE'
 EOF
-pg_ctl -D "$DATA" -l "$STATE/postgres.log" start >/dev/null
+# Distro builds default the socket to a directory the runner user cannot write.
+if ! pg_ctl -D "$DATA" -l "$STATE/postgres.log" start >/dev/null; then
+  cat "$STATE/postgres.log" >&2 || true
+  exit 1
+fi
 
 cd "$ROOT"
 KAVACH_TEST_DATABASE_URL="postgres://$DB_USER@127.0.0.1:$PORT/postgres?sslmode=disable" \
