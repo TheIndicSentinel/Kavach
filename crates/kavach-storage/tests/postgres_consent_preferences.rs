@@ -196,8 +196,8 @@ async fn postgres_authority_projections_are_tenant_scoped_with_scoped_runtime_gr
         ("authority_updates", "UPDATE", false),
         ("authority_updates", "DELETE", false),
         ("authority_updates", "TRUNCATE", false),
-        ("consent_current", "INSERT", false),
-        ("consent_current", "UPDATE", false),
+        ("consent_current", "INSERT", true), // granted by 035 for signed consent updates
+        ("consent_current", "UPDATE", true),
         ("consent_current", "DELETE", false),
         ("consent_current", "TRUNCATE", false),
         ("contact_preference_current", "INSERT", true),
