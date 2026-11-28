@@ -6,6 +6,7 @@
 #
 # One operation per line: METHOD /path reason
 
+GET /ready Readiness probe for the orchestrator and load balancer (503 while standby, fenced or not converged); the console has no use for it.
 GET /metrics Prometheus text format for Prometheus and Grafana (deploy/monitoring/), with an operator token allowed read_metrics; the console has no metrics view.
 POST /v1/dev/clock Development stacks only (404 unless started with `kavach dev up --clock`); driven by the kavach CLI (dev, simulate, attack), never by an operator in the console.
 POST /v1/authorize Agent listener: an agent's pre-check, with an agent token; not on the operator listener the console talks to.
