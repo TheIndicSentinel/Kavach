@@ -59,6 +59,7 @@ fn trusted_now(now: chrono::DateTime<Utc>) -> TrustedNow {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // one update lifecycle: replay, rotation, source pinning, read back
 async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
     let Some((owner_url, runtime_url)) = isolated_database_urls().await else {
         return;
@@ -108,9 +109,9 @@ async fn signed_reference_updates_are_encrypted_atomic_and_source_pinned() {
     let token = jws::sign(&signer, "lms-1", TYP_AUTHORITY_UPDATE, &first)
         .await
         .unwrap();
-    let verified = verifier.verify(&token, trusted_now(now)).unwrap();
-    assert!(!writer.apply(&verified).await.unwrap().replayed);
-    assert!(writer.apply(&verified).await.unwrap().replayed);
+    let accepted = verifier.verify(&token, trusted_now(now)).unwrap();
+    assert!(!writer.apply(&accepted).await.unwrap().replayed);
+    assert!(writer.apply(&accepted).await.unwrap().replayed);
 
     let history_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM authority_updates")
         .fetch_one(&runtime.pool)

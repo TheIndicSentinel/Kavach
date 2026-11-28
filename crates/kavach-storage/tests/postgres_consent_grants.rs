@@ -66,6 +66,7 @@ fn verifier(public_key: kavach_ports::PublicKey) -> AuthorityVerifier {
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)] // one consent lifecycle: grant, replay, withdraw, barrier, read back
 async fn signed_consent_grants_and_withdrawals_are_atomic_and_idempotent() {
     let Some((owner_url, runtime_url)) = isolated_database_urls().await else {
         return;
