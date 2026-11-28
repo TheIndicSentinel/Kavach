@@ -926,7 +926,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             config.roles.tenant_id.clone(),
             stop_rx.clone(),
         )
-        .await?;
+        .await
+        .map_err(|_| std::io::Error::other("HA lease token could not be generated"))?;
         state = state.with_ha_fence(fence);
         Some(task)
     } else {
