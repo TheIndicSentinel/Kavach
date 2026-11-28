@@ -144,7 +144,9 @@ fn open_snapshot(
         .ts
         .checked_add_signed(Duration::seconds(REVIEW_SNAPSHOT_TTL_SECONDS))
         .ok_or_else(|| ApiError::NotFound("no eligible HUMAN_REVIEW record".into()))?;
-    if stored.expires_at != expected_expiry || stored.expires_at <= now {
+    // Postgres keeps microseconds; the record time may carry nanoseconds.
+    let same_expiry = (stored.expires_at - expected_expiry).num_microseconds() == Some(0);
+    if !same_expiry || stored.expires_at <= now {
         return Err(ApiError::NotFound("no eligible HUMAN_REVIEW record".into()));
     }
     let envelope = EncryptedReviewSnapshot {
