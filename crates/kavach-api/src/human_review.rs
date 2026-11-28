@@ -253,6 +253,7 @@ async fn approve_inner(
     // Reload and re-verify the signed record and encrypted snapshot at the
     // decision boundary. This also enforces the current Cedar permission.
     let view = read_inner(state, headers, record_id, credentials).await?;
+    // The step-up proof's freshness runs on the login clock (the host).
     let now = Utc::now();
     let proof = login
         .take_verified_step_up(session_cookie, &view.action_hash)
@@ -385,7 +386,7 @@ async fn read_inner(
         .human_review_record(record_id)
         .await
         .map_err(|_| ApiError::Unavailable("review evidence is unavailable".into()))?;
-    let now = Utc::now();
+    let now = dataplane.now();
     let stored = state
         .review_snapshot_store()
         .get_live(state.tenant_id(), record_id, now)

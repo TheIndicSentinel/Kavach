@@ -1413,6 +1413,19 @@ fn evidence_export_from_postgres_verifies_and_a_changed_copy_fails() {
     assert!(doc["records"].as_u64().unwrap() >= 1, "{doc}");
     drop(stack);
 
+    // A restart on the same database keeps the stored consent and
+    // preferences: the re-seed is not newer, and the stack still starts.
+    let restart = kavach(
+        &dir,
+        &["--json", "dev", "up", "--at", "11:00", "--exit-when-ready"],
+    );
+    assert_eq!(
+        restart.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&restart.stderr)
+    );
+
     // A second export into the same directory is refused, not merged.
     let again = kavach(&dir, &["evidence", "export", bundle.to_str().unwrap()]);
     assert_eq!(again.status.code(), Some(1));

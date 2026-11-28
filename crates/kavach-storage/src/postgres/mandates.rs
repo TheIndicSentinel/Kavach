@@ -4,7 +4,7 @@
 //! `insert_child` and `revoke_tree` serialise per tenant on a transaction
 //! advisory lock, so a child is never inserted under a parent that a
 //! concurrent revocation is revoking (and never missed by it). Delegation and
-//! revocation are rare; root issuance and reads take no lock.
+//! root writes serialize with consent withdrawal on the same lock.
 
 use chrono::{DateTime, Utc};
 use kavach_domain::mandate::{Mandate, MandateStatus, RevocationReason};
@@ -111,6 +111,32 @@ impl PostgresMandateStore {
             .collect()
     }
 
+    async fn reject_withdrawn_consent(
+        tx: &mut Transaction<'_, Postgres>,
+        mandate: &Mandate,
+    ) -> Result<(), PortError> {
+        if mandate.consent_refs.is_empty() {
+            return Ok(());
+        }
+        let consent_refs: Vec<String> = mandate.consent_refs.iter().cloned().collect();
+        let withdrawn: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM mandate_revocations \
+             WHERE tenant_id = $1 AND event_type = 'consent.withdrawn' \
+             AND record_ref = ANY($2))",
+        )
+        .bind(&mandate.tenant_id)
+        .bind(&consent_refs)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| unavailable(&e))?;
+        if withdrawn {
+            return Err(PortError::rejected(
+                "consent is withdrawn; a new mandate needs new consent authority",
+            ));
+        }
+        Ok(())
+    }
+
     async fn insert_row<'e>(
         executor: impl sqlx::PgExecutor<'e>,
         record: &StoredMandate,
@@ -180,7 +206,11 @@ impl MandateStore for PostgresMandateStore {
                 "a delegated mandate needs insert_child",
             ));
         }
-        Self::insert_row(&self.pool, &record, None).await
+        let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
+        Self::lock_tenant(&mut tx, &record.mandate.tenant_id).await?;
+        Self::reject_withdrawn_consent(&mut tx, &record.mandate).await?;
+        Self::insert_row(&mut *tx, &record, None).await?;
+        tx.commit().await.map_err(|e| unavailable(&e))
     }
 
     async fn insert_child(&self, record: StoredMandate) -> Result<(), PortError> {
@@ -190,6 +220,7 @@ impl MandateStore for PostgresMandateStore {
         let tenant = record.mandate.tenant_id.clone();
         let mut tx = self.pool.begin().await.map_err(|e| unavailable(&e))?;
         Self::lock_tenant(&mut tx, &tenant).await?;
+        Self::reject_withdrawn_consent(&mut tx, &record.mandate).await?;
         let status: Option<String> =
             sqlx::query_scalar("SELECT status FROM mandates WHERE tenant_id = $1 AND id = $2")
                 .bind(&tenant)
@@ -307,6 +338,7 @@ impl MandateStore for PostgresMandateStore {
         .fetch_all(&mut *tx)
         .await
         .map_err(|e| unavailable(&e))?;
+        Self::reject_withdrawn_consent(&mut tx, m).await?;
         let mut barrier: Option<DateTime<Utc>> = None;
         for row in &rows {
             let kind: String = row.try_get("event_type").map_err(|e| unavailable(&e))?;

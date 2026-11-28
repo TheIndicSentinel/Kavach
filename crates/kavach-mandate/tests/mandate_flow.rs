@@ -2,7 +2,9 @@ mod common;
 
 use chrono::Duration;
 use common::*;
-use kavach_domain::mandate::{DelegationRequest, RevocationReason};
+use kavach_domain::mandate::{
+    ConsentArtefactSubset, ConsentStatus, DelegationRequest, RevocationReason,
+};
 use kavach_ports::{DomainEvent, ErrorClass, TimeSource};
 
 #[tokio::test]
@@ -102,6 +104,24 @@ async fn mandate_lifetime_is_clamped_to_consent_expiry() {
     let token = sign_event(&f.sor, "lms-issuer-1", &event(f.now, "evt-1")).await;
     let issued = f.service.issue_from_event(&token).await.unwrap();
     assert_eq!(issued.mandate.exp, t0() + Duration::hours(2));
+}
+
+#[tokio::test]
+async fn a_consent_not_yet_valid_issues_no_mandate() {
+    let mut c = consent(t0());
+    c.artefact = Some(ConsentArtefactSubset {
+        data_types: set(&["loan_account"]),
+        valid_from: t0() + Duration::hours(1),
+        data_from: t0() - Duration::days(30),
+        data_to: t0(),
+        status: ConsentStatus::Active,
+    });
+    let f = fixture_with(vec![c], template());
+    let token = sign_event(&f.sor, "lms-issuer-1", &event(f.now, "evt-future-consent")).await;
+    assert_eq!(
+        f.service.issue_from_event(&token).await.unwrap_err().class,
+        ErrorClass::Rejected
+    );
 }
 
 #[tokio::test]

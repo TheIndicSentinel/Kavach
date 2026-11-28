@@ -83,6 +83,9 @@ struct AgentArgs {
     /// Consent fixture JSON (PRD D7).
     #[arg(long, env = "KAVACH_CONSENTS")]
     consents: Option<PathBuf>,
+    /// Optional explicit contact-preference fixture for no-database development.
+    #[arg(long, env = "KAVACH_CONTACT_PREFERENCES")]
+    contact_preferences: Option<PathBuf>,
     #[arg(long, env = "KAVACH_TENANT_ID", default_value = "default")]
     tenant_id: String,
     /// System-of-record events accepted per second.
@@ -115,6 +118,19 @@ struct AgentArgs {
     /// channel; synthetic +910 numbers only).
     #[arg(long, env = "KAVACH_REFERENCES")]
     references: Option<PathBuf>,
+    /// Owner-only 32-byte hex key file for signed destination updates.
+    #[arg(long, env = "KAVACH_REFERENCE_VAULT_KEY_FILE")]
+    reference_vault_key_file: Option<PathBuf>,
+    /// Key id authenticated into new destination envelopes.
+    #[arg(
+        long,
+        env = "KAVACH_REFERENCE_VAULT_KEY_ID",
+        default_value = "reference-v1"
+    )]
+    reference_vault_key_id: String,
+    /// Previous owner-only vault keys, decrypt-only (`KEY_ID=PATH`, repeatable).
+    #[arg(long = "reference-vault-previous-key", value_name = "KEY_ID=PATH", action = clap::ArgAction::Append)]
+    reference_vault_previous_keys: Vec<String>,
     /// Gateway → provider connect timeout (ms; no retries).
     #[arg(
         long,
@@ -178,6 +194,11 @@ impl AgentArgs {
     ) -> Result<Option<kavach_api::dataplane::DataplaneConfig>, String> {
         let hsm = self.hsm_config()?;
         let Some(audience) = self.agent_oidc_audience else {
+            if self.reference_vault_key_file.is_some()
+                || !self.reference_vault_previous_keys.is_empty()
+            {
+                return Err("reference vault keys require the agent surfaces".into());
+            }
             if self.agent_only {
                 return Err(
                     "--agent-only serves the agent surfaces and nothing else: it needs them \
@@ -199,6 +220,23 @@ impl AgentArgs {
             Some(dir) => Ok(dir),
             None if in_hsm(role) => Ok(PathBuf::new()),
             None => Err(format!("agent surfaces need {flag} (or --hsm-keys {role})")),
+        };
+        let reference_vault = match &self.reference_vault_key_file {
+            Some(key_file) => Some(kavach_api::dataplane::ReferenceVaultConfig {
+                key_file: key_file.clone(),
+                key_id: self.reference_vault_key_id.clone(),
+                previous_keys: self
+                    .reference_vault_previous_keys
+                    .iter()
+                    .map(|entry| parse_reference_vault_previous_key(entry))
+                    .collect::<Result<Vec<_>, _>>()?,
+            }),
+            None if self.reference_vault_previous_keys.is_empty() => None,
+            None => {
+                return Err(
+                    "--reference-vault-previous-key requires --reference-vault-key-file".into(),
+                );
+            }
         };
         Ok(Some(kavach_api::dataplane::DataplaneConfig {
             agent_oidc: OidcConfig {
@@ -228,6 +266,7 @@ impl AgentArgs {
             checkpoint_stall_seconds: self.checkpoint_stall_seconds,
             subject_pseudonym_key: need(self.subject_pseudonym_key, "--subject-pseudonym-key")?,
             consents: need(self.consents, "--consents")?,
+            contact_preferences: self.contact_preferences,
             tenant_id: self.tenant_id,
             agent_only: self.agent_only,
             sor_rate_per_second: self.sor_rate_per_second,
@@ -242,6 +281,7 @@ impl AgentArgs {
             credential_key_id: self.credential_key_id,
             providers: need(self.providers, "--providers")?,
             references: need(self.references, "--references")?,
+            reference_vault,
             provider_connect_timeout_ms: self.provider_connect_timeout_ms,
             provider_timeout_ms: self.provider_timeout_ms,
             provider_ca: self.provider_ca,
@@ -696,6 +736,16 @@ fn parse_review_snapshot_previous_key(entry: &str) -> Result<(String, PathBuf), 
     Ok((key_id.to_owned(), PathBuf::from(path)))
 }
 
+fn parse_reference_vault_previous_key(entry: &str) -> Result<(String, PathBuf), String> {
+    let (key_id, path) = entry
+        .split_once('=')
+        .ok_or_else(|| "--reference-vault-previous-key must be KEY_ID=PATH".to_owned())?;
+    if key_id.is_empty() || path.is_empty() {
+        return Err("--reference-vault-previous-key must be KEY_ID=PATH".into());
+    }
+    Ok((key_id.to_owned(), PathBuf::from(path)))
+}
+
 impl Cli {
     /// The limits every listener applies (bounds checked again here).
     fn listener_limits(&self) -> Result<ListenerLimits, String> {
@@ -1117,6 +1167,40 @@ mod review_snapshot_cli_tests {
         );
         for value in ["", "no-separator", "=path", "id="] {
             assert!(parse_review_snapshot_previous_key(value).is_err());
+        }
+    }
+
+    #[test]
+    fn parses_repeated_previous_reference_vault_keys() {
+        let cli = Cli::try_parse_from([
+            "kavach-api",
+            "--pack",
+            "pack.yaml",
+            "--model",
+            "model.yaml",
+            "--reference-vault-previous-key",
+            "vault-old=/keys/vault-old.key",
+            "--reference-vault-previous-key",
+            "vault-older=/keys/vault-older.key",
+        ])
+        .expect("parse CLI");
+        assert_eq!(
+            cli.agents.reference_vault_previous_keys,
+            [
+                "vault-old=/keys/vault-old.key",
+                "vault-older=/keys/vault-older.key"
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_reference_vault_key_id_and_path_and_rejects_malformed_values() {
+        assert_eq!(
+            parse_reference_vault_previous_key("old=/keys/old.key").expect("key spec"),
+            ("old".into(), PathBuf::from("/keys/old.key"))
+        );
+        for value in ["", "no-separator", "=path", "id="] {
+            assert!(parse_reference_vault_previous_key(value).is_err());
         }
     }
 }

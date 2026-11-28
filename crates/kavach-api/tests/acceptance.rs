@@ -308,6 +308,38 @@ async fn scenario05_another_borrower_is_blocked_without_a_human(store: Store) {
 /// Scenario 6 (partial): A 35% waiver against a 10% ceiling → HUMAN_REVIEW; 5% →
 /// PASS. Pre-check only; WebAuthn step-up and approvals bound to the action
 /// hash are M4.
+/// The review snapshot's lifetime runs on the stack's clock, not the host's:
+/// a stack whose clock is behind the host (a fixed dev clock, a test clock)
+/// still stores and serves the snapshot of a fresh review.
+#[tokio::test(flavor = "multi_thread")]
+async fn review_snapshot_lifetime_follows_the_stack_clock() {
+    let Some((gw, _)) = world_and_database(Store::Memory, Some(NUMBER), true, true).await else {
+        return;
+    };
+    // Two hours behind the host: past the 30-minute snapshot lifetime if the
+    // host clock were used, inside the fixture consent's validity.
+    let behind = chrono::Utc::now() - Duration::hours(2);
+    gw.clock.advance(behind - gw.clock_now());
+    let mandate = issue_at(&gw.state, "evt-clock", gw.clock_now()).await;
+    let (status, reply) = gw
+        .call(
+            "propose_plan",
+            json!({ "mandate_id": mandate, "request_id": "clock-35",
+                    "params": { "subject_ref": SUBJECT, "waiver_bps": 3500 } }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reply}");
+    assert_eq!(decision(&reply), "HUMAN_REVIEW", "{reply}");
+    let review_record_id = reply["record_id"].as_str().expect("review record id");
+    assert!(gw
+        .state
+        .review_snapshot_store()
+        .get_live("default", review_record_id, gw.clock_now())
+        .await
+        .expect("snapshot lookup")
+        .is_some());
+}
+
 async fn scenario06_partial_large_waiver_needs_human_review(store: Store) {
     let Some((gw, _)) = world_and_database(store, Some(NUMBER), true, true).await else {
         return;

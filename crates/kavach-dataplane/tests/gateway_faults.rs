@@ -19,9 +19,12 @@ use kavach_dataplane::{
     reconcile_outcomes, AgentIdentity, AuthorizeConfig, AuthorizeCore, ForwardResult, Forwarder,
     MandateVerifier, PollState, ProviderStatus, StatusAnswer, StatusAsker, ToolRequest,
 };
+use kavach_domain::mandate::{ContactPreferenceRecord, ContactPreferenceStatus};
 use kavach_domain::Decision;
 use kavach_keys::{InMemoryKeyProvider, SubjectKeys};
-use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus, InMemoryMandateStore};
+use kavach_mandate::memory::{
+    InMemoryConsentSource, InMemoryContactPreferenceSource, InMemoryEventBus, InMemoryMandateStore,
+};
 use kavach_mandate::{MandateDeps, MandateService};
 use kavach_ports::agent_evidence::{AgentEvidenceStore, Outcome};
 use kavach_ports::{
@@ -73,6 +76,7 @@ impl MandateVerifier for Gate {
 #[derive(Default)]
 struct Resolver {
     fail: Mutex<Option<ErrorClass>>,
+    calls: AtomicUsize,
 }
 
 impl ReferenceResolver for Resolver {
@@ -82,6 +86,7 @@ impl ReferenceResolver for Resolver {
         _subject_ref: &str,
         _channel: &str,
     ) -> impl Future<Output = Result<Destination, PortError>> + Send {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         std::future::ready(match *self.fail.lock().unwrap() {
             Some(class) => Err(PortError {
                 class,
@@ -224,6 +229,7 @@ struct World {
     broker: Broker,
     forwarder: Forwarder_,
     observer: Observer,
+    contact_preferences: InMemoryContactPreferenceSource,
 }
 
 fn world() -> World {
@@ -274,6 +280,15 @@ fn world() -> World {
         broker: Broker::default(),
         forwarder: Forwarder_::default(),
         observer: Observer::default(),
+        contact_preferences: InMemoryContactPreferenceSource::new([ContactPreferenceRecord {
+            tenant_id: TENANT.into(),
+            subject_ref: SUBJECT.into(),
+            channel: "whatsapp".into(),
+            status: ContactPreferenceStatus::Allowed,
+            valid_from: ist(11, 0, 0) - Duration::days(1),
+            expires_at: ist(11, 0, 0) + Duration::days(30),
+        }])
+        .expect("valid preference fixture"),
     }
 }
 
@@ -318,6 +333,7 @@ impl World {
         let deps = GatewayDeps {
             core: &self.core,
             resolver: &self.resolver,
+            contact_preferences: &self.contact_preferences,
             broker: &self.broker,
             forwarder: &self.forwarder,
             gateway_held: None,
@@ -379,6 +395,40 @@ impl World {
         let mut polls = PollState::default();
         reconcile_outcomes(&self.core, &asker, &Questions, &mut polls).await
     }
+}
+
+#[tokio::test]
+async fn missing_contact_preference_stops_before_destination_resolution() {
+    let world = world();
+    let mandate = world.mandate().await;
+    let no_preferences = InMemoryContactPreferenceSource::new([]).unwrap();
+    let deps = GatewayDeps {
+        core: &world.core,
+        resolver: &world.resolver,
+        contact_preferences: &no_preferences,
+        broker: &world.broker,
+        forwarder: &world.forwarder,
+        gateway_held: None,
+        approval_release: None,
+        observer: &world.observer,
+    };
+
+    let reply = execute(
+        &deps,
+        &agent(),
+        "send_reminder",
+        request(&mandate, "missing-pref"),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(reply.outcome, Some(Outcome::NotExecuted));
+    assert_eq!(
+        reply.outcome_reason.as_deref(),
+        Some("contact_preference_denied")
+    );
+    assert_eq!(world.resolver.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(world.forwarder.sends.load(Ordering::SeqCst), 0);
 }
 
 /// F7, part one: a transient failure of the outcome write is retried, so the

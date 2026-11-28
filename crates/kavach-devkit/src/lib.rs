@@ -8,7 +8,7 @@
 //! |---|---|---|
 //! | `kavach/keys/` | kavach-api | `dev-mandate-1`, `dev-evidence-1`, `dev-checkpoint-1`, `dev-credential-1` (owner-only) |
 //! | `kavach/pseudonym.key` | kavach-api | subject pseudonym secret (owner-only) |
-//! | `kavach/*.json`, `kavach/tools/` | kavach-api | mandate config, consents, references (synthetic numbers), providers, JWKS, signed tool registry, tool signers |
+//! | `kavach/*.json`, `kavach/tools/` | kavach-api | mandate config, consents, explicit development contact preferences, references (synthetic numbers), providers, JWKS, signed tool registry, tool signers |
 //! | `kavach/tls/ca.pem` | kavach-api | the dev CA the gateway trusts for providers and for Postgres |
 //! | `postgres/` | Postgres | its TLS certificate and key (`server.crt`, `server.key`) |
 //! | `kavach/kavach.env` | kavach-api | every setting, as environment variables |
@@ -30,17 +30,28 @@ use std::path::{Path, PathBuf};
 
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
 use kavach_credential::DecryptionKey;
+use kavach_domain::authority::{AuthorityChange, AuthorityUpdateEvent};
 use kavach_domain::mandate::{
-    AgentPassport, ConsentRecord, ContactWindow, DelegationRules, MandateTemplate, SorEvent,
-    TimeZoneId,
+    AgentPassport, ConsentArtefactSubset, ConsentRecord, ConsentStatus, ContactPreferenceRecord,
+    ContactPreferenceStatus, ContactWindow, DelegationRules, MandateTemplate, SorEvent, TimeZoneId,
 };
 use kavach_keys::{sign_tool_registry, LocalFileKeyProvider};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 pub const TENANT: &str = "default";
+
+/// When the dev stack's consents and contact preferences start to apply. The
+/// simulator replays a fixed calendar from 2026-10-01 against the stack, so a
+/// window measured back from today would leave its early days uncovered.
+#[must_use]
+pub fn fixture_valid_from() -> DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+        .single()
+        .unwrap_or(DateTime::<Utc>::MIN_UTC)
+}
 pub const ISSUER: &str = "https://idp.dev.kavach.local";
 pub const OPERATOR_AUDIENCE: &str = "kavach-api";
 pub const AGENT_AUDIENCE: &str = "kavach-agents";
@@ -562,6 +573,13 @@ fn write_kavach_config(
                     purposes: set(&["loan_recovery"]),
                     expires_at: Utc::now() + Duration::days(30),
                     active: true,
+                    artefact: Some(ConsentArtefactSubset {
+                        data_types: set(&["loan_account"]),
+                        valid_from: fixture_valid_from(),
+                        data_from: Utc::now() - Duration::days(30),
+                        data_to: Utc::now(),
+                        status: ConsentStatus::Active,
+                    }),
                 })
                 .collect::<Vec<_>>(),
         )
@@ -573,6 +591,26 @@ fn write_kavach_config(
             "tenant_id": TENANT, "subject_ref": b.subject_ref,
             "destinations": { "whatsapp": b.destination, "sms": b.destination, "voice": b.voice },
         })).collect::<Vec<_>>() }),
+    )?;
+    write_json(
+        &kavach.join("contact-preferences.json"),
+        &serde_json::to_value(
+            world
+                .borrowers
+                .iter()
+                .flat_map(|borrower| {
+                    ["whatsapp", "sms", "voice"].map(|channel| ContactPreferenceRecord {
+                        tenant_id: TENANT.into(),
+                        subject_ref: borrower.subject_ref.clone(),
+                        channel: channel.into(),
+                        status: ContactPreferenceStatus::Allowed,
+                        valid_from: fixture_valid_from(),
+                        expires_at: Utc::now() + Duration::days(30),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_default(),
     )?;
     write_json(
         &kavach.join("providers.json"),
@@ -607,6 +645,7 @@ fn env_file(m: &str, issuer: &str) -> String {
          KAVACH_CREDENTIAL_KEY_ID={CREDENTIAL_KID}\n\
          KAVACH_SUBJECT_PSEUDONYM_KEY={m}/pseudonym.key\n\
          KAVACH_CONSENTS={m}/consents.json\n\
+         KAVACH_CONTACT_PREFERENCES={m}/contact-preferences.json\n\
          KAVACH_REFERENCES={m}/references.json\n\
          KAVACH_PROVIDERS={m}/providers.json\n\
          KAVACH_PROVIDER_CA={m}/tls/ca.pem\n\
@@ -713,6 +752,58 @@ pub async fn attack_event(bundle: &Path, spec: &AttackEvent) -> Result<String, S
         kavach_mandate::jws::sign(&keys, SOR_KID, typ, &event).await
     }
     .map_err(|e| e.to_string())
+}
+
+/// The bundle's synthetic active consents and contact preferences, each
+/// signed as a system-of-record authority update at `occurred_at`. A stack
+/// with a database reads consent and preferences only from these updates.
+pub async fn authority_updates(
+    bundle: &Path,
+    occurred_at: DateTime<Utc>,
+) -> Result<Vec<String>, String> {
+    let read = |name: &str| {
+        let path = bundle.join("kavach").join(name);
+        std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))
+    };
+    let consents: Vec<ConsentRecord> =
+        serde_json::from_slice(&read("consents.json")?).map_err(|e| format!("consents: {e}"))?;
+    let preferences: Vec<ContactPreferenceRecord> =
+        serde_json::from_slice(&read("contact-preferences.json")?)
+            .map_err(|e| format!("contact preferences: {e}"))?;
+    let changes = consents
+        .into_iter()
+        .filter(|record| record.active)
+        .map(AuthorityChange::Consent)
+        .chain(
+            preferences
+                .into_iter()
+                .map(AuthorityChange::ContactPreference),
+        );
+    let keys = LocalFileKeyProvider::new(bundle.join("sor"));
+    let stamp = occurred_at.timestamp_micros();
+    let mut tokens = Vec::new();
+    for (index, change) in changes.enumerate() {
+        let update_id = format!("dev-authority-{stamp}-{index}");
+        let event = AuthorityUpdateEvent {
+            update_id: update_id.clone(),
+            tenant_id: TENANT.into(),
+            system: "lms".into(),
+            occurred_at,
+            nonce: format!("n-{update_id}"),
+            change,
+        };
+        tokens.push(
+            kavach_mandate::jws::sign(
+                &keys,
+                SOR_KID,
+                kavach_mandate::jws::TYP_AUTHORITY_UPDATE,
+                &event,
+            )
+            .await
+            .map_err(|e| e.to_string())?,
+        );
+    }
+    Ok(tokens)
 }
 
 /// A signed system-of-record event that assigns `agent` to `subject_ref`.
@@ -872,6 +963,13 @@ mod tests {
                   "destinations": { "whatsapp": "+910000000003", "sms": "+910000000003", "voice": "+910000000004" } }
             ] })
         );
+        let preferences = read(&k.join("contact-preferences.json"));
+        assert_eq!(preferences.as_array().unwrap().len(), 6);
+        assert!(preferences
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|record| record["status"] == "allowed"));
         for agent in AGENTS {
             assert!(out.join(format!("agents/{agent}.jwt")).is_file());
         }

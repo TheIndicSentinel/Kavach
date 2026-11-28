@@ -2,7 +2,9 @@
 
 mod admin;
 mod agent_evidence;
+mod authority_updates;
 mod change_requests;
+mod consent_preferences;
 mod evidence;
 mod export;
 mod human_review;
@@ -10,6 +12,7 @@ mod incidents;
 mod jobs;
 mod mandates;
 mod migrate;
+mod reference_vault;
 mod retention;
 mod review_snapshots;
 mod roles;
@@ -18,7 +21,12 @@ mod tls;
 
 pub use admin::PostgresAdminStore;
 pub use agent_evidence::PostgresAgentEvidenceStore;
+pub use authority_updates::{
+    AppliedConsentGrant, AppliedConsentWithdrawal, AppliedPreferenceUpdate,
+    PostgresAuthorityUpdateStore,
+};
 pub use change_requests::PostgresChangeStore;
+pub use consent_preferences::{PostgresConsentSource, PostgresContactPreferenceSource};
 
 pub use evidence::PostgresEvidenceStore;
 pub use export::EvidenceSnapshot;
@@ -30,6 +38,10 @@ pub use jobs::{
 pub use mandates::{PostgresMandateStore, PostgresReplayGuard};
 pub use migrate::{
     connect_pool, connect_runtime, connect_runtime_sized, migrate, DEFAULT_POOL_SIZE,
+};
+pub use reference_vault::{
+    AppliedReferenceDestination, EncryptedDestination, PostgresReferenceDestinationStore,
+    PostgresReferenceResolver, ReferenceVaultKey,
 };
 pub use retention::PostgresRetentionStore;
 pub use review_snapshots::PostgresReviewSnapshotStore;
@@ -109,6 +121,29 @@ impl StoragePool {
 
     pub fn mandate_store(&self) -> PostgresMandateStore {
         PostgresMandateStore::new(self.pool.clone())
+    }
+
+    pub fn consent_source(&self) -> PostgresConsentSource {
+        PostgresConsentSource::new(self.pool.clone())
+    }
+
+    pub fn contact_preference_source(&self) -> PostgresContactPreferenceSource {
+        PostgresContactPreferenceSource::new(self.pool.clone())
+    }
+
+    pub fn authority_update_store(&self) -> PostgresAuthorityUpdateStore {
+        PostgresAuthorityUpdateStore::new(self.pool.clone())
+    }
+
+    pub fn reference_resolver(&self, key: ReferenceVaultKey) -> PostgresReferenceResolver {
+        PostgresReferenceResolver::new(self.pool.clone(), key)
+    }
+
+    pub fn reference_destination_store(
+        &self,
+        key: ReferenceVaultKey,
+    ) -> PostgresReferenceDestinationStore {
+        PostgresReferenceDestinationStore::new(self.pool.clone(), key)
     }
 
     pub fn replay_guard(&self) -> PostgresReplayGuard {

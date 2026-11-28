@@ -14,10 +14,12 @@ use kavach_dataplane::{
     reconcile_revocations, AgentIdentity, AuthorizeConfig, AuthorizeCore, CommitStatus, Mode,
     ReconcileConfig, ToolCall,
 };
-use kavach_domain::mandate::RevocationReason;
+use kavach_domain::mandate::{ContactPreferenceRecord, ContactPreferenceStatus, RevocationReason};
 use kavach_domain::Decision;
 use kavach_keys::{InMemoryKeyProvider, SubjectKeys};
-use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus, InMemoryMandateStore};
+use kavach_mandate::memory::{
+    InMemoryConsentSource, InMemoryContactPreferenceSource, InMemoryEventBus, InMemoryMandateStore,
+};
 use kavach_mandate::{MandateDeps, MandateService};
 use kavach_ports::agent_evidence::AgentEvidenceStore;
 use kavach_ports::{SyncStatus, TimeSource};
@@ -39,6 +41,7 @@ struct World {
     mandates: Arc<Service>,
     core: AuthorizeCore<Arc<Service>, MemoryAgentEvidenceStore>,
     sor: InMemoryKeyProvider,
+    contact_preferences: InMemoryContactPreferenceSource,
 }
 
 fn world_with(signer: TestSigner) -> World {
@@ -78,6 +81,17 @@ fn world_with(signer: TestSigner) -> World {
         mandates,
         core,
         sor,
+        contact_preferences: InMemoryContactPreferenceSource::new(["B-9382", "B-5511"].map(
+            |borrower| ContactPreferenceRecord {
+                tenant_id: TENANT.into(),
+                subject_ref: format!("ref:borrower:{borrower}"),
+                channel: "whatsapp".into(),
+                status: ContactPreferenceStatus::Allowed,
+                valid_from: ist(11, 0, 0) - Duration::days(1),
+                expires_at: ist(11, 0, 0) + Duration::days(30),
+            },
+        ))
+        .expect("valid contact preference fixtures"),
     }
 }
 
@@ -754,6 +768,7 @@ async fn selected_gateway_held_provider_uses_internal_broker_and_tokenless_adapt
     let deps = kavach_dataplane::GatewayDeps {
         core: &w.core,
         resolver: &resolver,
+        contact_preferences: &w.contact_preferences,
         broker: &broker,
         forwarder: &normal_forwarder,
         gateway_held: Some(&dispatch),
@@ -860,6 +875,7 @@ async fn a_send_that_would_land_after_send_by_is_not_executed() {
     let deps = kavach_dataplane::GatewayDeps {
         core: &w.core,
         resolver: &resolver,
+        contact_preferences: &w.contact_preferences,
         broker: &broker,
         forwarder: &forwarder,
         gateway_held: None,
@@ -896,6 +912,7 @@ async fn a_send_that_would_land_after_send_by_is_not_executed() {
     let deps = kavach_dataplane::GatewayDeps {
         core: &w.core,
         resolver: &fast,
+        contact_preferences: &w.contact_preferences,
         broker: &slow_broker,
         forwarder: &forwarder,
         gateway_held: None,
@@ -1036,6 +1053,7 @@ async fn a_mandate_revoked_after_the_decision_mints_nothing_and_sends_nothing() 
     let deps = kavach_dataplane::GatewayDeps {
         core: &w.core,
         resolver: &resolver,
+        contact_preferences: &w.contact_preferences,
         broker: &broker,
         forwarder: &forwarder,
         gateway_held: None,
@@ -1489,6 +1507,7 @@ async fn an_agent_stopped_after_the_decision_mints_nothing_and_sends_nothing() {
     let deps = kavach_dataplane::GatewayDeps {
         core: &w.core,
         resolver: &resolver,
+        contact_preferences: &w.contact_preferences,
         broker: &broker,
         forwarder: &forwarder,
         gateway_held: None,

@@ -206,12 +206,13 @@ describe("AgentEvidencePage states", () => {
     expect(byRole(html, "status")).toContain("1 unknown outcome loaded; more are available");
   });
 
-  it("renders only the authorized exact-action projection and states that it does not approve", () => {
+  it("renders the authorized exact-action projection and explains the approval handoff", () => {
     const html = humanReview({ phase: "done", what: "human review", result: humanReviewSnapshot });
     expect(text(html)).toContain("subj-pseudo-4");
     expect(text(html)).toContain("waive_interest");
     expect(text(html)).toContain("3500 bps");
-    expect(text(html)).toContain("This view does not approve or release it.");
+    expect(text(html)).toContain("Passkey verification is required to approve or reject it.");
+    expect(text(html)).toContain("Approval creates a short-lived handoff; it does not execute the action.");
     expect(text(html)).toContain("Continue to passkey verification");
     expect(text(html)).toContain("After verification, choose approve or reject.");
     expect(text(html)).toContain("Approve exact action");

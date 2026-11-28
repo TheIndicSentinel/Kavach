@@ -690,6 +690,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/sor/authority-updates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit a signed consent or contact-preference update.
+         * @description Not authenticated by a token: the compact authority-update JWS must
+         *     be signed by the configured source key for this tenant and system.
+         *     Consent grants, withdrawals and preference changes are stored in
+         *     Postgres. A withdrawal revokes matching active mandates atomically;
+         *     the response returns only the number revoked. Reference destinations
+         *     use `/v1/sor/reference-destinations`. These writes do not switch
+         *     mandate issuance or gateway reads away from their current fixtures.
+         */
+        post: operations["submitSignedAuthorityUpdate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/sor/reference-destinations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Submit a signed destination update for the encrypted reference vault.
+         * @description Not authenticated by a token: the compact authority-update JWS must
+         *     be signed by the configured source key for this tenant and system.
+         *     The route is enabled only when the persistent vault and Postgres are
+         *     configured. Destination values are encrypted before persistence and
+         *     are never returned. Exact retries are idempotent. The gateway continues
+         *     to use the fixture resolver until current contact-preference enforcement
+         *     is wired.
+         */
+        post: operations["submitSignedReferenceDestination"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/config": {
         parameters: {
             query?: never;
@@ -1531,6 +1583,13 @@ export interface components {
             /** @description Every mandate whose status changed, delegations included. */
             revoked: string[];
             replayed: boolean;
+        };
+        ReferenceDestinationUpdateResponse: {
+            replayed: boolean;
+        };
+        AuthorityUpdateResponse: {
+            replayed: boolean;
+            revoked_count?: number;
         };
     };
     responses: {
@@ -2836,6 +2895,96 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["SorEventResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["Unprocessable"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    submitSignedAuthorityUpdate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description A compact authority-update JWS. */
+                    event: string;
+                };
+            };
+        };
+        responses: {
+            /** @description An exact retry of a previously stored update. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorityUpdateResponse"];
+                };
+            };
+            /** @description The signed authority update was stored. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorityUpdateResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            413: components["responses"]["PayloadTooLarge"];
+            415: components["responses"]["UnsupportedMediaType"];
+            422: components["responses"]["Unprocessable"];
+            429: components["responses"]["TooManyRequests"];
+            500: components["responses"]["Internal"];
+            503: components["responses"]["Unavailable"];
+        };
+    };
+    submitSignedReferenceDestination: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description A compact authority-update JWS. */
+                    event: string;
+                };
+            };
+        };
+        responses: {
+            /** @description An exact retry of a previously stored update. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceDestinationUpdateResponse"];
+                };
+            };
+            /** @description The signed destination update was stored. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReferenceDestinationUpdateResponse"];
                 };
             };
             400: components["responses"]["BadRequest"];

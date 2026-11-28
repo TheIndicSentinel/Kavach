@@ -56,9 +56,10 @@ CI runs the same on push/PR (`.github/workflows/ci.yml`), plus Postgres tests, c
 - **Done:** Hardening track H0–H5b (clock sync, Postgres mandates, tracked migrations, signed agent evidence, authorization core, agent listener, signed tool registry, credential broker, gateway, network isolation); evidence E1–E4 (checkpoints, signed bundles, offline verification); Postgres TLS; HSM-backed signing keys with rotation
 - **Done:** CLI v0.1 (`init`, `dev up`, `authorize`, `call`, `why`, `attack`, `demo`, `simulate` S1–S3, `evidence`, release tooling); revocation by system-of-record event (ADR-012): evidence records, bundle format 2, attack catalog v4, simulated payments and disputes
 - **Done:** Agent kill switch K1-1 through K1-3b (ADR-013), including the attacks and independent-oracle simulation. Phase 0 exit artifacts are documented in [PHASE_0_EXIT.md](docs/PHASE_0_EXIT.md).
-- **In progress:** pilot blockers; the next independent item is the HUMAN_REVIEW approval path (PRD D17 / FR-6, ADR-003).
+- **Done:** pilot blocker HUMAN_REVIEW approval path (PRD D17 / FR-6, ADR-003), including exact-action step-up, one-use approval and agent handoff.
 - **Deferred:** external messaging-provider mode (ADR-015). Per the owner's decision, this work remains local-only; no paid provider is selected or enabled.
-- **Next:** after HUMAN_REVIEW: consent and reference stores, an HA reference, the reference-machine benchmark, and a DR drill; then a managed single-tenant SaaS foundation. Pre-alpha. Open core boundary: [OPEN_CORE.md](OPEN_CORE.md)
+- **Done:** consent and reference stores (PRD D7 / FR-8); implementation and rollout boundary are recorded in [CONSENT_REFERENCE_STORES_PLAN.md](docs/CONSENT_REFERENCE_STORES_PLAN.md).
+- **Next:** an HA reference, the reference-machine benchmark, and a DR drill; then a managed single-tenant SaaS foundation. Pre-alpha. Open core boundary: [OPEN_CORE.md](OPEN_CORE.md)
 - **Security claims:** [SECURITY_PROPERTIES.md](docs/SECURITY_PROPERTIES.md) — updated in the same PR as any guarantee change
 
 See [docs/MILESTONE_A_EXIT.md](docs/MILESTONE_A_EXIT.md), [docs/MILESTONE_B_EXIT.md](docs/MILESTONE_B_EXIT.md), and [docs/PARTNER_PILOT.md](docs/PARTNER_PILOT.md).

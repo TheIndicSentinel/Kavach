@@ -7,6 +7,7 @@
 //! - [`delegation`]: pure narrowing rules (child ⊆ parent ∩ passport).
 //! - [`memory`]: in-memory adapters (M1); Postgres adapters arrive in M2.
 
+pub mod authority;
 mod config;
 pub mod delegation;
 pub mod jws;
@@ -14,6 +15,7 @@ pub mod memory;
 mod reconcile;
 mod service;
 
+pub use authority::{AuthorityVerifier, VerifiedAuthorityUpdate};
 pub use config::DEFAULT_MAX_CLOCK_ERROR_MS;
 pub use config::{MandateConfig, SorIssuer};
 pub use reconcile::{ClosedRecord, ClosedState, Finding, FindingKind, Reconciliation};

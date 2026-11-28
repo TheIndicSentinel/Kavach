@@ -21,9 +21,10 @@ use kavach_api::{
     AccessControlKind, ApiConfig, AppState, EvidenceStoreKind, JwksSource, OidcConfig,
 };
 use kavach_credential::DecryptionKey;
+use kavach_domain::authority::{AuthorityChange, AuthorityUpdateEvent};
 use kavach_domain::mandate::{
-    AgentPassport, ConsentRecord, ContactWindow, DelegationRules, MandateTemplate, SorEvent,
-    TimeZoneId,
+    AgentPassport, ConsentArtefactSubset, ConsentRecord, ConsentStatus, ContactPreferenceRecord,
+    ContactPreferenceStatus, ContactWindow, DelegationRules, MandateTemplate, SorEvent, TimeZoneId,
 };
 use kavach_jws::KeySet;
 use kavach_keys::InMemoryKeyProvider;
@@ -180,6 +181,11 @@ pub fn credential_files(dir: &Path, keys: &Path) {
         .to_string(),
     )
     .unwrap();
+    std::fs::write(
+        dir.join("contact-preferences.json"),
+        serde_json::to_string(&fixture_preferences()).unwrap(),
+    )
+    .unwrap();
     owner_only(
         &keys.join("kavach-credential-1.ed25519"),
         &hex::encode([5u8; 32]),
@@ -266,23 +272,113 @@ fn write_mandates_and_consents(dir: &std::path::Path) {
         .to_string(),
     )
     .unwrap();
+    std::fs::write(
+        dir.join("consents.json"),
+        serde_json::to_string(&fixture_consents()).unwrap(),
+    )
+    .unwrap();
+}
+
+/// The fixture's consents (`consents.json`).
+fn fixture_consents() -> Vec<ConsentRecord> {
     let consent = |id: &str, subject: &str| ConsentRecord {
         consent_id: id.into(),
         tenant_id: "default".into(),
         subject_ref: subject.into(),
         purposes: set(&["loan_recovery"]),
-        expires_at: chrono::Utc::now() + chrono::Duration::days(30),
+        expires_at: Utc::now() + Duration::days(30),
         active: true,
+        artefact: None,
     };
-    let consents = vec![
+    vec![
         consent("C-7f3a", SUBJECT),
         consent("C-attack", ATTACK_SUBJECT),
-    ];
-    std::fs::write(
-        dir.join("consents.json"),
-        serde_json::to_string(&consents).unwrap(),
-    )
-    .unwrap();
+    ]
+}
+
+/// The fixture's contact preferences (`contact-preferences.json`).
+fn fixture_preferences() -> Vec<ContactPreferenceRecord> {
+    let now = Utc::now();
+    ["whatsapp", "sms", "voice"]
+        .map(|channel| ContactPreferenceRecord {
+            tenant_id: "default".into(),
+            subject_ref: SUBJECT.into(),
+            channel: channel.into(),
+            status: ContactPreferenceStatus::Allowed,
+            valid_from: now - Duration::days(1),
+            expires_at: now + Duration::days(30),
+        })
+        .to_vec()
+}
+
+/// With a database, issuance and the gateway read consents and contact
+/// preferences from it, never from the fixture files: post the fixture's
+/// records as signed SoR authority updates, timed `at` on the stack clock.
+/// A test that posts its own authority does not call this.
+pub async fn seed_fixture_authority(state: &Arc<AppState>, tag: &str, at: DateTime<Utc>) {
+    if !matches!(
+        state.review_snapshot_store(),
+        kavach_api::state::ReviewSnapshotBackend::Postgres(_)
+    ) {
+        return;
+    }
+    let mut issuer = InMemoryKeyProvider::new();
+    issuer.insert_seed("lms-issuer-1", [2u8; 32]).unwrap();
+    let stamp = at.timestamp_nanos_opt().unwrap_or_default();
+    // A signed consent update carries an explicit artefact; the fixture
+    // files keep the legacy shape.
+    let with_artefact = |mut consent: ConsentRecord| {
+        consent.artefact = Some(ConsentArtefactSubset {
+            data_types: set(&["loan_account"]),
+            valid_from: at - Duration::days(30),
+            data_from: at - Duration::days(30),
+            data_to: consent.expires_at,
+            status: ConsentStatus::Active,
+        });
+        consent
+    };
+    let changes = fixture_consents()
+        .into_iter()
+        .map(with_artefact)
+        .map(|c| {
+            (
+                format!("consent-{}", c.consent_id),
+                AuthorityChange::Consent(c),
+            )
+        })
+        .chain(fixture_preferences().into_iter().map(|p| {
+            (
+                format!("preference-{}", p.channel),
+                AuthorityChange::ContactPreference(p),
+            )
+        }));
+    for (name, change) in changes {
+        let update_id = format!("fixture-{tag}-{stamp}-{name}");
+        let event = AuthorityUpdateEvent {
+            nonce: format!("nonce-{update_id}"),
+            update_id,
+            tenant_id: "default".into(),
+            system: "lms".into(),
+            occurred_at: at,
+            change,
+        };
+        let token = kavach_mandate::jws::sign(
+            &issuer,
+            "lms-issuer-1",
+            kavach_mandate::jws::TYP_AUTHORITY_UPDATE,
+            &event,
+        )
+        .await
+        .expect("signed authority update");
+        let (status, body) = send(
+            sor_router(state.clone()),
+            "/v1/sor/authority-updates",
+            &[],
+            json!({ "event": token }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "seeding {name}: {body}");
+    }
 }
 
 pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
@@ -328,6 +424,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         checkpoint_stall_seconds: 600,
         subject_pseudonym_key: dir.join("pseudonym.key"),
         consents: dir.join("consents.json"),
+        contact_preferences: Some(dir.join("contact-preferences.json")),
         tenant_id: "default".into(),
         agent_only: false,
         sor_rate_per_second: rate,
@@ -338,6 +435,7 @@ pub fn files(rate: u32) -> (DataplaneConfig, OidcConfig) {
         credential_key_id: "kavach-credential-1".into(),
         providers: dir.join("providers.json"),
         references: dir.join("references.json"),
+        reference_vault: None,
         provider_connect_timeout_ms: 500,
         provider_timeout_ms: 1500,
         provider_ca: None,
@@ -649,6 +747,7 @@ pub async fn gateway_with(
     )
     .unwrap();
     let state = Arc::new(AppState::from_config(&api).await.expect("state"));
+    seed_fixture_authority(&state, "gw", clock.now().utc).await;
     let mandate = issue_at(&state, "evt-gw", clock.now().utc).await;
     Gw {
         state,

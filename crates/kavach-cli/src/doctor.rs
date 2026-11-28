@@ -44,10 +44,11 @@ impl Check {
 }
 
 /// The files `kavach dev up` needs, relative to the bundle.
-const BUNDLE_FILES: [&str; 12] = [
+const BUNDLE_FILES: [&str; 13] = [
     "kavach/jwks.json",
     "kavach/mandate-config.json",
     "kavach/consents.json",
+    "kavach/contact-preferences.json",
     "kavach/references.json",
     "kavach/providers.json",
     "kavach/tool-signers.json",

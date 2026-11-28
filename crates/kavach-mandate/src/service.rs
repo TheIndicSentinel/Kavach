@@ -808,7 +808,7 @@ where
                 .get(&event.tenant_id, consent_id)
                 .await?
                 .ok_or_else(|| PortError::rejected(format!("unknown consent {consent_id}")))?;
-            if !consent.active || consent.expires_at <= now {
+            if !consent.is_active_at(now) {
                 return Err(PortError::rejected(format!(
                     "consent {consent_id} is not active"
                 )));

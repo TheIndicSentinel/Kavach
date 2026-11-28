@@ -36,11 +36,15 @@ pub use jobs_store::{BatchJobRecord, JobQueryError, MemoryBatchJobStore};
 pub use model_governance::{govern_model, GovernedModel, ModelStartupError, ModelStartupRole};
 pub use postgres::{
     connect_options, connect_pool, connect_runtime, connect_runtime_sized, is_weakened, migrate,
-    BatchJobCreate, BatchJobStore, DatabaseTls, DatabaseTlsError, EvidenceSnapshot, JobStoreError,
-    NoopBatchJobStore, PostgresAdminStore, PostgresAgentEvidenceStore, PostgresBatchJobStore,
-    PostgresChangeStore, PostgresEvidenceStore, PostgresIncidentStore, PostgresMandateStore,
-    PostgresReplayGuard, PostgresRetentionStore, PostgresReviewApprovalStore,
-    PostgresReviewSnapshotStore, PostgresRoleStore, PostgresStepUpChallengeStore, StoragePool,
+    AppliedConsentGrant, AppliedConsentWithdrawal, AppliedPreferenceUpdate,
+    AppliedReferenceDestination, BatchJobCreate, BatchJobStore, DatabaseTls, DatabaseTlsError,
+    EncryptedDestination, EvidenceSnapshot, JobStoreError, NoopBatchJobStore, PostgresAdminStore,
+    PostgresAgentEvidenceStore, PostgresAuthorityUpdateStore, PostgresBatchJobStore,
+    PostgresChangeStore, PostgresConsentSource, PostgresContactPreferenceSource,
+    PostgresEvidenceStore, PostgresIncidentStore, PostgresMandateStore,
+    PostgresReferenceDestinationStore, PostgresReferenceResolver, PostgresReplayGuard,
+    PostgresRetentionStore, PostgresReviewApprovalStore, PostgresReviewSnapshotStore,
+    PostgresRoleStore, PostgresStepUpChallengeStore, ReferenceVaultKey, StoragePool,
     DEFAULT_POOL_SIZE,
 };
 pub use retention::{

@@ -21,7 +21,8 @@ use chrono::{DateTime, Utc};
 use kavach_domain::Decision;
 use kavach_ports::agent_evidence::{is_allow, AgentDecisionRecord, Outcome};
 use kavach_ports::{
-    CredentialBroker, CredentialRequest, ErrorClass, ReferenceResolver, TokenSecret,
+    require_contact_permission, ContactPreferenceSource, CredentialBroker, CredentialRequest,
+    ErrorClass, ReferenceResolver, TokenSecret,
 };
 use serde::Serialize;
 
@@ -285,9 +286,12 @@ pub trait GatewayObserver: Send + Sync {
 }
 
 /// What the gateway needs from its host.
-pub struct GatewayDeps<'a, V, S, R, B, F, O> {
+pub struct GatewayDeps<'a, V, S, R, C, B, F, O> {
     pub core: &'a AuthorizeCore<V, S>,
     pub resolver: &'a R,
+    /// Current authoritative channel preference; checked before resolving a
+    /// destination or creating a provider credential.
+    pub contact_preferences: &'a C,
     pub broker: &'a B,
     pub forwarder: &'a F,
     /// Optional per-provider dispatch for gateway-held provider tokens.
@@ -320,8 +324,8 @@ impl IssuedForCall {
 
 /// Executes an external effect once, or records a proposal without
 /// forwarding it. `Err` only for calls that get no decision reply.
-pub async fn execute<V, S, R, B, F, O>(
-    deps: &GatewayDeps<'_, V, S, R, B, F, O>,
+pub async fn execute<V, S, R, C, B, F, O>(
+    deps: &GatewayDeps<'_, V, S, R, C, B, F, O>,
     agent: &AgentIdentity,
     tool: &str,
     request: ToolRequest,
@@ -331,6 +335,7 @@ where
     S: kavach_ports::agent_evidence::AgentEvidenceStore
         + kavach_ports::agent_state::AgentStateStore,
     R: ReferenceResolver,
+    C: ContactPreferenceSource,
     B: CredentialBroker,
     F: Forwarder,
     O: GatewayObserver,
@@ -494,10 +499,37 @@ where
     }
 }
 
+/// The reason code for a destination the resolver could not give.
+fn resolve_refusal(class: ErrorClass) -> &'static str {
+    match class {
+        ErrorClass::Rejected => "no_destination",
+        ErrorClass::Invalid => "invalid_reference",
+        ErrorClass::Unavailable => "resolver_unavailable",
+    }
+}
+
+/// The reason code when contact preferences refuse this send, if they do.
+async fn contact_refusal<C: ContactPreferenceSource>(
+    preferences: &C,
+    tenant_id: &str,
+    call: &crate::authorize::ToolCall,
+    channel: &str,
+    now: DateTime<Utc>,
+) -> Option<&'static str> {
+    let error = require_contact_permission(preferences, tenant_id, &call.subject_ref, channel, now)
+        .await
+        .err()?;
+    Some(if error.class == ErrorClass::Unavailable {
+        "contact_preference_unavailable"
+    } else {
+        "contact_preference_denied"
+    })
+}
+
 /// Resolve → credential → deadline re-check → forward → classify. Never
 /// fails: every path ends in an outcome and a reason code.
-async fn run_allowed<V, S, R, B, F, O>(
-    deps: &GatewayDeps<'_, V, S, R, B, F, O>,
+async fn run_allowed<V, S, R, C, B, F, O>(
+    deps: &GatewayDeps<'_, V, S, R, C, B, F, O>,
     agent: &AgentIdentity,
     spec: &crate::tools::ToolSpec,
     call: &crate::authorize::ToolCall,
@@ -509,6 +541,7 @@ where
     S: kavach_ports::agent_evidence::AgentEvidenceStore
         + kavach_ports::agent_state::AgentStateStore,
     R: ReferenceResolver,
+    C: ContactPreferenceSource,
     B: CredentialBroker,
     F: Forwarder,
     O: GatewayObserver,
@@ -523,6 +556,21 @@ where
         return not_executed("tool_not_forwardable");
     };
 
+    let Some(now) = core.trusted_now() else {
+        return not_executed("trusted_time_unavailable");
+    };
+    if let Some(reason) = contact_refusal(
+        deps.contact_preferences,
+        core.tenant_id(),
+        call,
+        channel,
+        now,
+    )
+    .await
+    {
+        return not_executed(reason);
+    }
+
     let started = Instant::now();
     let resolved = deps
         .resolver
@@ -531,13 +579,7 @@ where
     deps.observer.stage(Stage::Resolve, started.elapsed());
     let destination = match resolved {
         Ok(destination) => destination,
-        Err(err) => {
-            return not_executed(match err.class {
-                ErrorClass::Rejected => "no_destination",
-                ErrorClass::Invalid => "invalid_reference",
-                ErrorClass::Unavailable => "resolver_unavailable",
-            })
-        }
+        Err(err) => return not_executed(resolve_refusal(err.class)),
     };
 
     let Some(now) = core.trusted_now() else {

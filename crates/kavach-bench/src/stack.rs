@@ -18,7 +18,12 @@ use kavach_api::dataplane::{agent_router, sor_router, DataplaneConfig, TestClock
 use kavach_api::{
     AccessControlKind, ApiConfig, AppState, DatabaseTls, EvidenceStoreKind, JwksSource, OidcConfig,
 };
-use kavach_domain::mandate::{ConsentRecord, SorEvent};
+use kavach_domain::authority::{AuthorityChange, AuthorityUpdateEvent};
+use kavach_domain::mandate::{
+    ConsentArtefactSubset, ConsentRecord, ConsentStatus, ContactPreferenceRecord,
+    ContactPreferenceStatus, SorEvent,
+};
+use kavach_keys::LocalFileKeyProvider;
 use kavach_ports::{KeyAlgorithm, PublicKey, TimeSource};
 use kavach_ports_testkit::FakeClock;
 use serde_json::{json, Value};
@@ -130,11 +135,34 @@ fn write_workload(kavach: &Path, n: usize, provider_url: &str) -> Result<(), Str
             purposes: ["loan_recovery".to_string()].into(),
             expires_at: Utc::now() + chrono::Duration::days(30),
             active: true,
+            artefact: Some(ConsentArtefactSubset {
+                data_types: ["loan_account".to_string()].into(),
+                valid_from: Utc::now() - chrono::Duration::days(1),
+                data_from: Utc::now() - chrono::Duration::days(30),
+                data_to: Utc::now(),
+                status: ConsentStatus::Active,
+            }),
         })
         .collect();
     write_json(
         &kavach.join("consents.json"),
         &serde_json::to_value(consents).map_err(|e| e.to_string())?,
+    )?;
+    let preferences: Vec<ContactPreferenceRecord> = (0..n)
+        .flat_map(|i| {
+            ["whatsapp", "sms"].map(move |channel| ContactPreferenceRecord {
+                tenant_id: TENANT.into(),
+                subject_ref: subject_ref(i),
+                channel: channel.into(),
+                status: ContactPreferenceStatus::Allowed,
+                valid_from: Utc::now() - chrono::Duration::days(1),
+                expires_at: Utc::now() + chrono::Duration::days(30),
+            })
+        })
+        .collect();
+    write_json(
+        &kavach.join("contact-preferences.json"),
+        &serde_json::to_value(preferences).map_err(|e| e.to_string())?,
     )?;
     let references: Vec<Value> = (0..=n)
         .map(|i| {
@@ -173,9 +201,6 @@ fn api_config(
     let keys = kavach.join("keys");
     ApiConfig {
         require_hardening: false,
-        review_snapshot_key_file: None,
-        review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
-        review_snapshot_previous_keys: Vec::new(),
         pack_path: repo.join("packs/finance/v0.yaml"),
         model_path: repo.join("models/finance/credit-underwriting-v1.yaml"),
         hmac_secret: None,
@@ -191,6 +216,9 @@ fn api_config(
         mtls_principal_san: None,
         change_ttl_seconds: 3600,
         roles: kavach_api::RolesConfig::default(),
+        review_snapshot_key_file: None,
+        review_snapshot_key_id: kavach_api::config::DEFAULT_REVIEW_SNAPSHOT_KEY_ID.into(),
+        review_snapshot_previous_keys: Vec::new(),
         migration_database_url: None,
         database_tls: tls,
         database_pool_size: pool_size,
@@ -210,6 +238,7 @@ fn api_config(
             checkpoint_stall_seconds: 600,
             subject_pseudonym_key: kavach.join("pseudonym.key"),
             consents: kavach.join("consents.json"),
+            contact_preferences: Some(kavach.join("contact-preferences.json")),
             tenant_id: TENANT.into(),
             agent_only: false,
             sor_rate_per_second: 1_000_000,
@@ -220,6 +249,7 @@ fn api_config(
             credential_key_id: kavach_devkit::CREDENTIAL_KID.into(),
             providers: kavach.join("providers.json"),
             references: kavach.join("references.json"),
+            reference_vault: None,
             provider_connect_timeout_ms: 2_000,
             provider_timeout_ms: 5_000,
             provider_ca: None,
@@ -369,6 +399,77 @@ async fn issue(
         .ok_or_else(|| format!("issue mandate {i}: {status} {body}"))
 }
 
+/// Loads the synthetic consent and preference fixtures into Postgres-backed
+/// projections through the same signed authority-update route used in the
+/// demo. Memory mode reads these records directly from the fixture files.
+async fn seed_authority_updates(
+    client: &reqwest::Client,
+    sor_url: &str,
+    bundle: &Path,
+    at: DateTime<Utc>,
+) -> Result<(), String> {
+    let kavach = bundle.join("kavach");
+    let consents: Vec<ConsentRecord> =
+        serde_json::from_str(&read(&kavach.join("consents.json"))?).map_err(|e| e.to_string())?;
+    let preferences: Vec<ContactPreferenceRecord> =
+        serde_json::from_str(&read(&kavach.join("contact-preferences.json"))?)
+            .map_err(|e| e.to_string())?;
+    let keys = LocalFileKeyProvider::new(bundle.join("sor"));
+    let mut index = 0_usize;
+    for (kind, changes) in [
+        (
+            "consent",
+            consents
+                .into_iter()
+                .filter(|record| record.active)
+                .map(AuthorityChange::Consent)
+                .collect::<Vec<_>>(),
+        ),
+        (
+            "preference",
+            preferences
+                .into_iter()
+                .map(AuthorityChange::ContactPreference)
+                .collect::<Vec<_>>(),
+        ),
+    ] {
+        for change in changes {
+            let offset = i64::try_from(index).map_err(|_| "too many authority updates")?;
+            let update_id = format!("bench-{kind}-{index}");
+            let event = AuthorityUpdateEvent {
+                update_id: update_id.clone(),
+                tenant_id: TENANT.into(),
+                system: "lms".into(),
+                occurred_at: at + chrono::Duration::microseconds(offset),
+                nonce: update_id,
+                change,
+            };
+            let token = kavach_mandate::jws::sign(
+                &keys,
+                kavach_devkit::SOR_KID,
+                kavach_mandate::jws::TYP_AUTHORITY_UPDATE,
+                &event,
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            let response = client
+                .post(format!("{sor_url}/v1/sor/authority-updates"))
+                .json(&json!({ "event": token }))
+                .send()
+                .await
+                .map_err(|e| format!("seed {kind} authority update {index}: {e}"))?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "seed {kind} authority update {index}: {}",
+                    response.status()
+                ));
+            }
+            index += 1;
+        }
+    }
+    Ok(())
+}
+
 impl Stack {
     pub async fn start(opts: &StackOptions) -> Result<Self, String> {
         let bundle = opts.work.join("bundle");
@@ -435,6 +536,9 @@ impl Stack {
         let sor_url = serve(sor_router(Arc::clone(&state))).await?;
 
         let client = reqwest::Client::new();
+        if database.is_some() {
+            seed_authority_updates(&client, &sor_url, &bundle, at).await?;
+        }
         let mut subjects = Vec::with_capacity(opts.subjects);
         for i in 0..opts.subjects {
             subjects.push(Subject {

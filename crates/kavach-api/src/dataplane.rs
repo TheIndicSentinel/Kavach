@@ -28,14 +28,19 @@ use kavach_dataplane::{
     Decided, FixtureResolver, GatewayDeps, GatewayError, GatewayReply, Mode, RegistryTrust,
     ToolRegistry, ToolRequest, WhatIfStore,
 };
-use kavach_domain::mandate::{AgentPassport, ConsentRecord, MandateTemplate, RevocationReason};
+use kavach_domain::authority::AuthorityChange;
+use kavach_domain::mandate::{
+    AgentPassport, ConsentRecord, ContactPreferenceRecord, MandateTemplate, RevocationReason,
+};
 use kavach_domain::Decision;
 use kavach_keys::{SubjectKeys, TrustedSigners};
 
 use crate::signing::{HsmConfig, HsmRole, HsmStatus, KeySources, SigningKeys};
 use kavach_mandate::jws::KeySet;
-use kavach_mandate::memory::{InMemoryConsentSource, InMemoryEventBus, InMemoryMandateStore};
-use kavach_mandate::{MandateConfig, MandateDeps, MandateService, SorIssuer};
+use kavach_mandate::memory::{
+    InMemoryConsentSource, InMemoryContactPreferenceSource, InMemoryEventBus, InMemoryMandateStore,
+};
+use kavach_mandate::{AuthorityVerifier, MandateConfig, MandateDeps, MandateService, SorIssuer};
 use kavach_ports::agent_evidence::{
     AgentDecisionRecord, AgentEvidenceStore, CommitRequest, CommitResult, EvidenceSigner,
     OutcomeRecord,
@@ -44,12 +49,13 @@ use kavach_ports::chain_record::{
     AgentStateDraft, AgentStateRecord, ChainRecord, RevocationDraft, RevocationRecord,
 };
 use kavach_ports::checkpoint::{Appended, Checkpoint, CheckpointStore, Scope};
-use kavach_ports::CredentialBroker;
 use kavach_ports::ReviewApprovalStore as _;
 use kavach_ports::{
-    ErrorClass, KeyAlgorithm, KeyProvider, MandateStore, PortError, PublicKey, ReplayGuard,
-    RevocationCursor, StoredMandate, StoredRevocation, SyncStatus, TimeSource, TrustedNow,
+    ConsentSource, ContactPreferenceSource, ErrorClass, KeyAlgorithm, KeyProvider, MandateStore,
+    PortError, PublicKey, ReplayGuard, RevocationCursor, StoredMandate, StoredRevocation,
+    SyncStatus, TimeSource, TrustedNow,
 };
+use kavach_ports::{CredentialBroker, Destination, ReferenceResolver};
 use kavach_storage::{
     MemoryAgentEvidenceStore, PostgresAgentEvidenceStore, PostgresMandateStore,
     PostgresReplayGuard, StoragePool,
@@ -87,8 +93,12 @@ pub struct DataplaneConfig {
     pub checkpoint_stall_seconds: u64,
     /// 32-byte hex secret for subject pseudonyms and parameter MACs.
     pub subject_pseudonym_key: PathBuf,
-    /// Consent fixture (JSON list of consent records; PRD D7).
+    /// Consent fixture (JSON list) for no-database development; Postgres
+    /// runtimes use the persistent consent projection instead (PRD D7).
     pub consents: PathBuf,
+    /// Optional explicit development contact-preference fixture. An absent
+    /// file means no contact is permitted; database runtimes use Postgres.
+    pub contact_preferences: Option<PathBuf>,
     pub tenant_id: String,
     /// Serve the agent surfaces and the evidence reads only: no evaluate,
     /// pack, model, retention, incident or batch routes, no console, no
@@ -110,9 +120,12 @@ pub struct DataplaneConfig {
     pub credential_key_id: String,
     /// Resource providers (JSON): each audience's X25519 encryption key.
     pub providers: PathBuf,
-    /// Reference fixture (JSON): capability references to destinations,
-    /// synthetic numbers only (a reference vault replaces it in M2).
+    /// Reference fixture (JSON): capability references to synthetic
+    /// destinations for development or when no reference vault is selected.
     pub references: PathBuf,
+    /// Optional persistent signed destination updates. When set, requires a
+    /// Postgres storage pool and selects the encrypted Postgres resolver.
+    pub reference_vault: Option<ReferenceVaultConfig>,
     /// Gateway → provider timeouts (no retries). Both stay below the
     /// credential lifetime.
     pub provider_connect_timeout_ms: u64,
@@ -130,6 +143,13 @@ pub struct DataplaneConfig {
     /// unless `--insecure-dev` is on and every signing key is a `dev-` key;
     /// what it times is marked `dev_fixed`.
     pub dev_clock: Option<Arc<crate::dev_clock::DevClock>>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceVaultConfig {
+    pub key_file: PathBuf,
+    pub key_id: String,
+    pub previous_keys: Vec<(String, PathBuf)>,
 }
 
 #[derive(Deserialize)]
@@ -200,6 +220,54 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path, what: &str) -> Result<
     let text =
         std::fs::read_to_string(path).map_err(|e| format!("{what} {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("{what} {}: {e}", path.display()))
+}
+
+fn read_consents(path: &Path) -> Result<Vec<ConsentRecord>, String> {
+    let consents: Vec<ConsentRecord> = read_json(path, "consents")?;
+    for consent in &consents {
+        consent.validate().map_err(str::to_owned)?;
+    }
+    Ok(consents)
+}
+
+fn read_contact_preferences(path: &Path) -> Result<Vec<ContactPreferenceRecord>, String> {
+    let records: Vec<ContactPreferenceRecord> = read_json(path, "contact preferences")?;
+    for record in &records {
+        record.validate().map_err(str::to_owned)?;
+    }
+    Ok(records)
+}
+
+#[cfg(test)]
+mod consent_fixture_tests {
+    use super::read_consents;
+
+    #[test]
+    fn loader_accepts_legacy_consent_and_refuses_invalid_artefact() {
+        let path =
+            std::env::temp_dir().join(format!("kavach-consents-{}.json", uuid::Uuid::new_v4()));
+        let mut records = serde_json::json!([{
+            "consent_id": "C-1",
+            "tenant_id": "tenant-a",
+            "subject_ref": "ref:borrower:B-1",
+            "purposes": ["loan_recovery"],
+            "expires_at": "2027-01-01T00:00:00Z",
+            "active": true
+        }]);
+        std::fs::write(&path, records.to_string()).unwrap();
+        assert_eq!(read_consents(&path).unwrap().len(), 1);
+
+        records[0]["artefact"] = serde_json::json!({
+            "data_types": ["loan_account"],
+            "valid_from": "2026-01-01T00:00:00Z",
+            "data_from": "2026-11-01T00:00:00Z",
+            "data_to": "2026-10-01T00:00:00Z",
+            "status": "active"
+        });
+        std::fs::write(&path, records.to_string()).unwrap();
+        assert!(read_consents(&path).is_err());
+        std::fs::remove_file(path).unwrap();
+    }
 }
 
 // ---- adapters selected at startup (ADR-006 §5) ----
@@ -748,11 +816,81 @@ impl TimeSource for ClockBackend {
 pub type Mandates = MandateService<
     SigningKeys,
     ReplayBackend,
-    InMemoryConsentSource,
+    ConsentBackend,
     MandateStoreBackend,
     InMemoryEventBus,
     ClockBackend,
 >;
+
+/// Production reads use the tenant-scoped Postgres projection. The local
+/// fixture remains available only when the runtime has no database pool.
+pub enum ConsentBackend {
+    Fixture(InMemoryConsentSource),
+    Postgres(kavach_storage::PostgresConsentSource),
+}
+
+/// Current contact preferences are read from Postgres in database-backed
+/// runtimes. The no-database development backend starts empty and fails
+/// closed until an explicit preference fixture is wired.
+pub enum ContactPreferenceBackend {
+    Fixture(InMemoryContactPreferenceSource),
+    Postgres(kavach_storage::PostgresContactPreferenceSource),
+}
+
+/// Runtime reference selection. Persistent resolution is enabled only with
+/// both Postgres and the explicitly configured encrypted vault.
+pub enum ReferenceBackend {
+    Fixture(FixtureResolver),
+    Postgres(kavach_storage::PostgresReferenceResolver),
+}
+
+impl ReferenceResolver for ReferenceBackend {
+    async fn resolve(
+        &self,
+        tenant_id: &str,
+        subject_ref: &str,
+        channel: &str,
+    ) -> Result<Destination, PortError> {
+        match self {
+            Self::Fixture(resolver) => resolver.resolve(tenant_id, subject_ref, channel).await,
+            Self::Postgres(resolver) => resolver.resolve(tenant_id, subject_ref, channel).await,
+        }
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            Self::Fixture(resolver) => resolver.describe(),
+            Self::Postgres(resolver) => resolver.describe(),
+        }
+    }
+}
+
+impl ContactPreferenceSource for ContactPreferenceBackend {
+    async fn get(
+        &self,
+        tenant_id: &str,
+        subject_ref: &str,
+        channel: &str,
+    ) -> Result<Option<ContactPreferenceRecord>, PortError> {
+        match self {
+            Self::Fixture(source) => source.get(tenant_id, subject_ref, channel).await,
+            Self::Postgres(source) => source.get(tenant_id, subject_ref, channel).await,
+        }
+    }
+}
+
+impl ConsentSource for ConsentBackend {
+    async fn get(
+        &self,
+        tenant_id: &str,
+        consent_id: &str,
+    ) -> Result<Option<ConsentRecord>, PortError> {
+        match self {
+            Self::Fixture(source) => source.get(tenant_id, consent_id).await,
+            Self::Postgres(source) => source.get(tenant_id, consent_id).await,
+        }
+    }
+}
 
 /// The system-of-record listener's limit and the operator stop limit.
 fn limiters(
@@ -781,7 +919,7 @@ fn mandate_service(
     deps: MandateDeps<
         SigningKeys,
         ReplayBackend,
-        InMemoryConsentSource,
+        ConsentBackend,
         MandateStoreBackend,
         InMemoryEventBus,
         ClockBackend,
@@ -831,6 +969,7 @@ impl TokenBucket {
 
 pub struct Dataplane {
     dev_clock: Option<Arc<crate::dev_clock::DevClock>>,
+    clock: ClockBackend,
     mandates: Arc<Mandates>,
     core: Arc<AuthorizeCore<Arc<Mandates>, EvidenceBackend>>,
     checkpointer: Arc<Checkpointer<EvidenceBackend>>,
@@ -846,7 +985,10 @@ pub struct Dataplane {
     broker: Arc<Broker>,
     /// What only the build knows is relaxed (see `crate::relaxations`).
     relaxed: Vec<crate::relaxations::Relaxation>,
-    resolver: FixtureResolver,
+    resolver: ReferenceBackend,
+    contact_preferences: ContactPreferenceBackend,
+    authority_updates: Option<SignedAuthorityUpdates>,
+    reference_destination_updates: Option<ReferenceDestinationUpdates>,
     forwarder: Arc<crate::forward::HttpForwarder>,
     keys: KeySources,
     /// Trusted public key for the configured evidence signer, used to verify
@@ -856,6 +998,15 @@ pub struct Dataplane {
     /// waits for them).
     in_flight: Arc<crate::shutdown::InFlight>,
     agent_only: bool,
+}
+
+struct ReferenceDestinationUpdates {
+    store: kavach_storage::PostgresReferenceDestinationStore,
+}
+
+struct SignedAuthorityUpdates {
+    store: kavach_storage::PostgresAuthorityUpdateStore,
+    verifier: AuthorityVerifier,
 }
 
 impl Dataplane {
@@ -892,19 +1043,26 @@ impl Dataplane {
         for issuer in &mandate_config.sor_issuers {
             refuse_dev_key("system-of-record issuer", &issuer.key.kid, insecure_dev)?;
         }
+        let authority_updates = build_signed_authority_updates(config, pool, &mandate_config)?;
+        let reference_destination_updates = build_reference_destination_updates(config, pool)?;
         let issuer_kids: Vec<String> = mandate_config
             .sor_issuers
             .iter()
             .map(|issuer| issuer.key.kid.clone())
             .collect();
-        let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
+        let consents = match pool {
+            Some(pool) => ConsentBackend::Postgres(pool.consent_source()),
+            None => ConsentBackend::Fixture(InMemoryConsentSource::new(read_consents(
+                &config.consents,
+            )?)),
+        };
         let evidence = Arc::new(evidence);
         let mandates = mandate_service(
             config,
             MandateDeps {
                 keys,
                 replay,
-                consents: InMemoryConsentSource::new(consents),
+                consents,
                 store,
                 events: InMemoryEventBus::new(),
                 clock: clock.clone(),
@@ -924,8 +1082,23 @@ impl Dataplane {
                 &config.evidence_key_id,
             )
             .await?;
-        let resolver = FixtureResolver::from_file(&config.references)
-            .map_err(|e| format!("references: {}", e.message))?;
+        let resolver = match &reference_destination_updates {
+            Some(updates) => ReferenceBackend::Postgres(updates.store.resolver()),
+            None => ReferenceBackend::Fixture(
+                FixtureResolver::from_file(&config.references)
+                    .map_err(|e| format!("references: {}", e.message))?,
+            ),
+        };
+        let contact_preferences = match pool {
+            Some(pool) => ContactPreferenceBackend::Postgres(pool.contact_preference_source()),
+            None => ContactPreferenceBackend::Fixture(
+                InMemoryContactPreferenceSource::new(match &config.contact_preferences {
+                    Some(path) => read_contact_preferences(path)?,
+                    None => Vec::new(),
+                })
+                .map_err(|error| format!("contact preferences: {}", error.message))?,
+            ),
+        };
         let forwarder = build_forwarder(config, &tools)?;
         let broker = build_broker(config, &tools, &mandate_kid, insecure_dev, &sources).await?;
         let subject_keys = SubjectKeys::from_file(&config.subject_pseudonym_key)
@@ -947,7 +1120,7 @@ impl Dataplane {
             tools,
             subject_keys,
             signer,
-            Box::new(clock),
+            Box::new(clock.clone()),
             authorize,
         )
         .map_err(|e| format!("authorization core: {e}"))?;
@@ -960,6 +1133,7 @@ impl Dataplane {
         Ok(Self {
             relaxed,
             dev_clock: config.dev_clock.clone(),
+            clock,
             mandates,
             core: Arc::new(core),
             checkpointer,
@@ -971,6 +1145,9 @@ impl Dataplane {
             reconcile_limiter,
             broker: Arc::new(broker),
             resolver,
+            contact_preferences,
+            authority_updates,
+            reference_destination_updates,
             forwarder: Arc::new(forwarder),
             keys: sources,
             review_evidence_keys: std::collections::BTreeMap::from([(
@@ -1025,7 +1202,7 @@ impl Dataplane {
     }
 
     /// Resolves capability references, after an allow, inside the gateway.
-    pub fn resolver(&self) -> &FixtureResolver {
+    pub fn resolver(&self) -> &ReferenceBackend {
         &self.resolver
     }
 
@@ -1043,6 +1220,12 @@ impl Dataplane {
 
     pub fn core(&self) -> &Arc<AuthorizeCore<Arc<Mandates>, EvidenceBackend>> {
         &self.core
+    }
+
+    /// The stack's trusted time: the clock evidence records carry (a fixed
+    /// development clock or a test clock where one is configured).
+    pub fn now(&self) -> DateTime<Utc> {
+        self.clock.now().utc
     }
 
     /// Loads a D17 review record using this dataplane's configured tenant.
@@ -1185,13 +1368,13 @@ impl WhatIf {
         let keys = sources.keys(HsmRole::Mandate, &config.mandate_keys_dir);
         let (mandate_config, passports) =
             load_mandate_config(&config.mandate_config, &keys, insecure_dev).await?;
-        let consents: Vec<ConsentRecord> = read_json(&config.consents, "consents")?;
+        let consents = read_consents(&config.consents)?;
         let mandates = Arc::new(
             MandateService::new(
                 MandateDeps {
                     keys,
                     replay: ReplayBackend::Dev(DevReplayGuard::default()),
-                    consents: InMemoryConsentSource::new(consents),
+                    consents: ConsentBackend::Fixture(InMemoryConsentSource::new(consents)),
                     store: MandateStoreBackend::Memory(InMemoryMandateStore::new()),
                     events: InMemoryEventBus::new(),
                     clock: clock.clone(),
@@ -1302,6 +1485,43 @@ fn build_relaxations(
         relaxed.push(Relaxation::TestDoubleBroker);
     }
     relaxed
+}
+
+fn build_reference_destination_updates(
+    config: &DataplaneConfig,
+    pool: Option<&StoragePool>,
+) -> Result<Option<ReferenceDestinationUpdates>, String> {
+    let Some(vault_config) = &config.reference_vault else {
+        return Ok(None);
+    };
+    let pool = pool.ok_or_else(|| {
+        "reference vault configuration requires the Postgres evidence store".to_string()
+    })?;
+    let mut key =
+        kavach_storage::ReferenceVaultKey::from_file(&vault_config.key_file, &vault_config.key_id)?;
+    for (key_id, path) in &vault_config.previous_keys {
+        let previous = kavach_storage::ReferenceVaultKey::from_file(path, key_id)?;
+        key.add_previous(previous)?;
+    }
+    Ok(Some(ReferenceDestinationUpdates {
+        store: pool.reference_destination_store(key),
+    }))
+}
+
+fn build_signed_authority_updates(
+    config: &DataplaneConfig,
+    pool: Option<&StoragePool>,
+    mandate_config: &MandateConfig,
+) -> Result<Option<SignedAuthorityUpdates>, String> {
+    let Some(pool) = pool else {
+        return Ok(None);
+    };
+    let verifier = AuthorityVerifier::new(config.tenant_id.clone(), mandate_config.clone())
+        .map_err(|error| format!("authority update verifier: {}", error.message))?;
+    Ok(Some(SignedAuthorityUpdates {
+        store: pool.authority_update_store(),
+        verifier,
+    }))
 }
 
 fn dataplane_clock(config: &DataplaneConfig, insecure_dev: bool) -> Result<ClockBackend, String> {
@@ -1909,6 +2129,18 @@ pub struct SorEventBody {
 }
 
 #[derive(Debug, Serialize)]
+pub struct ReferenceDestinationUpdateResponse {
+    pub replayed: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AuthorityUpdateResponse {
+    pub replayed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revoked_count: Option<usize>,
+}
+
+#[derive(Debug, Serialize)]
 pub struct SorEventResponse {
     pub mandate_id: String,
     pub exp: DateTime<Utc>,
@@ -1942,6 +2174,18 @@ fn event_refusal(err: &PortError) -> Refusal {
             err.message.clone(),
         ),
         ErrorClass::Unavailable => crate::problem::Problem::unavailable(&err.message),
+    }
+}
+
+fn authority_update_refusal(err: &PortError) -> Refusal {
+    if err.class == ErrorClass::Rejected && err.message.contains("different content") {
+        crate::problem::Problem::new(
+            StatusCode::CONFLICT,
+            "event_conflict",
+            "authority update conflicts with a previously accepted update",
+        )
+    } else {
+        event_refusal(err)
     }
 }
 
@@ -2002,6 +2246,137 @@ pub async fn sor_event(
             }
         },
     }
+}
+
+/// `POST /v1/sor/authority-updates`: persists signed consent grants,
+/// withdrawals and contact-preference changes to the selected Postgres stores.
+pub async fn sor_authority_update(
+    State(state): State<Arc<AppState>>,
+    body: Result<StrictJson<SorEventBody>, StrictJsonRejection>,
+) -> Result<(StatusCode, Json<AuthorityUpdateResponse>), Refusal> {
+    let dp = dataplane(&state)?;
+    let allowed = dp.sor_limiter.lock().is_ok_and(|mut bucket| bucket.take());
+    if !allowed {
+        return Err(refuse(StatusCode::TOO_MANY_REQUESTS, "event rate limit"));
+    }
+    let updates = dp.authority_updates.as_ref().ok_or_else(|| {
+        refuse(
+            StatusCode::NOT_FOUND,
+            "authority update ingestion is disabled",
+        )
+    })?;
+    let StrictJson(body) = body.map_err(|_| {
+        refuse(
+            StatusCode::BAD_REQUEST,
+            "malformed body: expected JSON with a signed event",
+        )
+    })?;
+    let verified = updates
+        .verifier
+        .verify(&body.event, dp.clock.now())
+        .map_err(|error| authority_update_refusal(&error))?;
+    let (replayed, revoked_count) = match &verified.event().change {
+        AuthorityChange::Consent(record) if record.active => (
+            updates
+                .store
+                .apply_consent_grant(&verified)
+                .await
+                .map_err(|error| authority_update_refusal(&error))?
+                .replayed,
+            None,
+        ),
+        AuthorityChange::Consent(_) => {
+            let applied = updates
+                .store
+                .apply_consent_withdrawal(&verified)
+                .await
+                .map_err(|error| authority_update_refusal(&error))?;
+            (applied.replayed, Some(applied.revoked.len()))
+        }
+        AuthorityChange::ContactPreference(_) => (
+            updates
+                .store
+                .apply_preference(&verified)
+                .await
+                .map_err(|error| authority_update_refusal(&error))?
+                .replayed,
+            None,
+        ),
+        AuthorityChange::ReferenceDestination(_) => {
+            return Err(refuse(
+                StatusCode::BAD_REQUEST,
+                "reference destinations must use the reference-destinations route",
+            ));
+        }
+    };
+    Ok((
+        if replayed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(AuthorityUpdateResponse {
+            replayed,
+            revoked_count,
+        }),
+    ))
+}
+
+/// `POST /v1/sor/reference-destinations`: accepts the signed authority-update
+/// envelope and persists only encrypted destination bytes plus signed metadata.
+pub async fn sor_reference_destination(
+    State(state): State<Arc<AppState>>,
+    body: Result<StrictJson<SorEventBody>, StrictJsonRejection>,
+) -> Result<(StatusCode, Json<ReferenceDestinationUpdateResponse>), Refusal> {
+    let dp = dataplane(&state)?;
+    let allowed = dp.sor_limiter.lock().is_ok_and(|mut bucket| bucket.take());
+    if !allowed {
+        return Err(refuse(StatusCode::TOO_MANY_REQUESTS, "event rate limit"));
+    }
+    let updates = dp.reference_destination_updates.as_ref().ok_or_else(|| {
+        refuse(
+            StatusCode::NOT_FOUND,
+            "reference destination updates are disabled",
+        )
+    })?;
+    let StrictJson(body) = body.map_err(|_| {
+        refuse(
+            StatusCode::BAD_REQUEST,
+            "malformed body: expected JSON with a signed event",
+        )
+    })?;
+    let now = dp.clock.now();
+    let authority = dp.authority_updates.as_ref().ok_or_else(|| {
+        refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "authority update verifier is unavailable",
+        )
+    })?;
+    let verified = authority
+        .verifier
+        .verify(&body.event, now)
+        .map_err(|error| authority_update_refusal(&error))?;
+    let applied = updates.store.apply(&verified).await.map_err(|error| {
+        if error.class == ErrorClass::Rejected && error.message.contains("different content") {
+            crate::problem::Problem::new(
+                StatusCode::CONFLICT,
+                "event_conflict",
+                "destination update conflicts with a previously accepted update",
+            )
+        } else {
+            event_refusal(&error)
+        }
+    })?;
+    Ok((
+        if applied.replayed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
+        Json(ReferenceDestinationUpdateResponse {
+            replayed: applied.replayed,
+        }),
+    ))
 }
 
 /// Writes a revocation's evidence-chain record (ADR-012 §7). The revocation
@@ -2207,6 +2582,7 @@ pub async fn tool_call(
         let deps = GatewayDeps {
             core: &dp.core,
             resolver: &dp.resolver,
+            contact_preferences: &dp.contact_preferences,
             broker: &*dp.broker,
             forwarder: &*dp.forwarder,
             gateway_held: None,
@@ -2319,7 +2695,7 @@ async fn persist_review_snapshot(
         ));
     }
     let expires_at = record.payload.ts + chrono::Duration::seconds(REVIEW_SNAPSHOT_TTL_SECONDS);
-    let now = Utc::now();
+    let now = dataplane.now();
     if expires_at <= now {
         return Err(PortError::rejected(
             "review snapshot lifetime already expired",
@@ -2370,6 +2746,11 @@ pub fn agent_router(state: Arc<AppState>) -> Router {
 pub fn sor_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/sor/events", post(sor_event))
+        .route("/v1/sor/authority-updates", post(sor_authority_update))
+        .route(
+            "/v1/sor/reference-destinations",
+            post(sor_reference_destination),
+        )
         .fallback(crate::problem::not_found)
         .method_not_allowed_fallback(crate::problem::method_not_allowed)
         .route_layer(axum::middleware::from_fn(crate::correlation::correlate))

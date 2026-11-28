@@ -111,6 +111,7 @@ pub fn setup() -> Setup {
             purposes: set(&["loan_recovery"]),
             expires_at: ist(11, 0, 0) + Duration::days(30),
             active: true,
+            artefact: None,
         })
         .into();
     let config = MandateConfig {
