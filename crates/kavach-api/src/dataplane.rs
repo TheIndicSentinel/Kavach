@@ -1222,6 +1222,12 @@ impl Dataplane {
         &self.core
     }
 
+    /// The stack's trusted time: the clock evidence records carry (a fixed
+    /// development clock or a test clock where one is configured).
+    pub fn now(&self) -> DateTime<Utc> {
+        self.clock.now().utc
+    }
+
     /// Loads a D17 review record using this dataplane's configured tenant.
     /// Records from other tenants, non-review decisions, and records without
     /// an exact-action binding are indistinguishable from a missing record.
@@ -2689,7 +2695,7 @@ async fn persist_review_snapshot(
         ));
     }
     let expires_at = record.payload.ts + chrono::Duration::seconds(REVIEW_SNAPSHOT_TTL_SECONDS);
-    let now = Utc::now();
+    let now = dataplane.now();
     if expires_at <= now {
         return Err(PortError::rejected(
             "review snapshot lifetime already expired",
